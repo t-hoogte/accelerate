@@ -995,6 +995,9 @@ data PreOpenExp (acc :: * -> * -> *) env aenv t where
                 => EltRepr t
                 -> PreOpenExp acc env aenv t
 
+  Undef         :: Elt t
+                => PreOpenExp acc env aenv t
+
   -- Tuples
   Tuple         :: (Elt t, IsTuple t)
                 => Tuple (PreOpenExp acc env aenv) (TupleRepr t)
@@ -1466,6 +1469,7 @@ rnfPreOpenExp rnfA topExp =
     Var ix                    -> rnfIdx ix
     Foreign asm f x           -> rnf (strForeign asm) `seq` rnfF f `seq` rnfE x
     Const t                   -> rnfConst (eltType (undefined::t)) t
+    Undef                     -> ()
     Tuple t                   -> rnfTuple rnfA t
     Prj ix e                  -> rnfTupleIdx ix `seq` rnfE e
     IndexNil                  -> ()
@@ -1692,6 +1696,7 @@ showPreExpOp :: forall acc env aenv t. PreOpenExp acc env aenv t -> String
 showPreExpOp Let{}              = "Let"
 showPreExpOp (Var ix)           = "Var x" ++ show (idxToInt ix)
 showPreExpOp (Const c)          = "Const " ++ show (toElt c :: t)
+showPreExpOp Undef              = "Undef"
 showPreExpOp Foreign{}          = "Foreign"
 showPreExpOp Tuple{}            = "Tuple"
 showPreExpOp Prj{}              = "Prj"

@@ -224,6 +224,7 @@ simplifyOpenExp env = first getAny . cvtE
 
       Var ix                    -> pure $ Var ix
       Const c                   -> pure $ Const c
+      Undef                     -> pure Undef
       Tuple tup                 -> Tuple <$> cvtT tup
       Prj ix t                  -> prj env ix (cvtE t)
       IndexNil                  -> pure IndexNil
@@ -755,6 +756,7 @@ summariseOpenExp = modify terms (+1) . goE
         Var{}                 -> zero & vars +~ 1
         Foreign _ _ x         -> travE x & terms +~ 1   -- +1 for asm, ignore fallback impls.
         Const{}               -> zero
+        Undef                 -> zero
         Tuple tup             -> travT tup & terms +~ 1
         Prj ix e              -> travTix ix +++ travE e
         IndexNil              -> zero

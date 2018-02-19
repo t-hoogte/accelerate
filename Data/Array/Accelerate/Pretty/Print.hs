@@ -358,6 +358,7 @@ prettyPreOpenExp prettyAcc wrap env aenv = pp
     pp (Const v)                = text $ show (toElt v :: t)
     pp (Prj idx e)              = wrap $ char '#' <> prettyTupleIdx idx <+> ppE e
     pp (Cond c t e)             = wrap $ sep [ ppE c, char '?' , tuple [ ppE' t, ppE' e ]]
+    pp Undef                    = text "undef"
     pp IndexNil                 = char 'Z'
     pp IndexAny                 = text "indexAny"
     pp (IndexCons t h)          = ppE' t <+> text ":." <+> ppE' h
