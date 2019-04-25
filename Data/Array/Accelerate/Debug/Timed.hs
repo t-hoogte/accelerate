@@ -1,4 +1,5 @@
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE MagicHash #-}
 -- |
 -- Module      : Data.Array.Accelerate.Debug.Timed
 -- Copyright   : [2016] Manuel M T Chakravarty, Gabriele Keller, Trevor L. McDonell
@@ -25,13 +26,15 @@ import Text.Printf
 #if ACCELERATE_DEBUG
 import Control.Applicative
 import Control.Monad.Trans                              ( liftIO )
-import Data.Int
 import Data.List
 import Data.Time.Clock
 import System.CPUTime
 import Prelude
 
+import GHC.Base
+import GHC.Int
 import GHC.Stats
+import GHC.Word
 #endif
 
 
@@ -46,7 +49,7 @@ timed mode fmt action = do
   enabled <- liftIO $ queryFlag mode
   if enabled
     then do
-      with_gc <- liftIO $ (&&) <$> getGCStatsEnabled <*> queryFlag verbose
+      with_gc <- liftIO $ (&&) <$> getRTSStatsEnabled <*> queryFlag verbose
       if with_gc
         then timed_gc    fmt action
         else timed_simpl fmt action
@@ -72,33 +75,59 @@ timed_simpl fmt action = do
   return res
 
 
+{-# INLINEABLE timed_gc #-}
 timed_gc :: MonadIO m => (Double -> Double -> String) -> m a -> m a
 timed_gc fmt action = do
-  gc0 <- liftIO getGCStats
-  res <- action
-  gc1 <- liftIO getGCStats
+#if __GLASGOW_HASKELL__ < 802
+  gc0   <- liftIO getGCStats
+  res   <- action
+  gc1   <- liftIO getGCStats
+#else
+  rts0  <- liftIO getRTSStats
+  res   <- action
+  rts1  <- liftIO getRTSStats
+#endif
   --
-  let toDouble :: Int64 -> Double
-      toDouble    = fromIntegral
+  let
+      w64 (W64# w#) = D# (word2Double# w#)
+      i64 (I64# i#) = D# (int2Double# i#)
       --
-      allocated   = toDouble (bytesAllocated gc1 - bytesAllocated gc0)
-      copied      = toDouble (bytesCopied gc1 - bytesCopied gc0)
+#if __GLASGOW_HASKELL__ < 802
+      allocated   = i64 (bytesAllocated gc1 - bytesAllocated gc0)
+      copied      = i64 (bytesCopied gc1 - bytesCopied gc0)
       totalWall   = wallSeconds gc1 - wallSeconds gc0
       totalCPU    = cpuSeconds gc1 - cpuSeconds gc0
       mutatorWall = mutatorWallSeconds gc1 - mutatorWallSeconds gc0
       mutatorCPU  = mutatorCpuSeconds gc1 - mutatorCpuSeconds gc0
       gcWall      = gcWallSeconds gc1 - gcWallSeconds gc0
       gcCPU       = gcCpuSeconds gc1 - gcCpuSeconds gc0
+      totalGCs    = numGcs gc1 - numGcs gc0
+#else
+      allocated   = w64 (allocated_bytes rts1 - allocated_bytes rts0)
+      copied      = w64 (copied_bytes rts1 - copied_bytes rts0)
+      totalWall   = i64 (elapsed_ns rts1 - elapsed_ns rts0) * 1.0E-9
+      totalCPU    = i64 (cpu_ns rts1 - cpu_ns rts0) * 1.0E-9
+      mutatorWall = i64 (mutator_elapsed_ns rts1 - mutator_elapsed_ns rts0) * 1.0E-9
+      mutatorCPU  = i64 (mutator_cpu_ns rts1 - mutator_cpu_ns rts0) * 1.0E-9
+      gcWall      = i64 (gc_elapsed_ns rts1 - gc_elapsed_ns rts0) * 1.0E-9
+      gcCPU       = i64 (gc_cpu_ns rts1 - gc_cpu_ns rts0) * 1.0E-9
+      totalGCs    = gcs rts1 - gcs rts0
+#endif
 
   liftIO . putTraceMsg $ intercalate "\n"
     [ fmt totalWall totalCPU
     , printf "    %s allocated on the heap" (showFFloatSIBase (Just 1) 1024 allocated "B")
-    , printf "    %s copied during GC (%d collections)" (showFFloatSIBase (Just 1) 1024 copied "B") (numGcs gc1 - numGcs gc0)
+    , printf "    %s copied during GC (%d collections)" (showFFloatSIBase (Just 1) 1024 copied "B") totalGCs
     , printf "    MUT: %s" (elapsed mutatorWall mutatorCPU)
     , printf "    GC:  %s" (elapsed gcWall gcCPU)
     ]
   --
   return res
+
+#if __GLASGOW_HASKELL__ < 802
+getRTSStatsEnabled :: IO Bool
+getRTSStatsEnabled = getGCStatsEnabled
+#endif
 #endif
 
 elapsed :: Double -> Double -> String

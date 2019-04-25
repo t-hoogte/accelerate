@@ -71,14 +71,15 @@ single (SuccIdx ix) = weakOut (single ix)
 instance Monoid (Stronger env) where
   mempty = Stronger WeakEmpty
 
-  mappend (Stronger WeakEmpty) (Stronger v) = Stronger v
-  mappend (Stronger v) (Stronger WeakEmpty) = Stronger v
-  mappend (Stronger WeakBase) (Stronger _)  = Stronger WeakBase
-  mappend (Stronger _) (Stronger WeakBase) = Stronger WeakBase
-  mappend (Stronger (WeakIn v)) (Stronger (WeakIn v')) = weakIn (Stronger v <> Stronger v')
-  mappend (Stronger (WeakIn v)) (Stronger (WeakOut v')) = weakIn (Stronger v <> Stronger v')
-  mappend (Stronger (WeakOut v)) (Stronger (WeakIn v')) = weakIn (Stronger v <> Stronger v')
-  mappend (Stronger (WeakOut v)) (Stronger (WeakOut v')) = weakOut (Stronger v <> Stronger v')
+instance Semigroup (Stronger env) where
+  (<>) (Stronger WeakEmpty) (Stronger v) = Stronger v
+  (<>) (Stronger v) (Stronger WeakEmpty) = Stronger v
+  (<>) (Stronger WeakBase) (Stronger _)  = Stronger WeakBase
+  (<>) (Stronger _) (Stronger WeakBase) = Stronger WeakBase
+  (<>) (Stronger (WeakIn v)) (Stronger (WeakIn v')) = weakIn (Stronger v <> Stronger v')
+  (<>) (Stronger (WeakIn v)) (Stronger (WeakOut v')) = weakIn (Stronger v <> Stronger v')
+  (<>) (Stronger (WeakOut v)) (Stronger (WeakIn v')) = weakIn (Stronger v <> Stronger v')
+  (<>) (Stronger (WeakOut v)) (Stronger (WeakOut v')) = weakOut (Stronger v <> Stronger v')
 
 dependenciesOpenAcc :: OpenAcc aenv t -> Stronger aenv
 dependenciesOpenAcc (OpenAcc acc) = dependenciesPreAcc dependenciesOpenAcc acc

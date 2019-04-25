@@ -3,7 +3,6 @@
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE FlexibleInstances     #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE NoImplicitPrelude     #-}
 {-# LANGUAGE TemplateHaskell       #-}
 -- |
 -- Module      : Data.Array.Accelerate.Classes.ToFloating
@@ -30,7 +29,7 @@ import Data.Array.Accelerate.Classes.Num
 
 import Language.Haskell.TH                                          hiding ( Exp )
 import Control.Monad
-import Prelude                                                      ( ($), error, concat )
+import Prelude                                                      hiding ( Num, Floating )
 
 
 -- | Accelerate lacks an arbitrary-precision 'Prelude.Rational' type, which the
@@ -58,10 +57,16 @@ $(runQ $ do
           TyConI (DataD _ _ _ _ cons _) <- reify name
 #endif
           let
+            -- This is what a constructor such as IntegralNumType will be reified
+            -- as prior to GHC 8.4...
             dig (NormalC _ [(_, AppT (ConT n) (VarT _))])               = digItOut n
 #if __GLASGOW_HASKELL__ < 800
             dig (ForallC _ _ (NormalC _ [(_, AppT (ConT _) (ConT n))])) = return [n]
 #else
+            -- ...but this is what IntegralNumType will be reified as on GHC 8.4
+            -- and later, after the changes described in
+            -- https://ghc.haskell.org/trac/ghc/wiki/Migration/8.4#TemplateHaskellreificationchangesforGADTs
+            dig (ForallC _ _ (GadtC _ [(_, AppT (ConT n) (VarT _))] _)) = digItOut n
             dig (GadtC _ _ (AppT (ConT _) (ConT n)))                    = return [n]
 #endif
             dig _ = error "Unexpected case generating ToFloating instances"
@@ -72,7 +77,9 @@ $(runQ $ do
         thToFloating a b =
           let
               ty  = AppT (AppT (ConT (mkName "ToFloating")) (ConT a)) (ConT b)
-              dec = ValD (VarP (mkName "toFloating")) (NormalB (VarE (mkName "mkToFloating"))) []
+              dec = ValD (VarP (mkName "toFloating")) (NormalB (VarE (mkName f))) []
+              f | a == b    = "id"
+                | otherwise = "mkToFloating"
           in
           instanceD (return []) (return ty) [return dec]
     --

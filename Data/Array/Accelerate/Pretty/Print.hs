@@ -46,7 +46,7 @@ module Data.Array.Accelerate.Pretty.Print (
 ) where
 
 -- standard libraries
-import Prelude                                          hiding ( exp, seq )
+import Prelude                                          hiding ( exp, seq, (<>))
 import Data.List
 import Text.PrettyPrint
 

@@ -37,7 +37,7 @@ import Control.Monad.State                              ( modify, gets, state )
 import Control.Arrow                                    ( (&&&) )
 import System.IO.Unsafe                                 ( unsafePerformIO )
 import Control.Applicative                              hiding ( Const, empty )
-import Prelude                                          hiding ( exp )
+import Prelude                                          hiding ( exp , (<>))
 import qualified Data.Sequence                          as Seq
 import qualified Data.HashSet                           as Set
 

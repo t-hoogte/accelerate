@@ -19,7 +19,8 @@ import Data.Maybe
 import Data.Hashable
 import Data.List
 import Text.Printf
-import Text.PrettyPrint
+import Text.PrettyPrint hiding ((<>))
+import Prelude 
 
 
 -- Rose tree, with all information at the leaves.
@@ -78,7 +79,7 @@ ppGraph (Graph l ss) =
 
 ppSubgraph :: Graph -> Doc
 ppSubgraph (Graph l ss) =
-  vcat [ text "subgraph cluster_" <> text l <+> lbrace
+  vcat [ (text "subgraph cluster_" <> text l) <+> lbrace
        , nest 4 $ vcat
                 $ punctuate semi
                 $ text "label" <> equals <> text l
@@ -103,8 +104,8 @@ ppNode (Node label nid body) =
        , brackets
        $ hcat
        $ punctuate comma
-       $ catMaybes [ fmap ((text "xlabel" <> equals <>) . doubleQuotes . text) label
-                   , Just ( text "label"  <> equals <>    doubleQuotes (ppNodeTree body))
+       $ catMaybes [ fmap (((text "xlabel" <> equals) <>) . doubleQuotes . text) label
+                   , Just ( (text "label"  <> equals) <>    doubleQuotes (ppNodeTree body))
                    ]
        ]
 
