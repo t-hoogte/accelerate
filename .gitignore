@@ -9,3 +9,5 @@
 /accelerate-io/dist/
 .stack-work/
 .stack-work-profile/
+
+stack\.yaml

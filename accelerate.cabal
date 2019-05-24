@@ -266,6 +266,7 @@ Library
         , transformers                  >= 0.3
         , unique
         , unordered-containers          >= 0.2
+        , lens
 
   Exposed-modules:
         -- The core language and reference implementation

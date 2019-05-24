@@ -35,7 +35,7 @@
 module Data.Array.Accelerate.Array.Sugar (
 
   -- * Array representation
-  Array(..), Scalar, Vector, Segments,
+  Array(..), Scalar, Vector, Matrix, Segments,
   Arrays(..), ArraysR(..), ArraysFlavour(..), ArrRepr,
 
   -- * Class of supported surface element types and their mapping to representation types
@@ -1016,6 +1016,10 @@ type Scalar e = Array DIM0 e
 -- |Vectors are one-dimensional arrays
 --
 type Vector e = Array DIM1 e
+
+-- | Matrices are two-dimensional arrays
+--
+type Matrix = Array DIM2
 
 -- |Segment descriptor (vector of segment lengths).
 --
