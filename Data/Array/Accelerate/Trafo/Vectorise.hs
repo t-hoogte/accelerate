@@ -511,6 +511,58 @@ liftPreOpenAcc vectAcc ctx size acc
         cvt _           = error "Absurd"
 #endif
 
+    asSame :: forall a a' a'' aenv . (Arrays a, Arrays a'') => LiftedType a a'' -> LiftedAcc acc aenv a -> acc aenv a''
+    asSame ty (LiftedAcc ty' a) = caster ty ty' a
+      where
+        caster :: forall b b' b'' . (Arrays b, Arrays b', Arrays b'') => LiftedType b b'' -> LiftedType b b' -> acc aenv b' -> acc aenv b''
+        caster ty ty' b 
+          | Just Refl <- eqT :: Maybe (b' :~: b'')
+          = b
+          | otherwise
+          = error $ "Unsafe cast from " ++ show ty ++ " to " ++ show ty'  
+
+    asRegular :: (Shape sh, Elt e) => LiftedAcc acc aenv' (Array sh e) -> acc aenv' (RegularArray sh e)
+    asRegular = asRegular' size
+
+    asRegular' :: forall aenv sh e. (Shape sh, Elt e) => Size acc aenv -> LiftedAcc acc aenv (Array sh e) -> acc aenv (RegularArray sh e)
+    asRegular' size (LiftedAcc ty a) = cvt ty a
+      where
+        cvt :: (Shape sh, Elt e, Arrays t') => LiftedType (Array sh e) t' -> acc aenv t' -> acc aenv (RegularArray sh e)
+        cvt AvoidedT    = replicateA size
+        cvt RegularT    = id
+        cvt IrregularT  = error "unsave transform form regular to irregular"
+    
+    asIrregularTup :: forall a. (Arrays a) => LiftedAcc acc aenv' a -> LiftedAcc acc aenv' a
+    asIrregularTup = asIrregularTup' size
+      
+    asIrregularTup' :: forall aenv a. (Arrays a) => Size acc aenv-> LiftedAcc acc aenv a -> LiftedAcc acc aenv a
+    asIrregularTup' size a'@(LiftedAcc ty a) = 
+      case ty of
+        UnitT       -> LiftedAcc ty a
+        LiftedUnitT -> LiftedAcc ty a
+        AvoidedT    | checkScalar ty -> LiftedAcc RegularT $ replicateA size a
+                    | otherwise      -> LiftedAcc IrregularT $ cvt ty a
+        RegularT    | checkScalar ty -> a'
+                    | otherwise      -> LiftedAcc IrregularT $ cvt ty a
+        IrregularT  -> LiftedAcc IrregularT $ cvt ty a
+        TupleT tup  | LiftedAtuple ty at <- asIrregularTupT tup (asAtupleC a)
+                    -> LiftedAcc (freeProdT ty) $^ Atuple at
+      where
+        cvt :: (Shape sh, Elt e, Arrays t') => LiftedType (Array sh e) t' -> acc aenv t' -> acc aenv (IrregularArray sh e)
+        cvt AvoidedT    = sparsifyC . replicateA size
+        cvt RegularT    = sparsifyC
+        cvt IrregularT  = id
+
+        asIrregularTupT :: forall t t' . 
+                           LiftedTupleType t t'
+                        -> Atuple (acc aenv) t'
+                        -> LiftedAtuple acc aenv t
+        asIrregularTupT NilLtup NilAtup = LiftedAtuple NilLtup NilAtup
+        asIrregularTupT (SnocLtup lt l) (SnocAtup tt ta)
+          | LiftedAcc ty a <- asIrregularTup' size (LiftedAcc l ta)
+          , LiftedAtuple tup t <- asIrregularTupT lt tt
+          = LiftedAtuple (SnocLtup tup ty) (SnocAtup t a)
+
     liftedE :: forall t. Elt t => LiftedExp acc () aenv' aenv' t -> acc aenv' (Vector t)
     liftedE (LiftedExp (Just e) _) = replicateE size e
     liftedE (LiftedExp _        e) = e
@@ -645,8 +697,41 @@ liftPreOpenAcc vectAcc ctx size acc
                 ixt (SuccIdx ZeroIdx) = ZeroIdx
                 ixt (SuccIdx (SuccIdx ZeroIdx)) = SuccIdx ZeroIdx
                 ixt (SuccIdx (SuccIdx (SuccIdx ix))) = SuccIdx . SuccIdx $ ix
+
+    acondUnsafe :: forall aenv' a a'. Arrays a' => Size acc aenv' -> LiftedType a a' -> acc aenv' a' -> acc aenv' a' -> acc (aenv', Vector Bool) a'
+    acondUnsafe size ty t e =
+      case ty of
+        UnitT       -> inject $ Use ()
+        LiftedUnitT -> size'
+        IrregularT  -> liftedCondC avar0 (weakenA1 t) (weakenA1 e)
+        TupleT tup  | at <- acondT tup (asAtupleC avar1) (asAtupleC avar0)
+                    -> inject $ Alet (weakenA1 t) $^ Alet (weakenA2 e) $^ Atuple at
+        RegularT    | checkScalar ty -> liftedCondRegC avar0 (weakenA1 t) (weakenA1 e)
+        _           -> error $ "unsafe use of acondUnsafe, type is: " ++ show ty
+
+      where
+        size' :: Size acc (aenv', Vector Bool)
+        size' = weakenA1 size
+
+        acondT :: forall aenv'' t t'. aenv'' ~ (((aenv', Vector Bool), a'), a')
+                => LiftedTupleType t t'
+                -> Atuple (acc aenv'') t'
+                -> Atuple (acc aenv'') t'
+                -> Atuple (acc aenv'') t'
+        acondT NilLtup NilAtup NilAtup = NilAtup
+        acondT (SnocLtup lt l) (SnocAtup tt ta) (SnocAtup et ea)
+          | a <- acondUnsafe (weakenA3 size) l ta ea
+          , t <- acondT lt tt et
+          = SnocAtup t (weaken ixt a)
+          where
+            ixt :: ((((aenv',Vector Bool),a'),a'), Vector Bool) :> (((aenv',Vector Bool),a'),a')
+            ixt ZeroIdx = SuccIdx . SuccIdx $ ZeroIdx
+            ixt (SuccIdx ZeroIdx) = ZeroIdx
+            ixt (SuccIdx (SuccIdx ZeroIdx)) = SuccIdx ZeroIdx
+            ixt (SuccIdx (SuccIdx (SuccIdx ix))) = SuccIdx . SuccIdx $ ix
+
 #if __GLASGOW_HASKELL__ < 800
-            acondT _ _ _ = error "Absurd"
+        acondT _ _ _ = error "Absurd"
 #endif
 
     -- TODO: Reimplement this
@@ -667,35 +752,33 @@ liftPreOpenAcc vectAcc ctx size acc
           | otherwise
           = let
                 awhileLift :: forall sh e . (Shape sh, Elt e)
-                          => acc (aenv', IrregularArray sh e) (IrregularArray DIM0 Bool)  
+                          => acc (aenv', IrregularArray sh e) (Vector Bool)  
                           -> acc (aenv', IrregularArray sh e) (IrregularArray sh e)  
-                          -> LiftedAcc acc aenv' (Array sh e) 
-                          -> LiftedAcc acc aenv' (Array sh e)
-                awhileLift predb_l iterb_l a_l = irregularAcc "awhile"
-                          $^ Alet (asIrregular a_l)
+                          -> acc aenv' (IrregularArray sh e)
+                          -> acc aenv' (IrregularArray sh e)
+                awhileLift predb_l iterb_l a_l = inject $ Alet a_l
                           $^ Aprj (SuccTupIdx . SuccTupIdx $ ZeroTupIdx)
                           $^ Awhile pred' (weakenA1 iter') init'
                   where
-                    pred_l :: PreOpenAfun acc aenv' (IrregularArray sh e -> IrregularArray DIM0 Bool)
+                    pred_l :: PreOpenAfun acc aenv' (IrregularArray sh e -> Vector Bool)
                     pred_l = Alam . Abody $ predb_l
                     iter_l :: PreOpenAfun acc aenv' (IrregularArray sh e -> IrregularArray sh e)
                     iter_l = Alam . Abody $ iterb_l
 
                     init' :: acc (aenv', IrregularArray sh e) (IrregularArray sh e, Vector Bool, Scalar Bool)
-                    init' = inject $ Alet (irregularValuesC $ weakenA1 pred_l `apply` avar0)
+                    init' = inject $ Alet (weakenA1 pred_l `apply` avar0)
                                    $ atup3 avar1 avar0 (fromHOAS S.or avar0)
    
                     pred' ::  Arrays s => PreOpenAfun acc (aenv',s) ((s, Vector Bool, Scalar Bool) -> Scalar Bool)
-                    pred' = Alam $ Abody $ inject $ Aprj ZeroTupIdx avar0
+                    pred' = Alam . Abody $^ Aprj ZeroTupIdx avar0
                  
                     iter_f :: Arrays s =>
                            acc (aenv', s) (IrregularArray sh e)
                            -> acc (aenv', s) (Vector Bool)
-                           -- -> acc (aenv', s) (Scalar Bool)
                            -> acc (aenv', s) (IrregularArray sh e, Vector Bool, Scalar Bool)
                     iter_f a f =
                       let a' = liftedCondC f (weakenA1 iter_l `apply` a) a
-                          f' = fromHOAS2 (S.zipWith (S.&&)) f (irregularValuesC $ weakenA1 pred_l `apply` a')
+                          f' = fromHOAS2 (S.zipWith (S.&&)) f (weakenA1 pred_l `apply` a')
                           c' = fromHOAS S.or f'
                       in atup3 a' f' c'
                     
@@ -704,23 +787,66 @@ liftPreOpenAcc vectAcc ctx size acc
                     iter' = Alam $ Abody $ iter_f
                              (inject $ Aprj (SuccTupIdx . SuccTupIdx $ ZeroTupIdx) avar0)
                              (inject $ Aprj (SuccTupIdx ZeroTupIdx) avar0)
-                             -- (inject $ Aprj ZeroTupIdx avar0)
-                
+
+                awhileLiftUnsafe :: forall a a' . (Arrays a)
+                      => Size acc (aenv') -> LiftedType a' a
+                      -> acc (aenv', a) (Vector Bool)  
+                      -> acc (aenv', a) a
+                      -> acc aenv' a
+                      -> acc aenv' a
+                awhileLiftUnsafe size ty
+                  predb_l iterb_l a_l = inject $ Alet a_l
+                          $^ Aprj (SuccTupIdx . SuccTupIdx $ ZeroTupIdx)
+                          $^ Awhile pred' (weakenA1 iter') init'
+                  where
+                    pred_l :: PreOpenAfun acc aenv' (a -> Vector Bool)
+                    pred_l = Alam . Abody $ predb_l
+                    iter_l :: PreOpenAfun acc aenv' (a -> a)
+                    iter_l = Alam . Abody $ iterb_l
+
+                    init' :: acc (aenv', a) (a, Vector Bool, Scalar Bool)
+                    init' = inject $ Alet (weakenA1 pred_l `apply` avar0)
+                                   $ atup3 avar1 avar0 (fromHOAS S.or avar0)
+   
+                    pred' ::  Arrays s => PreOpenAfun acc (aenv',s) ((s, Vector Bool, Scalar Bool) -> Scalar Bool)
+                    pred' = Alam . Abody $^ Aprj ZeroTupIdx avar0
+                 
+                    iter_f :: acc (aenv', (a, Vector Bool, Scalar Bool)) a
+                           -> acc (aenv', (a, Vector Bool, Scalar Bool)) (Vector Bool)
+                           -> acc (aenv', (a, Vector Bool, Scalar Bool)) (a, Vector Bool, Scalar Bool)
+                    iter_f a f =
+                      let a' = inject $ Alet f $ acondUnsafe (weakenA1 size) ty (weakenA1 iter_l `apply` a) a
+                          f' = fromHOAS2 (S.zipWith (S.&&)) f (weakenA1 pred_l `apply` a')
+                          c' = fromHOAS S.or f'
+                      in atup3 a' f' c'
+                    
+                    iter' :: PreOpenAfun acc aenv' ((a, Vector Bool, Scalar Bool)
+                          -> (a, Vector Bool, Scalar Bool))
+                    iter' = Alam $ Abody $ iter_f
+                             (inject $ Aprj (SuccTupIdx . SuccTupIdx $ ZeroTupIdx) avar0)
+                             (inject $ Aprj (SuccTupIdx ZeroTupIdx) avar0)
             in case ty of
               IrregularT -> 
                 let newctx  = push ctx IrregularT
                     newsize = weakenA1 size
-                    predb_l = asIrregular' newsize . vectAcc newctx newsize $ predb
+                    predb_l = asRegular' newsize . vectAcc newctx newsize $ predb
                     iterb_l = asIrregular' newsize . vectAcc newctx newsize $ iterb
-                in awhileLift predb_l iterb_l (LiftedAcc ty a)
+                in irregularAcc "awhile" $ awhileLift predb_l iterb_l a
               RegularT ->
                 let newctx  = push ctx IrregularT
                     newsize = weakenA1 size
-                    predb_l = asIrregular' newsize . vectAcc newctx newsize $ predb
+                    predb_l = asRegular' newsize . vectAcc newctx newsize $ predb
                     iterb_l = asIrregular' newsize . vectAcc newctx newsize $ iterb
-                in awhileLift predb_l iterb_l (LiftedAcc ty a)
+                    resa = sparsifyC $ a
+                in irregularAcc "awhile" $ awhileLift predb_l iterb_l resa
               LiftedUnitT -> LiftedAcc ty a
-              TupleT tup -> error $ "This is my tupple type" ++ show tup 
+              TupleT tup | LiftedAcc resty resa <- asIrregularTup $ LiftedAcc ty a
+                         ->
+                let newctx  = push ctx resty
+                    newsize = weakenA1 size
+                    predb_l = asRegular' newsize . vectAcc newctx newsize $ predb
+                    iterb_l = asSame resty . vectAcc newctx newsize $ iterb
+                in trace "IRREGULAR" "awhile" . LiftedAcc resty $ awhileLiftUnsafe size resty predb_l iterb_l resa
               _ -> error "Absurd: Vectorisation of loops should never end up here"
     awhileL _ _ _= error "Absurd: Vectorisation of loops should never end up here"
 
@@ -2002,13 +2128,13 @@ liftedCondReg pred t e = result
 --    init' = let f = pred init
 --            in S.lift (init, f, S.or f)
 
---    pred' :: S.Acc (Regular t, Vector Bool, Scalar Bool) -> S.Acc (Scalar Bool)
---    pred' f = let (_ :: S.Acc (Regular t), _ :: S.Acc (Vector Bool), c) = S.unlift f in c
+--    pred' :: S.Acc (IrregularArray sh e, Vector Bool, Scalar Bool) -> S.Acc (Scalar Bool)
+--    pred' f = let (_ :: S.Acc (IrregularArray sh e), _ :: S.Acc (Vector Bool), c) = S.unlift f in c
 
---    iter' :: S.Acc (Regular t, Vector Bool, Scalar Bool) -> S.Acc (Regular t, Vector Bool, Scalar Bool)
---    iter' (S.unlift -> (a, f, _ :: S.Acc (Scalar Bool)))
+--    iter' :: S.Acc (IrregularArray sh e, Vector Bool, Scalar Bool) -> S.Acc (IrregularArray sh e, Vector Bool, Scalar Bool)
+--    iter' (S.unlift -> (a, f, c :: S.Acc (Scalar Bool)))
 --      = let a' = liftedCond f (iter a) a
---            f' = S.zipWith (S.&&*) f (pred a')
+--            f' = S.zipWith (S.&&) f (pred a')
 --            c' = S.or f'
 --        in S.lift (a', f', c')
 
@@ -3516,3 +3642,7 @@ embedAfun (Abody a) = Abody (embedAcc a)
 
 dummy :: k a -> a
 dummy _ = undefined
+
+checkScalar :: forall sh e t. Shape sh => LiftedType (Array sh e) t -> Bool
+checkScalar _ | Just Refl <- eqT :: Maybe (sh :~: DIM0) = True
+              | otherwise                               = False
