@@ -11,3 +11,5 @@
 .stack-work-profile/
 
 stack\.yaml
+
+\.vscode/
