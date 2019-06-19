@@ -1898,9 +1898,10 @@ sparsify :: (Elt e, Shape sh) => S.Acc (RegularArray sh e) -> S.Acc (IrregularAr
 sparsify ra = S.Acc (S.Atuple $ NilAtup `SnocAtup` S.lift (S.unit sz, offs, shs) `SnocAtup` vs)
   where
     sz = S.size ra
+    seqSz = S.indexLast . S.shape $ ra
     vs = S.flatten ra
-    offs = S.enumFromStepN (S.index1 sz) 0 (S.shapeSize (regularShape ra))
-    shs  = S.fill (S.index1 sz) (regularShape ra)
+    offs = S.enumFromStepN (S.index1 seqSz) 0 (S.shapeSize (regularShape ra))
+    shs  = S.fill (S.index1 seqSz) (regularShape ra)
 
 makeFoldSegments :: forall sh. (Shape sh, Slice sh) => S.Acc (Segments (sh:.Int)) -> S.Acc (Vector Int, Segments sh)
 makeFoldSegments segs = S.lift (generateSeg inSegs (\seg _ _ -> S.indexHead (shapes segs S.!! seg)), outSegs)
@@ -1943,39 +1944,57 @@ liftedCond :: (Shape sh, Elt e)
            -> S.Acc (IrregularArray sh e)  -- then
            -> S.Acc (IrregularArray sh e)  -- else
            -> S.Acc (IrregularArray sh e)
-liftedCond pred t e = irregular segs vals
+liftedCond pred t e = result
   where
+    allt = S.the . S.and $ pred
+    alle = S.not . S.the . S.or $ pred
+
+    result = S.acond allt t $ S.acond alle e $ irregular segs vals
+
     shs_t = shapes (segments t)
     shs_e = shapes (segments e)
-    shs   = S.zipWith (\f p -> let (t,e) = S.unlift p in f S.? (t, e))
-                       pred
-                       (S.zip shs_t shs_e)
+    shs   = S.zipWith3 (\f t e -> f S.? (t, e))
+                       pred shs_t shs_e
 
     segs = segmentsFromShapes shs
 
     offs_t = offsets (segments t)
     offs_e = offsets (segments e)
-    sz_v   = S.fold (+) 0 $ S.map S.shapeSize shs
-    offs   = S.zipWith (\f p -> let (t,e) = S.unlift p in f S.? (t, e))
-                       pred
-                       (S.zip offs_t offs_e)
+    sz_v   = totalSize segs
+    offs   = S.zipWith3 (\f t e -> f S.? (t, e))
+                       pred offs_t offs_e
     flag_offs = replicateSeg segs $ S.zip pred offs
 
     vals_t = irregularValues t
     vals_e = irregularValues e
-    ones   = S.fill (S.index1 $ S.the sz_v) (1 :: S.Exp Int)
-    enums  = S.scanl1Seg (+) ones $ S.map S.shapeSize shs
+    ones   = S.fill (S.index1 $ sz_v) (1 :: S.Exp Int)
+    enums  = S.prescanlSeg (+) 0 ones $ S.map S.shapeSize shs
     vals   = S.zipWith (\t ind -> let (f,s) = S.unlift t in f S.? (vals_t S.!! (s + ind), vals_e S.!! (s + ind)))
                        flag_offs
                        enums
 
---liftedAwhile :: forall t.
---                (Arrays t, Arrays (Regular t))
---             => (S.Acc (Regular t) -> S.Acc (Vector Bool))
---             -> (S.Acc (Regular t) -> S.Acc (Regular t))
---             -> S.Acc (Regular t)
---             -> S.Acc (Regular t)
---liftedAwhile pred iter init
+liftedCondReg :: (Shape sh, Elt e)
+           => S.Acc (Vector Bool)          -- condition
+           -> S.Acc (RegularArray sh e)  -- then
+           -> S.Acc (RegularArray sh e)  -- else
+           -> S.Acc (RegularArray sh e)
+liftedCondReg pred t e = result
+  where
+    allt = S.the . S.and $ pred
+    alle = S.not . S.the . S.or $ pred
+
+    sh = S.shape t
+    size_reg = S.shapeSize . S.indexInit $ sh
+    flags = S.reshape sh . S.replicate (S.lift (Z:.All:.size_reg)) $ pred
+
+    result = S.zipWith3 (\f t e -> f S.? (t,e)) flags t e
+
+-- liftedAwhile :: forall e sh . (Shape sh, Elt e)
+--             => (S.Acc (IrregularArray sh e) -> S.Acc (Vector Bool))
+--             -> (S.Acc (IrregularArray sh e) -> S.Acc (IrregularArray sh e))
+--             -> S.Acc (IrregularArray sh e)
+--             -> S.Acc (IrregularArray sh e)
+-- liftedAwhile pred iter init
 --  = let
 --      (a, _ :: S.Acc (Vector Bool), _ :: S.Acc (Scalar Bool)) = S.unlift $ S.awhile pred' iter' init'
 --    in a
@@ -2236,6 +2255,13 @@ liftedCondC :: (Kit acc, Shape sh, Elt e)
             -> acc aenv (IrregularArray sh e)
             -> acc aenv (IrregularArray sh e)
 liftedCondC = fromHOAS3 liftedCond
+
+liftedCondRegC :: (Kit acc, Shape sh, Elt e)
+            => acc aenv (Vector Bool)
+            -> acc aenv (RegularArray sh e)
+            -> acc aenv (RegularArray sh e)
+            -> acc aenv (RegularArray sh e)
+liftedCondRegC = fromHOAS3 liftedCondReg
 
 irregularReshapeC :: (Elt e, Shape sh, Shape sh', Kit acc)
                   => acc aenv (Vector sh)
