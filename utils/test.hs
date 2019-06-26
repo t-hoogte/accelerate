@@ -17,7 +17,7 @@ import Prelude as P (fromIntegral, fromInteger, fromRational, String, return, (>
 import Data.Array.Accelerate.Trafo
 import qualified Data.Array.Accelerate.Trafo.Sharing    as Sharing
 import qualified Data.Array.Accelerate.AST              as AST
-import Data.Array.Accelerate.Trafo.Vectorise  as Vectorise
+import Data.Array.Accelerate.Trafo.Vectorise  as Vectorise hiding (index1, the, unit)
 import qualified Data.Array.Accelerate.Trafo.Rewrite    as Rewrite
 import qualified Data.Array.Accelerate.Trafo.Simplify   as Rewrite
 import qualified Data.Array.Accelerate.Trafo.Fusion     as Fusion
@@ -42,10 +42,8 @@ clearflags = clearFlags flags
 testflag = queryFlag dump_vectorisation
 
 
-xs' :: Vector Int
+xs', xs2' :: Vector Int
 xs' = fromList (Z :. 12) [0..]
-
-xs2' :: Vector Int
 xs2' = fromList (Z :. 9) [10..]
 
 xs :: Acc (Vector Int)
@@ -197,6 +195,8 @@ total_2 = travototal test2
 total_3 = travototal test3
 
 
+
+
 myliftedCond :: (Shape sh, Elt e)
            => Acc (Vector Bool)          -- condition
            -> Acc (IrregularArray sh e)  -- then
@@ -227,12 +227,13 @@ pred (unlift -> (segs :: Acc (Lifted.Segments sh) , vals)) = let (sz :: Acc (Sca
 irAr2 :: forall sh . Shape sh =>  Acc (IrregularArray sh Int) -> Acc (IrregularArray sh Int)
 irAr2 (unlift -> (segs :: Acc (Lifted.Segments sh) , vals)) = lift (segs, map (+50) vals)
 
+{-
 condTest :: Acc (IrregularArray DIM2 Int)
 condTest = liftedCond2 c t e
     where
       c = pred irAr
       t = irAr
-      e = irAr2 irAr
+      e = irAr2 irAr-}
 
 replsegTest :: Acc (Vector Int)
 replsegTest = Vectorise.replicateSeg (use (segs' 2)) $ use $ fromList (Z :. 2) [0..]
@@ -278,8 +279,13 @@ liftedCond2 :: (Shape sh, Elt e)
            -> Acc (IrregularArray sh e)  -- then
            -> Acc (IrregularArray sh e)  -- else
            -> Acc (IrregularArray sh e)
-liftedCond2 pred t e = irregular segs vals
+liftedCond2 pred t e = result
   where
+    allt = the . and $ pred
+    alle = not . the . or $ pred
+
+    result = acond allt t $ acond alle e $ irregular segs vals
+
     shs_t = Vectorise.shapes (segments t)
     shs_e = Vectorise.shapes (segments e)
     shs   = zipWith3 (\f t e -> f ? (t, e))
@@ -289,7 +295,7 @@ liftedCond2 pred t e = irregular segs vals
 
     offs_t = offsets (segments t)
     offs_e = offsets (segments e)
-    sz_v   = totalSize segs --fold (+) 0 $ map shapeSize shs
+    sz_v   = totalSize segs
     offs   = zipWith3 (\f t e -> f ? (t, e))
                        pred offs_t offs_e
     flag_offs = replicateSeg segs $ zip pred offs

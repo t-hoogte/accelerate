@@ -32,6 +32,8 @@ module Data.Array.Accelerate.Debug.Flags (
   dump_dot, dump_simpl_dot, dump_gc, dump_gc_stats, debug_cc, dump_cc, dump_ld, dump_asm,
   dump_exec, dump_sched, seq_chunk_size,
 
+  setforceIrreg, clearforceIrreg, queryforceIrreg,
+
   accInit,
   queryFlag, setFlag, setFlags, clearFlag, clearFlags,
   when, unless,
@@ -280,6 +282,16 @@ clearFlags f = modifyIORef _flags (\opt -> foldr (flip set False) opt f)
 setFlags _   = return ()
 clearFlags _ = return ()
 #endif
+
+forceIrregInit :: IORef Bool
+forceIrregInit = unsafePerformIO $ newIORef False
+
+setforceIrreg, clearforceIrreg :: IO ()
+setforceIrreg   = modifyIORef forceIrregInit (const True)
+clearforceIrreg = modifyIORef forceIrregInit (const False)
+
+queryforceIrreg :: IO Bool
+queryforceIrreg = readIORef forceIrregInit
 
 
 -- | Conditional execution of a monadic debugging expression
