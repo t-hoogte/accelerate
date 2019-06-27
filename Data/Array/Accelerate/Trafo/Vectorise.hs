@@ -802,7 +802,7 @@ liftPreOpenAcc vectAcc indAcc ctx size acc
                 regular :: Bool
                 --regular = unsafePerformIO Debug.queryReg
                 regular = let ind =  indAcc predb
-                              indres = DT.trace ("The result of the indepent test is: " ++ show ind) ((\(x,y) -> x && y) $ res)
+                              indres = DT.trace ("The result of the indepent test is: " ++ show ind) ((\(x,y) -> x && y) $ ind)
                               force = unsafePerformIO Debug.queryforceIrreg
                           in if force then False else indres
 
