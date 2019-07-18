@@ -339,6 +339,7 @@ Library
         Data.Array.Accelerate.Trafo.Dependency
         Data.Array.Accelerate.Trafo.Fusion
         Data.Array.Accelerate.Trafo.Rewrite
+        Data.Array.Accelerate.Trafo.Shape
         Data.Array.Accelerate.Trafo.Sharing
         Data.Array.Accelerate.Trafo.Shrink
         Data.Array.Accelerate.Trafo.Simplify
