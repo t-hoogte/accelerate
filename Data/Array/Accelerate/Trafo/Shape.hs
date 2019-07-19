@@ -2,11 +2,11 @@
 {-# LANGUAGE RankNTypes           #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
 --{-# LANGUAGE StandaloneDeriving   #-}
+{-# LANGUAGE AllowAmbiguousTypes  #-}
 {-# LANGUAGE FlexibleContexts     #-}
 {-# LANGUAGE TypeFamilies         #-}
 {-# LANGUAGE TypeOperators        #-}
 {-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE AllowAmbiguousTypes  #-}
 --{-# LANGUAGE ExplicitForAll       #-}
 --{-# LANGUAGE TemplateHaskell      #-}
 
@@ -28,10 +28,12 @@ module Data.Array.Accelerate.Trafo.Shape (
 ) where
 
 -- friends
+import           Control.Monad.State.Lazy
 import           Data.Array.Accelerate.Array.Sugar
 import           Data.Array.Accelerate.AST
 import           Data.Array.Accelerate.Product
-
+import           Unsafe.Coerce
+import           Data.Typeable
 -----------------------------------------------------------------
 type IndAcc acc = forall aenv t. acc aenv t -> (Bool, Bool)
 
@@ -198,7 +200,7 @@ independentShapeExp indA expr =
     Intersect sh1 sh2         -> indE sh1 &&& indE sh2
     Union sh1 sh2             -> indE sh1 &&& indE sh2
 
-type family ShapeRepr a :: *
+type family ShapeRepr (a :: *)
 type instance ShapeRepr ()           = ()
 type instance ShapeRepr (Array sh e) = sh
 type instance ShapeRepr (a, b)       = (ShapeRepr a, ShapeRepr b)
@@ -218,237 +220,230 @@ type instance ShapeRepr (a, b, c, d, e, f, g, h, i, j, k, l, m, n, o) = (ShapeRe
 
 
 data ShapeType acc aenv a where
-  ShapeVar :: Arrays arrs => ShapeEnv acc aenv shenv -> Idx shenv arrs -> ShapeType acc aenv arrs
-  ShapeExpr :: Shape sh => {-e proxy type ->-} ShapeEnv acc aenv shenv -> PreExp acc shenv sh -> ShapeType acc aenv (Array sh e)
+  ShapeVar :: Arrays arrs => ShapeEnv acc aenv shenv -> Idx shenv arrs -> ShapeType acc aenv (ShapeRepr arrs)
+  ShapeExpr :: Shape sh => ShapeEnv acc aenv shenv -> PreExp acc shenv sh -> ShapeType acc aenv sh
 
-  Scalar :: {-e proxy type -> -} ShapeType acc aenv (Array Z e)
-  Folded :: Shape sh => ShapeType acc aenv (Array (sh :.Int) e) -> ShapeType acc aenv (Array sh e)
-  Zipped :: {- e proxy type -> -} ShapeType acc aenv (Array sh e1) -> ShapeType acc aenv (Array sh e2) -> ShapeType acc aenv (Array sh e3)
-  Scanned :: ShapeType acc aenv (Array sh e) -> ShapeType acc aenv (Array sh e)
+  Scalar :: ShapeType acc aenv Z
+  Folded :: Shape sh => ShapeType acc aenv (sh :.Int) -> ShapeType acc aenv sh
+  Zipped :: Shape sh => ShapeType acc aenv sh -> ShapeType acc aenv sh -> ShapeType acc aenv sh
+  Scanned :: ShapeType acc aenv sh -> ShapeType acc aenv sh
 
   Replicated :: (Shape sh, Shape sl, Slice slix) => ShapeEnv acc aenv shenv
-             -> PreExp acc shenv slix -> ShapeType acc aenv (Array sl e) -> ShapeType acc aenv (Array sh e)
+             -> PreExp acc shenv slix -> ShapeType acc aenv sl -> ShapeType acc aenv sh
   Sliced :: (Shape sh, Shape sl, Slice slix) => ShapeEnv acc aenv shenv
-         -> PreExp acc shenv slix -> ShapeType acc aenv (Array sl e) -> ShapeType acc aenv (Array sh e)
+         -> PreExp acc shenv slix -> ShapeType acc aenv sl -> ShapeType acc aenv sh
 
-  Tup :: ShapeTypeTup acc aenv (TupleRepr arrs) -> ShapeType acc aenv arrs
-  TupIdx :: (Arrays arrs, IsAtuple arrs, Arrays a) =>
-          TupleIdx (TupleRepr arrs) a -> ShapeType acc aenv arrs -> ShapeType acc aenv a
+  Tup :: (IsProduct Arrays arrs {-, ArrRepr arrs ~ (a,b)-}) => arrs {-proxy type-}
+      -> ShapeTypeTup acc aenv (TupleRepr arrs) -> ShapeType acc aenv (ShapeRepr arrs)
+  TupIdx :: (Arrays arrs, IsAtuple arrs, Arrays a) => arrs {-proxy type-} ->
+          TupleIdx (TupleRepr arrs) a -> ShapeType acc aenv (ShapeRepr arrs) -> ShapeType acc aenv (ShapeRepr a)
 
-  Undecidable :: {- e -> proxy type -}ShapeType acc aenv a
-  Retype :: ShapeType acc aenv (Array sh e) -> ShapeType acc aenv (Array sh e')
+  UndecidableVar :: Int -> ShapeType acc aenv sh
 
-data ShapeTypeTup acc aenv sh where
+data ShapeTypeTup acc aenv a where
   STTupNil :: ShapeTypeTup acc aenv ()
-  STTupCons :: ShapeTypeTup acc aenv sht -> ShapeType acc aenv sh -> ShapeTypeTup acc aenv (sht, sh)
+  STTupCons :: ShapeTypeTup acc aenv arrs -> ShapeType acc aenv (ShapeRepr a) -> ShapeTypeTup acc aenv (arrs, a)
 
 data ShapeEnv acc aenv shenv where
   SEEmpty :: ShapeEnv acc aenv aenv
-  SEPush  :: ShapeEnv acc aenv shenv -> ShapeType acc aenv s -> ShapeEnv acc aenv (shenv, s)
+  SEPush  :: ShapeEnv acc aenv shenv -> ShapeType acc aenv (ShapeRepr s) -> ShapeEnv acc aenv (shenv, s)
 
-lookUp :: Arrays arrs => Idx shenv arrs -> ShapeEnv acc aenv shenv -> Maybe (ShapeType acc aenv arrs)
+lookUp :: Idx shenv a -> ShapeEnv acc aenv shenv -> Maybe (ShapeType acc aenv (ShapeRepr a))
 lookUp _ SEEmpty                     = Nothing
 lookUp ZeroIdx (SEPush _ t)          = Just t
 lookUp (SuccIdx idx) (SEPush env' _) = lookUp idx env'
 
-equalShape :: ShapeType acc aenv sh -> ShapeType acc aenv sh -> Bool
-equalShape st1@(ShapeVar env1 idx1) st2@(ShapeVar env2 idx2) =
-  case (lookUp idx1 env1, lookUp idx2 env2) of
-    (Nothing, Nothing)   -> idxToInt idx1 == idxToInt idx2
-    (Just st1, Just st2) -> equalShape st1 st2
-    (Just st1, Nothing)  -> equalShape st1 st2
-    (Nothing, Just st2)  -> equalShape st1 st2
-equalShape (ShapeVar env1 idx1) st2 =
-  case lookUp idx1 env1 of
-    Nothing  -> False
-    Just st1 -> equalShape st1 st2
+equalShape :: forall sh acc aenv. ShapeType acc aenv sh -> ShapeType acc aenv sh -> Bool
+equalShape st1 st2 -- | Just Refl <- eqT :: Maybe (sh :~: DIM0) = True
+                   | otherwise =
+  case (st1, st2) of
+    (ShapeVar env1 idx1, ShapeVar env2 idx2) -> 
+      case (lookUp idx1 env1, lookUp idx2 env2) of
+        (Nothing, Nothing)   -> idxToInt idx1 == idxToInt idx2
+        (Just st1, Just st2) -> equalShape st1 st2
+        (Just st1, Nothing)  -> equalShape st1 st2
+        (Nothing, Just st2)  -> equalShape st1 st2
+    (Scalar, Scalar) -> True
+    (ShapeExpr env1 e1, ShapeExpr env2 e2) 
+      | Just Refl <- (eqT :: Maybe (sh :~: DIM0)) -> True
+      | otherwise -> equalE env1 e1 env2 e2
+    (Folded st1, Folded st2) 
+      | Just Refl <- (eqT :: Maybe (sh :~: DIM0)) -> True
+      | otherwise -> equalShape st1 st2
+    (Zipped st1a st1b, Zipped st2a st2b) ->
+      equalShape st1a st2a && equalShape st1b st2b
+      || equalShape st1a st2b && equalShape st1b st2a
+    (Scanned st1, Scanned st2) -> equalShape st1 st2
+    (Replicated env1 slix1 st1, Replicated env2 slix2 st2) -> equalSlix env1 slix1 env2 slix2 && equalShape' st1 st2
+    (Sliced env1 slix1 st1, Sliced env2 slix2 st2) -> equalSlix env1 slix1 env2 slix2 && equalShape' st1 st2
+    (Tup _ sttup1, Tup _ sttup2) -> equalShapeT sttup1 sttup2
+    
+    (ShapeVar env1 idx1, _) ->
+      case lookUp idx1 env1 of
+        Nothing  -> False
+        Just st1 -> equalShape st1 st2
+    (_, ShapeVar env2 idx2) ->
+      case lookUp idx2 env2 of
+        Nothing  -> False
+        Just st2 -> equalShape st1 st2
+
+  where
+    equalE :: (Shape sh) => ShapeEnv acc aenv shenv' -> PreExp acc shenv' sh -> ShapeEnv acc aenv shenv -> PreExp acc shenv sh -> Bool
+    equalE env1 e1 env2 e2 = undefined env1 e1 env2 e2
+
+    equalSlix :: forall sh shenv shenv' slix slix'. (Slice slix, Slice slix') 
+              => ShapeEnv acc aenv shenv' -> PreExp acc shenv' slix -> ShapeEnv acc aenv shenv -> PreExp acc shenv slix' -> Bool
+    equalSlix env1 slix1 env2 slix2 | Just Refl <- (eqT :: Maybe (slix :~: slix')) = undefined
+                                    | otherwise = False 
+
+    equalShape' :: forall sh sh' acc aenv. (Shape sh, Shape sh') => ShapeType acc aenv sh -> ShapeType acc aenv sh' -> Bool
+    equalShape' st1 st2 | Just Refl <- (eqT :: Maybe (sh :~: sh')) = equalShape st1 st2
+                        | otherwise = False
+
+    equalShapeT :: ShapeTypeTup acc aenv a -> ShapeTypeTup acc aenv a' -> Bool
+    equalShapeT = undefined
+    
+    
+-- equalShape st1@(ShapeVar env1 idx1) st2@(ShapeVar env2 idx2) =
+--   case (lookUp idx1 env1, lookUp idx2 env2) of
+--     (Nothing, Nothing)   -> idxToInt idx1 == idxToInt idx2
+--     (Just st1, Just st2) -> equalShape st1 st2
+--     (Just st1, Nothing)  -> equalShape st1 st2
+--     (Nothing, Just st2)  -> equalShape st1 st2
+-- equalShape (ShapeVar env1 idx1) st2 =
+--   case lookUp idx1 env1 of
+--     Nothing  -> False
+--     Just st1 -> equalShape st1 st2
 
   {-
-  ShapeVar :: Arrays arrs => ShapeEnv acc aenv shenv -> Idx shenv arrs -> ShapeType acc aenv arrs
-  ShapeExpr :: Shape sh => {-e proxy type ->-} ShapeEnv acc aenv shenv -> PreExp acc shenv sh -> ShapeType acc aenv (Array sh e)
+  ShapeVar :: Arrays arrs => ShapeEnv acc aenv shenv -> Idx shenv arrs -> ShapeType acc aenv (ShapeRepr arrs)
+  ShapeExpr :: Shape sh => ShapeEnv acc aenv shenv -> PreExp acc shenv sh -> ShapeType acc aenv sh
 
-  Scalar :: {-e proxy type -> -} ShapeType acc aenv (Array Z e)
-  Folded :: Shape sh => ShapeType acc aenv (Array (sh :.Int) e) -> ShapeType acc aenv (Array sh e)
-  Zipped :: {- e proxy type -> -} ShapeType acc aenv (Array sh a) -> ShapeType acc aenv (Array sh b) -> ShapeType acc aenv (Array sh e)
+  Scalar :: ShapeType acc aenv Z
+  Folded :: Shape sh => ShapeType acc aenv (sh :.Int) -> ShapeType acc aenv sh
+  Zipped :: Shape sh => ShapeType acc aenv sh -> ShapeType acc aenv sh -> ShapeType acc aenv sh
+  Scanned :: ShapeType acc aenv sh -> ShapeType acc aenv sh
 
   Replicated :: (Shape sh, Shape sl, Slice slix) => ShapeEnv acc aenv shenv
-             -> PreExp acc shenv slix -> ShapeType acc aenv (Array sl e) -> ShapeType acc aenv (Array sh e)
+             -> PreExp acc shenv slix -> ShapeType acc aenv sl -> ShapeType acc aenv sh
   Sliced :: (Shape sh, Shape sl, Slice slix) => ShapeEnv acc aenv shenv
-         -> PreExp acc shenv slix -> ShapeType acc aenv (Array sl e) -> ShapeType acc aenv (Array sh e)
+         -> PreExp acc shenv slix -> ShapeType acc aenv sl -> ShapeType acc aenv sh
 
-  Tup :: ShapeTypeTup acc aenv (TupleRepr arrs) -> ShapeType acc aenv arrs
-  TupIdx :: (Arrays arrs, IsAtuple arrs, Arrays a) =>
-          TupleIdx (TupleRepr arrs) a -> ShapeType acc aenv arrs -> ShapeType acc aenv a
-
-  Undecidable :: {- e -> proxy type -}ShapeType acc aenv a
+  Tup :: (IsProduct Arrays arrs {-, ArrRepr arrs ~ (a,b)-}) => arrs {-proxy type-}
+      -> ShapeTypeTup acc aenv (TupleRepr arrs) -> ShapeType acc aenv (ShapeRepr arrs)
+  TupIdx :: (Arrays arrs, IsAtuple arrs, Arrays a) => arrs {-proxy type-} ->
+          TupleIdx (TupleRepr arrs) a -> ShapeType acc aenv (ShapeRepr arrs) -> ShapeType acc aenv (ShapeRepr a)
   -}
 -------------------------------------------------------------
-type ShAcc acc = forall aenv shenv t . ShapeEnv acc aenv shenv -> acc shenv t -> ShapeType acc aenv t
+type ShAcc acc = forall aenv shenv t . ShapeEnv acc aenv shenv -> acc shenv t -> VSM (ShapeType acc aenv (ShapeRepr t))
 
-shAcc :: Arrays t => Acc t -> ShapeType OpenAcc () (t)
-shAcc a = shOpenAcc SEEmpty a
+type VarState = Int
+type VSM  = State VarState
 
-shOpenAcc :: ShapeEnv OpenAcc aenv shenv -> OpenAcc shenv t -> ShapeType OpenAcc aenv (t)
+getNext :: VSM Int
+getNext = state (\st -> let st' = nextState st in (valFromState st,st') )
+    where
+      valFromState s = s
+      nextState s = s + 1
+
+shAcc :: Arrays t => Acc t -> ShapeType OpenAcc () (ShapeRepr t)
+shAcc a = evalState (shOpenAcc SEEmpty a) 0
+
+shOpenAcc :: ShapeEnv OpenAcc aenv shenv -> OpenAcc shenv t -> VSM (ShapeType OpenAcc aenv (ShapeRepr t))
 shOpenAcc shenv (OpenAcc pacc) = shaperAcc shOpenAcc shenv pacc
 
 -- Maybe change last argument, to be a shapetype or whatever.
-shAF1 :: ShAcc acc -> ShapeEnv acc aenv shenv -> PreOpenAfun acc shenv (arrs1 -> arrs2) -> acc shenv arrs1 -> ShapeType acc aenv arrs2
-shAF1 shA shenv (Alam (Abody f)) a = let newenv = SEPush shenv (shA shenv a) in shA newenv f
+shAF1 :: ShAcc acc -> ShapeEnv acc aenv shenv -> PreOpenAfun acc shenv (arrs1 -> arrs2) -> ShapeType acc aenv (ShapeRepr arrs1) -> VSM (ShapeType acc aenv (ShapeRepr arrs2))
+shAF1 shA shenv (Alam (Abody f)) sha = do let newenv = SEPush shenv sha
+                                          shA newenv f
 shAF1 _ _ _ _ = error "error when applying shAF1"
 
-shaperAcc :: forall acc aenv shenv t. ShAcc acc -> ShapeEnv acc aenv shenv -> PreOpenAcc acc shenv t -> ShapeType acc aenv t
+shaperAcc :: forall acc aenv shenv t. ShAcc acc -> ShapeEnv acc aenv shenv -> PreOpenAcc acc shenv t -> VSM (ShapeType acc aenv (ShapeRepr t))
 shaperAcc shA' shenv acc =
   let
-    shA :: acc shenv t' -> ShapeType acc aenv t'
+    shA :: acc shenv t' -> VSM (ShapeType acc aenv (ShapeRepr t'))
     shA = shA' shenv
 
-    shE :: Shape sh => PreExp acc shenv sh -> ShapeType acc aenv (Array sh e)
-    shE e = ShapeExpr shenv e
+    shATup :: forall t' a . acc shenv t' -> TupleIdx (TupleRepr t') a -> VSM (Maybe (ShapeType acc aenv (ShapeRepr a)))
+    shATup a tidx = do
+      sha <- shA' shenv a
+      case sha of
+        Tup pr t -> Just <$> getTup (believeme t) tidx
+        _        -> return $ Nothing
+        where
+          --believeme :: ShapeTypeTup acc aenv (ProdRepr arrs) -> ShapeTypeTup acc aenv (ProdRepr t')
+          believeme = unsafeCoerce
 
-    shT :: forall t. Atuple (acc shenv) t -> ShapeTypeTup acc aenv t
-    shT NilAtup        = STTupNil
-    shT (SnocAtup t a) = STTupCons (shT t) (shA a)
-    
-    getTup :: ShapeTypeTup acc aenv tarrs -> TupleIdx tarrs a -> ShapeType acc aenv a
-    getTup (STTupCons _ sha) ZeroTupIdx = sha
+    shE :: Shape sh => PreExp acc shenv sh -> VSM (ShapeType acc aenv sh)
+    shE e = return $ ShapeExpr shenv e
+
+    shT :: forall t. Atuple (acc shenv) t -> VSM (ShapeTypeTup acc aenv t)
+    shT NilAtup        = return STTupNil
+    shT (SnocAtup t a) = STTupCons <$> (shT t) <*> (shA a)
+
+    proxy' :: acc shenv t' -> t'
+    proxy' _ = undefined
+
+    proxy :: t
+    proxy = undefined
+
+    getTup :: ShapeTypeTup acc aenv tarrs -> TupleIdx tarrs a -> VSM (ShapeType acc aenv (ShapeRepr a))
+    getTup (STTupCons _ sha) ZeroTupIdx = return sha
     getTup (STTupCons shtup _) (SuccTupIdx tup) = getTup shtup tup
     getTup STTupNil _ = error "Tupple index is to high for the tupple"
 
-    scan' :: Shape sh => acc shenv (Array (sh :. Int) e) -> ShapeType acc aenv (Array (sh :. Int) e, Array sh e )
-    scan' a = case shA a of
-                  Undecidable -> Undecidable
-                  sha         -> Tup $ STTupCons
-                                  (STTupCons STTupNil sha)
-                                  (Folded sha)
+    scan' :: forall sh e. (Shape sh, Elt e) => acc shenv (Array (sh :. Int) e) -> VSM (ShapeType acc aenv ((sh :. Int), sh))
+    scan' a = do
+      sha <- shA a
+      return $ Tup (undefined :: (Array (sh :. Int) e, Array sh e)) $ STTupCons (STTupCons STTupNil sha) (Folded sha)
 
-    {-
-    notUn :: acc aenv' t' -> (ShapeType acc aenv t -> ShapeType acc aenv t) -> ShapeType acc aenv t
-    notUn a f = case shA a of
-                  Undecidable -> Undecidable
-                  sha         -> f sha
--}
+    nextUndecidable :: VSM (ShapeType acc aenv (ShapeRepr t))
+    nextUndecidable = UndecidableVar <$> getNext
   in
   case acc of
-    Alet a b            -> let newenv = SEPush shenv (shA a) in shA' newenv b
-    Avar idx            -> ShapeVar shenv idx
-    Atuple tup          -> Tup (shT tup)
-    Aprj tidx a         | Tup t <- shA a
-                        -> getTup t tidx
-                        | otherwise -> TupIdx tidx (shA a)
-    Apply f a           -> shAF1 shA' shenv f a
+    Alet a b            -> do a' <- shA a
+                              let newenv = SEPush shenv a'
+                              shA' newenv b
+    Avar idx            -> return $ ShapeVar shenv idx
+    Atuple tup          -> Tup proxy <$> (shT tup)
+    Aprj tidx a         -> do
+      sha <- shA a
+      case sha of
+        --Tup pr t -> getTup t tidx
+        _        -> return $ TupIdx (proxy' a) tidx sha
+    Apply f a           -> shAF1 shA' shenv f =<< shA a
     --Aforeign thing can alter the shape really undecidable.
-    Aforeign _ _ _      -> Undecidable
-    --Have to think about this, if it eventually points to the same acond, it's still fine right?
-    Acond _ t e         -> let sht = shA t
-                               she = shA e
-                           in if equalShape sht she then sht else Undecidable
-    Awhile _ it i       -> let shi = shA i
-                               --itEnv = SEPush shenv shi
-                               shIt = shAF1 shA' shenv it i
-                           in  if equalShape shi shIt then shi else Undecidable
-    Unit _              -> Scalar
+    Aforeign _ _ _      -> nextUndecidable
+    Acond _ t e         -> do
+      sht <- shA t
+      she <- shA e
+      if equalShape sht she then return sht else nextUndecidable
+    Awhile _ it i       -> do
+      shi <- shA i
+      shIter <- shAF1 shA' shenv it shi
+      if equalShape shi shIter then return shi else nextUndecidable
+    Use _               -> nextUndecidable
+    Subarray _ _ _      -> nextUndecidable
+    Unit _              -> return Scalar
     Reshape e _         -> shE e
     Generate e _        -> shE e
     Transform sh _ _ _  -> shE sh
-    Replicate _ slix a  -> case shA a of
-                            Undecidable -> Undecidable
-                            sha         -> Replicated shenv slix sha
-    Slice _ a slix      -> case shA a of
-                            Undecidable -> Undecidable
-                            sha         -> Sliced shenv slix sha
-    Map _ a             -> Retype $ shA a
-    ZipWith _ a1 a2     -> Zipped (shA a1) (shA a2)
-    Fold _ _ a          -> case shA a of
-                            Undecidable -> Undecidable
-                            sha         -> Folded sha
-    Fold1 _ a           -> case shA a of
-                            Undecidable -> Undecidable
-                            sha         -> Folded sha
-    FoldSeg _ _ _ _     -> Undecidable
-    Fold1Seg _ _ _      -> Undecidable
-    Scanl _ _ a         -> case shA a of
-                            Undecidable -> Undecidable
-                            sha         -> Scanned sha
+    Replicate _ slix a  -> Replicated shenv slix <$> shA a
+    Slice _ a slix      -> Sliced shenv slix <$> shA a
+    Map _ a             -> shA a
+    ZipWith _ a1 a2     -> Zipped <$> shA a1 <*> shA a2
+    Fold _ _ a          -> Folded <$> shA a
+    Fold1 _ a           -> Folded <$> shA a
+    FoldSeg _ _ _ _     -> nextUndecidable
+    Fold1Seg _ _ _      -> nextUndecidable
+    Scanl _ _ a         -> Scanned <$> shA a
     Scanl' _ _ a        -> scan' a
     Scanl1 _ a          -> shA a
-    Scanr _ _ a         -> case shA a of
-                            Undecidable -> Undecidable
-                            sha         -> Scanned sha
+    Scanr _ _ a         -> Scanned <$> shA a
     Scanr' _ _ a        -> scan' a
     Scanr1 _ a          -> shA a
     Permute _ a _ _     -> shA a
     Backpermute e _ _   -> shE e
-    Stencil _ _ a       -> Retype $ shA a
-    Stencil2 _ _ a _ b  -> Zipped (shA a) (shA b)
-    
-    --TODO:: Realy not sure about these yet
-    Use _               -> Undecidable
-    Subarray _ _ _      -> Undecidable
-    Collect _ _ _ _     -> Undecidable
-
-    --Collect _ _ _ _     -> undefined
-    --_ -> undefined
-    {-
-    Avar idx            -> ShapeVar (idxToInt idx)
-    Atuple tup          -> Tup (shTup tup)
-    Aprj tidx a         | Tup t <- shA a
-                        -> getTup t tidx
-                        | otherwise -> TupIdx tidx (shA a)
-    Aforeign _ _ _      -> Undecidable
-    Acond _ t e         -> let sht = shA t
-                               she = shA e
-                           in if equalShape sht she then sht else Undecidable
-    Awhile p it i       -> let shi = shA i
-                               itEnv = addToEnv shenv shi
-                               shIt = shPreOpenAfun shA' itEnv it
-                           in  if equalShape shi shIt then shi else Undecidable
-
-    Unit e              -> Scalar
-    Reshape e a         -> shE e
-    Generate e f        -> shE e
-    Transform sh f f' a -> shE sh
-    --Subarray {}         -> undefined
-    Replicate _ slix a  -> case shA a of
-                            Undecidable -> Undecidable
-                            sha         -> Replicated slix sha
-    Slice _ a slix      -> case shA a of
-                            Undecidable -> Undecidable
-                            sha         -> Sliced slix sha
-    Map f a             -> shA a
-    ZipWith f a1 a2     -> Zipped (shA a1) (shA a2)
-    Fold _ _ a          -> case shA a of
-                            Undecidable -> Undecidable
-                            sha         -> Folded sha
-    Fold1 _ a           -> case shA a of
-                            Undecidable -> Undecidable
-                            sha         -> Folded sha
-    FoldSeg _ _ _ _     -> Undecidable
-    Fold1Seg _ _ _      -> Undecidable
-    Scanl f z a         -> case shA a of
-                            Undecidable -> Undecidable
-                            sha         -> Scanned sha
-    Scanl' f z a        -> scan' a
-    Scanl1 f a          -> shA a
-    Scanr f z a         -> case shA a of
-                            Undecidable -> Undecidable
-                            sha         -> Scanned sha
-    Scanr' f z a        -> scan' a
-    Scanr1 f a          -> shA a
-    Permute _ a _ _     -> shA a
-    Backpermute e _ _   -> shE e
     Stencil _ _ a       -> shA a
-    Stencil2 _ _ a1 _ a2
-                        -> Zipped (shA a1) (shA a2)
-    --Collect _ _ _ _     -> undefined
-    _ -> error "Wrong construct in shape analysis (probably Collect or Subarray)."
-    -}
-
-{-
-shaperExp :: forall acc env aenv e sh. ShAcc acc -> ShapeEnv -> PreOpenExp acc env aenv e -> ShapeType acc aenv sh
-shaperExp shA shenv expr =
-  let x = expr
-
-  in case expr of
-    Shape a -> shA shenv a
-    _       -> ShapeExpr expr
-    -}
+    Stencil2 _ _ a _ b  -> Zipped <$> shA a <*> shA b
+    Collect _ _ _ _     -> nextUndecidable
