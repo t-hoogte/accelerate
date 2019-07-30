@@ -32,7 +32,7 @@ module Data.Array.Accelerate.Analysis.Match (
   -- auxiliary
   matchIdx, matchTupleType,
   matchIntegralType, matchFloatingType, matchNumType, matchScalarType,
-  matchSource,
+  matchSource, matchConst, matchPrimConst, 
 
   -- hashing expressions
   HashAcc,

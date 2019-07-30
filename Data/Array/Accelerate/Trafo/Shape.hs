@@ -23,15 +23,22 @@
 module Data.Array.Accelerate.Trafo.Shape (
   -- * Analysis if array expression is only dependent on shape
   IndAcc, indOpenAcc,
-  shAcc,
+  -- * Functions that get shape information out of an array term
+  shAcc, shOpenAcc, shOpenAF1,
+  -- * Functions that compare two shapes
+  equalShape, equalShapedAcc, equalShapeOpen,
+  ShapeEnv(..)
 
 ) where
 
 -- friends
-import           Control.Monad.State.Lazy
+import           Data.Array.Accelerate.Analysis.Match
+import           Data.Array.Accelerate.Array.Representation (SliceIndex(..))
 import           Data.Array.Accelerate.Array.Sugar
 import           Data.Array.Accelerate.AST
 import           Data.Array.Accelerate.Product
+
+import           Control.Monad.State.Lazy
 import           Data.Typeable
 -----------------------------------------------------------------
 type IndAcc acc = forall aenv t. acc aenv t -> (Bool, Bool)
@@ -253,6 +260,19 @@ lookUp _ SEEmpty                     = Nothing
 lookUp ZeroIdx (SEPush _ t)          = Just t
 lookUp (SuccIdx idx) (SEPush env' _) = lookUp idx env'
 
+equalShapedAcc :: (Arrays t, Arrays s) => Acc t -> Acc s -> Bool
+equalShapedAcc a1 a2 =
+  let 
+     res :: VSM Bool
+     res = do 
+              st1 <- shOpenAcc SEEmpty a1
+              st2 <- shOpenAcc SEEmpty a2
+              equalShape shOpenAcc st1 st2
+  in evalState res 0
+
+equalShapeOpen :: ShapeType OpenAcc aenv a -> ShapeType OpenAcc aenv a' -> VSM Bool
+equalShapeOpen = equalShape shOpenAcc
+
 equalShape :: forall a a' acc aenv . ShAcc acc -> ShapeType acc aenv a -> ShapeType acc aenv a' -> VSM Bool
 equalShape shA st1 st2 -- | Just Refl <- eqT :: Maybe (sh :~: DIM0) = True
                    | otherwise =
@@ -266,7 +286,7 @@ equalShape shA st1 st2 -- | Just Refl <- eqT :: Maybe (sh :~: DIM0) = True
     (ShapeExpr env1 e1, ShapeExpr env2 e2) -> equalE env1 e1 env2 e2
 
     (Scalar, Scalar) -> return True
-    (Folded st1, Folded st2) -> equalShape' st1 st2
+    (Folded st1, Folded st2) -> equalShapeFold' st1 st2
     (Zipped st1a st1b, Zipped st2a st2b) ->
       equalShape' st1a st2a &&^ equalShape' st1b st2b
       ||^ equalShape' st1a st2b &&^ equalShape' st1b st2a
@@ -303,19 +323,19 @@ equalShape shA st1 st2 -- | Just Refl <- eqT :: Maybe (sh :~: DIM0) = True
       case tryGetTup tidx2 stb of
         Nothing  -> return False
         Just st2 -> equalShape shA st1 st2
-    (ShapeExpr env1 e1, _) -> do 
+    (ShapeExpr env1 e1, _) -> do
       res <- tryGetExprShape shA env1 e1
       case res of
-        Nothing -> return False
+        Nothing  -> return False
         Just st1 -> equalShape shA st1 st2
-    (_, ShapeExpr env2 e2) -> do 
+    (_, ShapeExpr env2 e2) -> do
       res <- tryGetExprShape shA env2 e2
       case res of
-        Nothing -> return False
+        Nothing  -> return False
         Just st2 -> equalShape shA st1 st2
-    
+
     --Do all the scalar checks
-    --We only check for scalar, folded, zipped, replicated and sliced, since these need to be arrays, so we have shape information
+    --We only check for scalar, folded, zipped, replicated and sliced, since these need to be arrays, so we have shape information, and they can be scalar
     (Scalar, Folded _) -> eqScalar st1 st2
     (Scalar, Zipped _ _) -> eqScalar st1 st2
     (Scalar, Replicated _ _ _) -> eqScalar st1 st2
@@ -333,8 +353,8 @@ equalShape shA st1 st2 -- | Just Refl <- eqT :: Maybe (sh :~: DIM0) = True
     (Sliced _ _ _, _) -> equalShape shA st2 st1
 
     _ -> return False
-    
-    
+
+
   where
     eqScalar :: forall sh sh' e e' aenv. (Shape sh, Shape sh') => ShapeType acc aenv (Array sh e) -> ShapeType acc aenv (Array sh' e') -> VSM Bool
     eqScalar _ _ | Just Refl <- (eqT :: Maybe (sh :~: sh'))
@@ -346,15 +366,15 @@ equalShape shA st1 st2 -- | Just Refl <- eqT :: Maybe (sh :~: DIM0) = True
            => ShapeEnv acc aenv shenv' -> PreExp acc shenv' sh' -> ShapeEnv acc aenv shenv -> PreExp acc shenv sh -> VSM Bool
     equalE env1 e1 env2 e2 | Just Refl <- (eqT :: Maybe (sh :~: sh'))
                            , Just Refl <- (eqT :: Maybe (sh :~: DIM0)) = return True
-                           | Just Refl <- (eqT :: Maybe (sh :~: sh')) = equalE' env1 e1 env2 e2
+                           | Just Refl <- (eqT :: Maybe (sh :~: sh')) = equalE' env1 env2 e1 e2
                            | otherwise = return False
-    
-    equalE' :: ShapeEnv acc aenv shenv' -> PreExp acc shenv' sh -> ShapeEnv acc aenv shenv -> PreExp acc shenv sh -> VSM Bool
-    equalE' = undefined
+
+    equalE' :: ShapeEnv acc aenv shenv -> ShapeEnv acc aenv shenv' -> PreExp acc shenv sh -> PreExp acc shenv' sh -> VSM Bool
+    equalE' = equalPreOpenExp shA
 
     equalSlix :: forall shenv shenv' slix slix'. (Slice slix, Slice slix')
               => ShapeEnv acc aenv shenv' -> PreExp acc shenv' slix -> ShapeEnv acc aenv shenv -> PreExp acc shenv slix' -> VSM Bool
-    equalSlix env1 slix1 env2 slix2 | Just Refl <- (eqT :: Maybe (slix :~: slix')) = equalE' env1 slix1 env2 slix2 
+    equalSlix env1 slix1 env2 slix2 | Just Refl <- (eqT :: Maybe (slix :~: slix')) = equalE' env1 env2 slix1 slix2
                                     | otherwise = return False
 
     equalShape' :: forall sh sh' e e' aenv. (Shape sh, Shape sh') => ShapeType acc aenv (Array sh e) -> ShapeType acc aenv (Array sh' e') -> VSM Bool
@@ -362,6 +382,12 @@ equalShape shA st1 st2 -- | Just Refl <- eqT :: Maybe (sh :~: DIM0) = True
                         , Just Refl <- (eqT :: Maybe (sh :~: DIM0)) = return True
                         | Just Refl <- (eqT :: Maybe (sh :~: sh')) = equalShape shA st1 st2
                         | otherwise = return False
+
+    equalShapeFold' :: forall sh sh' e e' aenv. (Shape sh, Shape sh') => ShapeType acc aenv (Array sh e) -> ShapeType acc aenv (Array sh' e') -> VSM Bool
+    equalShapeFold' st1 st2 | Just Refl <- (eqT :: Maybe (sh :~: sh'))
+                            , Just Refl <- (eqT :: Maybe (sh :~: DIM1)) = return True
+                            | Just Refl <- (eqT :: Maybe (sh :~: sh')) = equalShape shA st1 st2
+                            | otherwise = return False
 
     equalShapeT :: ShapeTypeTup acc aenv t -> ShapeTypeTup acc aenv t' -> VSM Bool
     equalShapeT STTupNil STTupNil = return True
@@ -388,38 +414,105 @@ tryGetTup tidx st = case st of
 
 tryGetExprShape :: ShAcc acc -> ShapeEnv acc aenv shenv -> PreOpenExp acc env shenv sh -> VSM (Maybe (ShapeType acc aenv (Array sh e)))
 tryGetExprShape shA env exp = case exp of
-  Shape a -> Just . Retype <$> shA env a
+  Shape a  -> Just . Retype <$> shA env a
   IndexNil -> return $ Just Scalar
-  _         -> return Nothing
+  _        -> return Nothing
 
+{-
 equalOpenExp
     :: ShapeEnv OpenAcc aenv shenv
     -> ShapeEnv OpenAcc aenv shenv'
-    -> OpenExp env shenv s
-    -> OpenExp env shenv' s
+    -> OpenExp env shenv sh
+    -> OpenExp env shenv' sh
     -> VSM Bool
-equalOpenExp = equalPreOpenExp shOpenAcc
+equalOpenExp = equalPreOpenExp shOpenAcc-}
 
 equalPreOpenExp
-    :: forall acc env env' aenv shenv shenv' s t.
+    :: forall acc env aenv shenv shenv' t .
        ShAcc acc
     -> ShapeEnv acc aenv shenv
     -> ShapeEnv acc aenv shenv'
-    -> PreOpenExp acc env shenv s
-    -> PreOpenExp acc env' shenv' t
+    -> PreOpenExp acc env shenv t
+    -> PreOpenExp acc env shenv' t
     -> VSM Bool
-equalPreOpenExp shA shenv1 shenv2 e1 e2 = 
-  let 
-    shE :: forall env1 env2 a b. PreOpenExp acc env1 shenv a -> PreOpenExp acc env2 shenv' b -> VSM Bool
-    shE = equalPreOpenExp shA shenv1 shenv2
+equalPreOpenExp shA shenv1 shenv2 e1 e2 =
+  let
+    eqE :: PreOpenExp acc env1 shenv s -> PreOpenExp acc env1 shenv' s -> VSM Bool
+    eqE = equalPreOpenExp shA shenv1 shenv2
+
+    eqE' :: forall e1 e2 env1 . (Elt e1, Elt e2) => PreOpenExp acc env1 shenv e1 -> PreOpenExp acc env1 shenv' e2 -> VSM Bool
+    eqE' | Just Refl <- eqT :: Maybe (e1 :~: e2) = eqE
+         | otherwise = \_ _ -> return False
     
-    
+    eqE'' :: forall e1 e2 env1 s . (Elt e1, Elt e2) => PreOpenExp acc (env1, e1) shenv s -> PreOpenExp acc (env1, e2) shenv' s -> VSM Bool
+    eqE'' | Just Refl <- eqT :: Maybe (e1 :~: e2) = eqE
+          | otherwise = \_ _ -> return False 
+
+    eqTuple :: Tuple (PreOpenExp acc env1 shenv) s -> Tuple (PreOpenExp acc env1 shenv') s -> VSM Bool
+    eqTuple NilTup          NilTup           = return True
+    eqTuple (SnocTup t1 e1) (SnocTup t2 e2)  = eqTuple t1 t2 &&^ eqE e1 e2
+
+    eqSlice :: SliceIndex slix s1 co sh1 -> SliceIndex slix' t2 co' sh2 -> Bool
+    eqSlice SliceNil SliceNil                 = True
+    eqSlice (SliceAll   sl1) (SliceAll   sl2) = eqSlice sl1 sl2
+    eqSlice (SliceFixed sl1) (SliceFixed sl2) = eqSlice sl1 sl2
+    eqSlice _ _                               = False
+
+    eqF :: PreOpenFun acc env1 shenv s -> PreOpenFun acc env1 shenv' s -> VSM Bool
+    eqF (Lam s) (Lam t)   = eqF s t
+    eqF (Body s) (Body t) = eqE s t
+    eqF _ _               = return False
+
   in case (e1, e2) of
-    (Let x1 e1, Let x2 e2) -> shE x1 x2 &&^ shE e1 e2
-    (Var ix1, Var ix2) -> return $ idxToInt ix1 == idxToInt ix2
+    (Let x1 e1, Let x2 e2)           -> eqE' x1 x2 &&^ eqE'' e1 e2
+    (Var ix1, Var ix2)               -> return $ idxToInt ix1 == idxToInt ix2
     --Foreign functions can be randoms or something
-    (Foreign _ _ _, Foreign _ _ _) -> return False 
-    (Const c1, Const c2) -> return $ c1 == c2
+    (Foreign _ _ _, Foreign _ _ _)   -> return False
+    (Const c1, Const c2)             -> return $ matchConst (eltType (undefined::t)) c1 c2
+    (Tuple t1, Tuple t2)             -> eqTuple t1 t2
+    (Prj tidx1 t1, Prj tidx2 t2)     -> eqE' t1 t2 &&^ return (tupleIdxToInt tidx1 == tupleIdxToInt tidx2)
+    (IndexNil, IndexNil)             -> return True
+    (IndexCons sl1 a1, IndexCons sl2 a2)
+                                     -> eqE sl1 sl2 &&^ eqE a1 a2
+    (IndexHead sl1, IndexHead sl2)   -> eqE' sl1 sl2
+    (IndexTail sl1, IndexTail sl2)   -> eqE' sl1 sl2
+    (IndexTrans sl1, IndexTrans sl2) -> eqE sl1 sl2
+    (IndexAny, IndexAny)             -> return True
+    (IndexSlice sliceIndex1 _ sh1, IndexSlice sliceIndex2 _ sh2)
+                                     -> return (eqSlice sliceIndex1 sliceIndex2) &&^ eqE' sh1 sh2
+    (IndexFull sliceIndex1 ix1 sl1, IndexFull sliceIndex2 ix2 sl2)
+                                     -> return (eqSlice sliceIndex1 sliceIndex2) &&^ eqE' ix1 ix2 &&^ eqE' sl1 sl2
+    (ToIndex sh1 i1, ToIndex sh2 i2) -> eqE' sh1 sh2 &&^ eqE' i1 i2
+    (FromIndex sh1 i1, FromIndex sh2 i2)
+                                     -> eqE sh1 sh2 &&^ eqE i1 i2
+    (ToSlice _ sh1 i1, ToSlice _ sh2 i2)
+                                     -> eqE sh1 sh2 &&^ eqE i1 i2
+    (Cond p1 t1 e1, Cond p2 t2 e2)   -> eqE p1 p2 &&^ eqE t1 t2 &&^ eqE e1 e2
+    (While p1 f1 x1, While p2 f2 x2) -> eqF p1 p2 &&^ eqF f1 f2 &&^ eqE x1 x2
+    (PrimConst c1, PrimConst c2)     | Just Refl <- matchPrimConst c1 c2
+                                     -> return True
+    -- In the match library they reorder things, we don't here
+    (PrimApp f1 x1, PrimApp f2 x2)   | Just Refl <- matchPrimFun' f1 f2
+                                     -> eqE' x1 x2
+    -- We cannot assume the same arrays, so we cannot know if indexing gives the same value
+    (Index _ _, Index _ _)           ->  return False
+    (LinearIndex _ _, LinearIndex _ _)
+                                     -> return False
+    -- This is the reason we are writing our own equality class, instead of using the match library allready in 
+    -- place. The arrays do not need to be the same, but must have the same shape
+    (Shape a1, Shape a2)             -> do
+      sha1 <- shA shenv1 a1
+      sha2 <- shA shenv2 a2
+      equalShape shA sha1 sha2
+    (ShapeSize sh1, ShapeSize sh2)   -> eqE' sh1 sh2
+    (Intersect sha1 shb1, Intersect sha2 shb2)
+                                     -> (eqE sha1 sha2 &&^ eqE shb1 shb2) ||^
+                                        (eqE sha1 shb2 &&^ eqE shb1 sha2)
+    (Union sha1 shb1, Union sha2 shb2)
+                                     -> (eqE sha1 sha2 &&^ eqE shb1 shb2) ||^
+                                        (eqE sha1 shb2 &&^ eqE shb1 sha2)
+    _                                -> return False
+
 
 -------------------------------------------------------------
 type ShAcc acc = forall aenv shenv t . ShapeEnv acc aenv shenv -> acc shenv t -> VSM (ShapeType acc aenv t)
@@ -436,16 +529,19 @@ getNext = state (\st -> let st' = nextState st in (valFromState st,st') )
 shAcc :: Arrays t => Acc t -> ShapeType OpenAcc () t
 shAcc a = evalState (shOpenAcc SEEmpty a) 0
 
-shOpenAcc :: ShapeEnv OpenAcc aenv shenv -> OpenAcc shenv t -> VSM (ShapeType OpenAcc aenv (t))
+shOpenAcc :: ShapeEnv OpenAcc aenv shenv -> OpenAcc shenv t -> VSM (ShapeType OpenAcc aenv t)
 shOpenAcc shenv (OpenAcc pacc) = shaperAcc shOpenAcc shenv pacc
 
+shOpenAF1 :: ShapeEnv OpenAcc aenv shenv -> OpenAfun shenv (arrs1 -> arrs2) -> ShapeType OpenAcc aenv arrs1 -> VSM (ShapeType OpenAcc aenv arrs2)
+shOpenAF1 = shAF1 shOpenAcc
+
 -- Maybe change last argument, to be a shapetype or whatever.
-shAF1 :: ShAcc acc -> ShapeEnv acc aenv shenv -> PreOpenAfun acc shenv (arrs1 -> arrs2) -> ShapeType acc aenv (arrs1) -> VSM (ShapeType acc aenv (arrs2))
+shAF1 :: ShAcc acc -> ShapeEnv acc aenv shenv -> PreOpenAfun acc shenv (arrs1 -> arrs2) -> ShapeType acc aenv arrs1 -> VSM (ShapeType acc aenv arrs2)
 shAF1 shA shenv (Alam (Abody f)) sha = do let newenv = SEPush shenv sha
                                           shA newenv f
 shAF1 _ _ _ _ = error "error when applying shAF1"
 
-shaperAcc :: forall acc aenv shenv t. ShAcc acc -> ShapeEnv acc aenv shenv -> PreOpenAcc acc shenv t -> VSM (ShapeType acc aenv (t))
+shaperAcc :: forall acc aenv shenv t. ShAcc acc -> ShapeEnv acc aenv shenv -> PreOpenAcc acc shenv t -> VSM (ShapeType acc aenv t)
 shaperAcc shA' shenv acc =
   let
     shA :: acc shenv t' -> VSM (ShapeType acc aenv (t'))
@@ -472,7 +568,7 @@ shaperAcc shA' shenv acc =
       sha <- shA a
       return $ Tup (undefined :: (Array (sh :. Int) e, Array sh e)) $ STTupCons (STTupCons STTupNil sha) (Folded sha)
 
-    nextUndecidable :: VSM (ShapeType acc aenv (t))
+    nextUndecidable :: VSM (ShapeType acc aenv t)
     nextUndecidable = UndecidableVar <$> getNext
   in
   case acc of

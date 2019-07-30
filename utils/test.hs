@@ -2,6 +2,7 @@
 {-# language TypeOperators #-}
 {-# language ViewPatterns #-}
 {-# language ScopedTypeVariables #-}
+{-# language FlexibleContexts #-}
 module Test
 
 where
@@ -22,10 +23,13 @@ import qualified Data.Array.Accelerate.Trafo.Rewrite    as Rewrite
 import qualified Data.Array.Accelerate.Trafo.Simplify   as Rewrite
 import qualified Data.Array.Accelerate.Trafo.Fusion     as Fusion
 import Data.Array.Accelerate.Array.Lifted               as Lifted
+import Data.Array.Accelerate.Trafo.Shape
 
 import Data.Array.Accelerate.Pretty.Print (prettyArrays, Val(..), prettyEnv, PrettyEnv(..))
 import Data.Array.Accelerate.Trafo.Base
+
 import Text.PrettyPrint hiding (empty)
+import Control.Monad.State.Lazy hiding (lift)
 
 myshow :: (Kit acc, PrettyEnv aenv, Arrays a) => acc aenv a -> String
 myshow = render . prettyAcc P.id prettyEnv
@@ -135,6 +139,14 @@ travoSharing' :: Arrays arrs => Phase -> Acc arrs -> AST.Acc arrs
 travoSharing' Phase{..} acc
   = (Sharing.convertAcc recoverAccSharing recoverExpSharing recoverSeqSharing floatOutAccFromExp)
   $ acc
+
+travoSharingF :: Sharing.Afunction f => f -> AST.Afun (Sharing.AfunctionR f)
+travoSharingF = travoSharingF' phases
+
+travoSharingF' :: Sharing.Afunction f => Phase -> f -> AST.Afun (Sharing.AfunctionR f)
+travoSharingF' Phase{..} f
+  = (Sharing.convertAfun recoverAccSharing recoverExpSharing recoverSeqSharing floatOutAccFromExp)
+  $ f
 
 travoVectorise :: Arrays t => AST.Acc t -> AST.Acc t
 travoVectorise = Vectorise.vectoriseAcc
@@ -307,3 +319,107 @@ liftedCond2 pred t e = result
     vals   = zipWith (\t ind -> let (f,s) = unlift t in f ? (vals_t !! (s + ind), vals_e !! (s + ind)))
                        flag_offs
                        enums
+
+----------------------------------------------
+-- Shape test
+
+input1 :: Acc (Scalar Int)
+input1 = unit 10
+
+input2 :: Acc (Vector Int)
+input2 = generate (lift $ Z :. (10 :: Int)) indexHead
+
+input3 :: Acc (Vector Int)
+input3 = map (+1) $ generate (lift $ Z :. (10 :: Int)) indexHead
+
+input4 :: Acc (Vector Int)
+input4 = generate (shape input3) indexHead
+
+input5 :: Acc (Vector Int)
+input5 = use $ fromList (Z :. 10) [0..]
+
+input6 :: Acc (Scalar Int, Vector Int)
+input6 = lift (input1, input5)
+
+input7 :: Acc (Vector Int, Vector Int)
+input7 = lift (input4, input5)
+
+testf :: Acc (Vector Int, Vector Int) -> Acc (Vector Int, Vector Int)
+testf (unlift -> (x1, x2) :: (Acc (Vector Int), Acc (Vector Int))) = lift (generate (lift $ Z :. (size x1 + 1)) indexHead, map (+10) x2)
+
+testf2 :: Acc (Vector Int) -> Acc (Vector Int)
+testf2 x = res
+    where
+      (_, res) = unlift y :: (Acc (Vector Int), Acc (Vector Int))
+      y = testf (lift (input4, x))
+
+testWhile :: Acc (Scalar Int, Vector Int) -> Acc (Scalar Int, Vector Int)
+testWhile x = awhile pred iter x
+    where
+      pred (unlift -> (x1, _) :: (Acc (Scalar Int), Acc (Vector Int))) = map (<10) x1
+      iter (unlift -> (x1, x2) :: (Acc (Scalar Int), Acc (Vector Int))) = lift (map (+1) x1, map (+10) x2)
+
+testWhile2 :: Acc (Scalar Int, Vector Int) -> Acc (Scalar Int, Vector Int)
+testWhile2 x = awhile pred iter x
+    where
+      pred (unlift -> (x1, _) :: (Acc (Scalar Int), Acc (Vector Int))) = map (<10) x1
+      iter (unlift -> (x1, x2) :: (Acc (Scalar Int), Acc (Vector Int))) = lift (x1, scanl (+) 0 x2)
+
+testWhile3 :: Acc (Vector Int) -> Acc (Vector Int)
+testWhile3 x = res
+    where
+      (_, res) = unlift thewhile :: (Acc (Vector Int), Acc (Vector Int))
+      thewhile = awhile pred testf (lift (input4, x))
+      pred (unlift -> (x1, _) :: (Acc (Vector Int), Acc (Vector Int))) = and $ map (<10) x1
+
+equalShapedAcc' :: (Arrays t, Arrays s) => Acc t -> Acc s -> Bool
+equalShapedAcc' a1 a2 = equalShapedAcc (travoSharing a1) (travoSharing a2)
+
+equalF :: (Arrays t, Arrays s) => Acc t -> (Acc t -> Acc s) -> Bool
+equalF x f =
+  let
+    x' = travoSharing x
+    f' = travoSharingF f
+    res = do stx <- shOpenAcc SEEmpty x'
+             fapplied <- shOpenAF1 SEEmpty f' stx
+             equalShape shOpenAcc stx fapplied
+  in evalState res 0
+
+stest1 :: Bool
+stest1 = equalShapedAcc' input1 input2
+
+stest2 :: Bool
+stest2 = equalShapedAcc' input1 (sum input2)
+
+stest3 :: Bool
+stest3 = equalShapedAcc' input2 input3
+
+stest4 :: Bool
+stest4 = equalShapedAcc' input3 input4
+
+stest5 :: Bool
+stest5 = equalShapedAcc' input5 input2
+
+stest6 :: Bool
+stest6 = equalF input2 (map (+1))
+
+stest7 :: Bool
+stest7 = equalF input2 (sum)
+
+stest8 :: Bool
+stest8 = equalF input5 (awhile (\x -> unit $ x!!5 >10 ) (map (+1)))
+
+stest9 :: Bool
+stest9 = equalF input5 (awhile (\x -> unit $ x!!5 >10 ) (scanl (+) 0)) -- (map (+1)))
+
+stest10 :: Bool
+stest10 = equalF input6 testWhile
+
+stest11 :: Bool
+stest11 = equalF input6 testWhile2
+
+stest12 :: Bool
+stest12 = equalF input5 testWhile3
+
+stest13 :: Bool
+stest13 = equalF input5 testf2
