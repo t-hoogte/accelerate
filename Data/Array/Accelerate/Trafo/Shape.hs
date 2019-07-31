@@ -303,51 +303,60 @@ equalShape shA st1 st2 -- | Just Refl <- eqT :: Maybe (sh :~: DIM0) = True
         (Nothing, Nothing)   -> equalShape shA sta stb &&^ return (tupleIdxToInt tidx1 == tupleIdxToInt tidx2)
 
     (UndecidableVar i1, UndecidableVar i2) -> return $ i1 == i2
+    
 
+    -- These rules do a sort of rewritting of the shape types
     (Retype st1, _) -> equalShape shA st1 st2
     (_, Retype st2) -> equalShape shA st1 st2
 
     (ShapeVar env1 idx1, _) ->
       case lookUp idx1 env1 of
-        Nothing  -> return False
+        Nothing  -> laterChecks st2 st1
         Just st1 -> equalShape shA st1 st2
     (_, ShapeVar env2 idx2) ->
       case lookUp idx2 env2 of
-        Nothing  -> return False
+        Nothing  -> laterChecks st1 st2
         Just st2 -> equalShape shA st1 st2
     (TupIdx _ tidx1 sta, _) ->
       case tryGetTup tidx1 sta of
-        Nothing  -> return False
+        Nothing  -> laterChecks st2 st1
         Just st1 -> equalShape shA st1 st2
     (_, TupIdx _ tidx2 stb) ->
       case tryGetTup tidx2 stb of
-        Nothing  -> return False
+        Nothing  -> laterChecks st1 st2
         Just st2 -> equalShape shA st1 st2
     (ShapeExpr env1 e1, _) -> do
       res <- tryGetExprShape shA env1 e1
       case res of
-        Nothing  -> return False
+        Nothing  -> laterChecks st2 st1
         Just st1 -> equalShape shA st1 st2
     (_, ShapeExpr env2 e2) -> do
       res <- tryGetExprShape shA env2 e2
       case res of
-        Nothing  -> return False
+        Nothing  -> laterChecks st1 st2
         Just st2 -> equalShape shA st1 st2
+    
+    -- If everything is rewritten, we can do fall-back zip checks, since apparently we 
+    -- weren't matched against two zipped expressions
+    -- But this comes at a cost, we cannot do the scalar checks anymore.
+    (Zipped st1a st1b, _) -> do
+      eq <- equalShape' st1a st1b
+      if eq then equalShape shA st1a st2
+        else return False
+    (_, Zipped st2a st2b) -> do
+      eq <- equalShape' st2a st2b
+      if eq then equalShape shA st1 st2a
+        else return False
 
     --Do all the scalar checks
     --We only check for scalar, folded, zipped, replicated and sliced, since these need to be arrays, so we have shape information, and they can be scalar
     (Scalar, Folded _) -> eqScalar st1 st2
-    (Scalar, Zipped _ _) -> eqScalar st1 st2
     (Scalar, Replicated _ _ _) -> eqScalar st1 st2
     (Scalar, Sliced _ _ _) -> eqScalar st1 st2
-    (Folded _,  Zipped _ _) -> eqScalar st1 st2
     (Folded _, Replicated _ _ _) -> eqScalar st1 st2
     (Folded _, Sliced _ _ _) -> eqScalar st1 st2
     --We flip the arguments, so it can check for previous ones in the list
     (Folded _, _) -> equalShape shA st2 st1
-    (Zipped _ _, Replicated _ _ _) -> eqScalar st1 st2
-    (Zipped _ _, Sliced _ _ _) -> eqScalar st1 st2
-    (Zipped _ _, _) -> equalShape shA st2 st1
     (Replicated _ _ _, Sliced _ _ _) -> eqScalar st1 st2
     (Replicated _ _ _, _) -> equalShape shA st2 st1
     (Sliced _ _ _, _) -> equalShape shA st2 st1
@@ -356,6 +365,16 @@ equalShape shA st1 st2 -- | Just Refl <- eqT :: Maybe (sh :~: DIM0) = True
 
 
   where
+    -- Here we do later checks, after rewritting stuff
+    laterChecks :: ShapeType acc aenv b -> ShapeType acc aenv b' -> VSM Bool
+    laterChecks check other =
+      case check of
+        Zipped st1a st1b -> do
+          eq <- equalShape' st1a st1b
+          if eq then equalShape shA st1a other
+            else return False
+        _ -> return False
+
     eqScalar :: forall sh sh' e e' aenv. (Shape sh, Shape sh') => ShapeType acc aenv (Array sh e) -> ShapeType acc aenv (Array sh' e') -> VSM Bool
     eqScalar _ _ | Just Refl <- (eqT :: Maybe (sh :~: sh'))
                  , Just Refl <- (eqT :: Maybe (sh :~: DIM0)) = return True
