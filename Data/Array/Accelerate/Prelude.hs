@@ -1782,7 +1782,7 @@ take :: forall sh e. (Slice sh, Shape sh, Elt e)
      -> Acc (Array (sh :. Int) e)
      -> Acc (Array (sh :. Int) e)
 take n acc =
-  let n'        = the (unit (n `min` sz))
+  let n'        = n `min` sz --the (unit (n `min` sz))
       sh :. sz  = unlift (shape acc)            :: Exp sh :. Exp Int
   in
   backpermute (lift (sh :. n')) id acc
@@ -1813,7 +1813,7 @@ drop :: forall sh e. (Slice sh, Shape sh, Elt e)
      -> Acc (Array (sh :. Int) e)
      -> Acc (Array (sh :. Int) e)
 drop n acc =
-  let n'        = the (unit n)
+  let n'        = n --the (unit n)
       sh :. sz  = unlift (shape acc)            :: Exp sh :. Exp Int
       index ix  = let j :. i = unlift ix        :: Exp sh :. Exp Int
                   in  lift (j :. i + n')
@@ -1890,8 +1890,8 @@ slit :: forall sh e. (Slice sh, Shape sh, Elt e)
      -> Acc (Array (sh :. Int) e)
      -> Acc (Array (sh :. Int) e)
 slit m n acc =
-  let m'        = the (unit m)
-      n'        = the (unit n)
+  let m'        = m --the (unit m)
+      n'        = n --the (unit n)
       sh :. sz  = unlift (shape acc)            :: Exp sh :. Exp Int
       index ix  = let j :. i = unlift ix        :: Exp sh :. Exp Int
                   in  lift (j :. i + m')
