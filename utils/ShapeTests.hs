@@ -21,6 +21,7 @@ import Prelude as P (fromIntegral, fromInteger, fromRational, String, return, (>
 import Data.Array.Accelerate.Trafo
 import qualified Data.Array.Accelerate.Trafo.Sharing    as Sharing
 import qualified Data.Array.Accelerate.AST              as AST
+import Data.Array.Accelerate.Debug.Flags
 -- import Data.Array.Accelerate.Trafo.Vectorise  as Vectorise hiding (index1, the, unit)
 -- import qualified Data.Array.Accelerate.Trafo.Rewrite    as Rewrite
 -- import qualified Data.Array.Accelerate.Trafo.Simplify   as Rewrite
@@ -57,6 +58,10 @@ allTests = [(foldScalarTest, "foldScalarTest") ,(foldTest , "foldTest ") ,(foldT
            ,(awhileTest3 , "awhileTest3 ") ,(stencilTest , "stencilTest ") ,(stencilTest2 , "stencilTest2 ")
            ]
 
+flags = [dump_vectorisation, dump_phases]
+setflags, clearflags :: IO ()
+setflags = setFlags flags
+clearflags = clearFlags flags
 
 -------------------------------------
 -- Helpfull defenitions for the tests
@@ -190,7 +195,7 @@ inputVector4 :: Acc (Vector Int)
 inputVector4 = generate (lift $ Z :. (9 :: Int)) indexHead
 
 inputMatrix :: Acc (Matrix Int)
-inputMatrix = generate (lift $ Z :. (11 :: Int) :. (5 :: Int)) indexHead
+inputMatrix = generate (lift $ Z :. (11 :: Int) :. (6 :: Int)) indexHead
 
 inputTupple :: Acc (Vector Int, Vector Int)
 inputTupple = lift (inputVector, inputVector2)
@@ -333,3 +338,145 @@ stencilTest2 = testFuncOutput inputVector f
  where
     f = stencil st Clamp . take (constant 9)
     st (l,c,r) = l + c + r
+
+----------------------------------
+-- Vectorize tests
+
+inputSeq1 :: Seq [Vector Int]
+inputSeq1 = toSeqOuter inputMatrix
+
+inputSeq2Broken :: Seq [Vector Int]
+inputSeq2Broken = streamIn [I.run inputVector, I.run inputVector2]
+
+inputSeq3 :: Seq [Vector Int]
+inputSeq3 = produce (constant 10) f
+    where
+        f (the -> x) = generate (index1 (x + 1)) indexHead
+
+inputSeqPair1 :: Seq [(Vector Int, Vector Int)]
+inputSeqPair1 = produce (constant 10) f
+  where
+    f (the -> x) = lift . unzip $ generate (index1 (x + 1)) (\sh -> lift (indexHead sh, indexHead sh - constant 10) )
+
+inputSeqPair2 :: Seq [(Vector Int, Vector Int)]
+inputSeqPair2 = zipSeq inputSeq1 inputSeq3
+
+inputSeqPair3 :: Seq [(Vector Int, Vector Int)]
+inputSeqPair3 = produce (constant 10) f
+  where
+    f (the -> x) = lift . unzip $ generate (index1 (constant 5)) (\sh -> lift (indexHead sh, indexHead sh - constant 10) )
+
+inputSeqPair4 :: Seq [(Vector Int, Vector Int)]
+inputSeqPair4 = zipSeq inputSeq1 (mapSeq (map (+(constant 10)) ) inputSeq1)
+
+whileSeqTest' :: Seq [Vector Int] -> Acc (Vector Int)
+whileSeqTest' = collect . elements . mapSeq f
+  where
+    f = awhile (\x -> unit $ x!!0 <10 ) (map (+1))
+
+whileSeqTest2' :: Seq [Vector Int] -> Acc (Vector Int)
+whileSeqTest2' = collect . elements . mapSeq f
+  where
+    f = awhile (\x -> unit $ x!!0 <3 ) iter
+    iter xs =  map (+1) $ enumFromN (index1 . (+1) . shapeSize $ shape xs) (xs !! (constant 0))
+
+whileSeqTest3' :: Seq [Vector Int] -> Acc (Vector Int)
+whileSeqTest3' = collect . elements . mapSeq f
+  where
+    f xs = asnd . w $ lift (unit (constant 0), xs)
+    w = awhile (\x -> unit $ (afst x) !! 0 <3 ) iter
+    iter (unlift -> (xs1, xs2) :: (Acc (Scalar Int), Acc (Vector Int))) = lift (map (+1) xs1, map (+1) xs2)
+
+whileSeqTest4' :: Seq [Vector Int] -> Acc (Vector Int)
+whileSeqTest4' = collect . elements . mapSeq f
+  where
+    f xs = asnd . w $ lift (unit (constant 0), xs)
+    w = awhile (\x -> unit $ (afst x) !! 0 <3 ) iter
+    iter (unlift -> (xs1, xs2) :: (Acc (Scalar Int), Acc (Vector Int))) = lift (map (+1) xs1, g xs2)
+    g = map (+1) . take (constant 9)
+
+whileSeqTest5' :: Seq [Vector Int] -> Acc (Vector Int)
+whileSeqTest5' = collect . elements . mapSeq f
+  where
+    f xs = asnd . w $ lift (fill (index1 . constant $ 10) (constant 0), xs)
+    w = awhile (\x -> unit $ (size . afst $ x) >3 ) iter
+    iter (unlift -> (xs1, xs2) :: (Acc (Vector Int), Acc (Vector Int))) = lift (take (size xs1 - (constant 1)) xs1, g xs2)
+    g = map (+1)
+
+acondTest1' :: Seq [(Vector Int, Vector Int)] -> Acc (Vector Int)
+acondTest1' = collect . elements . P.uncurry (zipWithSeq f) . unzipSeq
+  where
+    -- f = zipWith (+)
+    f x y = acond (x!! (constant 0) > 10) x y
+
+acondTest2' :: Seq [Vector Int] -> Acc (Vector Int)
+acondTest2' = collect . elements . mapSeq f
+  where
+    -- f = zipWith (+)
+    f x = acond (x!! (constant 0) > 10) x (map (+ 10) x)
+
+acondTest3' :: Seq [(Vector Int, Vector Int)] -> Acc (Vector Int)
+acondTest3' = collect . elements . mapSeq f
+  where
+    f ::  Acc (Vector Int, Vector Int) -> Acc (Vector Int)
+    f pair = afst $ acond ((afst pair)!! 0 > 10) (h pair) (g pair)
+    g (unlift -> (x, y) :: (Acc (Vector Int), Acc (Vector Int)) ) = lift (y, x)
+    h (unlift -> (x, y) :: (Acc (Vector Int), Acc (Vector Int)) ) = lift (map (+1) y, x)
+
+acondTest4' :: Seq [(Vector Int, Vector Int)] -> Acc (Vector Int)
+acondTest4' = collect . elements . mapSeq f
+  where
+    f ::  Acc (Vector Int, Vector Int) -> Acc (Vector Int)
+    f pair = afst $ acond ((afst pair)!! 0 > 10) (h pair) (g pair)
+    g (unlift -> (x, y) :: (Acc (Vector Int), Acc (Vector Int)) ) = lift (y, x)
+    h (unlift -> (x, y) :: (Acc (Vector Int), Acc (Vector Int)) ) = lift (map (+1) y, generate (index1 10) indexHead)
+
+zipWithTest' :: Seq [Vector Int] -> Acc (Vector Int)
+zipWithTest' = collect . elements . mapSeq f
+  where
+    f xs = fold1 (+) $ zipWith (\x y -> (x + 2) * y - 10) (scanl1 (+) xs) (map (+ (xs!! 0)) xs)
+
+zipWithTest2' :: Seq [Vector Int] -> Acc (Vector (Int,Int))
+zipWithTest2' = collect . elements . mapSeq f
+  where
+    f xs = zip (scanl1 (+) xs) (map (+ (xs!! 0)) xs)
+
+whileSeqTest1, whileSeqTest2, whileSeqTest3, whileSeqTest4, whileSeqTest5, whileSeqTest6, whileSeqTest7, whileSeqTest8, whileSeqTest9, whileSeqTest10 :: Acc (Vector Int)
+whileSeqTest1 = whileSeqTest' inputSeq1
+whileSeqTest2 = whileSeqTest' inputSeq3
+whileSeqTest3 = whileSeqTest2' inputSeq1
+whileSeqTest4 = whileSeqTest2' inputSeq3
+whileSeqTest5 = whileSeqTest3' inputSeq1
+whileSeqTest6 = whileSeqTest3' inputSeq3
+whileSeqTest7 = whileSeqTest4' inputSeq1
+whileSeqTest8 = whileSeqTest4' inputSeq3
+whileSeqTest9 = whileSeqTest5' inputSeq1
+whileSeqTest10 = whileSeqTest5' inputSeq3
+
+acondTest1, acondTest2, acondTest3, acondTest4, acondTest5, acondTest6 :: Acc (Vector Int)
+acondTest1 = acondTest1' inputSeqPair1
+acondTest2 = acondTest1' inputSeqPair2
+acondTest3 = acondTest1' inputSeqPair3
+acondTest4 = acondTest1' inputSeqPair4
+acondTest5 = acondTest2' inputSeq1
+acondTest6 = acondTest2' inputSeq3
+acondTest7 = acondTest3' inputSeqPair1
+acondTest8 = acondTest3' inputSeqPair2
+acondTest9 = acondTest3' inputSeqPair3
+acondTest10 = acondTest3' inputSeqPair4
+acondTest11 = acondTest4' inputSeqPair1
+acondTest12 = acondTest4' inputSeqPair2
+acondTest13 = acondTest4' inputSeqPair3
+acondTest14 = acondTest4' inputSeqPair4
+
+zipWithTest1, zipWithTest2 :: Acc (Vector Int)
+zipWithTest1 = zipWithTest' inputSeq1
+zipWithTest2 = zipWithTest' inputSeq3
+zipWithTest3 = zipWithTest2' inputSeq1
+zipWithTest4 = zipWithTest2' inputSeq3
+
+
+whileSeqTestBroken1, whileSeqTestBroken2, whileSeqTestBroken3 :: Acc (Vector Int)
+whileSeqTestBroken1 = whileSeqTest' inputSeq2Broken
+whileSeqTestBroken2 = whileSeqTest2' inputSeq2Broken
+whileSeqTestBroken3 = whileSeqTest3' inputSeq2Broken

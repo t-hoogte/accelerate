@@ -33,6 +33,7 @@
 module Data.Array.Accelerate.Trafo.Vectorise (
 
   vectoriseAcc, vectoriseAfun, vectoriseStreamSeq,
+  module Data.Array.Accelerate.Trafo.Vectorise
 
 ) where
 
@@ -325,7 +326,7 @@ vectoriseOpenAcc :: Arrays t
                  -> Size OpenAcc aenv'
                  -> OpenAcc aenv t
                  -> LiftedOpenAcc aenv' t
-vectoriseOpenAcc ctx size (OpenAcc a) = liftPreOpenAcc vectoriseOpenAcc indOpenAcc ctx size a
+vectoriseOpenAcc ctx size (OpenAcc a) = liftPreOpenAcc vectoriseOpenAcc indOpenAcc shOpenAcc ctx size a
 
 irregularSize :: (Kit acc, Shape sh, Elt e)
               => acc aenv (IrregularArray sh e)
@@ -364,11 +365,12 @@ sizeFromType ty = fromMaybe (unit (Const 1)) . szt ty
 liftPreOpenAcc :: forall acc aenv aenv' t. (Kit acc, Arrays t)
                => VectoriseAcc acc
                -> IndAcc acc
+               -> ShAcc acc
                -> Context acc aenv aenv'
                -> Size acc aenv'
                -> PreOpenAcc acc aenv t
                -> LiftedAcc acc aenv' t
-liftPreOpenAcc vectAcc indAcc ctx size acc
+liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
   = case acc of
     Alet a b            -> aletL a b
     Avar ix             -> avarL ix
@@ -388,7 +390,7 @@ liftPreOpenAcc vectAcc indAcc ctx size acc
     Replicate sl slix a -> replicateL sl slix a
     Slice sl a slix     -> sliceL sl a slix
     Map f a             -> mapL f a
-    ZipWith f a1 a2     -> zipWithL (sameShape a1 a2) f a1 a2
+    ZipWith f a1 a2     -> zipWithL (sameShape shAcc a1 a2) f a1 a2
     Fold f z a          -> foldL f z a (fixedInnerDimension a)
     Fold1 f a           -> fold1L f a
     FoldSeg f z a s     -> foldSegL f z a s
@@ -536,17 +538,27 @@ liftPreOpenAcc vectAcc indAcc ctx size acc
         cvt RegularT    = id
         cvt IrregularT  = error "unsave transform form regular to irregular"
     
-    asIrregularTup, asRegularTup :: forall a. (Arrays a) => LiftedAcc acc aenv' a -> LiftedAcc acc aenv' a
-    asIrregularTup = asTup False
-    asRegularTup = asTup True
-    
+    isReg :: forall t t' . LiftedType t t' -> Bool
+    isReg ty = 
+      case ty of
+        UnitT       -> True
+        LiftedUnitT -> True 
+        AvoidedT    -> True
+        RegularT    -> True
+        IrregularT  -> False
+        TupleT tup  -> isRegT tup
+      where
+        isRegT :: forall t t' . LiftedTupleType t t' -> Bool
+        isRegT NilLtup = True
+        isRegT (SnocLtup lt l) =  isRegT lt && isReg l
+
     asTup :: forall a. (Arrays a) => Bool -> LiftedAcc acc aenv' a -> LiftedAcc acc aenv' a
     asTup = asTup' size
 
     asTup' :: forall aenv a. (Arrays a) => Size acc aenv -> Bool -> LiftedAcc acc aenv a -> LiftedAcc acc aenv a
     asTup' size regular a'@(LiftedAcc ty a) = 
       case ty of
-        UnitT       -> a'
+        UnitT       -> LiftedAcc LiftedUnitT size
         LiftedUnitT -> a'
         AvoidedT    | regular || checkScalar ty -> LiftedAcc RegularT $ replicateA size a
                     | otherwise                 -> LiftedAcc IrregularT $ cvt ty a
@@ -661,7 +673,7 @@ liftPreOpenAcc vectAcc indAcc ctx size acc
            -> acc aenv t
            -> acc aenv t
            -> LiftedAcc acc aenv' t
-    acondL (cvtE -> p) (cvtA -> t) (cvtA -> e)
+    acondL (cvtE -> p) orig_t@(cvtA -> t) orig_e@(cvtA -> e)
       | LiftedExp (Just p') _ <- p
       , LiftedAcc ty  t' <- t
       , LiftedAcc ty' e' <- e
@@ -670,21 +682,31 @@ liftPreOpenAcc vectAcc indAcc ctx size acc
       | LiftedAcc ty  t' <- t
       , LiftedAcc ty' e' <- e
       , Join ty'' k k' <- join ty ty'
-      = trace "TUPLE" "acond"
-      $  inject
+      = let
+        regular :: Bool
+        regular = 
+          let sameshape = equalShapedA shAcc orig_t orig_e
+              msg = if sameshape then "Found same shape for acond (regular)" else "Found different shape for acond (irregular)"
+              shaperes = trace "Same shape analysis" msg $ sameshape
+              force = unsafePerformIO Debug.queryforceIrreg
+          in isReg ty'' && if force then False else shaperes
+      in inject
       $* Alet (liftedE p)
-      $* acond size ty'' (k size t') (k' size e')
+      $* acond regular size ty'' (k size t') (k' size e')
       where
-        acond :: forall aenv' a a'. Arrays a' => Size acc aenv' -> LiftedType a a' -> acc aenv' a' -> acc aenv' a' -> LiftedAcc acc (aenv', Vector Bool) a
-        acond size ty t e =
+        acond :: forall aenv' a a'. Arrays a' => Bool -> Size acc aenv' -> LiftedType a a' -> acc aenv' a' -> acc aenv' a' -> LiftedAcc acc (aenv', Vector Bool) a
+        acond regular size ty t e =
           case ty of
             UnitT       -> LiftedAcc UnitT $^ Use ()
             LiftedUnitT -> LiftedAcc LiftedUnitT size'
-            AvoidedT    -> LiftedAcc IrregularT (liftedCondC avar0 (sparsifyC (replicateA size' (weakenA1 t))) (sparsifyC (replicateA size' (weakenA1 e))))
-            RegularT    -> LiftedAcc IrregularT (liftedCondC avar0 (sparsifyC (weakenA1 t)) (sparsifyC (weakenA1 e)))
-            IrregularT  -> LiftedAcc IrregularT (liftedCondC avar0 (weakenA1 t) (weakenA1 e))
+            AvoidedT    | regular   -> regularAcc "acond" $ liftedCondRegC avar0 (replicateA size' $ weakenA1 t) (replicateA size' $ weakenA1 e)
+                        | otherwise -> irregularAcc "acond" (liftedCondC avar0 (sparsifyC (replicateA size' (weakenA1 t))) (sparsifyC (replicateA size' (weakenA1 e))))
+            RegularT    | regular   -> regularAcc "acond" $ liftedCondRegC avar0 (weakenA1 t) (weakenA1 e)
+                        | otherwise ->  irregularAcc "acond" (liftedCondC avar0 (sparsifyC (weakenA1 t)) (sparsifyC (weakenA1 e)))
+            IrregularT  -> irregularAcc "acond" (liftedCondC avar0 (weakenA1 t) (weakenA1 e))
             TupleT tup  | LiftedAtuple ty at <- acondT tup (asAtupleC avar1) (asAtupleC avar0)
-                        -> LiftedAcc (freeProdT ty) $^ Alet (weakenA1 t) $^ Alet (weakenA2 e) $^ Atuple at
+                        -> let reg_mes     = if regular then "REGULAR" else "IRREGULAR"
+                           in trace reg_mes "acond" $ LiftedAcc (freeProdT ty) $^ Alet (weakenA1 t) $^ Alet (weakenA2 e) $^ Atuple at
 
           where
             size' :: Size acc (aenv', Vector Bool)
@@ -697,7 +719,7 @@ liftPreOpenAcc vectAcc indAcc ctx size acc
                    -> LiftedAtuple acc aenv'' t
             acondT NilLtup NilAtup NilAtup = LiftedAtuple NilLtup NilAtup
             acondT (SnocLtup lt l) (SnocAtup tt ta) (SnocAtup et ea)
-              | LiftedAcc ty a <- acond (weakenA3 size) l ta ea
+              | LiftedAcc ty a <- acond regular (weakenA3 size) l ta ea
               , LiftedAtuple tup t <- acondT lt tt et
               = LiftedAtuple (SnocLtup tup ty) (SnocAtup t (weaken ixt a))
               where
@@ -707,17 +729,17 @@ liftPreOpenAcc vectAcc indAcc ctx size acc
                 ixt (SuccIdx (SuccIdx ZeroIdx)) = SuccIdx ZeroIdx
                 ixt (SuccIdx (SuccIdx (SuccIdx ix))) = SuccIdx . SuccIdx $ ix
 
-    acondUnsafe :: forall aenv' a a'. Arrays a' => Bool -> Size acc aenv' -> LiftedType a a' -> acc aenv' a' -> acc aenv' a' -> acc (aenv', Vector Bool) a'
-    acondUnsafe regular size ty t e =
+    acondUnsafe :: forall aenv' a a'. Arrays a' => Bool -> Size acc aenv' -> LiftedType a a' -> acc aenv' (Vector Bool) -> acc aenv' a' -> acc aenv' a' -> acc aenv' a'
+    acondUnsafe regular size ty p t e = inject $ Alet p $ acondUnsafe' regular size ty t e
+
+    acondUnsafe' :: forall aenv' a a'. Arrays a' => Bool -> Size acc aenv' -> LiftedType a a' -> acc aenv' a' -> acc aenv' a' -> acc (aenv', Vector Bool) a'
+    acondUnsafe' regular size ty t e =
       case ty of
-        UnitT       -> inject $ Use ()
         LiftedUnitT -> size'
-        IrregularT  -> if regular 
-                        then error "We want a regular acond" 
-                        else liftedCondC avar0 (weakenA1 t) (weakenA1 e)
+        IrregularT  | not regular -> liftedCondC avar0 (weakenA1 t) (weakenA1 e)
+        RegularT    | regular || checkScalar ty -> liftedCondRegC avar0 (weakenA1 t) (weakenA1 e)
         TupleT tup  | at <- acondT tup (asAtupleC avar1) (asAtupleC avar0)
                     -> inject $ Alet (weakenA1 t) $^ Alet (weakenA2 e) $^ Atuple at
-        RegularT    | regular || checkScalar ty -> liftedCondRegC avar0 (weakenA1 t) (weakenA1 e)
         _           -> error $ "unsafe use of acondUnsafe, type is: " ++ show ty
 
       where
@@ -731,7 +753,7 @@ liftPreOpenAcc vectAcc indAcc ctx size acc
                 -> Atuple (acc aenv'') t'
         acondT NilLtup NilAtup NilAtup = NilAtup
         acondT (SnocLtup lt l) (SnocAtup tt ta) (SnocAtup et ea)
-          | a <- acondUnsafe regular (weakenA3 size) l ta ea
+          | a <- acondUnsafe' regular (weakenA3 size) l ta ea
           , t <- acondT lt tt et
           = SnocAtup t (weaken ixt a)
           where
@@ -751,7 +773,7 @@ liftPreOpenAcc vectAcc indAcc ctx size acc
             -> PreOpenAfun acc aenv (t -> t)
             -> acc             aenv t
             -> LiftedAcc acc aenv' t
-    awhileL (Alam (Abody predb)) (Alam (Abody iterb)) (cvtA -> LiftedAcc ty a)
+    awhileL (Alam (Abody predb)) it@(Alam (Abody iterb)) a'@(cvtA -> LiftedAcc ty a)
           | Just iso <- isIso ty
           , LiftedAcc ty' predb_r <- vectAcc (push ctx avoidedType) (weakenA1 size) predb
           , LiftedAcc ty'' iterb_r <- vectAcc (push ctx avoidedType) (weakenA1 size) iterb
@@ -767,44 +789,17 @@ liftPreOpenAcc vectAcc indAcc ctx size acc
                           -> acc (aenv', IrregularArray sh e) (IrregularArray sh e)  
                           -> acc aenv' (IrregularArray sh e)
                           -> acc aenv' (IrregularArray sh e)
-                awhileLift predb_l iterb_l a_l = inject $ Alet a_l
-                          $^ Aprj (SuccTupIdx . SuccTupIdx $ ZeroTupIdx)
-                          $^ Awhile pred' (weakenA1 iter') init'
-                  where
-                    pred_l :: PreOpenAfun acc aenv' (IrregularArray sh e -> Vector Bool)
-                    pred_l = Alam . Abody $ predb_l
-                    iter_l :: PreOpenAfun acc aenv' (IrregularArray sh e -> IrregularArray sh e)
-                    iter_l = Alam . Abody $ iterb_l
-
-                    init' :: acc (aenv', IrregularArray sh e) (IrregularArray sh e, Vector Bool, Scalar Bool)
-                    init' = inject $ Alet (weakenA1 pred_l `apply` avar0)
-                                   $ atup3 avar1 avar0 (fromHOAS S.or avar0)
-   
-                    pred' ::  Arrays s => PreOpenAfun acc (aenv',s) ((s, Vector Bool, Scalar Bool) -> Scalar Bool)
-                    pred' = Alam . Abody $^ Aprj ZeroTupIdx avar0
-                 
-                    iter_f :: Arrays s =>
-                           acc (aenv', s) (IrregularArray sh e)
-                           -> acc (aenv', s) (Vector Bool)
-                           -> acc (aenv', s) (IrregularArray sh e, Vector Bool, Scalar Bool)
-                    iter_f a f =
-                      let a' = liftedCondC f (weakenA1 iter_l `apply` a) a
-                          f' = fromHOAS2 (S.zipWith (S.&&)) f (weakenA1 pred_l `apply` a')
-                          c' = fromHOAS S.or f'
-                      in atup3 a' f' c'
-                    
-                    iter' :: PreOpenAfun acc aenv' ((IrregularArray sh e, Vector Bool, Scalar Bool)
-                          -> (IrregularArray sh e, Vector Bool, Scalar Bool))
-                    iter' = Alam $ Abody $ iter_f
-                             (inject $ Aprj (SuccTupIdx . SuccTupIdx $ ZeroTupIdx) avar0)
-                             (inject $ Aprj (SuccTupIdx ZeroTupIdx) avar0)
+                awhileLift = awhileLiftUnsafe False size IrregularT
 
                 regular :: Bool
-                --regular = unsafePerformIO Debug.queryReg
-                regular = let ind =  indAcc predb
-                              indres = DT.trace ("The result of the indepent test is: " ++ show ind) ((\(x,y) -> x && y) $ ind)
+                regular = let ind =  uncurry (&&) $ indAcc predb
+                              indmsg = if ind then "Found independent predicate in awhile (regular)" else "Found dependent predicate in awhile"
+                              indres = trace "Independent analysis" indmsg ind
+                              sameshape = equalShapedF1 shAcc it a'
+                              sameshapemsg = if sameshape then "Found same shape for iteration in awhile (regular)" else "Found different shape iteration in awhile (irregular)"
+                              shaperes = trace "Same shape analysis" sameshapemsg sameshape
                               force = unsafePerformIO Debug.queryforceIrreg
-                          in if force then False else indres
+                          in isReg ty && if force then False else indres || shaperes
 
                 awhileLiftUnsafe :: forall a a' . (Arrays a)
                       => Bool
@@ -834,7 +829,7 @@ liftPreOpenAcc vectAcc indAcc ctx size acc
                            -> acc (aenv', (a, Vector Bool, Scalar Bool)) (Vector Bool)
                            -> acc (aenv', (a, Vector Bool, Scalar Bool)) (a, Vector Bool, Scalar Bool)
                     iter_f a f =
-                      let a' = inject $ Alet f $ (acondUnsafe regular) (weakenA1 size) ty (weakenA1 iter_l `apply` a) a
+                      let a' = acondUnsafe regular (weakenA1 size) ty f (weakenA1 iter_l `apply` a) a
                           f' = fromHOAS2 (S.zipWith (S.&&)) f (weakenA1 pred_l `apply` a')
                           c' = fromHOAS S.or f'
                       in atup3 a' f' c'
@@ -866,14 +861,13 @@ liftPreOpenAcc vectAcc indAcc ctx size acc
                     resa = sparsifyC $ a
                 in irregularAcc "awhile" $ awhileLift predb_l iterb_l resa
               LiftedUnitT -> LiftedAcc ty a
-              TupleT tup | LiftedAcc resty resa <- asTup regular $ LiftedAcc ty a
-                         ->
+              TupleT tup | LiftedAcc resty resa <- asTup regular $ LiftedAcc ty a ->
                 let newctx  = push ctx resty
                     newsize = weakenA1 size
                     predb_l = asRegular' newsize . vectAcc newctx newsize $ predb
                     iterb_l = asSame resty . vectAcc newctx newsize $ iterb
-                    --regular = (\(x,y) -> x && y) $ indAcc predb
-                in trace (if regular then "regular" else "IRREGULAR") "awhile" . LiftedAcc resty $ awhileLiftUnsafe regular size resty predb_l iterb_l resa
+                    reg_mes     = if regular then "REGULAR" else "IRREGULAR"
+                in trace reg_mes "awhile" . LiftedAcc resty $ awhileLiftUnsafe regular size resty predb_l iterb_l resa
               _ -> error "Absurd: Vectorisation of loops should never end up here"
     awhileL _ _ _= error "Absurd: Vectorisation of loops should never end up here"
 
@@ -3624,35 +3618,37 @@ reduceOpenSeq seq =
 
 -- Shape analysis
 --
-sameShape :: Kit acc => acc aenv (Array sh e1) -> acc aenv (Array sh e2) -> Bool
-sameShape a b | same (extract a) (extract b)
-              = trace "sameShape" "Found equal shapes for zipWith" True
-              | otherwise = False
-  where
-    same :: Kit acc => PreOpenAcc acc aenv (Array sh e1) -> PreOpenAcc acc aenv (Array sh e2) -> Bool
-    same (Generate sh1 _)       (Generate sh2 _)
-      | Just Refl <- match sh1 sh2
-      = True
-    same (Generate sh1 _)       (Backpermute sh2 _ _)
-      | Just Refl <- match sh1 sh2
-      = True
-    same (Backpermute sh1 _ _)  (Generate sh2 _)
-      | Just Refl <- match sh1 sh2
-      = True
-    same (Backpermute sh1 _ _)  (Backpermute sh2 _ _)
-      | Just Refl <- match sh1 sh2
-      = True
-    same (Map _ a)              b
-      = sameShape a (inject b)
-    same a                      (Map _ b)
-      = sameShape (inject a) b
-    same (ZipWith _ a1 a2)      (ZipWith _ b1 b2)
-      =    (sameShape a1 b1 && sameShape a2 b2)
-        || (sameShape a1 b2 && sameShape a2 b1)
-    same (Avar ix1)             (Avar ix2)
-      | Just Refl <- match ix1 ix2
-      = True
-    same _                      _                 = False
+sameShape :: ShAcc acc -> acc aenv (Array sh e1) -> acc aenv (Array sh e2) -> Bool
+sameShape shAcc a b = let sameshape = equalShapedA shAcc a b
+                          msg = if sameshape then "Found same shape for zipWith (regular)" else "Found different shape for zipWith (irregular)"
+                      in trace "Same shape analysis" msg $ sameshape
+  --             | same (extract a) (extract b)
+  --             = trace "Same shape analysis" "Found equal shapes for zipWith" True
+  -- where
+  --   same :: Kit acc => PreOpenAcc acc aenv (Array sh e1) -> PreOpenAcc acc aenv (Array sh e2) -> Bool
+  --   same (Generate sh1 _)       (Generate sh2 _)
+  --     | Just Refl <- match sh1 sh2
+  --     = True
+  --   same (Generate sh1 _)       (Backpermute sh2 _ _)
+  --     | Just Refl <- match sh1 sh2
+  --     = True
+  --   same (Backpermute sh1 _ _)  (Generate sh2 _)
+  --     | Just Refl <- match sh1 sh2
+  --     = True
+  --   same (Backpermute sh1 _ _)  (Backpermute sh2 _ _)
+  --     | Just Refl <- match sh1 sh2
+  --     = True
+  --   same (Map _ a)              b
+  --     = sameShape a (inject b)
+  --   same a                      (Map _ b)
+  --     = sameShape (inject a) b
+  --   same (ZipWith _ a1 a2)      (ZipWith _ b1 b2)
+  --     =    (sameShape a1 b1 && sameShape a2 b2)
+  --       || (sameShape a1 b2 && sameShape a2 b1)
+  --   same (Avar ix1)             (Avar ix2)
+  --     | Just Refl <- match ix1 ix2
+  --     = True
+  --   same _                      _                 = False
 
 -- Embedding
 --
