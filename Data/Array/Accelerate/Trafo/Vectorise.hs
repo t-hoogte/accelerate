@@ -1195,6 +1195,9 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
       | LiftedAcc AvoidedT a' <- a
       = avoidedAcc "scanl1"
       $^ Scanl1 f a'
+      | LiftedAcc RegularT a' <- a
+      , AsSlice <- asSlice (Proxy :: Proxy sh)
+      = regularAcc "scanl" $^ Scanl1 f a'
       | otherwise
       = irregularAcc "scanl1"
       $ scanl1Lift f (asIrregular a)
@@ -1210,6 +1213,9 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
       | LiftedAcc AvoidedT a' <- a
       = avoidedAcc "scanl"
       $^ Scanl f z a'
+      | LiftedAcc RegularT a' <- a
+      , AsSlice <- asSlice (Proxy :: Proxy sh)
+      = regularAcc "scanl" $^ Scanl f z a'
       | AsSlice <- asSlice (Proxy :: Proxy sh)
       = irregularAcc "scanl"
       $  scanlLift f z (asIrregular a)
@@ -1265,6 +1271,9 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
       | LiftedAcc AvoidedT a' <- a
       = avoidedAcc "scanr1"
       $^ Scanr1 f a'
+      | LiftedAcc RegularT a' <- a
+      , AsSlice <- asSlice (Proxy :: Proxy sh)
+      = regularAcc "scanr1" $^ Scanr1 f a'
       | otherwise
       = irregularAcc "scanr1"
       $ scanr1Lift f (asIrregular a)
@@ -1280,6 +1289,9 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
       | LiftedAcc AvoidedT a' <- a
       = avoidedAcc "scanr"
       $^ Scanr f z a'
+      | LiftedAcc RegularT a' <- a
+      , AsSlice <- asSlice (Proxy :: Proxy sh)
+      = regularAcc "scanr" $^ Scanr f z a'
       | AsSlice <- asSlice (Proxy :: Proxy sh)
       = irregularAcc "scanr"
       $ scanrLift f z (asIrregular a)
