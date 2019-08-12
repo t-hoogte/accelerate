@@ -27,8 +27,7 @@ module Data.Array.Accelerate.Trafo.Shape (
   ShAcc, shAcc, shOpenAcc, shOpenAF1,
   -- * Functions that compare two shapes
   equalShape, equalShapedAcc, equalShapeOpen, equalShapedF1, equalShapedA, 
-  ShapeEnv(..)
-
+  ShapeEnv(..),
 ) where
 
 -- friends

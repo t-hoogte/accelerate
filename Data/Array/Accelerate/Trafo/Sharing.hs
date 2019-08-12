@@ -381,6 +381,7 @@ convertSharingSeq config alyt aenv senv (ScopedSeq lams lams' (SletSharing sa@(S
         Stag i                -> producer $ AST.Produce Nothing $ Alam $ Abody
                                $ AST.OpenAcc (AST.Avar (SuccIdx (prjIdx ("Nested sequence variabe: " ++ show i) i alyt )))
         StreamIn arrs         -> producer $ AST.Pull (AST.List arrs)
+        StreamInReg sh arrs   -> producer $ AST.Pull (AST.RegularList sh arrs)
         Subarrays sh arr      -> producer $ AST.Subarrays (cvtE sh) arr
         FromSegs s n vs       -> producer $ AST.FromSegs (cvtA s) (cvtE n) (cvtA vs)
         Produce l f           -> producer $ AST.Produce (Just $ cvtE l) (cvtAF1 f)
@@ -1834,6 +1835,7 @@ makeOccMapSharingSeq config accOccMap seqOccMap = traverseSeq
           case seq of
             Stag i        -> producer $ return (Stag i, 0)
             StreamIn arrs -> producer $ return (StreamIn arrs, 1)
+            StreamInReg sh arrs -> producer $ return (StreamInReg sh arrs, 1)
             Subarrays sh arr -> producer $ do
               (sh', h1) <- traverseExp lvl sh
               return (Subarrays sh' arr, h1 + 1)
@@ -2806,6 +2808,7 @@ determineScopesSharingSeq config accOccMap _seqOccMap = scopesSeq
       case s of
         Stag i -> producer (Stag i) noNodeCounts
         StreamIn arrs -> producer (StreamIn arrs) noNodeCounts
+        StreamInReg sh arrs -> producer (StreamInReg sh arrs) noNodeCounts
         Subarrays sh arr ->
           let
             (sh'   , accCount1) = scopesExp sh

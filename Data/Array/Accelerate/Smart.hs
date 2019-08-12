@@ -408,6 +408,11 @@ data PreSeq acc seq exp arrs where
                  => [Array sh e]
                  -> PreSeq acc seq exp [Array sh e]
 
+  StreamInReg    :: (Shape sh, Elt e)
+                 => sh
+                 -> [Array sh e]
+                 -> PreSeq acc seq exp [Array sh e]
+
   Subarrays      :: (Shape sh, Elt e, sh :<= DIM2)
                  => exp sh
                  -> Array sh e
@@ -1746,6 +1751,7 @@ showPreAccOp Collect{}          = "Collect"
 showPreSeqOp :: PreSeq acc seq exp arrs -> String
 showPreSeqOp Stag{}           = "Stag"
 showPreSeqOp StreamIn{}       = "StreamIn"
+showPreSeqOp StreamInReg{}    = "StreamInReg"
 showPreSeqOp Subarrays{}      = "Subarrays"
 showPreSeqOp FromSegs{}       = "FromSegs"
 showPreSeqOp Produce{}        = "Produce"

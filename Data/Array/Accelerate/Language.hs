@@ -47,7 +47,7 @@ module Data.Array.Accelerate.Language (
   collect,
 
   -- * Sequence producers
-  streamIn, subarrays, produce, fromSegs,
+  streamIn, streamInReg, subarrays, produce, fromSegs,
 
   -- * Sequence transudcers
   mapSeq, zipWithSeq, -- mapBatch,
@@ -819,6 +819,12 @@ streamIn :: (Shape sh, Elt e)
          => [Array sh e]
          -> Seq [Array sh e]
 streamIn = Seq . StreamIn
+
+streamInReg :: (Shape sh, Elt e)
+            => sh
+            -> [Array sh e]
+            -> Seq [Array sh e]
+streamInReg = Seq $$ StreamInReg
 
 -- |Split an array up into subarrays of given shape along the outermost dimension
 -- moving inward - e.g. if the array is a matrix, the returned sequence is the
