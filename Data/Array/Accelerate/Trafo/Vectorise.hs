@@ -551,6 +551,9 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
         isRegT :: forall t t' . LiftedTupleType t t' -> Bool
         isRegT NilLtup = True
         isRegT (SnocLtup lt l) =  isRegT lt && isReg l
+    
+    asIrregTup :: forall a. (Arrays a) => LiftedAcc acc aenv' a -> LiftedAcc acc aenv' a
+    asIrregTup = asTup False
 
     asTup :: forall a. (Arrays a) => Bool -> LiftedAcc acc aenv' a -> LiftedAcc acc aenv' a
     asTup = asTup' size
@@ -861,13 +864,22 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
                     resa = sparsifyC $ a
                 in irregularAcc "awhile" $ awhileLift predb_l iterb_l resa
               LiftedUnitT -> LiftedAcc ty a
-              TupleT tup | LiftedAcc resty resa <- asTup regular $ LiftedAcc ty a ->
+              TupleT tup | regular
+                         , LiftedAcc resty resa <-  asTup regular $ LiftedAcc ty a
+                         , LiftedAcc itty iter <- vectAcc (push ctx resty) (weakenA1 size) $ iterb
+                         , isReg itty ->
+                let newctx  = push ctx resty
+                    newsize = weakenA1 size
+                    predb_l = asRegular' newsize . vectAcc newctx newsize $ predb
+                    iterb_l = asSame resty $ LiftedAcc itty iter\
+                in trace "REGULAR" "awhile" . LiftedAcc resty $ awhileLiftUnsafe regular size resty predb_l iterb_l resa
+              TupleT tup | LiftedAcc resty resa <-  asIrregTup $ LiftedAcc ty a
+                          ->
                 let newctx  = push ctx resty
                     newsize = weakenA1 size
                     predb_l = asRegular' newsize . vectAcc newctx newsize $ predb
                     iterb_l = asSame resty . vectAcc newctx newsize $ iterb
-                    reg_mes     = if regular then "REGULAR" else "IRREGULAR"
-                in trace reg_mes "awhile" . LiftedAcc resty $ awhileLiftUnsafe regular size resty predb_l iterb_l resa
+                in trace "IRREGULAR" "awhile" . LiftedAcc resty $ awhileLiftUnsafe False size resty predb_l iterb_l resa
               _ -> error "Absurd: Vectorisation of loops should never end up here"
     awhileL _ _ _= error "Absurd: Vectorisation of loops should never end up here"
 
