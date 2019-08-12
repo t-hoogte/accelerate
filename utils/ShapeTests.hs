@@ -6,14 +6,13 @@
 {-# language GADTs #-}
 {-# language FlexibleInstances #-}
 {-# language MultiParamTypeClasses #-}
-module ShapeTests (doAllTest)
+module ShapeTests (doAllTest, counts)
 
 where
 
 import Data.Array.Accelerate                              as A hiding (fromInteger, fromRational, fromIntegral)
 import qualified Data.Array.Accelerate                    as A (fromInteger, fromRational, fromIntegral)
 import Data.Array.Accelerate.Interpreter                  as I
--- import Data.Array.Accelerate.Debug.Flags
 
 import qualified Prelude as P
 import Prelude as P (fromIntegral, fromInteger, fromRational, String, return, (>>=), (>>), IO, Maybe(..), maybe, show)
@@ -22,12 +21,14 @@ import Data.Array.Accelerate.Trafo
 import qualified Data.Array.Accelerate.Trafo.Sharing    as Sharing
 import qualified Data.Array.Accelerate.AST              as AST
 import Data.Array.Accelerate.Debug.Flags
--- import Data.Array.Accelerate.Trafo.Vectorise  as Vectorise hiding (index1, the, unit)
+import Data.Array.Accelerate.Trafo.Vectorise  as Vectorise hiding (index1, the, unit, replicate)
 -- import qualified Data.Array.Accelerate.Trafo.Rewrite    as Rewrite
 -- import qualified Data.Array.Accelerate.Trafo.Simplify   as Rewrite
 -- import qualified Data.Array.Accelerate.Trafo.Fusion     as Fusion
 -- import Data.Array.Accelerate.Array.Lifted               as Lifted
 import Data.Array.Accelerate.Trafo.Shape
+import Data.Array.Accelerate.Analysis.ActionsCount
+import Data.Array.Accelerate.Trafo.Base as Base
 
 -- import Data.Array.Accelerate.Pretty.Print (prettyArrays, Val(..), prettyEnv, PrettyEnv(..))
 -- import Data.Array.Accelerate.Trafo.Base
@@ -480,3 +481,35 @@ whileSeqTestBroken1, whileSeqTestBroken2, whileSeqTestBroken3 :: Acc (Vector Int
 whileSeqTestBroken1 = whileSeqTest' inputSeq2Broken
 whileSeqTestBroken2 = whileSeqTest2' inputSeq2Broken
 whileSeqTestBroken3 = whileSeqTest3' inputSeq2Broken
+
+------------------------------------
+-- Count parallel actions
+
+average :: Acc (Vector Double) -> Acc (Scalar Double)
+average xs = map (/n) sum
+    where
+      sum = fold1 (+) xs
+      n = A.fromIntegral $ indexHead (shape xs) 
+
+conditional :: Acc (Vector Double) -> Acc (Vector Double)
+conditional xs = acond p xs (map (+1) xs)
+      where
+        p = xs!!0 > 1
+
+conditional2 :: Acc (Vector Double) -> Acc (Vector Double)
+conditional2 xs = acond p xs (scanl (+) 0 xs)
+      where
+        p = xs!!0 > 1
+
+scanT :: Acc (Vector Double) -> Acc (Vector Double)
+scanT xs = scanl (+) 0 xs
+
+counts :: IO ()
+counts = do P.putStrLn "average"
+            countF average
+            P.putStrLn "condtional"
+            countF conditional
+            P.putStrLn "condtional2"
+            countF conditional2
+            P.putStrLn "scanT"
+            countF scanT
