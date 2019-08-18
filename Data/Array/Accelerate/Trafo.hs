@@ -21,8 +21,11 @@ module Data.Array.Accelerate.Trafo (
   Phase(..), phases,
 
   convertAcc,  convertAccWith,
-  convertAfun, convertAfunWith,
   convertSeq,  convertSeqWith,
+  
+    -- ** Array functions
+  Afunction, AfunctionR,
+  convertAfun, convertAfunWith,
 
   -- * Fusion
   module Data.Array.Accelerate.Trafo.Fusion,
