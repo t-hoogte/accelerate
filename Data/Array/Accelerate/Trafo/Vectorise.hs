@@ -3350,13 +3350,13 @@ vectoriseOpenSeq vectAcc ctx size seq =
     regularSource sh arrs = Function f arrs
       where
         f sz rest = let (as, rest') = splitAt sz rest
-                    in (null rest', concatRegular sh as, rest')
+                    in (null as, concatRegular sh as, rest',length rest')
 
     irregularSource :: (Shape sh, Elt e) => [Array sh e] -> Source (Segments sh, Vector e)
     irregularSource arrs = Function f arrs
       where
         f sz rest = let (as, rest') = splitAt sz rest
-                    in (null as, concatIrregular as, rest')
+                    in (null as, concatIrregular as, rest',length rest')
 
     stageError = $internalError "vectoriseOpenSeq" "AST is at wrong stage for vectorisation. It seems to have already been vectorised."
 

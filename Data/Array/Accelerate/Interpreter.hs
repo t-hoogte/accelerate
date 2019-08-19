@@ -1229,6 +1229,7 @@ evalSeq min max i s aenv = evalSeq' BaseEnv s
             (evalOpenAcc a')
             ext
             (Just aenv')
+            remains'
         Producer (ProduceAccum l f a) (Reify ty a') -> concatMap (divide ty) $
           go i
             index
@@ -1239,9 +1240,11 @@ evalSeq min max i s aenv = evalSeq' BaseEnv s
             (evalOpenAcc a')
             ext
             (Just aenv')
+            remains'
         _ -> $internalError "evalSeq" "Sequence computation does not appear to be delayed"
       where
-        (ext, Just aenv') = evalSources (indexSize index) prods
+        (ext, Just aenv', remains) = evalSources (indexSize index) prods
+        remains'                   = fromMaybe 0 remains
         index             = evalPreExp evalOpenAcc (initialIndex (Const min)) aenv'
         go :: forall arrs s a. Maybe Int
            -> index
@@ -1252,23 +1255,26 @@ evalSeq min max i s aenv = evalSeq' BaseEnv s
            -> (Val (aenv', a) -> arrs)
            -> Extend (Producer index DelayedOpenAcc) aenv aenv'
            -> Maybe (Val aenv')
+           -> Int
            -> [arrs]
-        go _ _     _ _ _ a _    _   Nothing      = a
-        go i index l f s a next ext (Just aenv') =
+        go _ _     _ _ _ a _    _   Nothing      _       = a
+        go i index l f s a next ext (Just aenv') remains =
           let
             (a', s') = f aenv' (fromFunction Z (const index)) s
             a''      = next (aenv' `Push` a')
-            index'   = nextIndex' index
-            (ext', maenv) = evalSources (indexSize index') ext
+            index'   = nextIndex' remains index
+            (ext', maenv, remains') = evalSources (indexSize index') ext
+            remains'' = fromMaybe 0 remains'
           in if maybe True (contains' index) l && maybe True (>0) i
               then a'' : go (flip (-) 1 <$> i)
-                            index' l f s' [] next ext' maenv
+                            index' l f s' [] next ext' maenv remains''
               else a
 
-        nextIndex'= modifySize (\n -> if 2*n <= fromMaybe mAXIMUM_CHUNK_SIZE max
-                                      then 2*n
-                                      else n)
-                  . nextIndex
+        nextIndex' remains = modifySize 
+          (\n -> Prelude.min remains (if 2*n <= fromMaybe mAXIMUM_CHUNK_SIZE max
+                                        then 2*n
+                                        else n))
+          . nextIndex
 
     drop :: forall aenv aenv' a. aenv' :?> aenv -> (aenv',a) :?> aenv
     drop _ ZeroIdx      = Nothing
@@ -1276,14 +1282,15 @@ evalSeq min max i s aenv = evalSeq' BaseEnv s
 
     evalSources :: Int
                 -> Extend (Producer index DelayedOpenAcc) aenv aenv'
-                -> (Extend (Producer index DelayedOpenAcc) aenv aenv', Maybe (Val aenv'))
+                -> (Extend (Producer index DelayedOpenAcc) aenv aenv', Maybe (Val aenv'), Maybe Int)
     evalSources n (PushEnv ext (Pull (Function f a)))
-      | (ext', aenv) <- evalSources n ext
-      , (stop,b,a') <- f n a
+      | (ext', aenv, remains') <- evalSources n ext
+      , (stop,b,a',remains) <- f n a
       = ( PushEnv ext' (Pull (Function f a'))
-        , if not stop then Push <$> aenv <*> pure b else Nothing)
+        , if not stop then Push <$> aenv <*> pure b else Nothing
+        , maybe (Just remains) (\r -> Just $ Prelude.min remains r) remains')
     evalSources _ BaseEnv
-      = (BaseEnv, Just aenv)
+      = (BaseEnv, Just aenv, Nothing)
     evalSources _ _
       = $internalError "evalSeq" "AST is at wrong stage"
 

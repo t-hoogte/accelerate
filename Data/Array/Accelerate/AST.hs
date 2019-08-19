@@ -553,7 +553,7 @@ data Source a where
               -> Source (Array sh e)
 
   Function    :: Arrays a
-              => (Int -> s -> (Bool,a,s))
+              => (Int -> s -> (Bool,a,s,Int))
               -> s
               -> Source a
 

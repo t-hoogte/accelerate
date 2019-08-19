@@ -354,6 +354,12 @@ inputSeq3 = produce (constant 10) f
     where
         f (the -> x) = generate (index1 (x + 1)) indexHead
 
+inputSeq4Broken :: Seq [Vector Int]
+inputSeq4Broken = streamInReg (Z :. 10) [I.run inputVector, I.run inputVector2]
+
+inputSeq5Broken :: Int -> Seq [Vector Int]
+inputSeq5Broken n = streamInReg (Z :. 10) [I.run inputVector | x <- [1..n]]
+
 inputSeqPair1 :: Seq [(Vector Int, Vector Int)]
 inputSeqPair1 = produce (constant 10) f
   where
@@ -477,10 +483,14 @@ zipWithTest3 = zipWithTest2' inputSeq1
 zipWithTest4 = zipWithTest2' inputSeq3
 
 
-whileSeqTestBroken1, whileSeqTestBroken2, whileSeqTestBroken3 :: Acc (Vector Int)
+whileSeqTestBroken1, whileSeqTestBroken2, whileSeqTestBroken3, whileSeqTestBroken4, whileSeqTestBroken5, whileSeqTestBroken6 :: Acc (Vector Int)
 whileSeqTestBroken1 = whileSeqTest' inputSeq2Broken
 whileSeqTestBroken2 = whileSeqTest2' inputSeq2Broken
 whileSeqTestBroken3 = whileSeqTest3' inputSeq2Broken
+whileSeqTestBroken4 = whileSeqTest' inputSeq4Broken
+whileSeqTestBroken5 = whileSeqTest2' inputSeq4Broken
+whileSeqTestBroken6 = whileSeqTest3' inputSeq4Broken
+whileSeqTestBroken7 n = whileSeqTest3' (inputSeq5Broken n)
 
 ------------------------------------
 -- Count parallel actions
