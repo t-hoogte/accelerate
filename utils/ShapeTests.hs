@@ -6,29 +6,29 @@
 {-# language GADTs #-}
 {-# language FlexibleInstances #-}
 {-# language MultiParamTypeClasses #-}
-module ShapeTests (doAllTest, counts)
+module ShapeTests (doAllTest, counts, evalAllVecTests, setflags, clearflags, allIndTests)
 
 where
 
 import Data.Array.Accelerate                              as A hiding (fromInteger, fromRational, fromIntegral)
-import qualified Data.Array.Accelerate                    as A (fromInteger, fromRational, fromIntegral)
+import qualified Data.Array.Accelerate                    as A (fromIntegral)--, fromRational, fromInteger)
 import Data.Array.Accelerate.Interpreter                  as I
 
 import qualified Prelude as P
-import Prelude as P (fromIntegral, fromInteger, fromRational, String, return, (>>=), (>>), IO, Maybe(..), maybe, show)
+import Prelude as P (String, return, IO)
 
 import Data.Array.Accelerate.Trafo
 import qualified Data.Array.Accelerate.Trafo.Sharing    as Sharing
 import qualified Data.Array.Accelerate.AST              as AST
 import Data.Array.Accelerate.Debug.Flags
-import Data.Array.Accelerate.Trafo.Vectorise  as Vectorise hiding (index1, the, unit, replicate)
+-- import Data.Array.Accelerate.Trafo.Vectorise  as Vectorise hiding (index1, the, unit, replicate)
 -- import qualified Data.Array.Accelerate.Trafo.Rewrite    as Rewrite
 -- import qualified Data.Array.Accelerate.Trafo.Simplify   as Rewrite
 -- import qualified Data.Array.Accelerate.Trafo.Fusion     as Fusion
 -- import Data.Array.Accelerate.Array.Lifted               as Lifted
 import Data.Array.Accelerate.Trafo.Shape
 import Data.Array.Accelerate.Analysis.ActionsCount
-import Data.Array.Accelerate.Trafo.Base as Base
+-- import Data.Array.Accelerate.Trafo.Base as Base
 
 -- import Data.Array.Accelerate.Pretty.Print (prettyArrays, Val(..), prettyEnv, PrettyEnv(..))
 -- import Data.Array.Accelerate.Trafo.Base
@@ -37,6 +37,7 @@ import Data.Array.Accelerate.Trafo.Base as Base
 import Control.Monad.State.Lazy hiding (lift)
 import Control.Lens (lens)
 import Control.Lens.Tuple
+import Control.Exception
 
 ---------------------------------------
 --Run all the tests
@@ -59,13 +60,14 @@ allTests = [(foldScalarTest, "foldScalarTest") ,(foldTest , "foldTest ") ,(foldT
            ,(awhileTest3 , "awhileTest3 ") ,(stencilTest , "stencilTest ") ,(stencilTest2 , "stencilTest2 ")
            ]
 
+flags :: [Mode]
 flags = [dump_vectorisation, dump_phases]
 setflags, clearflags :: IO ()
 setflags = setFlags flags
 clearflags = clearFlags flags
 
 -------------------------------------
--- Helpfull defenitions for the tests
+-- Helpfull definitions for the tests
 instance (Slice sh, Elt a, Elt a')
     => Field1 (Exp (sh :. a)) (Exp (sh :. a')) (Exp a) (Exp a') where
   _1 = lens indexHead (\sh b -> lift (indexTail sh :. b))
@@ -358,7 +360,7 @@ inputSeq4Broken :: Seq [Vector Int]
 inputSeq4Broken = streamInReg (Z :. 10) [I.run inputVector, I.run inputVector2]
 
 inputSeq5Broken :: Int -> Seq [Vector Int]
-inputSeq5Broken n = streamInReg (Z :. 10) [I.run inputVector | x <- [1..n]]
+inputSeq5Broken n = streamInReg (Z :. 10) [I.run inputVector | _ <- [1..n]]
 
 inputSeqPair1 :: Seq [(Vector Int, Vector Int)]
 inputSeqPair1 = produce (constant 10) f
@@ -371,7 +373,7 @@ inputSeqPair2 = zipSeq inputSeq1 inputSeq3
 inputSeqPair3 :: Seq [(Vector Int, Vector Int)]
 inputSeqPair3 = produce (constant 10) f
   where
-    f (the -> x) = lift . unzip $ generate (index1 (constant 5)) (\sh -> lift (indexHead sh, indexHead sh - constant 10) )
+    f (the -> _) = lift . unzip $ generate (index1 (constant 5)) (\sh -> lift (indexHead sh, indexHead sh - constant 10) )
 
 inputSeqPair4 :: Seq [(Vector Int, Vector Int)]
 inputSeqPair4 = zipSeq inputSeq1 (mapSeq (map (+(constant 10)) ) inputSeq1)
@@ -436,7 +438,7 @@ acondTest4' = collect . elements . mapSeq f
     f ::  Acc (Vector Int, Vector Int) -> Acc (Vector Int)
     f pair = afst $ acond ((afst pair)!! 0 > 10) (h pair) (g pair)
     g (unlift -> (x, y) :: (Acc (Vector Int), Acc (Vector Int)) ) = lift (y, x)
-    h (unlift -> (x, y) :: (Acc (Vector Int), Acc (Vector Int)) ) = lift (map (+1) y, generate (index1 10) indexHead)
+    h (unlift -> (_, y) :: (Acc (Vector Int), Acc (Vector Int)) ) = lift (map (+1) y, generate (index1 10) indexHead)
 
 zipWithTest' :: Seq [Vector Int] -> Acc (Vector Int)
 zipWithTest' = collect . elements . mapSeq f
@@ -460,7 +462,8 @@ whileSeqTest8 = whileSeqTest4' inputSeq3
 whileSeqTest9 = whileSeqTest5' inputSeq1
 whileSeqTest10 = whileSeqTest5' inputSeq3
 
-acondTest1, acondTest2, acondTest3, acondTest4, acondTest5, acondTest6 :: Acc (Vector Int)
+acondTest1, acondTest2, acondTest3, acondTest4, acondTest5, acondTest6
+  , acondTest7, acondTest8, acondTest9, acondTest10, acondTest11, acondTest12, acondTest13, acondTest14  :: Acc (Vector Int)
 acondTest1 = acondTest1' inputSeqPair1
 acondTest2 = acondTest1' inputSeqPair2
 acondTest3 = acondTest1' inputSeqPair3
@@ -476,10 +479,11 @@ acondTest12 = acondTest4' inputSeqPair2
 acondTest13 = acondTest4' inputSeqPair3
 acondTest14 = acondTest4' inputSeqPair4
 
-zipWithTest1, zipWithTest2 :: Acc (Vector Int)
+zipWithTest1, zipWithTest2 :: Acc (Vector Int) 
 zipWithTest1 = zipWithTest' inputSeq1
 zipWithTest2 = zipWithTest' inputSeq3
 zipWithTest3 = zipWithTest2' inputSeq1
+zipWithTest3, zipWithTest4 :: Acc (Vector (Int, Int))
 zipWithTest4 = zipWithTest2' inputSeq3
 
 
@@ -490,8 +494,22 @@ whileSeqTestBroken3 = whileSeqTest3' inputSeq2Broken
 whileSeqTestBroken4 = whileSeqTest' inputSeq4Broken
 whileSeqTestBroken5 = whileSeqTest2' inputSeq4Broken
 whileSeqTestBroken6 = whileSeqTest3' inputSeq4Broken
+whileSeqTestBroken7 :: Int -> Acc (Vector Int)
 whileSeqTestBroken7 n = whileSeqTest3' (inputSeq5Broken n)
 
+evalAllVecTests' :: [Acc (Vector Int)] -> IO ()
+evalAllVecTests' xs = mapM_ (evaluate . I.run) xs
+
+allVecTests :: [Acc (Vector Int)]
+allVecTests = [
+    whileSeqTest1, whileSeqTest2, whileSeqTest3, whileSeqTest4, whileSeqTest5, whileSeqTest6, whileSeqTest7, whileSeqTest8, whileSeqTest9, whileSeqTest10
+  , acondTest1, acondTest2, acondTest3, acondTest4, acondTest5, acondTest6, acondTest7
+  , acondTest8, acondTest9, acondTest10, acondTest11, acondTest12, acondTest13, acondTest14
+  , zipWithTest1, zipWithTest2, map fst zipWithTest3, map fst zipWithTest4
+  , whileSeqTestBroken1, whileSeqTestBroken2, whileSeqTestBroken3, whileSeqTestBroken4, whileSeqTestBroken5, whileSeqTestBroken6, whileSeqTestBroken7 2 ]
+
+evalAllVecTests :: IO ()
+evalAllVecTests = evalAllVecTests' allVecTests
 ------------------------------------
 -- Count parallel actions
 
@@ -523,3 +541,94 @@ counts = do P.putStrLn "average"
             countF conditional2
             P.putStrLn "scanT"
             countF scanT
+
+
+---------------------------------------------------------
+-- Independece tests
+
+predTest :: Acc (Vector Int) -> Acc (Scalar Bool)
+predTest xs = let sh = shape xs
+                  n = indexHead sh
+              in  unit (n > 1)
+
+predTest2 :: Acc (Vector Int) -> Acc (Scalar Bool)
+predTest2 xs = unit (xs !! 0 > 10)
+
+predTest3 :: Acc (Vector Int) -> Acc (Scalar Bool)
+predTest3 xs = map (>10) (fold1 (+) xs)
+
+predTest4 :: Acc (Vector Int) -> Acc (Scalar Bool)
+predTest4 _ = let ys = generate (index2 5 2) indexHead :: Acc (Matrix Int)
+                  ys' = fold1All (+) ys
+               in map (>10) ys'
+
+predTest5 :: Acc (Vector Int) -> Acc (Scalar Bool)
+predTest5 xs = let ys = generate (shape xs) indexHead :: Acc (Vector Int)
+                   ys' = fold1All (+) ys
+               in  map (>10) ys'
+
+predTest6 :: Acc (Vector Int) -> Acc (Scalar Bool)
+predTest6 xs = let ys = backpermute (lift Z) (\sh -> lift (sh :. (0::Int))) xs :: Acc (Scalar Int)
+               in  map (>10) ys
+
+predTest7 :: Acc (Vector Int) -> Acc (Scalar Bool)
+predTest7 xs = let ys = permute (+) (unit 0) indexTail xs :: Acc (Scalar Int)
+               in  map (>10) ys
+
+predTest8 :: Acc (Vector Int) -> Acc (Scalar Bool)
+predTest8 xs = let ys = permute (+) (unit 0) indexTail xs :: Acc (Scalar Int)
+                   ys' = unit (size ys)
+               in  map (>10) ys'
+
+predTest9 :: Acc (Vector Int) -> Acc (Scalar Bool)
+predTest9 xs = let ys = generate (shape xs) indexHead :: Acc (Vector Int)
+                   ys' = stencil f Clamp ys :: Acc (Vector Int)
+                   f :: Stencil3 Int -> Exp Int
+                   f (a,b,c) = a + b + c `div` 3
+
+                   zs = unit (size ys') 
+               in  map (>10) zs
+
+predTest10 :: Acc (Vector Int) -> Acc (Scalar Bool)
+predTest10 xs = let ys = generate (shape xs) indexHead :: Acc (Vector Int)
+                    ys' = stencil f Clamp ys :: Acc (Vector Int)
+                    f :: Stencil3 Int -> Exp Int
+                    f (a,b,c) = a + b + c `div` 3
+                    zs = unit (ys' !! 0) 
+                in  map (>10) zs
+
+testInds :: (Arrays a, Arrays b) => (Acc a -> Acc b) -> Independence -> Bool
+testInds f i = let
+    f' = travoSharingF f
+    env = PushIE BaseIE undefined i
+    ind = indOpenAfun1 env f' 
+  in isInd ind
+
+
+evalIndTests :: (Arrays a, Arrays b) => (String, (Acc a -> Acc b), Bool, Bool, Bool) -> IO (Bool)
+evalIndTests (name, f, tI, sI, nI) = do
+  let tIres = testInds f TotalInd P.== tI
+      sIres = testInds f ShapeInd P.== sI
+      nIres = testInds f NotInd   P.== nI
+  if P.not tIres then P.putStrLn ("Function \'" P.++ name P.++ "\' gave a wrong answer for independece test for total independent. It should be: " P.++ P.show tI) else return ()
+  if P.not sIres then P.putStrLn ("Function \'" P.++ name P.++ "\' gave a wrong answer for independece test for shape independent. It should be: " P.++ P.show sI) else return ()
+  if P.not nIres then P.putStrLn ("Function \'" P.++ name P.++ "\' gave a wrong answer for independece test for not independent. It should be: " P.++ P.show nI) else return ()
+  if tIres P.&& sIres P.&& nIres then P.putStrLn ("Function \'" P.++ name P.++ "\' is completely right") else return ()
+  return (tIres P.&& sIres P.&& nIres)
+    
+allIndTests'  :: [(String, Acc (Vector Int) -> Acc (Scalar Bool), Bool, Bool, Bool)]
+allIndTests' = [ ("predTest", predTest, True, True, False)
+               , ("predTest2", predTest2, True, False, False)
+               , ("predTest3", predTest3, True, False, False)
+               , ("predTest4", predTest4, True, True, True)
+               , ("predTest5", predTest5, True, True, False)
+               , ("predTest6", predTest6, True, False, False)
+               , ("predTest7", predTest7, True, False, False)
+               , ("predTest8", predTest8, True, True, False)
+               , ("predTest9", predTest9, True, True, False)
+               , ("predTest10", predTest10, True, True, False)
+               , ("predTest11", predTest11, True, True, False)
+               ]
+
+allIndTests :: IO [Bool]
+allIndTests = mapM evalIndTests allIndTests'

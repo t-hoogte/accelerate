@@ -94,6 +94,30 @@ push :: Arrays t'
      -> Context acc (aenv, t) (aenv', t')
 push ctx ty = PushC ctx ty NoNest
 
+-- |Convert between the context environment of the lifting, and between the
+-- environment that is used for the independence analysis
+convertEnv :: Context acc aenv aenv' -> IndEnv aenv
+convertEnv BaseC            = BaseIE
+convertEnv (PushC ctx ty _) = PushIE (convertEnv ctx) (proxyTy ty) (tyInd ty)
+  where
+    proxyTy :: LiftedType t t' -> t
+    proxyTy _ = undefined
+
+    tyInd :: LiftedType t t' -> Independence
+    tyInd ty = case ty of
+      UnitT        -> TotalInd
+      LiftedUnitT  -> TotalInd
+      AvoidedT     -> TotalInd
+      RegularT     -> ShapeInd
+      IrregularT   -> NotInd
+      TupleT tup   -> tyIndT tup
+    
+    tyIndT :: LiftedTupleType t t' -> Independence
+    tyIndT NilLtup = TotalInd
+    tyIndT (SnocLtup tup ty) = min (tyIndT tup) (tyInd ty)
+                      
+
+
 -- Lifting terms
 -- ---------------
 --
@@ -795,7 +819,8 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
                 awhileLift = awhileLiftUnsafe False size IrregularT
 
                 regular :: Bool
-                regular = let ind =  uncurry (&&) $ indAcc predb
+                regular = let indEnv = convertEnv (push ctx ty)
+                              ind =  isInd $ indAcc indEnv predb
                               indmsg = if ind then "Found independent predicate in awhile (regular)" else "Found dependent predicate in awhile"
                               indres = trace "Independent analysis" indmsg ind
                               sameshape = equalShapedF1 shAcc it a'

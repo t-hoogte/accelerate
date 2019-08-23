@@ -22,12 +22,12 @@
 
 module Data.Array.Accelerate.Trafo.Shape (
   -- * Analysis if array expression is only dependent on shape
-  IndAcc, indOpenAcc,
+  IndAcc, indOpenAcc, indOpenAfun1, Independence(..), IndEnv(..), isInd,
   -- * Functions that get shape information out of an array term
   ShAcc, shAcc, shOpenAcc, shOpenAF1,
   -- * Functions that compare two shapes
   equalShape, equalShapedAcc, equalShapeOpen, equalShapedF1, equalShapedA, 
-  ShapeEnv(..),
+  ShapeEnv(..), 
 ) where
 
 -- friends
@@ -40,142 +40,274 @@ import           Data.Array.Accelerate.Product
 import           Control.Monad.State.Lazy
 import           Data.Typeable
 -----------------------------------------------------------------
-type IndAcc acc = forall aenv t. acc aenv t -> (Bool, Bool)
+data Independence =  NotInd | ShapeInd | TotalInd
+  deriving (Eq, Ord, Show)
 
-(&&&) :: (Bool, Bool) -> (Bool, Bool) -> (Bool, Bool)
-(b1, b2) &&& (a1, a2) = (b1 && a1, b2 && a2)
+isInd :: Independence -> Bool
+isInd TotalInd = True
+isInd _        = False
 
-(&|) :: (Bool, Bool) -> (Bool, Bool) -> (Bool, Bool)
-(b1, b2) &| (a1, a2) = (b1 && a1, b2 || a2)
 
-indOpenAcc :: OpenAcc aenv t -> (Bool, Bool)
-indOpenAcc (OpenAcc pacc) = independentShapeArray indOpenAcc pacc
+data IndEnv aenv where
+  BaseIE     :: IndEnv aenv
+  PushIE     :: IndEnv aenv
+  -- Added the proxy type, so we have extra type check safety if we add the right independence value to the environment
+             -> t {- proxy -}
+             -> Independence
+             -> IndEnv (aenv, t)
 
-indPreOpenAfun :: IndAcc acc -> PreOpenAfun acc aenv t -> (Bool, Bool)
-indPreOpenAfun indA (Abody b) = indA b
-indPreOpenAfun indA (Alam f)  = indPreOpenAfun indA f
 
-indPreOpenFun :: IndAcc acc -> PreOpenFun acc env aenv t -> (Bool, Bool)
-indPreOpenFun indA (Body b) = independentShapeExp indA b
-indPreOpenFun indA (Lam f)  = indPreOpenFun indA f
 
-independentShapeArray :: forall acc aenv t. IndAcc acc -> PreOpenAcc acc aenv t -> (Bool, Bool)
---independentShapeArray :: forall acc aenv t. Kit acc => PreOpenAcc acc aenv t -> (Bool, Bool)
-independentShapeArray indA acc =
+type IndAcc acc = forall aenv t. IndEnv aenv -> acc aenv t -> Independence
+
+(&&&) :: Independence -> Independence -> Independence
+(&&&) = min
+
+(|||) :: Independence -> Independence -> Independence
+(|||) = max
+
+-- Pass the right environment to this function.
+-- Arrays that avoid vectorization, are totally independent.
+-- Arrays that are regular, are shape independent.
+-- Irregular Arrays, are totally dependent
+-- Of only a base environment gets pushed, we have a problem.
+-- Since it will recognize the base as an empty one.
+indOpenAcc :: IndEnv aenv -> OpenAcc aenv t -> Independence
+indOpenAcc env (OpenAcc pacc) = independentShapeArray indOpenAcc env pacc
+
+indOpenAfun1 :: IndEnv (aenv, a) -> OpenAfun aenv (a -> b) -> Independence
+indOpenAfun1 env (Alam (Abody a)) = indOpenAcc env a
+indOpenAfun1 _ _ = error "Didn't provide correct function for indOpenAfun1"
+
+indPreOpenAfun1 :: IndAcc acc -> IndEnv (aenv,a) -> PreOpenAfun acc aenv (a -> b) -> Independence
+indPreOpenAfun1 indA env (Alam (Abody b)) = indA env b
+indPreOpenAfun1 _ _ _ = error "Didn't provide correct function for indPreOpenAfun1"
+
+indPreOpenFun1 :: IndAcc acc -> IndEnv aenv -> IndEnv (env,a) -> PreOpenFun acc env aenv (a -> b) -> Independence
+indPreOpenFun1 indA aenv env (Lam (Body b)) = independentShapeExp indA aenv env b
+indPreOpenFun1 _ _ _ _ = error "Didn't provide correct function for indPreOpenFun1"
+
+indPreOpenFun2 :: IndAcc acc -> IndEnv aenv -> IndEnv ((env,a),b) -> PreOpenFun acc env aenv (a -> b -> c) -> Independence
+indPreOpenFun2 indA aenv env (Lam (Lam (Body b))) = independentShapeExp indA aenv env b
+indPreOpenFun2 _ _ _ _ = error "Didn't provide correct function for indPreOpenFun2"
+
+indIx :: forall aenv t .
+         IndEnv aenv
+      -> Idx aenv t
+      -> Independence
+indIx BaseIE            _            = TotalInd
+indIx (PushIE _ _ ind)  ZeroIdx      = ind
+indIx (PushIE env _ _)  (SuccIdx ix) = indIx env ix
+
+independentShapeArray :: forall acc aenv t. IndAcc acc -> IndEnv aenv -> PreOpenAcc acc aenv t -> Independence
+--independentShapeArray :: forall acc aenv t. Kit acc => PreOpenAcc acc aenv t -> Independence
+independentShapeArray indA' env acc =
   let
-    indAF :: PreOpenAfun acc aenv' t' -> (Bool, Bool)
-    indAF = indPreOpenAfun indA
+    indA :: acc aenv t' -> Independence
+    indA = indA' env
 
-    indF :: PreOpenFun acc env aenv' t' -> (Bool, Bool)
-    indF = indPreOpenFun indA
+    indAF1 :: IndEnv (aenv',a) -> PreOpenAfun acc aenv' (a -> b) -> Independence
+    indAF1 = indPreOpenAfun1 indA'
 
-    indE :: PreOpenExp acc env' aenv' e' -> (Bool, Bool)
-    indE = independentShapeExp indA
+    indF1 :: PreExp acc aenv a -> PreFun acc aenv (a -> b) -> Independence
+    indF1 e = indPreOpenFun1 indA' env (pushE e)
 
-    indTup :: Atuple (acc aenv') t' -> (Bool, Bool)
-    indTup NilAtup        = notIndShape
+    indF1AEl :: acc aenv (Array sh a) -> PreFun acc aenv (a -> b) -> Independence
+    indF1AEl a = indPreOpenFun1 indA' env (pushAEl a)
+
+    indF2AEl :: acc aenv (Array sh a) -> acc aenv (Array sh b) -> PreFun acc aenv (a -> b -> c) -> Independence
+    indF2AEl a b = indPreOpenFun2 indA' env (pushAEl' (pushAEl a) b)
+
+    indE' :: IndEnv env -> PreOpenExp acc env aenv e' -> Independence
+    indE' env' = independentShapeExp indA' env env'
+
+    indE :: PreExp acc aenv e' -> Independence
+    indE = indE' BaseIE
+
+    indTup :: Atuple (acc aenv) t' -> Independence
+    indTup NilAtup        = TotalInd
     indTup (SnocAtup t a) = indA a &&& indTup t
 
+    pushA' :: IndEnv aenv' -> acc aenv' a -> IndEnv (aenv', a)
+    pushA' env' a = PushIE env' undefined (indA' env' a)
+
+    pushE' :: IndEnv env' -> PreOpenExp acc env' aenv a -> IndEnv (env', a)
+    pushE' env' a = PushIE env' undefined (indE' env' a)
+
+    pushAEl' :: IndEnv env' -> acc aenv (Array sh a) -> IndEnv (env', a)
+    pushAEl' env' a = PushIE env' undefined (indA a)
+
+    pushA :: acc aenv a -> IndEnv (aenv, a)
+    pushA = pushA' env
+
+    pushE :: PreExp acc aenv a -> IndEnv ((), a)
+    pushE = pushE' BaseIE
+
+    pushAEl :: acc aenv (Array sh a) -> IndEnv (env', a)
+    pushAEl = pushAEl' BaseIE
+
     -- The shape of the array is independent of elements of the array
-    indShape :: (Bool, Bool)
-    indShape = (False, True)
+    shapeInd :: Independence
+    shapeInd = ShapeInd
 
     -- The shape of the array is (probably) dependent of elements of the array
-    notIndShape :: (Bool, Bool)
-    notIndShape = (False, False)
+    notInd :: Independence
+    notInd = NotInd
+
+    proxyA :: acc aenv a -> a 
+    proxyA = undefined
+
+    proxyEl :: acc aenv (Array sh e) -> e
+    proxyEl = undefined
+
+    proxySh :: acc aenv (Array sh e) -> sh
+    proxySh = undefined
   in
   -- In general we do an analysis that is to strict. If we are not strict enough, we break stuff.
   case acc of
-    -- If the variable we introduce is dependent, we can't assume indepence anymore.
-    -- TODO: Maybe we can look in the environment and place the value of the binding there
-    Alet a b            -> case indA a of
-                            (_, True)  -> indA b
-                            (_, False) -> notIndShape
-    Avar _              -> indShape
+    -- We store the result of the independence test in our environment
+    Alet a b            -> indA' (pushA a) b
+    Avar ix             -> indIx env ix
     Atuple tup          -> indTup tup
+    -- We just check the whole tupple
     Aprj _ a            -> indA a
-    Apply f a           -> indAF f &&& indA a
-    -- We cannot say if the foreign function changes the shape and if so if that was dependent on the elements of the array
-    Aforeign _ _ _      -> notIndShape
+    -- We store the applicant in the environment
+    Apply f a           -> indAF1 (pushA a) f
+    -- WARNING: When using a foreign function, we could assume it follows the rules of the fallback implementation.
+    -- This could break stuff horribly, so we just are extra safe now.
+    -- Aforeign _ f a      -> let env' = PushIE BaseIE (indA a)
+    --                        in indAF1 env' f
+    Aforeign _ _ _      -> notInd
     -- Only of the choice can be made independent of elements of arrays, we can be sure that shape stays independent
     Acond p t e         -> case indE p of
-                            (True, _) -> indA t &&& indA e
-                            _         -> notIndShape
-    -- My guess is this. But it's hard to reason about.
-    Awhile p it i       -> indAF p &&& indAF it &&& indA i
-    Use _               -> indShape
-    -- If the expresion is independent, we have an array that is independent
-    Unit e              -> indE e
+                             TotalInd -> indA t &&& indA e
+                             _         -> notInd
+    -- Only if the predicate is totally independent, we are sure to stop at exactly the same time.
+    -- This must hold for intiatial thing, but also if it has passed through an arbitrary iteration
+    Awhile p it i       -> let indi = indA i
+                               env' = PushIE env (proxyA i) indi
+                               indboth = indi &&& indAF1 env' it
+                               env'' = PushIE env (proxyA i) indboth
+                            in case indAF1 env'' p of
+                                 TotalInd -> indboth
+                                 _        -> notInd
+    -- Not really sure about this one. If this occurs in a sequence, is it always the same?
+    -- Must be right? Since it is not dependent on anything else.
+    Use _               -> TotalInd
+    -- The shape is indepedent, but maybe the expression is totally independent
+    Unit e              -> indE e -- ||| shapeInd
     -- If the new shape is independent, we force that. Otherwise it simply isn't
     Reshape e a         -> case indE e of
-                            (True, _) -> (True, True) &| indA a
-                            _         -> notIndShape
-    -- If the new shape is independent, we force that. Otherwise it simply isn't
+                             TotalInd -> indA a ||| shapeInd 
+                             _        -> notInd
+    -- If the new shape is independent, we force that (automatically since it is expr func). Otherwise it simply isn't
     Generate e f        -> case indE e of
-                            (True, _) -> (True, True) &| indF f
-                            _         -> notIndShape
+                             TotalInd -> indF1 e f -- ||| shapeInd
+                             _        -> notInd
     Transform sh f f' a -> case indE sh of
-                            (True, _) -> (True, True) &| (indF f &&& indF f' &&& indA a)
-                            _         -> notIndShape
-    -- TODO: I think false?
-    Subarray {}         -> notIndShape
-    Replicate _ slix a  -> indE slix &&& indA a
-    -- False, since you can slice out a Scalar
-    Slice _ _ _         -> notIndShape
-    -- Doesn't change the shape, if a input was indepent and so is function f, we end up totally independent.
-    Map f a             -> indF f &&& indA a
-    ZipWith f a1 a2     -> indF f &&& indA a1 &&& indA a2
-    --The shape is independent, but the elements (of the scalar) aren't
-    Fold _ _ _          -> indShape
-    Fold1 _ _           -> indShape
-    -- TODO: Not sure about the fold segs, probably if the segs aren't totaly independent, we have a dependent shape
-    FoldSeg _ _ _ _     -> notIndShape
-    Fold1Seg _ _ _      -> notIndShape
-    Scanl f z a         -> indF f &&& indE z &&& indA a
-    Scanl' f z a        -> indF f &&& indE z &&& indA a
-    Scanl1 f a          -> indF f &&& indA a
-    Scanr f z a         -> indF f &&& indE z &&& indA a
-    Scanr' f z a        -> indF f &&& indE z &&& indA a
-    Scanr1 f a          -> indF f &&& indA a
-    -- False, since you could permute everything to a scalar
-    Permute _ _ _ _     -> notIndShape
-    Backpermute _ _ _   -> notIndShape
+                            TotalInd -> (indF1 sh f &&& indF1AEl a f') &&& indA a ||| shapeInd
+                            _        -> notInd
+    
+    -- Shouldn't occur here
+    Subarray {}         -> notInd
+    -- If the slice is independent, just take over the independence of a
+    Replicate _ slix a  -> case indE slix of
+                             TotalInd -> indA a
+                             _        -> notInd
+    Slice _ a slix         -> case indE slix of
+                                TotalInd -> indA a
+                                _        -> notInd
+    -- Doesn't change the shape, if an input was totally indepent and so is function f, we end up totally independent.
+    -- It will not cover the case when a map will fill everthing with constant values
+    Map f a             -> indA a &&& indF1AEl a f
+    ZipWith f a1 a2     -> indA a1 &&& indA a2 &&& indF2AEl a1 a2 f 
+    --The shape is independent, only if the input array was and the same for the resulting elements
+    --Folding to a scalar, will always give an indepedent shape, we do not check for that now
+    Fold f z a          -> indA a &&& indF2AEl a a f  &&& indE z
+    Fold1 f a           -> indA a &&& indF2AEl a a f 
+    -- If the segs aren't totaly independent, we have a dependent shape
+    FoldSeg f z a segs  -> case indA segs of
+                             TotalInd -> indA a &&& indF2AEl a a f  &&& indE z
+                             _        -> notInd
+    Fold1Seg f a segs   -> case indA segs of
+                             TotalInd -> indA a &&& indF2AEl a a f
+                             _        -> notInd
+    Scanl f z a         -> indA a &&& indF2AEl a a f &&& indE z
+    --Scanning to a scalar, will always give an indepedent shape, for the second index of the tupple.
+    --We do not check for that
+    Scanl' f z a        -> indA a &&& indF2AEl a a f &&& indE z
+    Scanl1 f a          -> indA a &&& indF2AEl a a f
+    Scanr f z a         -> indA a &&& indF2AEl a a f &&& indE z
+    Scanr' f z a        -> indA a &&& indF2AEl a a f &&& indE z
+    Scanr1 f a          -> indA a &&& indF2AEl a a f
+    -- So this one is difficult. The default array and source array are both used in the
+    -- combine function. So we combine the results. The shape function, can only really tell
+    -- things if the source array was atleast shape independent. The case split is not neccesairy
+    -- since we combine results anyway, but it is for clarity for myself
+    -- 
+    Permute f d p a     -> let indd = indA d
+                               inda = indA a
+                               indboth = indd &&& inda
+                               env' = PushIE (PushIE BaseIE (proxyEl a) indboth) (proxyEl a) indboth
+                               indf = indPreOpenFun2 indA' env env' f
+                               indp = case inda of
+                                        NotInd -> notInd
+                                        _      -> indPreOpenFun1 indA' env (PushIE BaseIE (proxySh a) inda) p
+                           in indboth &&& indf &&& indp
+    Backpermute sh f a   -> case indE sh of
+                              NotInd -> notInd
+                              _      -> shapeInd ||| (indF1 sh f &&& indA a)
     -- The shape will be indepedent, (not the elements), aslong as the input array's shape is independent.
-    Stencil _ _ a       -> indShape &&& indA a
+    -- This could be improved, if the elements are also independent, then only the combination function
+    -- and boundary need to be checked on independence. We don't bother atm.
+    Stencil _ _ a       -> shapeInd &&& indA a
     Stencil2 _ _ a1 _ a2
-                        -> indShape &&& indA a1 &&& indA a2
+                        -> shapeInd &&& indA a1 &&& indA a2
     --We only call this when sequencing, thus this means a sequence in a sequence, which isn't possible.
-    Collect _ _ _ _     -> notIndShape
+    Collect _ _ _ _     -> notInd
 
 -- We check if the expression is based on constant numbers or the shape of an array (and the array itself hasn't changed it's shape in an unpreditable manner)
 -- Most importantly, if array elements are accessed, it will never be independent.
-independentShapeExp :: forall acc env aenv e. IndAcc acc -> PreOpenExp acc env aenv e -> (Bool, Bool)
-independentShapeExp indA expr =
+independentShapeExp :: forall acc env aenv e. IndAcc acc -> IndEnv aenv -> IndEnv env -> PreOpenExp acc env aenv e -> Independence
+independentShapeExp indA' aenv env expr =
   let
-    indE :: PreOpenExp acc env' aenv' e' -> (Bool, Bool)
-    indE = independentShapeExp indA
+    indA :: acc aenv a -> Independence
+    indA = indA' aenv
 
-    indTup :: Tuple (PreOpenExp acc env' aenv') t -> (Bool, Bool)
+    indE :: PreOpenExp acc env aenv e' -> Independence
+    indE = indE' env
+
+    indE' :: IndEnv env' -> PreOpenExp acc env' aenv e' -> Independence
+    indE' env' = independentShapeExp indA' aenv env'
+
+    indTup :: Tuple (PreOpenExp acc env aenv) t -> Independence
     indTup NilTup        = ind
     indTup (SnocTup t e) = indE e &&& indTup t
 
-    indF :: PreOpenFun acc env' aenv' e' -> (Bool, Bool)
-    indF = indPreOpenFun indA
+    indF1 :: PreOpenExp acc env aenv a -> PreOpenFun acc env aenv (a -> b) -> Independence
+    indF1 e = indPreOpenFun1 indA' aenv (pushE e)
+
+    pushE :: PreOpenExp acc env aenv a -> IndEnv (env, a)
+    pushE = pushE' env
+
+    pushE' :: IndEnv env' -> PreOpenExp acc env' aenv a -> IndEnv (env', a)
+    pushE' env' a = PushIE env' undefined (indE' env' a)
 
     -- The expression is only dependent on shape or constants (independent of the elements of the array)
-    ind :: (Bool, Bool)
-    ind = (True, True)
+    ind :: Independence
+    ind = TotalInd
 
-    -- The expression is (probably) dependent on the elements of the array
-    notInd :: (Bool, Bool)
-    notInd = (False, True)
+    -- The expression is (probably) dependent on the elements of the array, but the shape is always shape independent
+    shInd :: Independence
+    shInd = ShapeInd
 
   in
   case expr of
-    Let bnd body              -> indE bnd &&& indE body
-    Var _                     -> ind
+    -- _ ->  shInd
+    Let bnd body              -> indE' (pushE bnd) body
+    Var ix                    -> indIx env ix ||| shInd
     -- We cannot guarantee that foreign isn't a random function or something
-    Foreign _ _ _             -> notInd
+    Foreign _ _ _             -> shInd
     Const _                   -> ind
     Tuple t                   -> indTup t
     -- We cannot go to a specific tuple index for now, so check whole tuple
@@ -193,14 +325,16 @@ independentShapeExp indA expr =
     IndexTrans sh             -> indE sh
     ToSlice _ slix i          -> indE slix &&& indE i
     Cond p e1 e2              -> indE p &&& indE e1 &&& indE e2
-    While p f x               -> indF p &&& indF f &&& indE x
+    While p f x               -> indF1 x p &&& indF1 x f &&& indE x
     PrimConst _               -> ind
     PrimApp _ x               -> indE x
-    Index _ _                 -> notInd
-    LinearIndex _ _           -> notInd
+    -- We are indexing arrays. We will always stay shape independent. But maybe if the array is totally indepedent we can go to a totally dependent value
+    Index a ix                -> (indA a &&& indE ix) ||| shInd
+    LinearIndex a ix          -> (indA a &&& indE ix) ||| shInd
+    --This step is very important. It means we can go from only a shape dependent array, to a totally dependent value.
     Shape a                   -> case indA a of
-                                  (_, True)  -> ind
-                                  (_, False) -> notInd
+                                  NotInd -> shInd
+                                  _  -> ind
     ShapeSize sh              -> indE sh
     Intersect sh1 sh2         -> indE sh1 &&& indE sh2
     Union sh1 sh2             -> indE sh1 &&& indE sh2
