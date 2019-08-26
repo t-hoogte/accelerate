@@ -70,7 +70,6 @@ import qualified Data.Array.Accelerate.Debug            as Debug
 import Data.Array.Accelerate.Error
 
 import System.IO.Unsafe (unsafePerformIO)
-import qualified Debug.Trace as DT
 
 -- |Encodes the relationship between the old environment and the lifted
 -- environment
@@ -93,6 +92,8 @@ push :: Arrays t'
      -> LiftedType t t'
      -> Context acc (aenv, t) (aenv', t')
 push ctx ty = PushC ctx ty NoNest
+
+
 
 -- |Convert between the context environment of the lifting, and between the
 -- environment that is used for the independence analysis
@@ -402,6 +403,7 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
     Aprj tup a          -> aprjL tup a
     Apply f a           -> applyL f a
     Aforeign ff afun as -> foreignL ff afun as
+    LiftedAFun f lf a   -> liftedAfunL f lf a
     Acond p t e         -> acondL p t e
     Awhile p it i       -> awhileL p it i
     Use a               -> useL a
@@ -439,6 +441,13 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
     avoidedAcc   f = trace "AVOIDED"   f . LiftedAcc avoidedType
     regularAcc   f = trace "REGULAR"   f . LiftedAcc RegularT
     irregularAcc f = trace "IRREGULAR" f . LiftedAcc IrregularT
+
+    weakenClosedFunc :: PreAfun acc (as' -> bs') -> acc aenv' as' -> PreOpenAcc acc aenv' bs'
+    weakenClosedFunc (Alam (Abody f)) x = Apply (Alam (Abody (weaken k f))) x
+      where
+        k :: Idx ((),as') t' -> Idx (aenv', as') t'
+        k ZeroIdx = ZeroIdx
+        k _       = error "Strange, shouldn't be possible"
 
     nestedError :: String -> String -> String
     nestedError place op = "Unexpect nested parallelism in " ++ place ++ " argument to " ++ op
@@ -680,6 +689,36 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
       = inject . flip Apply a . Alam . Abody $* vectAcc (push ctx ty) (weakenA1 size) b
     applyL _                _
       = error "Absurd"
+
+    liftedAfunL :: (Elt e1, Shape sh1, Elt e2, Shape sh2, as ~ Array sh1 e1, t ~ Array sh2 e2 )
+                => PreAfun     acc       (as -> t)
+                -> (forall as' bs'. LiftedType as as' -> LiftedType t bs' -> Maybe (PreAfun acc (as' -> bs')))
+                -> acc             aenv  as
+                -> LiftedAcc   acc aenv' t
+    liftedAfunL afun@(Alam (Abody b)) liftedf (cvtA -> LiftedAcc ty as)
+      | Just iso <- isIso ty
+      = LiftedAcc avoidedType $^ weakenClosedFunc afun (castAccC iso as)
+      | otherwise
+      = case ty of
+          RegularT   -> case liftedf RegularT RegularT of
+                          Just f -> LiftedAcc RegularT $^ weakenClosedFunc f as
+                          _      -> fallback
+          IrregularT -> case liftedf IrregularT RegularT of
+                          Just f ->  LiftedAcc RegularT $^ weakenClosedFunc f as
+                          _      -> case liftedf IrregularT IrregularT of
+                                       Just f -> LiftedAcc IrregularT $^ weakenClosedFunc f as
+                                       _      -> fallback
+                        -- Nothing -> 
+          -- IrregularT -> case liftedf ty IrregularT of
+          --                 Just f -> irregularAcc "liftedAfun" $^ LiftedAFun f Nothing as
+          -- _        -> 
+      -- = LiftedAcc tyb (inject $ LiftedAFun lifted (const Nothing) as)
+        where
+          fallback = inject . flip Apply as . Alam . Abody $* vectAcc (push ctx ty) (weakenA1 size) (weaken k b)
+
+          k :: Idx ((),as) t' -> Idx (aenv, as) t'
+          k ZeroIdx = ZeroIdx
+          k _       = error "Strange, shouldn't be possible"
 
     foreignL :: (Arrays arrs, Arrays t, Foreign f)
              => f (arrs -> t)

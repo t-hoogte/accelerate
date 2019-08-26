@@ -10,6 +10,8 @@
 {-# LANGUAGE TypeFamilies         #-}
 {-# LANGUAGE TypeOperators        #-}
 {-# LANGUAGE ViewPatterns         #-}
+{-# LANGUAGE RankNTypes         #-}
+
 {-# OPTIONS_GHC -fno-warn-orphans        #-}
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 #if __GLASGOW_HASKELL__ >= 800
@@ -59,7 +61,7 @@ import Prelude
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Smart
 import Data.Array.Accelerate.Array.Representation       ( SliceIndex )
-import Data.Array.Accelerate.Array.Lifted               ( avoidedType )
+import Data.Array.Accelerate.Array.Lifted               ( avoidedType, LiftedType(..))
 import Data.Array.Accelerate.Array.Sugar                as Sugar
 import Data.Array.Accelerate.AST                        hiding ( PreOpenAcc(..), OpenAcc(..), Acc
                                                                , Stencil(..), PreOpenExp(..), OpenExp
@@ -70,7 +72,6 @@ import Data.Array.Accelerate.Trafo.Base                 ( StreamSeq(..), Extend(
 import Data.Array.Accelerate.Trafo.Substitution         ( weaken, (:>) )
 import qualified Data.Array.Accelerate.AST              as AST
 import qualified Data.Array.Accelerate.Debug            as Debug
-
 
 -- Configuration
 -- -------------
@@ -160,6 +161,21 @@ convertAfun :: Afunction f => Bool -> Bool -> Bool -> Bool -> f -> AST.Afun (Afu
 convertAfun shareAcc shareExp shareSeq floatAcc =
   let config = Config shareAcc shareExp shareSeq (shareAcc && floatAcc)
   in  aconvert config EmptyLayout
+
+-- convertAfun2 :: (f ~ (Acc a' -> Acc b'), a' ~ Array sh1' e1', b' ~ Array sh2' e2', a ~ Array sh1 e1, b ~ Array sh2 e2)
+convertAfun2 :: (f ~ (Acc a' -> Acc b'), a ~ Array sh1 e1, b ~ Array sh2 e2)
+             => Bool -> Bool -> Bool -> Bool -> f -> LiftedType a a' -> LiftedType b b' -> AST.Afun (AfunctionR f)
+convertAfun2 shareAcc shareExp shareSeq floatAcc f ty1 ty2 =
+  case (ty1, ty2) of
+    (AvoidedT, AvoidedT)     -> convertAfun shareAcc shareExp shareSeq floatAcc f
+    (RegularT, RegularT)     -> convertAfun shareAcc shareExp shareSeq floatAcc f
+    (IrregularT, IrregularT) -> convertAfun shareAcc shareExp shareSeq floatAcc f
+    (AvoidedT, RegularT)     -> convertAfun shareAcc shareExp shareSeq floatAcc f
+    (AvoidedT, IrregularT)   -> convertAfun shareAcc shareExp shareSeq floatAcc f
+    (RegularT, AvoidedT)     -> convertAfun shareAcc shareExp shareSeq floatAcc f
+    (RegularT, IrregularT)   -> convertAfun shareAcc shareExp shareSeq floatAcc f
+    (IrregularT, AvoidedT)   -> convertAfun shareAcc shareExp shareSeq floatAcc f
+    (IrregularT, RegularT)   -> convertAfun shareAcc shareExp shareSeq floatAcc f
 
 
 -- Convert a HOAS fragment into de Bruijn form, binding variables into the typed
@@ -261,6 +277,22 @@ convertSharingAcc config alyt aenv (ScopedAcc lams (AccSharing _ preAcc))
 
         cvtAfun1 :: (Arrays a, Arrays b) => (Acc a -> ScopedAcc b) -> AST.OpenAfun aenv (a -> b)
         cvtAfun1 = convertSharingAfun1 config alyt aenv'
+
+        liftedAFun :: forall sh sh' e e'.(Shape sh, Shape sh', Elt e, Elt e')
+          => (Acc (Array sh e) -> Acc (Array sh' e'))
+          -> (forall as' bs' . LiftedType (Array sh e) as' -> LiftedType (Array sh' e') bs' -> Maybe (Acc as' -> Acc bs'))
+          -> ScopedAcc (Array sh e)
+          -> AST.PreOpenAcc AST.OpenAcc aenv (Array sh' e')
+        liftedAFun afun lf acc =
+          let a = recoverAccSharing config
+              e = recoverExpSharing config
+              s = recoverSeqSharing config
+              f = floatOutAcc config
+              newlf :: forall as' bs' . LiftedType (Array sh e) as' -> LiftedType (Array sh' e') bs' -> Maybe (AST.Afun (AfunctionR (Acc as' -> Acc bs'))) 
+              newlf tya tyb = case (lf tya tyb) of
+                            Nothing -> Nothing
+                            Just lfb -> Just $ convertAfun2 a e s f lfb tya tyb
+          in AST.LiftedAFun (convertAfun a e s f afun) newlf (cvtA acc)
     in
     case preAcc of
 
@@ -283,6 +315,8 @@ convertSharingAcc config alyt aenv (ScopedAcc lams (AccSharing _ preAcc))
                f = floatOutAcc config
            in
            AST.Aforeign ff (convertAfun a e s f afun) (cvtA acc)
+
+      LiftedAFun afun lf acc      -> liftedAFun afun lf acc
 
       Acond b acc1 acc2           -> AST.Acond (cvtE b) (cvtA acc1) (cvtA acc2)
       Awhile pred iter init       -> AST.Awhile (cvtAfun1 pred) (cvtAfun1 iter) (cvtA init)
@@ -1333,6 +1367,7 @@ makeOccMapSharingAcc config accOccMap = traverseAcc
                                              return (Pipe afun1' afun2' acc'
                                                     , h1 `max` h2 `max` h3 + 1)
             Aforeign ff afun acc        -> reconstruct $ travA (Aforeign ff afun) acc
+            LiftedAFun afun ff acc      -> reconstruct $ travA (LiftedAFun afun ff) acc
             Acond e acc1 acc2           -> reconstruct $ do
                                              (e'   , h1) <- traverseExp lvl e
                                              (acc1', h2) <- traverseAcc lvl acc1
@@ -2190,6 +2225,10 @@ determineScopesSharingAcc config accOccMap = scopesAcc
                                        (acc', accCount) = scopesAcc acc
                                      in
                                      reconstruct (Aforeign ff afun acc') accCount
+          LiftedAFun afun ff acc    -> let
+                                       (acc', accCount) = scopesAcc acc
+                                     in
+                                     reconstruct (LiftedAFun afun ff acc') accCount
           Acond e acc1 acc2       -> let
                                        (e'   , accCount1) = scopesExp e
                                        (acc1', accCount2) = scopesAcc acc1

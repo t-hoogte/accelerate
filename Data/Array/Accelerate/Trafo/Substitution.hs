@@ -543,6 +543,7 @@ rebuildPreOpenAcc k av acc =
     Stencil2 f b1 a1 b2 a2  -> Stencil2     <$> rebuildFun k (pure . IE) av f <*> pure b1 <*> k av a1 <*> pure b2 <*> k av a2
     Collect min max i s     -> Collect      <$> rebuildPreOpenExp k (pure . IE) av min <*> traverse (rebuildPreOpenExp k (pure . IE) av) max <*> traverse (rebuildPreOpenExp k (pure . IE) av) i <*> rebuildSeq k av s
     Aforeign ff afun as     -> Aforeign ff afun <$> k av as
+    LiftedAFun afun ff as   -> LiftedAFun afun ff <$> k av as
 
 {-# INLINEABLE rebuildAfun #-}
 rebuildAfun

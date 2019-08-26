@@ -99,6 +99,7 @@ dependenciesPreAcc depsAcc = deps
       Aprj _ a               -> depsAcc a
       Apply f a              -> depsAF f <> depsAcc a
       Aforeign _ _ a         -> depsAcc a
+      LiftedAFun _ _ a       -> depsAcc a
       Acond p t e            -> depsE p  <> depsAcc t <> depsAcc e
       Awhile p f a           -> depsAF p <> depsAF f <> depsAcc a
       Use _                  -> mempty

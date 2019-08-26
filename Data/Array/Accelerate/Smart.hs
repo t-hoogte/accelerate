@@ -7,6 +7,7 @@
 {-# LANGUAGE StandaloneDeriving    #-}
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE TypeOperators         #-}
+{-# LANGUAGE RankNTypes            #-}
 {-# OPTIONS_HADDOCK hide #-}
 -- |
 -- Module      : Data.Array.Accelerate.Smart
@@ -87,6 +88,7 @@ import Data.Array.Accelerate.AST                hiding ( PreOpenAcc(..), OpenAcc
                                                        , Consumer(..), Producer(..)
                                                        , showPreAccOp, showPreExpOp )
 import qualified Data.Array.Accelerate.AST      as AST
+import Data.Array.Accelerate.Array.Lifted               ( LiftedType(..) )
 
 -- Array computations
 -- ------------------
@@ -247,6 +249,12 @@ data PreAcc acc seq exp as where
                 -> (Acc as -> Acc bs)
                 -> acc as
                 -> PreAcc acc seq exp bs
+  
+  LiftedAFun    :: (Shape sh, Shape sh', Elt e, Elt e')
+                => (Acc (Array sh e) -> Acc (Array sh' e'))
+                -> (forall as' bs' . LiftedType (Array sh e) as' -> LiftedType (Array sh' e') bs' -> Maybe (Acc as' -> Acc bs'))
+                -> acc (Array sh e)
+                -> PreAcc acc seq exp (Array sh' e')
 
   Acond         :: Arrays as
                 => exp Bool

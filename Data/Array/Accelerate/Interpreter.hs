@@ -194,6 +194,7 @@ evalOpenAcc (AST.Manifest pacc) aenv =
     Aprj ix atup                -> evalPrj ix . fromAtuple $ manifest atup
     Apply afun acc              -> evalOpenAfun afun aenv  $ manifest acc
     Aforeign _ afun acc         -> evalOpenAfun afun Empty $ manifest acc
+    LiftedAFun afun _ acc       -> evalOpenAfun afun Empty $ manifest acc
     Acond p acc1 acc2
       | evalE p                 -> manifest acc1
       | otherwise               -> manifest acc2

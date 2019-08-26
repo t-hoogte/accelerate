@@ -125,6 +125,13 @@ matchPreOpenAcc matchAcc hashAcc = match
           sn2 <- makeStableName ff2
           return $! hashStableName sn1 == hashStableName sn2
       = gcast Refl
+    
+    -- TODO: We can't match on this now, cause we cannot match the lifted function
+    -- Answer is nothing, just to be safe
+    match (LiftedAFun f1 _ a1) (LiftedAFun f2 _ a2)
+      | Just Refl <- matchPreOpenAfun matchAcc f1 f2
+      , Just Refl <- matchAcc                  a1 a2
+      = Nothing
 
     match (Acond p1 t1 e1) (Acond p2 t2 e2)
       | Just Refl <- matchExp p1 p2
@@ -1118,6 +1125,7 @@ hashPreOpenAcc hashAcc pacc =
     Aprj ix a                   -> hash "Aprj"          `hashWithSalt` hashTupleIdx ix    `hashA` a
     Apply f a                   -> hash "Apply"         `hashWithSalt` hashAfun hashAcc f `hashA` a
     Aforeign _ f a              -> hash "Aforeign"      `hashWithSalt` hashAfun hashAcc f `hashA` a
+    LiftedAFun f _ a            -> hash "LiftedAFun"    `hashWithSalt` hashAfun hashAcc f `hashA` a
     Use a                       -> hash "Use"           `hashWithSalt` hashArrays (arrays (undefined::arrs)) a
     Subarray ix sh a            -> hash "Subarray"      `hashE` ix `hashE` sh `hashWithSalt` hashArrays (arrays (undefined::arrs)) a
     Awhile p f a                -> hash "Awhile"        `hashWithSalt` hashAfun hashAcc f `hashWithSalt` hashAfun hashAcc p `hashA` a

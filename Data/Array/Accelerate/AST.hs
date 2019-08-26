@@ -279,6 +279,12 @@ data PreOpenAcc acc aenv a where
               -> acc              aenv as                       -- Arguments to the function
               -> PreOpenAcc   acc aenv bs
 
+  LiftedAFun  :: (Elt e1, Shape sh1, Elt e2, Shape sh2, a ~ Array sh1 e1, b ~ Array sh2 e2 )
+              => (PreAfun acc (a -> b))                                                -- Original function
+              -> (forall a' b' . LiftedType a a' -> LiftedType b b' -> Maybe (PreAfun acc (a' -> b')))  -- Maybe lifted function
+              -> acc aenv a                                                            -- Input array
+              -> PreOpenAcc acc aenv b
+
   -- If-then-else for array-level computations
   Acond       :: Arrays arrs
               => PreExp     acc aenv Bool
@@ -1312,6 +1318,7 @@ rnfPreOpenAcc rnfA pacc =
     Aprj tix a                -> rnfTupleIdx tix `seq` rnfA a
     Apply afun acc            -> rnfAF afun `seq` rnfA acc
     Aforeign asm afun a       -> rnf (strForeign asm) `seq` rnfAF afun `seq` rnfA a
+    LiftedAFun afun _ acc     -> rnfAF afun `seq` rnfA acc
     Acond p a1 a2             -> rnfE p `seq` rnfA a1 `seq` rnfA a2
     Awhile p f a              -> rnfAF p `seq` rnfAF f `seq` rnfA a
     Use arrs                  -> rnfArrays (arrays (undefined::t)) arrs
@@ -1631,6 +1638,7 @@ showPreAccOp (Use a)            = "Use "  ++ showArrays (toArr a :: arrs)
 showPreAccOp Subarray{}         = "Subarray"
 showPreAccOp Apply{}            = "Apply"
 showPreAccOp Aforeign{}         = "Aforeign"
+showPreAccOp LiftedAFun{}       = "LiftedAFun"
 showPreAccOp Acond{}            = "Acond"
 showPreAccOp Awhile{}           = "Awhile"
 showPreAccOp Atuple{}           = "Atuple"

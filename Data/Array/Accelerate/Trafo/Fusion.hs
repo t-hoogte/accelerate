@@ -186,6 +186,7 @@ manifest fuseAcc (OpenAcc pacc) =
     Aprj ix tup             -> Aprj ix (manifest fuseAcc tup)
     Apply f a               -> Apply (cvtAF f) (manifest fuseAcc a)
     Aforeign ff f a         -> Aforeign ff (cvtAF f) (manifest fuseAcc a)
+    LiftedAFun f _ a       -> LiftedAFun (cvtAF f) (\_ _ -> Nothing) (manifest fuseAcc a)
 
     -- Producers
     -- ---------
@@ -608,6 +609,7 @@ embedPreAcc fuseAcc embedAcc elimAcc pacc
     Awhile p f a        -> done $ Awhile (cvtAF p) (cvtAF f) (cvtA a)
     Atuple tup          -> atupleD embedAcc tup
     Aforeign ff f a     -> done $ Aforeign ff (cvtAF f) (cvtA a)
+    LiftedAFun f lf a   -> done $ LiftedAFun (cvtAF f) lf (cvtA a)
     Collect min max i s -> done $ Collect (cvtE min) (cvtE <$> max) (cvtE <$> i) (cvtS s)
 
     -- Array injection
@@ -1856,6 +1858,7 @@ aletD' embedAcc elimAcc (Embed env1 cc1) (Embed env0 cc0)
         Awhile p f a            -> Awhile (cvtAF p) (cvtAF f) (cvtA a)
         Apply f a               -> Apply (cvtAF f) (cvtA a)
         Aforeign ff f a         -> Aforeign ff f (cvtA a)       -- no sharing between f and a
+        LiftedAFun f lf a       -> LiftedAFun f lf (cvtA a)
         Generate sh f           -> Generate (cvtE sh) (cvtF f)
         Map f a                 -> Map (cvtF f) (cvtA a)
         ZipWith f a b           -> ZipWith (cvtF f) (cvtA a) (cvtA b)
@@ -1998,6 +2001,7 @@ aletD' embedAcc elimAcc (Embed env1 cc1) (Embed env0 cc0)
         Awhile p f a            -> Awhile (cvtAF p) (cvtAF f) (cvtA a)
         Apply f a               -> Apply (cvtAF f) (cvtA a)
         Aforeign ff f a         -> Aforeign ff f (cvtA a)       -- no sharing between f and a
+        LiftedAFun f lf a       -> LiftedAFun f lf (cvtA a)
         Generate sh f           -> Generate (cvtE sh) (cvtF f)
         Map f a                 -> Map (cvtF f) (cvtA a)
         ZipWith f a b           -> ZipWith (cvtF f) (cvtA a) (cvtA b)

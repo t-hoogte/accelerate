@@ -72,6 +72,7 @@ convertSegments = cvtA
       Aprj tup a                -> Aprj tup (cvtA a)
       Apply f a                 -> Apply (cvtAfun f) (cvtA a)
       Aforeign ff afun acc      -> Aforeign ff (cvtAfun afun) (cvtA acc)
+      LiftedAFun afun ff acc    -> LiftedAFun (cvtAfun afun) ff (cvtA acc)
       Acond p t e               -> Acond (cvtE p) (cvtA t) (cvtA e)
       Awhile p f a              -> Awhile (cvtAfun p) (cvtAfun f) (cvtA a)
       Use a                     -> Use a
@@ -213,6 +214,7 @@ convertSubarray = cvtA
       Aprj tup a                -> Aprj tup (cvtA a)
       Apply f a                 -> Apply (cvtAfun f) (cvtA a)
       Aforeign ff afun acc      -> Aforeign ff (cvtAfun afun) (cvtA acc)
+      LiftedAFun afun ff acc    -> LiftedAFun (cvtAfun afun) ff (cvtA acc)
       Acond p t e               -> Acond (cvtE p) (cvtA t) (cvtA e)
       Awhile p f a              -> Awhile (cvtAfun p) (cvtAfun f) (cvtA a)
       Use a                     -> Use a

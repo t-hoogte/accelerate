@@ -91,7 +91,8 @@ countAcc cA acc =
     Atuple tup          -> cTup cA tup
     Aprj _ a            -> cA a
     Apply f a           -> cAF f +^ cA a
-    Aforeign _ _ a      -> addPar1 $ cA a
+    Aforeign _ f a      -> cAF f +^ cA a
+    LiftedAFun f _ a    -> cAF f +^ cA a
     -- We don't know which branch we take. Thus we just take the one with the maximum parallel actions
     Acond _ t e         -> maxA (cA t) (cA e)
     Awhile p it i       -> cAF p +^ cAF it +^  cA i

@@ -131,6 +131,9 @@ independentShapeArray indA' env acc =
     pushA' :: IndEnv aenv' -> acc aenv' a -> IndEnv (aenv', a)
     pushA' env' a = PushIE env' undefined (indA' env' a)
 
+    pushA'' :: IndEnv aenv' -> acc aenv' a -> IndEnv ((), a)
+    pushA'' env' a = PushIE BaseIE undefined (indA' env' a)
+
     pushE' :: IndEnv env' -> PreOpenExp acc env' aenv a -> IndEnv (env', a)
     pushE' env' a = PushIE env' undefined (indE' env' a)
 
@@ -175,9 +178,11 @@ independentShapeArray indA' env acc =
     Apply f a           -> indAF1 (pushA a) f
     -- WARNING: When using a foreign function, we could assume it follows the rules of the fallback implementation.
     -- This could break stuff horribly, so we just are extra safe now.
-    -- Aforeign _ f a      -> let env' = PushIE BaseIE (indA a)
-    --                        in indAF1 env' f
+    -- Aforeign _ f a      -> let env' = pushA'' BaseIE a
+                          --  in indAF1 env' f
     Aforeign _ _ _      -> notInd
+    LiftedAFun f _ a    -> let env' = pushA'' BaseIE a
+                           in indAF1 env' f
     -- Only of the choice can be made independent of elements of arrays, we can be sure that shape stays independent
     Acond p t e         -> case indE p of
                              TotalInd -> indA t &&& indA e
@@ -712,6 +717,7 @@ shaperAcc shA' shenv acc =
     Apply f a           -> shAF1 shA' shenv f =<< shA a
     --Aforeign thing can alter the shape really undecidable.
     Aforeign _ _ _      -> nextUndecidable
+    LiftedAFun f _ a    -> nextUndecidable -- shAF1 shA' SEEmpty f =<< shA a
     Acond _ t e         -> do
       sht <- shA t
       she <- shA e

@@ -111,6 +111,11 @@ preAccType k pacc =
 #if __GLASGOW_HASKELL__ < 800
                              _            -> error "Who on earth wrote all these weird error messages?"
 #endif
+    LiftedAFun _ _ _      -> case arrays (undefined :: Array sh e) of
+                             ArraysRarray -> eltType (undefined::e)
+#if __GLASGOW_HASKELL__ < 800
+                             _            -> error "Who on earth wrote all these weird error messages?"
+#endif
 
     Collect _ _ _ _     -> case arrays (undefined :: Array sh e) of
                              ArraysRarray -> eltType (undefined::e)

@@ -6,6 +6,8 @@
 {-# language GADTs #-}
 {-# language FlexibleInstances #-}
 {-# language MultiParamTypeClasses #-}
+{-# language RankNTypes #-}
+
 module ShapeTests (doAllTest, counts, evalAllVecTests, setflags, clearflags, allIndTests)
 
 where
@@ -28,6 +30,7 @@ import Data.Array.Accelerate.Debug.Flags
 -- import Data.Array.Accelerate.Array.Lifted               as Lifted
 import Data.Array.Accelerate.Trafo.Shape
 import Data.Array.Accelerate.Analysis.ActionsCount
+import Data.Array.Accelerate.Language
 -- import Data.Array.Accelerate.Trafo.Base as Base
 
 -- import Data.Array.Accelerate.Pretty.Print (prettyArrays, Val(..), prettyEnv, PrettyEnv(..))
@@ -627,8 +630,25 @@ allIndTests' = [ ("predTest", predTest, True, True, False)
                , ("predTest8", predTest8, True, True, False)
                , ("predTest9", predTest9, True, True, False)
                , ("predTest10", predTest10, True, True, False)
-               , ("predTest11", predTest11, True, True, False)
+              --  , ("predTest11", predTest11, True, True, False)
                ]
 
 allIndTests :: IO [Bool]
 allIndTests = mapM evalIndTests allIndTests'
+
+
+myliftedTest :: Acc (Vector Int) -> Acc (Vector Int)
+myliftedTest = liftedAcc (map (+1)) f
+  where
+    f :: LiftedType (Vector Int) a' -> LiftedType (Vector Int) b' -> P.Maybe (Acc a' -> Acc b')
+    f = \ty ty2 -> case (ty,ty2) of
+                                  (RegularT,RegularT) -> P.Just (map (+2))
+                                  _ -> P.Nothing
+                                  
+
+
+myliftedTestSeq :: Seq [Vector Int] -> Acc (Vector Int)
+myliftedTestSeq = collect . elements . mapSeq myliftedTest
+
+data LiftedFunc f where
+  LiftedFunc :: (forall b' a'. LiftedType a a' -> LiftedType b b' -> P.Maybe (Acc a' -> Acc b')) -> LiftedFunc (a -> b)

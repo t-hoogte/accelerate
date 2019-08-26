@@ -254,6 +254,7 @@ prettyDelayedOpenAcc detail wrap aenv atop@(Manifest pacc) =
                             -> "stencil2"    .$ [ ppF sten, ppB acc1 bndy1, ppA acc1,
                                                             ppB acc2 bndy2, ppA acc2 ]
     Aforeign ff _afun xs    -> "aforeign"    .$ [ return (PDoc (text (strForeign ff)) []), {- ppAf afun, -} ppA xs ]
+    LiftedAFun afun _ xs    -> (apply <$> prettyDelayedAfun detail Aempty afun <*> prettyDelayedOpenAcc detail parens aenv xs)
     -- Collect{}               -> error "Collect"
 
   where

@@ -4,6 +4,8 @@
 {-# LANGUAGE TypeFamilies        #-}
 {-# LANGUAGE TypeOperators       #-}
 {-# LANGUAGE ViewPatterns        #-}
+{-# LANGUAGE RankNTypes        #-}
+
 -- |
 -- Module      : Data.Array.Accelerate.Language
 -- Copyright   : [2008..2016] Manuel M T Chakravarty, Gabriele Keller
@@ -81,6 +83,9 @@ module Data.Array.Accelerate.Language (
   foreignExp,
   VectorisedForeign(..), LiftedType(..),
 
+  -- * Self lifted functions
+  liftedAcc,
+
   -- * Pipelining
   (>->),
 
@@ -115,7 +120,7 @@ import Data.Array.Accelerate.Type
 import qualified Data.Array.Accelerate.Array.Sugar      as Sugar
 
 -- standard libraries
-import Prelude                                          ( ($), (.) )
+import Prelude                                          (Maybe, ($), (.) )
 
 
 -- Array introduction
@@ -935,6 +940,14 @@ foreignAcc
     -> Acc as
     -> Acc bs
 foreignAcc = Acc $$$ Aforeign
+
+liftedAcc
+    :: (Shape sh, Shape sh', Elt e, Elt e')
+    => (Acc (Array sh e) -> Acc (Array sh' e'))
+    -> (forall as' bs'. LiftedType (Array sh e) as' -> LiftedType (Array sh' e') bs' -> Maybe (Acc as' -> Acc bs'))
+    -> Acc (Array sh e)
+    -> Acc (Array sh' e')
+liftedAcc x y z = Acc (LiftedAFun x y z)
 
 -- | Call a foreign scalar expression.
 --

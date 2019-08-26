@@ -117,6 +117,9 @@ prettyPreOpenAcc prettyAcc wrap aenv = pp
     ppAF :: PreOpenAfun acc aenv f -> Doc
     ppAF = parens . prettyPreOpenAfun prettyAcc aenv
 
+    ppAF' :: Val aenv' -> PreOpenAfun acc aenv' f -> Doc
+    ppAF' env = parens . prettyPreOpenAfun prettyAcc env
+
     ppL :: Maybe (PreExp acc aenv e) -> Doc
     ppL Nothing  = text "infinity"
     ppL (Just l) = ppE l
@@ -178,6 +181,7 @@ prettyPreOpenAcc prettyAcc wrap aenv = pp
     pp (Permute f dfts p acc)   = "permute"     .$ [ ppF f, ppA dfts, ppF p, ppA acc ]
     pp (Backpermute sh p acc)   = "backpermute" .$ [ ppSh sh, ppF p, ppA acc ]
     pp (Aforeign ff _afun acc)  = "aforeign"    .$ [ text (strForeign ff), {- ppAf afun, -} ppA acc ]
+    pp (LiftedAFun afun _ acc)  = "liftedafun"  .$ [ ppAF' Empty afun, ppA acc ]
     pp (Stencil sten bndy acc)  = "stencil"     .$ [ ppF sten, ppB acc bndy, ppA acc ]
     pp (Stencil2 sten bndy1 acc1 bndy2 acc2)
                                 = "stencil2"    .$ [ ppF sten, ppB acc1 bndy1, ppA acc1,

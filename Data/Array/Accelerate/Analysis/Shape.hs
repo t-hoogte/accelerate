@@ -63,6 +63,11 @@ preAccDim k pacc =
 #if __GLASGOW_HASKELL__ < 800
                               _            -> error "umm, hello"
 #endif
+    LiftedAFun _ _ _      -> case arrays (undefined :: Array sh e) of
+                              ArraysRarray -> ndim (eltType (undefined::sh))
+#if __GLASGOW_HASKELL__ < 800
+                              _            -> error "umm, hello"
+#endif
 
     Aforeign _ _ _      -> case arrays (undefined :: Array sh e) of
                               ArraysRarray -> ndim (eltType (undefined::sh))

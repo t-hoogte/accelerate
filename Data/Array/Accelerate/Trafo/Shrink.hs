@@ -181,6 +181,7 @@ shrinkPreAcc shrinkAcc reduceAcc = Stats.substitution "shrink acc" shrinkA
       Aprj tup a                -> Aprj tup (shrinkAcc a)
       Apply f a                 -> Apply (shrinkAF f) (shrinkAcc a)
       Aforeign ff af a          -> Aforeign ff af (shrinkAcc a)
+      LiftedAFun af ff a        -> LiftedAFun af ff (shrinkAcc a)
       Acond p t e               -> Acond (shrinkE p) (shrinkAcc t) (shrinkAcc e)
       Awhile p f a              -> Awhile (shrinkAF p) (shrinkAF f) (shrinkAcc a)
       Use a                     -> Use a
@@ -549,6 +550,7 @@ usesOfPreAcc countAcc idx = count
                                 -> countA a
       Apply f a                 -> countAF f idx <+> countA a
       Aforeign _ _ a            -> countA a
+      LiftedAFun _ _ a          -> countA a
       Acond p t e               -> countE p  <+> countA t <+> countA e
       Awhile p f a              -> countAF p idx <+> countAF f idx <+> countA a
       Use _                     -> zeroUse
@@ -742,6 +744,7 @@ reduceAccessPreAcc reduceAcc idx pacc =
     Aprj tup a                -> Aprj tup (cvtA a)
     Apply f a                 -> Apply (cvtAfun f) (cvtA a)
     Aforeign ff afun acc      -> Aforeign ff afun (cvtA acc)
+    LiftedAFun afun ff acc    -> LiftedAFun afun ff (cvtA acc)
     Acond p t e               -> Acond (cvtE p) (cvtA t) (cvtA e)
     Awhile p f a              -> Awhile (cvtAfun p) (cvtAfun f) (cvtA a)
     Use a                     -> Use a
