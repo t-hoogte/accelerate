@@ -351,6 +351,9 @@ module Data.Array.Accelerate (
   foreignExp,
   VectorisedForeign(..), LiftedType(..),
 
+  -- * Self lifted functions
+  liftedAcc,
+
   -- ---------------------------------------------------------------------------
   -- * Plain arrays
   -- ** Operations
