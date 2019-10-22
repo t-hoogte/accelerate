@@ -749,29 +749,30 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
       , LiftedAcc ty' e' <- e
       , Join ty'' k k' <- join ty ty'
       = let
-        regular :: Bool
-        regular = 
-          let sameshape = equalShapedA shAcc orig_t orig_e
-              msg = if sameshape then "Found same shape for acond (regular)" else "Found different shape for acond (irregular)"
-              shaperes = trace "Same shape analysis" msg $ sameshape
+        sameShape :: Bool
+        sameShape = 
+          let same = equalShapedA shAcc orig_t orig_e
+              msg = if same then "Found same shape for acond" else "Found different shape for acond"
+              shaperes = trace "Same shape analysis" msg $ same
               force = unsafePerformIO Debug.queryforceIrreg
-          in isReg ty'' && if force then False else shaperes
+          in if force then False else shaperes
       in inject
       $* Alet (liftedE p)
-      $* acond regular size ty'' (k size t') (k' size e')
+      $* acond sameShape size ty'' (k size t') (k' size e')
       where
         acond :: forall aenv' a a'. Arrays a' => Bool -> Size acc aenv' -> LiftedType a a' -> acc aenv' a' -> acc aenv' a' -> LiftedAcc acc (aenv', Vector Bool) a
-        acond regular size ty t e =
+        acond sameShape size ty t e =
           case ty of
             UnitT       -> LiftedAcc UnitT $^ Use ()
             LiftedUnitT -> LiftedAcc LiftedUnitT size'
-            AvoidedT    | regular   -> regularAcc "acond" $ liftedCondRegC avar0 (replicateA size' $ weakenA1 t) (replicateA size' $ weakenA1 e)
+            AvoidedT    | sameShape -> regularAcc "acond" $ liftedCondRegC avar0 (replicateA size' $ weakenA1 t) (replicateA size' $ weakenA1 e)
                         | otherwise -> irregularAcc "acond" (liftedCondC avar0 (sparsifyC (replicateA size' (weakenA1 t))) (sparsifyC (replicateA size' (weakenA1 e))))
-            RegularT    | regular   -> regularAcc "acond" $ liftedCondRegC avar0 (weakenA1 t) (weakenA1 e)
-                        | otherwise ->  irregularAcc "acond" (liftedCondC avar0 (sparsifyC (weakenA1 t)) (sparsifyC (weakenA1 e)))
-            IrregularT  -> irregularAcc "acond" (liftedCondC avar0 (weakenA1 t) (weakenA1 e))
+            RegularT    | sameShape -> regularAcc "acond" $ liftedCondRegC avar0 (weakenA1 t) (weakenA1 e)
+                        | otherwise -> irregularAcc "acond" (liftedCondC avar0 (sparsifyC (weakenA1 t)) (sparsifyC (weakenA1 e)))
+            IrregularT  | sameShape -> irregularAcc "acond" $ liftedCondIrRegC avar0 (weakenA1 t) (weakenA1 e)
+                        | otherwise -> irregularAcc "acond" (liftedCondC avar0 (weakenA1 t) (weakenA1 e))
             TupleT tup  | LiftedAtuple ty at <- acondT tup (asAtupleC avar1) (asAtupleC avar0)
-                        -> let reg_mes     = if regular then "REGULAR" else "IRREGULAR"
+                        -> let reg_mes     = if sameShape then "REGULAR" else "IRREGULAR"
                            in trace reg_mes "acond" $ LiftedAcc (freeProdT ty) $^ Alet (weakenA1 t) $^ Alet (weakenA2 e) $^ Atuple at
 
           where
@@ -785,7 +786,7 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
                    -> LiftedAtuple acc aenv'' t
             acondT NilLtup NilAtup NilAtup = LiftedAtuple NilLtup NilAtup
             acondT (SnocLtup lt l) (SnocAtup tt ta) (SnocAtup et ea)
-              | LiftedAcc ty a <- acond regular (weakenA3 size) l ta ea
+              | LiftedAcc ty a <- acond sameShape (weakenA3 size) l ta ea
               , LiftedAtuple tup t <- acondT lt tt et
               = LiftedAtuple (SnocLtup tup ty) (SnocAtup t (weaken ixt a))
               where
@@ -2184,7 +2185,7 @@ liftedCond pred t e = result
     allt = S.the . S.and $ pred
     alle = S.not . S.the . S.or $ pred
 
-    result = S.acond allt t $ S.acond alle e $ irregular segs vals
+    result = {-S.acond allt t $ S.acond alle e $-} irregular segs vals
 
     shs_t = shapes (segments t)
     shs_e = shapes (segments e)
@@ -2208,8 +2209,10 @@ liftedCond pred t e = result
                        flag_offs
                        enums
 
+-- You can use this, if the then and else branch have the same shape
+-- Thus meaning we stay regular
 liftedCondReg :: (Shape sh, Elt e)
-           => S.Acc (Vector Bool)          -- condition
+           => S.Acc (Vector Bool)        -- condition
            -> S.Acc (RegularArray sh e)  -- then
            -> S.Acc (RegularArray sh e)  -- else
            -> S.Acc (RegularArray sh e)
@@ -2224,7 +2227,29 @@ liftedCondReg pred t e = result
 
     vals = S.zipWith3 (\f t e -> f S.? (t,e)) flags t e
 
-    result = S.acond allt t $ S.acond alle e $ vals
+    result = {-S.acond allt t $ S.acond alle e $-} vals
+
+-- You can use this, if the then and else branch have the same shape
+-- Thus meaning we have the same shape descriptor
+liftedCondIrReg :: (Shape sh, Elt e)
+           => S.Acc (Vector Bool)          -- condition
+           -> S.Acc (IrregularArray sh e)  -- then
+           -> S.Acc (IrregularArray sh e)  -- else
+           -> S.Acc (IrregularArray sh e)
+liftedCondIrReg pred t e = result
+  where
+    allt = S.the . S.and $ pred
+    alle = S.not . S.the . S.or $ pred
+
+    segs = segments t
+    -- Quite costly to make the replicate the predicate values to match the segments
+    flags = replicateSeg segs pred
+    vals_t = irregularValues t
+    vals_e = irregularValues e
+
+    vals = S.zipWith3 (\f t e -> f S.? (t,e)) flags vals_t vals_e
+
+    result = {-S.acond allt t $ S.acond alle e $-} irregular segs vals
 
 -- liftedAwhile :: forall e sh . (Shape sh, Elt e)
 --             => (S.Acc (IrregularArray sh e) -> S.Acc (Vector Bool))
@@ -2499,6 +2524,13 @@ liftedCondRegC :: (Kit acc, Shape sh, Elt e)
             -> acc aenv (RegularArray sh e)
             -> acc aenv (RegularArray sh e)
 liftedCondRegC = fromHOAS3 liftedCondReg
+
+liftedCondIrRegC :: (Kit acc, Shape sh, Elt e)
+                 => acc aenv (Vector Bool)
+                 -> acc aenv (IrregularArray sh e)
+                 -> acc aenv (IrregularArray sh e)
+                 -> acc aenv (IrregularArray sh e)
+liftedCondIrRegC = fromHOAS3 liftedCondIrReg
 
 irregularReshapeC :: (Elt e, Shape sh, Shape sh', Kit acc)
                   => acc aenv (Vector sh)
