@@ -605,7 +605,7 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
       where
         isRegT :: forall t t' . LiftedTupleType t t' -> Bool
         isRegT NilLtup = True
-        isRegT (SnocLtup lt l) =  isRegT lt && isReg l
+        isRegT (SnocLtup lt l) =  isRegT lt && isReg' l
     
     asIrregTup :: forall a. (Arrays a) => LiftedAcc acc aenv' a -> LiftedAcc acc aenv' a
     asIrregTup = asTup False
