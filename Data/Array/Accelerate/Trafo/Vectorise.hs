@@ -1568,7 +1568,7 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
                                    (sndA avar0))
                             (withFL (weakenA2 size) sparsifyC id (weakenA2 a))
 
-    permuteL :: (Shape sh, Shape sh', Elt e)
+    permuteL :: forall sh sh' e. (Shape sh, Shape sh', Elt e)
              => PreFun acc  aenv  (e -> e -> e)
              -> acc            aenv  (Array sh' e)
              -> PreFun acc  aenv  (sh -> sh')
@@ -1584,6 +1584,46 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
       =  avoidedAcc "permute"
       $^ Permute comb defs' p a'
       -- TODO: Regular permutation
+      | isReg a
+      , isReg defs
+      , AsSlice <- asSlice (Proxy :: Proxy sh)
+      , AsSlice <- asSlice (Proxy :: Proxy sh') 
+      -- Seems like an unsafecast, but we already checked if it was really regular above 
+      = case (asRegular a, asRegular defs) of
+        (a', defs') | Just p_a <- p_a -> reg2 a' defs' p_a
+                    | otherwise -> reg a' defs'
+          where
+            reg a' defs' = regularAcc "permute"
+                 $^ Alet a'
+                 -- The original size (old shape)
+                 $^ Alet (unit . indexInit . Shape $ avar0)
+                 -- The new size of the regular form
+                 $^ Alet (unit $ Shape avar1)
+                 -- Here we make a matrix of shape (sh:.Int), in which each argument points to a shape (sh' :. Int)
+                 $^ Alet (inject . Reshape (the avar0) $ p_l' `apply` flattenC (enumC avar0))
+                 $^ Permute (weakenA4 comb) (weakenA4 defs') (fun1 $ Index avar0) avar3
+
+            -- This makes sure the lifting function works correctly. Important is that shapeNest looks at avar0, which
+            -- corrospondents with Scalar sh here (due to weakening)
+            -- And that actually points to the original size of a.
+            p_l' :: forall aenv . aenv~(((aenv', Array (sh :. Int) e), Scalar sh), Scalar (sh :. Int))
+                 => PreOpenAfun acc aenv  (Vector (sh:.Int) -> Vector (sh':.Int))
+            p_l' = higher' (weaken (SuccIdx . newTop SuccIdx) (p_l shapeNest))
+
+            reg2 a' defs' p_a = regularAcc "permute" $^ Permute comb defs' (p_a' p_a) a'
+
+            p_a' :: PreOpenFun acc () aenv' (sh -> sh')
+                    -> PreOpenFun acc () aenv' ((sh :. Int) -> sh' :. Int)
+            p_a' (Lam (Body pb)) = Lam (Body (p'))
+              where
+                p' = let newsh = Let oldsh (weakenE ixt pb) in indexSnoc newsh outer
+
+                oldsh = indexInit var0
+                outer = indexLastC var0
+
+                ixt :: (env,x) :> ((env,y),x)
+                ixt ZeroIdx     = ZeroIdx
+                ixt (SuccIdx t) = SuccIdx (SuccIdx t)
       |  otherwise
       =  irregularAcc "permute"
       $^ Alet (asIrregular defs)
@@ -3025,10 +3065,9 @@ avar1 = inject $ Avar $ SuccIdx ZeroIdx
 avar2 :: (Kit acc, Arrays a2) => acc (((aenv, a2), a1), a0) a2
 avar2 = inject $ Avar $ SuccIdx . SuccIdx $ ZeroIdx
 
--- avar3 :: (Kit acc, Arrays t)
---       => acc ((((aenv, t), s), r), q) t
--- avar3 = inject $ Avar $ SuccIdx . SuccIdx . SuccIdx $ ZeroIdx
---
+avar3 :: (Kit acc, Arrays a3) => acc ((((aenv, a3), a2), a1), a0) a3
+avar3 = inject $ Avar $ SuccIdx . SuccIdx . SuccIdx $ ZeroIdx
+
 -- avar4 :: (Kit acc, Arrays t)
 --       => acc (((((aenv, t), s), r), q), p) t
 -- avar4 = inject $ Avar $ SuccIdx . SuccIdx . SuccIdx . SuccIdx $ ZeroIdx
