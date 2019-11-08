@@ -552,9 +552,25 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
     higher' (Alam (Abody f)) = Alam . Abody
                            $^ Alet (inject $ Map (fun1 indexInit) avar0)
                            $^ Alet (inject $ Map (fun1 indexLastC) avar1)
-                           $^ ZipWith (fun2 indexSnoc) (weaken (SuccIdx . newTop SuccIdx) f) avar0
+                           $^ ZipWith (weakenA3  testIgnore') (weaken (SuccIdx . newTop SuccIdx) f) avar0
+      where
+        testIgnore :: S.Exp sh' -> S.Exp Int -> S.Exp (sh' :. Int)
+        testIgnore sh i | Just Refl <- (eqT :: Maybe (sh' :~: DIM0)) = S.indexSnoc sh i
+                        | otherwise = S.cond (isIgnore sh) S.ignore (S.indexSnoc sh i)
+        -- testIgnore sh i | Just Refl <- (eqT :: Maybe (sh' :~: DIM1)) = S.cond (S.indexHead sh S.== -1) S.ignore (S.indexSnoc sh i)
+
+        testIgnore' :: PreOpenFun acc () aenv (sh' -> Int -> (sh' :. Int))
+        testIgnore' = cvtExpHOAS testIgnore
     higher' _ = error "Absurd"
-    
+
+    isIgnore :: forall sh0. Shape sh0 => S.Exp sh0 -> S.Exp Bool
+    isIgnore sh | Just Refl <- (eqT :: Maybe (sh0 :~: DIM0)) = (1 :: S.Exp Int) S.== -1 --False
+                | Just Refl <- (eqT :: Maybe (sh0 :~: DIM1)) = S.indexHead sh S.== -1 S.|| isIgnore (S.indexTail sh)
+                | Just Refl <- (eqT :: Maybe (sh0 :~: DIM2)) = S.indexHead sh S.== -1 S.|| isIgnore (S.indexTail sh)
+                | Just Refl <- (eqT :: Maybe (sh0 :~: DIM3)) = S.indexHead sh S.== -1 S.|| isIgnore (S.indexTail sh)
+                | otherwise = error "To high shape in permute (can easily be added manualy if needed)"
+                -- | Just Refl <- (eqT :: Maybe (sh0 :~: DIM4)) = S.indexHead sh S.== -1 S.|| isIgnore (S.indexTail sh)
+
     asIrregular :: (Shape sh, Elt e) => LiftedAcc acc aenv' (Array sh e) -> acc aenv' (IrregularArray sh e)
     asIrregular = asIrregular' size
 
@@ -1595,23 +1611,25 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
           where
             reg a' defs' = regularAcc "permute"
                  $^ Alet a'
-                 -- The original size (old shape)
-                 $^ Alet (unit . indexInit . Shape $ avar0)
                  -- The new size of the regular form
-                 $^ Alet (unit $ Shape avar1)
+                 $^ Alet (unit $ Shape avar0)
+                 -- The original size (old shape)
+                 $^ Alet (unit . indexInit . the $ avar0)
+                --  $^ Alet (unit . indexInit . Shape $ weakenA2 defs')
                  -- Here we make a matrix of shape (sh:.Int), in which each argument points to a shape (sh' :. Int)
-                 $^ Alet (inject . Reshape (the avar0) $ p_l' `apply` flattenC (enumC avar0))
+                 $^ Alet (inject . Reshape (the avar1) $ p_l' `apply` flattenC (enumC avar1))
                  $^ Permute (weakenA4 comb) (weakenA4 defs') (fun1 $ Index avar0) avar3
 
             -- This makes sure the lifting function works correctly. Important is that shapeNest looks at avar0, which
             -- corrospondents with Scalar sh here (due to weakening)
             -- And that actually points to the original size of a.
-            p_l' :: forall aenv . aenv~(((aenv', Array (sh :. Int) e), Scalar sh), Scalar (sh :. Int))
+            p_l' :: forall aenv a b . aenv~(((aenv', a), b), Scalar (sh))
                  => PreOpenAfun acc aenv  (Vector (sh:.Int) -> Vector (sh':.Int))
-            p_l' = higher' (weaken (SuccIdx . newTop SuccIdx) (p_l shapeNest))
+            p_l' = weaken (newTop $ SuccIdx . SuccIdx) $ higher' ((p_l shapeNest))
 
             reg2 a' defs' p_a = regularAcc "permute" $^ Permute comb defs' (p_a' p_a) a'
-
+            
+            -- TODO: Add case when we ignore indexes in a permute (-1)
             p_a' :: PreOpenFun acc () aenv' (sh -> sh')
                     -> PreOpenFun acc () aenv' ((sh :. Int) -> sh' :. Int)
             p_a' (Lam (Body pb)) = Lam (Body (p'))
