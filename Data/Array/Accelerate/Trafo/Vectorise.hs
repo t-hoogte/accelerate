@@ -33,20 +33,20 @@
 module Data.Array.Accelerate.Trafo.Vectorise (
 
   vectoriseAcc, vectoriseAfun, vectoriseStreamSeq,
-  module Data.Array.Accelerate.Trafo.Vectorise
+  --module Data.Array.Accelerate.Trafo.Vectorise
 
 ) where
 
 import Prelude                                          hiding ( exp, replicate, concat, maximum )
 import qualified Prelude                                as P
-import Data.Maybe                                       ( fromMaybe, isJust )
+import Data.Maybe                                       ( fromMaybe )
 import Data.Typeable
 #if __GLASGOW_HASKELL__ <= 708
 import Control.Applicative                              hiding ( Const, empty )
 #endif
 
 -- friends
-import Data.Array.Accelerate.Analysis.Match            ( matchPreOpenExp )
+-- import Data.Array.Accelerate.Analysis.Match            ( matchPreOpenExp )
 import Data.Array.Accelerate.Trafo.Shape
 import Data.Array.Accelerate.AST                       hiding ( Empty )
 import Data.Array.Accelerate.Array.Lifted
@@ -467,6 +467,7 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
         k :: Idx ((),as') t' -> Idx (aenv', as') t'
         k ZeroIdx = ZeroIdx
         k _       = error "Strange, shouldn't be possible"
+    weakenClosedFunc _ _ = error "Absurd"
 
     nestedError :: String -> String -> String
     nestedError place op = "Unexpect nested parallelism in " ++ place ++ " argument to " ++ op
@@ -563,14 +564,6 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
         testIgnore' = cvtExpHOAS testIgnore
     higher' _ = error "Absurd"
 
-    isIgnore :: forall sh0. Shape sh0 => S.Exp sh0 -> S.Exp Bool
-    isIgnore sh | Just Refl <- (eqT :: Maybe (sh0 :~: DIM0)) = (1 :: S.Exp Int) S.== -1 --False
-                | Just Refl <- (eqT :: Maybe (sh0 :~: DIM1)) = S.indexHead sh S.== -1 S.|| isIgnore (S.indexTail sh)
-                | Just Refl <- (eqT :: Maybe (sh0 :~: DIM2)) = S.indexHead sh S.== -1 S.|| isIgnore (S.indexTail sh)
-                | Just Refl <- (eqT :: Maybe (sh0 :~: DIM3)) = S.indexHead sh S.== -1 S.|| isIgnore (S.indexTail sh)
-                | otherwise = error "To high shape in permute (can easily be added manualy if needed)"
-                -- | Just Refl <- (eqT :: Maybe (sh0 :~: DIM4)) = S.indexHead sh S.== -1 S.|| isIgnore (S.indexTail sh)
-
     asIrregular :: (Shape sh, Elt e) => LiftedAcc acc aenv' (Array sh e) -> acc aenv' (IrregularArray sh e)
     asIrregular = asIrregular' size
 
@@ -585,7 +578,7 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
         cvt _           = error "Absurd"
 #endif
 
-    asSame :: forall a a' a'' aenv . (Arrays a, Arrays a'') => LiftedType a a'' -> LiftedAcc acc aenv a -> acc aenv a''
+    asSame :: forall a a' aenv . (Arrays a, Arrays a') => LiftedType a a' -> LiftedAcc acc aenv a -> acc aenv a'
     asSame ty (LiftedAcc ty' a) = caster ty ty' a
       where
         caster :: forall b b' b'' . (Arrays b, Arrays b', Arrays b'') => LiftedType b b'' -> LiftedType b b' -> acc aenv b' -> acc aenv b''
@@ -607,7 +600,7 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
         cvt IrregularT  = error "unsave transform from regular to irregular"
     
     isReg :: LiftedAcc acc aenv' a -> Bool
-    isReg (LiftedAcc ty a) = isReg' ty
+    isReg (LiftedAcc ty _) = isReg' ty
     
     isReg' :: forall t t' . LiftedType t t' -> Bool
     isReg' ty = 
@@ -743,6 +736,7 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
                           _      -> case liftedf IrregularT IrregularT of
                                        Just f -> LiftedAcc IrregularT $^ weakenClosedFunc f as
                                        _      -> fallback
+          _          -> error "Absurd AfunL"
                         -- Nothing -> 
           -- IrregularT -> case liftedf ty IrregularT of
           --                 Just f -> irregularAcc "liftedAfun" $^ LiftedAFun f Nothing as
@@ -754,6 +748,7 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
           k :: Idx ((),as) t' -> Idx (aenv, as) t'
           k ZeroIdx = ZeroIdx
           k _       = error "Strange, shouldn't be possible"
+    liftedAfunL _ _ _ = error "Absurd AfunL"
 
     foreignL :: (Arrays arrs, Arrays t, Foreign f)
              => f (arrs -> t)
@@ -937,7 +932,7 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
                              (inject $ Aprj (SuccTupIdx . SuccTupIdx $ ZeroTupIdx) avar0)
                              (inject $ Aprj (SuccTupIdx ZeroTupIdx) avar0)
 
-                awhileIndependent :: forall a a' . (Arrays a)
+                awhileIndependent :: forall a . (Arrays a)
                       => acc (aenv', a) (Vector Bool)  
                       -> acc (aenv', a) a
                       -> acc aenv' a
@@ -988,6 +983,7 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
                                              , Just same <- isSame iterty' resty
                                              -> let predb_l' = asRegular' (weakenA1 size) . vectAcc (push ctx resty) (weakenA1 size) $ predb
                                                 in LiftedAcc resty $ awhileIndependent predb_l' (castAccC same iterb_l') resa
+                    _                        -> error "Absurd in awhileL"
                   -- The iterations function doesn't retain the same shape. Thus we should switch to an irregular representation.
                   -- It must stay irregular after that.
               else 
@@ -1022,7 +1018,7 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
                   in irregularAcc "awhile" $ awhileLift sameShape ty predb_l iterb_l a
                 -- It remains the same shape, so it doesn't have to transforms its regular types
                 -- Although it must transforms its avoided types and the join might transform its types aswell
-                TupleT tup | sameShape
+                TupleT _ | sameShape
                            , LiftedAcc resty resa <-  asTup sameShape $ LiftedAcc ty a
                            , LiftedAcc itty iter <- vectAcc (push ctx resty) (weakenA1 size) $ iterb
                            , Just same <- isSame itty resty
@@ -1035,7 +1031,7 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
                 -- It doesn't have the same shapes, so it must convert the regular and avoided types to an irregular representation (except for Scalar regular arrays)
                 -- Or maybe the iteration function didn't stay regular, thus that needed to switch aswell.
                 -- But in the latter case, we can still posibly do an optimized awhile
-                TupleT tup | LiftedAcc resty resa <-  asIrregTup $ LiftedAcc ty a
+                TupleT _ | LiftedAcc resty resa <-  asIrregTup $ LiftedAcc ty a
                            ->
                   let newctx  = push ctx resty
                       newsize = weakenA1 size
@@ -1623,7 +1619,7 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
             -- This makes sure the lifting function works correctly. Important is that shapeNest looks at avar0, which
             -- corrospondents with Scalar sh here (due to weakening)
             -- And that actually points to the original size of a.
-            p_l' :: forall aenv a b . aenv~(((aenv', a), b), Scalar (sh))
+            p_l' :: forall aenv a b . aenv~(((aenv', a), b), Scalar sh)
                  => PreOpenAfun acc aenv  (Vector (sh:.Int) -> Vector (sh':.Int))
             p_l' = weaken (newTop $ SuccIdx . SuccIdx) $ higher' ((p_l shapeNest))
 
@@ -2085,6 +2081,8 @@ liftExp vectAcc ctx size exp
                   (inject . Alet (weaken (under ctx) a) $ replicateE (weakenA1 size) (indexInit (Shape avar0)))
       | IrregularT <- ty'
       = LiftedExp Nothing (shapesC (segmentsC (weaken (under ctx) a')))
+      | otherwise
+      = error "Absurd"
 #if __GLASGOW_HASKELL__ < 800
     shapeL _
       = error "Absurd"
@@ -2257,11 +2255,11 @@ indexInSeg :: (Shape sh, Elt e) => S.Acc (IrregularArray sh e) -> S.Exp Int -> S
 indexInSeg arr seg ix = let segs = segments arr
                         in irregularValues arr S.!! ((offsets segs S.!! seg) + (S.toIndex (shapes segs S.!! seg) ix))
 
-indexSeg :: (Shape sh, Elt e) => S.Acc (IrregularArray sh e) -> S.Acc (Scalar Int) -> S.Acc (Array sh e)
-indexSeg arr i = S.backpermute sh (S.index1 . (offs S.!! S.the i +) . S.toIndex sh) (irregularValues arr)
-  where
-    sh   = shapes (segments arr) S.!! S.the i
-    offs = offsets (segments arr)
+-- indexSeg :: (Shape sh, Elt e) => S.Acc (IrregularArray sh e) -> S.Acc (Scalar Int) -> S.Acc (Array sh e)
+-- indexSeg arr i = S.backpermute sh (S.index1 . (offs S.!! S.the i +) . S.toIndex sh) (irregularValues arr)
+--   where
+--     sh   = shapes (segments arr) S.!! S.the i
+--     offs = offsets (segments arr)
 
 irregularValues :: (Shape sh, Elt e) => S.Acc (IrregularArray sh e) -> S.Acc (Vector e)
 irregularValues = S.Acc . S.Aprj ZeroTupIdx
@@ -2325,8 +2323,8 @@ liftedCond :: (Shape sh, Elt e)
            -> S.Acc (IrregularArray sh e)
 liftedCond pred t e = result
   where
-    allt = S.the . S.and $ pred
-    alle = S.not . S.the . S.or $ pred
+    -- allt = S.the . S.and $ pred
+    -- alle = S.not . S.the . S.or $ pred
 
     result = {-S.acond allt t $ S.acond alle e $-} irregular segs vals
 
@@ -2361,8 +2359,8 @@ liftedCondReg :: (Shape sh, Elt e)
            -> S.Acc (RegularArray sh e)
 liftedCondReg pred t e = result
   where
-    allt = S.the . S.and $ pred
-    alle = S.not . S.the . S.or $ pred
+    -- allt = S.the . S.and $ pred
+    -- alle = S.not . S.the . S.or $ pred
 
     sh = S.shape t
     size_reg = S.shapeSize . S.indexInit $ sh
@@ -2381,8 +2379,8 @@ liftedCondIrReg :: (Shape sh, Elt e)
            -> S.Acc (IrregularArray sh e)
 liftedCondIrReg pred t e = result
   where
-    allt = S.the . S.and $ pred
-    alle = S.not . S.the . S.or $ pred
+    -- allt = S.the . S.and $ pred
+    -- alle = S.not . S.the . S.or $ pred
 
     segs = segments t
     -- Quite costly to make the replicate the predicate values to match the segments
@@ -2398,26 +2396,26 @@ liftedCondIrReg pred t e = result
 -- Thus meaning we have the same shape descriptor
 -- We can give the index of the value vectors, since that for example
 -- doesn't change during a awhile. This might be quicker
-liftedCondIrReg' :: (Shape sh, Elt e)
-           => S.Acc (Vector Int)           -- The index of value vectors
-           -> S.Acc (Vector Bool)          -- condition
-           -> S.Acc (IrregularArray sh e)  -- then
-           -> S.Acc (IrregularArray sh e)  -- else
-           -> S.Acc (IrregularArray sh e)
-liftedCondIrReg' iseg pred t e = result
-  where
-    allt = S.the . S.and $ pred
-    alle = S.not . S.the . S.or $ pred
+-- liftedCondIrReg' :: (Shape sh, Elt e)
+--            => S.Acc (Vector Int)           -- The index of value vectors
+--            -> S.Acc (Vector Bool)          -- condition
+--            -> S.Acc (IrregularArray sh e)  -- then
+--            -> S.Acc (IrregularArray sh e)  -- else
+--            -> S.Acc (IrregularArray sh e)
+-- liftedCondIrReg' iseg pred t e = result
+--   where
+--     -- allt = S.the . S.and $ pred
+--     -- alle = S.not . S.the . S.or $ pred
 
-    segs = segments t
+--     segs = segments t
 
-    flags = S.map (\i -> pred S.!! i) iseg
-    vals_t = irregularValues t
-    vals_e = irregularValues e
+--     flags = S.map (\i -> pred S.!! i) iseg
+--     vals_t = irregularValues t
+--     vals_e = irregularValues e
 
-    vals = S.zipWith3 (\f t e -> f S.? (t,e)) flags vals_t vals_e
+--     vals = S.zipWith3 (\f t e -> f S.? (t,e)) flags vals_t vals_e
 
-    result = {-S.acond allt t $ S.acond alle e $-} irregular segs vals
+--     result = {-S.acond allt t $ S.acond alle e $-} irregular segs vals
 
 -- liftedAwhile :: forall e sh . (Shape sh, Elt e)
 --             => (S.Acc (IrregularArray sh e) -> S.Acc (Vector Bool))
@@ -3306,29 +3304,29 @@ subApplyE2 (Lam (Lam (Body f))) a b
   $ f
 subApplyE2 _ _ _ = error "subApplyE2: inconsistent evaluation"
 
-partApply :: Kit acc
-         => PreOpenAfun acc aenv (a -> r)
-         -> acc             aenv a
-         -> PreOpenAfun acc aenv r
-partApply (Alam f) a
- = app id a f
- where
-   app :: forall acc aenv aenv' a f. (Kit acc, Arrays a)
-       => (aenv' :> (aenv, a))
-       -> acc aenv a
-       -> PreOpenAfun acc aenv' f
-       -> PreOpenAfun acc aenv  f
-   app ixt a (Abody b) = Abody (inject $ Alet a $ weaken ixt b)
-   app ixt a (Alam  f) = Alam  (app ixt' (weaken SuccIdx a) f)
-     where
-       ixt' :: Idx (aenv', s) t
-            -> Idx ((aenv, s), a) t
-       ixt' ZeroIdx      = SuccIdx ZeroIdx
-       ixt' (SuccIdx ix) = case ixt ix of
-                             ZeroIdx      -> ZeroIdx
-                             (SuccIdx ix) -> SuccIdx (SuccIdx ix)
-partApply _ _
- = error "partApply: inconsistent evaluation"
+-- partApply :: Kit acc
+--          => PreOpenAfun acc aenv (a -> r)
+--          -> acc             aenv a
+--          -> PreOpenAfun acc aenv r
+-- partApply (Alam f) a
+--  = app id a f
+--  where
+--    app :: forall acc aenv aenv' a f. (Kit acc, Arrays a)
+--        => (aenv' :> (aenv, a))
+--        -> acc aenv a
+--        -> PreOpenAfun acc aenv' f
+--        -> PreOpenAfun acc aenv  f
+--    app ixt a (Abody b) = Abody (inject $ Alet a $ weaken ixt b)
+--    app ixt a (Alam  f) = Alam  (app ixt' (weaken SuccIdx a) f)
+--      where
+--        ixt' :: Idx (aenv', s) t
+--             -> Idx ((aenv, s), a) t
+--        ixt' ZeroIdx      = SuccIdx ZeroIdx
+--        ixt' (SuccIdx ix) = case ixt ix of
+--                              ZeroIdx      -> ZeroIdx
+--                              (SuccIdx ix) -> SuccIdx (SuccIdx ix)
+-- partApply _ _
+--  = error "partApply: inconsistent evaluation"
 
 infixr 0 $^
 
@@ -3648,7 +3646,7 @@ liftedSubArrays :: forall acc aenv sh e. (sh :<= DIM2, Elt e, Shape sh, Kit acc)
 liftedSubArrays index sh arr
   | Just Refl <- eqT :: Maybe (sh :~: DIM2)
   , IndexNil `IndexCons` h `IndexCons` Const w <- sh
-  , Z:.h':.w' <- shape arr
+  , Z:._:.w' <- shape arr
   , w == w'
   = inject
   $  Reshape (index3 (sndE index) h (Const w))
@@ -3679,7 +3677,7 @@ liftedSubArrays index sh arr
           trd = Prj ZeroTupIdx
 
           fsh = fromElt (shape arr)
-      _ -> error "Absurd"
+      -- _ -> error "Absurd"
 
   where
     times a b = PrimApp (PrimMul numType) (tup a b)
@@ -3740,7 +3738,7 @@ liftedSubArrays index sh arr
         y_out = y `mod` fh
       in S.index2 y_out x_out
 
-
+{-
 -- Sequence AST reduction
 --
 reduceStreamSeq :: Kit acc
@@ -3893,7 +3891,7 @@ reduceOpenSeq seq =
                 y = height a `plus` height b
               in index2 (y `mod` height fsh)
                         (width a `plus` (y `div` height fsh `times` width b))
-            _                         -> error "Vectorisation doesn't currently support subarrays on an array of dimension higher than 2"
+            -- _                         -> error "Vectorisation doesn't currently support subarrays on an array of dimension higher than 2"
           where
             height, width :: PreExp acc aenv DIM2 -> PreExp acc aenv Int
             height = IndexHead . IndexTail
@@ -3919,7 +3917,7 @@ reduceOpenSeq seq =
           $  atup avar0 avar1
 
     stageError = $internalError "vectoriseOpenSeq" "AST is at wrong stage for vectorisation. It seems to have already been vectorised."
-
+-}
 -- Shape analysis
 --
 sameShape :: ShAcc acc -> acc aenv (Array sh e1) -> acc aenv (Array sh e2) -> Bool
