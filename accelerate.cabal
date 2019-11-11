@@ -300,6 +300,7 @@ Library
         Data.Array.Accelerate.Error
         Data.Array.Accelerate.FullList
         Data.Array.Accelerate.Lifetime
+        Data.Array.Accelerate.Pattern
         Data.Array.Accelerate.Pretty
         Data.Array.Accelerate.Product
         Data.Array.Accelerate.Smart

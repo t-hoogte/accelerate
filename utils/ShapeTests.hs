@@ -12,7 +12,8 @@ module ShapeTests (doAllTest, counts, evalAllVecTests, setflags, clearflags, all
 
 where
 
-import Data.Array.Accelerate                              as A hiding (fromInteger, fromRational, fromIntegral)
+import Data.Array.Accelerate                              as A hiding (fromInteger, fromRational, fromIntegral, Segments)
+import Data.Array.Accelerate.Prelude                              as A hiding (fromInteger, fromRational, fromIntegral)
 import qualified Data.Array.Accelerate                    as A (fromIntegral)--, fromRational, fromInteger)
 import Data.Array.Accelerate.Interpreter                  as I
 
@@ -31,6 +32,8 @@ import Data.Array.Accelerate.Debug.Flags
 import Data.Array.Accelerate.Trafo.Shape
 import Data.Array.Accelerate.Analysis.ActionsCount
 import Data.Array.Accelerate.Language
+import Data.Array.Accelerate.Pattern
+import Data.Array.Accelerate.Array.Lifted (IrregularArray, Segments)
 -- import Data.Array.Accelerate.Trafo.Base as Base
 
 -- import Data.Array.Accelerate.Pretty.Print (prettyArrays, Val(..), prettyEnv, PrettyEnv(..))
@@ -41,6 +44,8 @@ import Control.Monad.State.Lazy hiding (lift)
 import Control.Lens (lens)
 import Control.Lens.Tuple
 import Control.Exception
+
+import QuickSort
 
 ---------------------------------------
 --Run all the tests
@@ -201,7 +206,10 @@ inputVector4 :: Acc (Vector Int)
 inputVector4 = generate (lift $ Z :. (9 :: Int)) indexHead
 
 inputMatrix :: Acc (Matrix Int)
-inputMatrix = generate (lift $ Z :. (11 :: Int) :. (6 :: Int)) indexHead
+inputMatrix = generate (lift $ Z :. (10 :: Int) :. (6 :: Int)) (\sh -> (3 - indexHead sh) * (3 - indexHead sh))
+
+inputMatrix' :: Acc (Vector Int)
+inputMatrix' = generate (lift $ Z :. (6 :: Int)) (\sh -> (3 - indexHead sh) * (3 - indexHead sh))
 
 inputTupple :: Acc (Vector Int, Vector Int)
 inputTupple = lift (inputVector, inputVector2)
@@ -425,7 +433,13 @@ acondTest2' :: Seq [Vector Int] -> Acc (Vector Int)
 acondTest2' = collect . elements . mapSeq f
   where
     -- f = zipWith (+)
-    f x = acond (x!! (constant 0) > 10) x (map (+ 10) x)
+    f x = acond (x!! (constant 0) > 10) x (scanl1 (+) x)
+
+acondTest22' :: Seq [Vector Int] -> Acc (Vector Int)
+acondTest22' = collect . elements . mapSeq f
+  where
+    -- f = zipWith (+)
+    f x = acond (x!! (constant 0) > 10) x (scanl (+) 0 x)
 
 acondTest3' :: Seq [(Vector Int, Vector Int)] -> Acc (Vector Int)
 acondTest3' = collect . elements . mapSeq f
@@ -473,6 +487,7 @@ acondTest3 = acondTest1' inputSeqPair3
 acondTest4 = acondTest1' inputSeqPair4
 acondTest5 = acondTest2' inputSeq1
 acondTest6 = acondTest2' inputSeq3
+acondTest66 = acondTest22' inputSeq3
 acondTest7 = acondTest3' inputSeqPair1
 acondTest8 = acondTest3' inputSeqPair2
 acondTest9 = acondTest3' inputSeqPair3
@@ -652,3 +667,112 @@ myliftedTestSeq = collect . elements . mapSeq myliftedTest
 
 data LiftedFunc f where
   LiftedFunc :: (forall b' a'. LiftedType a a' -> LiftedType b b' -> P.Maybe (Acc a' -> Acc b')) -> LiftedFunc (a -> b)
+
+
+quicksortTestFI :: Seq [Vector Int] -> Acc (Vector Int)
+-- quicksortTestFI = collect . elements . mapSeq (afst3 . quicksort)
+quicksortTestFI = collect . elements . mapSeq (afst . quicksort)
+
+quicksortTestFB :: Seq [Vector Int] -> Acc (Vector Bool)
+-- quicksortTestFB = collect . elements . mapSeq (asnd3 . quicksort)
+quicksortTestFB = collect . elements . mapSeq (asnd . quicksort)
+
+-- quicksortTestFD :: Seq [Vector Int] -> Acc (Vector DIM1)
+-- quicksortTestFD = collect . elements . mapSeq (athd3 . quicksort)
+
+afst3 :: (Arrays a, Arrays b, Arrays c) => Acc (a,b,c) -> Acc a
+afst3 (T3 a _ _) = a
+
+asnd3 :: (Arrays a, Arrays b, Arrays c) => Acc (a,b,c) -> Acc b
+asnd3 (T3 _ b _) = b
+
+athd3 :: (Arrays a, Arrays b, Arrays c) => Acc (a,b,c) -> Acc c
+athd3 (T3 _ _ c) = c
+
+
+quicksortTestF2 :: Seq [Vector Int] -> Acc (Vector Int)
+quicksortTestF2 = collect . elements . mapSeq quickerror
+quicksortTestF3 :: Seq [Vector Int] -> Acc (Vector Int)
+quicksortTestF3 = collect . elements . mapSeq f
+  where
+    f xs = backpermute (index1 6) P.id xs
+
+quicksortTestF4 :: Seq [Vector Int] -> Acc (Vector Int)
+quicksortTestF4 = collect . elements . mapSeq f
+  where
+    --f xs = permute (\x y ->x+y+100) xs (\sh -> index1 ((unindex1 sh + 1) `mod` size xs) ) xs
+    f xs = permute (\x y ->x+y+100) xs P.id xs
+
+
+quicksortTest = quicksortTestFI inputSeq1
+quicksortTest' = quicksort inputMatrix'
+quicksortTestB = quicksortTestFB inputSeq1
+-- quicksortTestD = take 6 $ quicksortTestFD inputSeq1
+quicksortTestD = generate (index1 6) (\sh -> cond (shapeSize sh > 1) (index1 (-1)) sh)
+
+writeTest = writeFlags quicksortTestD (initialFlags inputMatrix')
+(writeinpA, writeinpB) = I.run . lift $ (quicksortTestD, initialFlags inputMatrix')
+writeinpS = zipSeq (streamInReg (Z:.6) [writeinpA, writeinpA]) (streamInReg (Z:.7) [writeinpB, writeinpB])
+
+writeFlags :: A.Acc (A.Vector A.DIM1) -> A.Acc (A.Vector Bool) -> A.Acc (A.Vector Bool)
+writeFlags writes flags = A.permute (&&) flags (writes A.!) t
+  where
+    -- t = use $ I.run (A.fill (index1 6) $ A.constant True)
+    t = (A.fill (A.shape writes) $ A.constant True)
+
+writeFlags' (T2 a b) = writeFlags a b
+
+writeTest2 = collect . elements . mapSeq writeFlags' $ writeinpS
+writeTest2' = writeFlags (use writeinpA) (use writeinpB)
+
+enum :: Shape sh => Exp sh -> Acc (Array sh sh)
+enum sh = generate sh P.id 
+
+test :: (Shape sh, Slice sh, Eq sh) => Exp sh -> Exp Bool
+test t = t == ignore
+
+quicksortTest2 = quicksortTestF2 inputSeq1
+quicksortTest3 = quicksortTestF3 inputSeq1
+quicksortTest4 = quicksortTestF4 inputSeq1
+
+permuteLReg :: (Exp Int -> Exp Int -> Exp Int) -> Acc (Array DIM3 Int) -> (Exp DIM1 -> Exp DIM2) -> Acc (Array DIM2 Int) -> Acc (Array DIM3 Int)
+permuteLReg comb def p a =
+  let
+    p' :: (Exp DIM2 -> Exp DIM3)
+    p' sh = let oldsh = indexInit sh
+                outer = indexLast sh
+            in p oldsh `indexSnoc` outer
+  in permute comb def p' a
+
+permuteLReg2 :: forall sh sh'. (Shape sh, Shape sh') => --sh ~ DIM2, sh'~DIM1) =>
+  (Exp Int -> Exp Int -> Exp Int) -> Acc (Array (sh :. Int) Int) -> (Acc (Vector sh') -> Acc (Vector sh)) -> Acc (Array (sh' :. Int) Int) -> Acc (Array (sh :. Int) Int)
+permuteLReg2 comb def p a =
+  let
+    --temp = generate (size a) p'
+
+    reg = indexLast $ shape a
+    innerInd = indexInit $ shape a
+    maxn = shapeSize innerInd
+    innerIndSh :: Exp Int -> Acc (Vector (sh :. Int))
+    --innerIndSh i = map (\sh -> indexSnoc sh i) . p . fill (index1 reg) $ fromIndex innerInd i
+    -- innerIndSh i = generate (index1 reg) $ \sh -> indexSnoc (fromIndex innerInd i) (unindex1 sh)
+    innerIndSh i = imap (\j sh -> indexSnoc sh (unindex1 j)) . p . fill (index1 reg) $ fromIndex innerInd i
+
+    thearray :: Acc (Array (sh' :. Int) (sh :. Int))
+    thearray = reshape (shape a) . asnd $ awhile check iter init
+      where
+        check (unlift -> (n,xs :: Acc (Vector (sh :. Int)))) = unit (the n < maxn)
+        iter  (unlift -> (n,xs )) = lift (map (+1) n, xs ++ innerIndSh (the n))
+        init = lift (unit 0, fill (index1 0) (shape def) )
+  in permute comb def (thearray!) a
+
+permTest :: Acc (Array DIM3 Int)
+permTest = res
+  where
+    comb = (+)
+    def = generate (index3 4 4 2) (const 0)
+    a = generate (index3 4 2 3) (const 1)
+    -- p :: Acc (Vector DIM1) -> Acc (Vector DIM2)
+    -- p = map (\sh -> lift (indexTrans sh :. (0::Exp Int)))
+    p = map indexTrans
+    res = permuteLReg2 comb def p a
