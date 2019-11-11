@@ -1642,22 +1642,26 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
                 ixt :: (env,x) :> ((env,y),x)
                 ixt ZeroIdx     = ZeroIdx
                 ixt (SuccIdx t) = SuccIdx (SuccIdx t)
+            p_a' _ = error "Absurd"
       |  otherwise
       =  irregularAcc "permute"
       $^ Alet (asIrregular defs)
       $^ Alet (weakenA1 $ asIrregular a)
-      $  let init     = avar0
-             defaults = avar1
-             shapes   = segmentsC init
-             shapes'  = segmentsC defaults
-             enums    = inject . Map (fun1 (Prj tupIx0)) . enumSegC $ shapes
-             ixs      = weakenA1 (p_l (IrregularNest (segmentsC avar0))) `apply` enums
-             ixs'     = asOffsetsOfC (irregularC shapes ixs) shapes'
-             vals     = Permute (weakenA2 $ comb)
-                                (irregularValuesC defaults)
-                                (fun1 (ixs' `Index`))
-                                (irregularValuesC init)
-          in irregularC shapes' $^ vals
+      -- $^ Alet (segmentsC avar0)
+      $^ Alet ixs'
+      $^ Alet (inject $ Permute (weakenA3 $ comb)
+                                (irregularValuesC avar2)
+                                (fun1 (avar0 `Index`))
+                                (irregularValuesC avar1)
+              )
+      $ irregularC (segmentsC avar3) avar0
+        where
+          shapes   = segmentsC avar0
+          shapes'  = segmentsC avar1
+          enums    = inject . Map (fun1 (Prj tupIx0)) . enumSegC $ shapes
+          p_l'     = weaken (newTop $ SuccIdx) (p_l (IrregularNest (segmentsC avar0)))
+          ixs      = p_l' `apply` enums
+          ixs'     = asOffsetsOfC (irregularC shapes ixs) shapes'
     permuteL _ _ _ _
       = error $ nestedError "first" "permute"
 
@@ -2548,10 +2552,27 @@ asOffsetsOf :: (Shape sh, Shape sh')
             => S.Acc (IrregularArray sh sh')
             -> S.Acc (Segments sh')
             -> S.Acc (Vector DIM1)
-asOffsetsOf ixs shapes' = S.map S.index1 $ S.zipWith (+) starts (S.map S.shapeSize (irregularValues ixs))
+asOffsetsOf ixs shapes' = S.map S.index1 $ S.zipWith combiner starts (irregularValues ixs)
   where
     shapes = segments ixs
     starts = replicateSeg shapes (offsets shapes')
+
+    combiner :: forall sh'. Shape sh' => S.Exp Int -> S.Exp sh' -> S.Exp Int
+    combiner i sh | Just Refl <- (eqT :: Maybe (sh' :~: DIM0)) = i + S.shapeSize sh
+                  | otherwise = S.cond (isIgnore sh) (-1) (i + S.shapeSize sh)
+
+isIgnore :: forall sh0. Shape sh0 => S.Exp sh0 -> S.Exp Bool
+isIgnore sh | Just Refl <- (eqT :: Maybe (sh0 :~: DIM0)) = S.lift False
+            | Just Refl <- (eqT :: Maybe (sh0 :~: DIM1)) = S.indexHead sh S.== -1
+            | Just Refl <- (eqT :: Maybe (sh0 :~: DIM2)) = S.indexHead sh S.== -1 S.&& isIgnore (S.indexTail sh)
+            | Just Refl <- (eqT :: Maybe (sh0 :~: DIM3)) = S.indexHead sh S.== -1 S.&& isIgnore (S.indexTail sh)
+            | Just Refl <- (eqT :: Maybe (sh0 :~: DIM4)) = S.indexHead sh S.== -1 S.&& isIgnore (S.indexTail sh)
+            | Just Refl <- (eqT :: Maybe (sh0 :~: DIM6)) = S.indexHead sh S.== -1 S.&& isIgnore (S.indexTail sh)
+            | Just Refl <- (eqT :: Maybe (sh0 :~: DIM7)) = S.indexHead sh S.== -1 S.&& isIgnore (S.indexTail sh)
+            | Just Refl <- (eqT :: Maybe (sh0 :~: DIM8)) = S.indexHead sh S.== -1 S.&& isIgnore (S.indexTail sh)
+            | Just Refl <- (eqT :: Maybe (sh0 :~: DIM9)) = S.indexHead sh S.== -1 S.&& isIgnore (S.indexTail sh)
+            | otherwise = error "To high shape in permute (can easily be added manualy if needed)"
+            -- | Just Refl <- (eqT :: Maybe (sh0 :~: DIM4)) = S.indexHead sh S.== -1 S.|| isIgnore (S.indexTail sh)
 
 liftedRegularIndex :: (Shape sh, Elt e)
                    => S.Acc (RegularArray sh e)
