@@ -32,9 +32,9 @@ import Data.Array.Accelerate.Debug.Flags
 -- import Data.Array.Accelerate.Array.Lifted               as Lifted
 import Data.Array.Accelerate.Trafo.Shape
 import Data.Array.Accelerate.Analysis.ActionsCount
-import Data.Array.Accelerate.Language
+-- import Data.Array.Accelerate.Language
 import Data.Array.Accelerate.Pattern
-import Data.Array.Accelerate.Array.Lifted (IrregularArray, Segments)
+import Data.Array.Accelerate.Array.Lifted ({-IrregularArray,-} Segments)
 -- import Data.Array.Accelerate.Trafo.Base as Base
 
 -- import Data.Array.Accelerate.Pretty.Print (prettyArrays, Val(..), prettyEnv, PrettyEnv(..))
@@ -480,7 +480,7 @@ whileSeqTest8 = whileSeqTest4' inputSeq3
 whileSeqTest9 = whileSeqTest5' inputSeq1
 whileSeqTest10 = whileSeqTest5' inputSeq3
 
-acondTest1, acondTest2, acondTest3, acondTest4, acondTest5, acondTest6
+acondTest1, acondTest2, acondTest3, acondTest4, acondTest5, acondTest6, acondTest66
   , acondTest7, acondTest8, acondTest9, acondTest10, acondTest11, acondTest12, acondTest13, acondTest14  :: Acc (Vector Int)
 acondTest1 = acondTest1' inputSeqPair1
 acondTest2 = acondTest1' inputSeqPair2
@@ -704,24 +704,28 @@ quicksortTestF4 = collect . elements . mapSeq f
     --f xs = permute (\x y ->x+y+100) xs (\sh -> index1 ((unindex1 sh + 1) `mod` size xs) ) xs
     f xs = permute (\x y ->x+y+100) xs P.id xs
 
-
+quicksortTest ::  A.Acc (A.Vector Int)
 quicksortTest = quicksortTestFI inputSeq1
+quicksortTest' ::  A.Acc (A.Vector Int, A.Vector Bool)
 quicksortTest' = quicksort inputMatrix'
+quicksortTestB ::  A.Acc (A.Vector Bool)
 quicksortTestB = quicksortTestFB inputSeq1
 -- quicksortTestD = take 6 $ quicksortTestFD inputSeq1
+quicksortTestD :: A.Acc (A.Vector DIM1)
 quicksortTestD = generate (index1 6) (\sh -> cond (shapeSize sh > 1) (index1 (-1)) sh)
 
+-- writeTest :: 
 writeTest = writeFlags quicksortTestD (initialFlags inputMatrix')
 (writeinpA, writeinpB) = I.run . lift $ (quicksortTestD, initialFlags inputMatrix')
 writeinpS = zipSeq (streamInReg (Z:.6) [writeinpA, writeinpA]) (streamInReg (Z:.7) [writeinpB, writeinpB])
 
-writeFlags :: A.Acc (A.Vector A.DIM1) -> A.Acc (A.Vector Bool) -> A.Acc (A.Vector Bool)
-writeFlags writes flags = A.permute (&&) flags (writes A.!) t
+writeFlags2 :: A.Acc (A.Vector A.DIM1) -> A.Acc (A.Vector Bool) -> A.Acc (A.Vector Bool)
+writeFlags2 writes flags = A.permute (&&) flags (writes A.!) t
   where
     -- t = use $ I.run (A.fill (index1 6) $ A.constant True)
     t = (A.fill (A.shape writes) $ A.constant True)
 
-writeFlags' (T2 a b) = writeFlags a b
+writeFlags' (T2 a b) = writeFlags2 a b
 
 writeTest2 = collect . elements . mapSeq writeFlags' $ writeinpS
 writeTest2' = writeFlags (use writeinpA) (use writeinpB)
@@ -777,3 +781,317 @@ permTest = res
     -- p = map (\sh -> lift (indexTrans sh :. (0::Exp Int)))
     p = map indexTrans
     res = permuteLReg2 comb def p a
+
+inputN2' :: Int -> [Vector Int]
+inputN2' n = P.replicate n (fromList (Z :. 32) [P.floor (100 * P.cos (x + 15)) | x <- [0..] ])
+
+inputN2 :: Int -> [Vector Int]
+inputN2 _ = [I.run . afst. quicksort . use . P.head $ inputN2' 1]
+
+tester :: Acc (Matrix Int)
+tester = collect . tabulate . mapSeq (afst . quicksort) . streamIn $ inputN2 2
+
+tester' :: Acc (Matrix Int)
+tester' = collect . tabulate . mapSeq (afst . quicksort) . streamInReg (Z :. 32) $ inputN2 2
+
+testerB :: Acc (Matrix Bool)
+testerB = collect . tabulate . mapSeq (asnd . quicksort) . streamIn $ inputN2 2
+
+testPerm :: Acc (Vector Int) -> Acc (Vector Int)
+testPerm xs = permute (+) (fill (shape xs) (constant 0)) f xs
+  where
+    f sh = cond (xs!sh >0) sh (indexMove sh)
+    indexMove (unindex1->sh) = index1 $ n - sh - 1
+    n = size xs
+
+tester2 :: Acc (Matrix Int)
+tester2 = collect . tabulate . mapSeq (testPerm) . streamIn $ inputN2 2
+
+tester2' :: Acc (Matrix Int)
+tester2' = collect . tabulate . mapSeq (testPerm) . streamInReg (Z :. 32) $ inputN2 2
+
+backpermuteTest :: Acc (Vector Int) -> Acc (Vector Int)
+backpermuteTest xs = backpermute (shape xs) f xs
+  where
+    f sh = cond (xs!sh <0) sh (indexMove sh)
+    indexMove (unindex1->sh) = index1 $ n - sh - 1
+    n = size xs
+
+scatterTest :: Acc (Vector Int) -> Acc (Vector Int)
+scatterTest xs = scatter ints (fill (shape xs) 0) xs 
+  where 
+    ints = map unindex1 $ imap f xs
+    f sh _ = cond (xs!sh <0) sh (indexMove sh)
+    indexMove (unindex1->sh) = index1 $ n - sh - 1
+    n = size xs
+
+
+tester3 :: Acc (Matrix Int)
+tester3 = collect . tabulate . mapSeq (backpermuteTest) . streamIn $ inputN2 2
+
+tester4 :: Acc (Matrix Int)
+tester4 = collect . tabulate . mapSeq (scatterTest) . streamIn $ inputN2 2
+
+tester5 :: Acc (Matrix Int)
+tester5 = collect . tabulate . mapSeq (afst . quicksort) . streamIn $ inputN2 1
+
+tester5' :: Acc (Vector Int)
+tester5' = afst. quicksort . use . P.head $ inputN2 1
+
+tester5B :: Acc (Matrix Bool)
+tester5B = collect . tabulate . mapSeq (asnd . quicksort) . streamIn $ inputN2 1
+
+tester5B' :: Acc (Vector Bool)
+tester5B' = asnd. quicksort . use . P.head $ inputN2 1
+
+scanl1Test :: Acc (Vector Int) -> Acc (Vector Int)
+scanl1Test xs = scanl1 (+) xs 
+  -- where 
+    -- ints = map unindex1 $ imap f xs
+    -- f sh _ = cond (xs!sh <0) sh (indexMove sh)
+    -- indexMove (unindex1->sh) = index1 $ n - sh - 1
+    -- n = size xs
+flagsB :: Acc (Vector Bool)
+flagsB = tester5B'
+values :: Acc (Vector Int)
+values = tester5'
+
+inputVal' = I.run values
+inputVal = streamIn $  [inputVal']
+
+
+tester6 :: Acc (Matrix Int)
+tester6 = collect . tabulate . mapSeq (scanl1Test) . streamIn $ inputN2 1
+
+tester6' :: Acc (Vector Int)
+tester6' =  (scanl1Test) . use . P.head $ inputN2 1
+
+indicesSmaller :: Acc (Vector Int) -> Acc (Vector Int)
+indicesSmaller xs = A.map (\x -> x - 1) $ postscanSegHead (+) headFlags $ A.map (A.? (0, 1)) isLarger
+  where
+    headFlags = flagsB
+    values = xs
+    isLarger = A.zipWith (A.>=) values pivots
+    pivots = propagateSegmentHead headFlags values
+
+tester7 :: Acc (Matrix Int)
+tester7 = collect . tabulate . mapSeq (indicesSmaller) $ inputVal
+
+tester7' :: Acc (Vector Int)
+tester7' =  (indicesSmaller) . use $ inputVal'
+
+propagateSegmentHead2 :: A.Acc (A.Vector Int) -> A.Acc (A.Vector (Int, Bool))
+propagateSegmentHead2 values
+  -- = A.map A.fst
+  = postscanl2 f (T2 undef $ A.constant True)
+  $ A.zip values headFlags
+  where
+    f left (T2 rightValue rightFlag) =
+      A.cond rightFlag (T2 rightValue $ A.constant True) left
+    headFlags = flagsB
+
+    postscanl2 f e = map (e `f`) . scanl1 f
+
+
+tester8 :: Acc (Vector (Int,Bool))
+tester8 = collect . elements . mapSeq (propagateSegmentHead2) . streamIn $ inputN2 1
+
+tester8' :: Acc (Vector (Int, Bool))
+tester8' =  (propagateSegmentHead2) . use . P.head $ inputN2 1
+
+indiceLarger :: Acc (Vector Int) -> Acc (Vector Int)
+indiceLarger xs = A.map (\x -> x - 1) $ postscanSegHead (+) headFlags $ A.map (A.? (1, 0)) isLarger
+  where
+    headFlags = flagsB
+    values = xs
+    isLarger = A.zipWith (A.>=) values pivots
+    pivots = propagateSegmentHead headFlags values
+
+tester9 :: Acc (Matrix Int)
+tester9 = collect . tabulate . mapSeq (indiceLarger) . streamIn $ inputN2 1
+
+tester9' :: Acc (Vector Int)
+tester9' =  (indiceLarger) . use . P.head $ inputN2 1
+
+countSmaller :: A.Acc (A.Vector Int) -> A.Acc (A.Vector Int)
+-- countSmaller xs = A.map (+1) . A.map fst $ propagateSegmentLast2 {-headFlags-} (indicesSmaller xs)
+countSmaller xs = A.map (+1) $ propagateSegmentLast2' headFlags (indicesSmaller xs)
+  where
+    headFlags = flagsB
+
+
+tester10 :: Acc (Matrix Int)
+tester10 = collect . tabulate . mapSeq (countSmaller) $ inputVal
+
+tester10' :: Acc (Vector Int)
+tester10' =  (countSmaller) . use $ inputVal'
+
+propagateSegmentLast2' hd = A.map A.fst . propagateSegmentLast2 hd
+
+propagateSegmentLast2 :: A.Acc (A.Vector Bool) -> A.Acc (A.Vector Int) -> A.Acc (A.Vector (Int, Bool))
+propagateSegmentLast2 headFlags values
+  -- = A.map A.fst
+  = postscanr f (T2 undef $ A.constant True)
+  $ A.zip values 
+  $ A.tail headFlags
+  where
+    f (T2 leftValue leftFlag) right =
+      A.cond leftFlag (T2 leftValue $ A.constant True) right
+    -- headFlags = flagsB
+
+    postscanr2 f e = {-map (`f` e) .-} scanr1 f
+                     
+
+
+tester11 :: Acc (Vector (Int,Bool))
+tester11 = collect . elements . mapSeq (propagateSegmentLast2 flagsB) . streamIn $ inputN2 1
+
+tester11' :: Acc (Vector (Int, Bool))
+tester11' =  (propagateSegmentLast2 flagsB) . use . P.head $ inputN2 1
+
+------------------------------
+-- Vectorize internal functions tests
+
+mkHeadFlags :: forall sh. Shape sh => Acc (Segments (sh:.Int)) -> Acc (Vector Int)
+mkHeadFlags seg
+  = generateSeg seg (\_ _ ix -> shapeSize ix == 0 ? (1, 0))
+
+mkHeadFlags2 :: Acc (Segments DIM1) -> Acc (Vector Int)
+mkHeadFlags2 seg
+  = init
+  $ permute (+) zeros (\ix -> index1 (offset ! ix)) ones
+  where
+    offset = offsets seg
+    len    = totalSize seg
+    zeros  = fill (index1  $ len + 1) (0 :: Exp Int)
+    ones   = fill (index1  $ size offset) (1 :: Exp Int)
+
+
+mkTailFlags :: forall sh. Shape sh => Acc (Segments (sh:.Int)) -> Acc (Vector Int)
+mkTailFlags seg
+  = generateSeg seg (\_ sh ix -> shapeSize ix == shapeSize sh - 1 ? (1, 0))
+
+mkTailFlags2 :: Acc (Segments DIM1) -> Acc (Vector Int)
+mkTailFlags2 seg
+  = init
+  $ permute (+) zeros (\ix -> index1 (len - 1 - offset ! ix)) ones
+  where
+    offset = offsets seg
+    len    = totalSize seg
+    zeros  = fill (index1 $ len + 1) (0 :: Exp Int)
+    ones   = fill (index1  $ size offset) (1 :: Exp Int)
+
+generateSeg :: forall e sh. (Elt e, Shape sh)
+            => Acc (Segments sh)
+            -> (Exp Int -> Exp sh -> Exp sh -> Exp e)
+            -> Acc (Vector e)
+generateSeg segs f = map (\(unlift -> (seg,sh,i)) -> f seg sh (fromIndex sh i)) domain
+  where
+    shs   = shapes2 segs
+    offs  = offsets segs
+    ts    = totalSize segs
+
+    -- Using a binary search for each element to preserve fusibility.
+
+    search :: Exp Int -> Exp Int
+    search i = fst $ while (uncurry nonconverged) (uncurry f) (lift (0::Exp Int,length offs))
+      where
+        nonconverged l h = h - l > 1
+        f l h =
+         let m = (h + l) `div` 2
+         in offs !! m > i ?
+              ( lift (l,m)
+              , lift (m,h) )
+
+    domain = imap (\i s -> lift (s, shs !! s, unindex1 i - offs !! s))
+           $ generate (index1 ts) (search . unindex1)
+
+offsets :: Shape sh => Acc (Segments sh) -> Acc (Vector Int)
+offsets (unatup3 -> (_,o,_) :: (Acc (Scalar Int), Acc (Vector Int), Acc (Vector sh))) = o
+
+shapes2 :: Shape sh => Acc (Segments sh) -> Acc (Vector sh)
+shapes2 (unatup3 -> (_,_,shs)) = shs
+
+totalSize :: Shape sh => Acc (Segments sh) -> Exp Int
+totalSize (unatup3 -> (ts,_,_)) = the ts
+
+unatup3 :: (Arrays a, Arrays b, Arrays c) => Acc (a, b, c) -> (Acc a, Acc b, Acc c)
+unatup3 (unlift -> (a,b,c)) =
+  ( a
+  , b
+  , c )
+
+
+segs :: Acc (Segments DIM1)
+segs = lift (sz, offsets, ext)
+  where
+    headFlags = zip flagsB tester5'
+    osz = size $ headFlags
+    sz = unit $ osz * 2
+    offsets = generate (index1 2) (\sh -> shapeSize sh * osz)
+    ext = fill (index1 2) (shape headFlags)
+
+inputScan :: Acc (Vector (Int, (Int, Bool)))
+inputScan = zip (mkHeadFlags segs) (zip tester5' tester5B')
+
+inputScan2 :: Acc (Vector (Int, (Int, Bool)))
+inputScan2 = zip (mkTailFlags segs) (zip tester5' (tail tester5B'))
+
+inputScan3 :: Acc (Vector (Int, (Int, Bool)))
+inputScan3 = zip (mkTailFlags2 segs) (zip tester5' (tail tester5B'))
+
+-- type Segments sh = ( Scalar Int  -- Total size in scalar elements
+--                    , Vector Int  -- Offsets
+--                    , Vector sh   -- Extents
+--                    )
+
+
+-- segmented :: (Elt e, Kit acc)
+--           => PreOpenFun acc env aenv (e -> e -> e)
+--           -> PreOpenFun acc env aenv ((Int, e) -> (Int, e) -> (Int, e))
+-- segmented f = Lam . Lam . Body
+--   $ tup (PrimBOr integralType `PrimApp` tup (fstE var1) (fstE var0))
+--         (Cond (PrimNEq scalarType `PrimApp` tup (fstE var0) (Const 0))
+--               (sndE var0)
+--               (subApplyE2 (weakenE2 f) (sndE var0) (sndE var1)))
+
+segmented :: (Elt e) => (Exp e -> Exp e -> Exp e) -> Exp (Int, e) -> Exp (Int, e) -> Exp (Int, e)
+segmented f (unlift -> (x1, x2)) (unlift -> (y1, y2)) = lift (x1 .|. y1, cond (y1 /= 0) y2 (f y2 x2))
+
+segmented2 :: (Elt e) => (Exp e -> Exp e -> Exp e) -> Exp (Int, e) -> Exp (Int, e) -> Exp (Int, e)
+segmented2 f (unlift -> (x1, x2)) (unlift -> (y1, y2)) = lift (x1 .|. y1, cond (y1 /= 0) y2 (f x2 y2))
+
+segmented3 :: (Elt e) => (Exp e -> Exp e -> Exp e) -> Exp (Int, e) -> Exp (Int, e) -> Exp (Int, e)
+segmented3 f (unlift -> (x1, x2)) (unlift -> (y1, y2)) = lift (x1 .|. y1, cond (x1 /= 0) x2 (f x2 y2))
+
+
+
+scanTestVec :: Acc (Vector (Int, (Int, Bool))) 
+scanTestVec = scanl1 (segmented f) inputScan
+  where
+    f left (T2 rightValue rightFlag) =
+      A.cond rightFlag (T2 rightValue $ A.constant True) left
+
+scanTestVec2 :: Acc (Vector (Int, (Int, Bool))) 
+scanTestVec2 = scanl1 (segmented2 f) inputScan
+  where
+    f left (T2 rightValue rightFlag) =
+      A.cond rightFlag (T2 rightValue $ A.constant True) left
+
+scanrTestVec :: Acc (Vector (Int, (Int, Bool))) 
+scanrTestVec = scanr1 (segmented f) inputScan2
+  where
+    f (T2 leftValue leftFlag) right =
+      cond leftFlag (T2 leftValue $ constant True) right
+
+scanrTestVec2 :: Acc (Vector (Int, (Int, Bool))) 
+scanrTestVec2 = scanr1 (segmented2 f) inputScan2
+  where
+    f (T2 leftValue leftFlag) right =
+      cond leftFlag (T2 leftValue $ constant True) right
+
+scanrTestVec3 :: Acc (Vector (Int, (Int, Bool))) 
+scanrTestVec3 = scanr1 (segmented3 f) inputScan2
+  where
+    f (T2 leftValue leftFlag) right =
+      cond leftFlag (T2 leftValue $ constant True) right
