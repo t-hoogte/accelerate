@@ -1720,7 +1720,7 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
       $  irregularC (segmentsC avar0)
       $  sndA
       $  unzipC
-      $^ Scanl1 (weakenA1 $ segmented f)
+      $^ Scanl1 (weakenA1 $ segmentedl f)
       $  let
            flags :: forall aenv sh e. (Shape sh, Elt e) => acc (aenv, IrregularArray (sh:.Int) e) (Vector Int)
            flags = fromHOAS mkHeadFlags (segmentsC avar0)
@@ -1766,7 +1766,7 @@ liftPreOpenAcc vectAcc indAcc shAcc ctx size acc
       $  irregularC (segmentsC avar0)
       $  sndA
       $  unzipC
-      $^ Scanr1 (weakenA1 $ segmented f)
+      $^ Scanr1 (weakenA1 $ segmentedr f)
       $  let
            flags :: forall aenv sh e. (Shape sh, Elt e) => acc (aenv, IrregularArray (sh:.Int) e) (Vector Int)
            flags = fromHOAS mkTailFlags (segmentsC avar0)
@@ -3155,14 +3155,23 @@ indexInit = IndexTrans . IndexTail . IndexTrans
 times :: PreExp acc aenv Int -> PreExp acc aenv Int -> PreExp acc aenv Int
 times a b= PrimApp (PrimMul numType) (tup a b)
 
-segmented :: (Elt e, Kit acc)
+segmentedl :: (Elt e, Kit acc)
           => PreOpenFun acc env aenv (e -> e -> e)
           -> PreOpenFun acc env aenv ((Int, e) -> (Int, e) -> (Int, e))
-segmented f = Lam . Lam . Body
+segmentedl f = Lam . Lam . Body
   $ tup (PrimBOr integralType `PrimApp` tup (fstE var1) (fstE var0))
         (Cond (PrimNEq scalarType `PrimApp` tup (fstE var0) (Const 0))
               (sndE var0)
-              (subApplyE2 (weakenE2 f) (sndE var0) (sndE var1)))
+              (subApplyE2 (weakenE2 f) (sndE var1) (sndE var0)))
+
+segmentedr :: (Elt e, Kit acc)
+          => PreOpenFun acc env aenv (e -> e -> e)
+          -> PreOpenFun acc env aenv ((Int, e) -> (Int, e) -> (Int, e))
+segmentedr f = Lam . Lam . Body
+  $ tup (PrimBOr integralType `PrimApp` tup (fstE var1) (fstE var0))
+        (Cond (PrimNEq scalarType `PrimApp` tup (fstE var1) (Const 0))
+              (sndE var1)
+              (subApplyE2 (weakenE2 f) (sndE var1) (sndE var0)))
 
 maximum :: PreOpenExp acc env aenv Int
         -> PreOpenExp acc env aenv Int
