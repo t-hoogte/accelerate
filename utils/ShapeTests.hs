@@ -12,10 +12,11 @@ module ShapeTests (doAllTest, counts, evalAllVecTests, setflags, clearflags, all
 
 where
 
-import Data.Array.Accelerate                              as A hiding (fromInteger, fromRational, fromIntegral, Segments)
-import Data.Array.Accelerate.Prelude                              as A hiding (fromInteger, fromRational, fromIntegral)
+import Data.Array.Accelerate                              as A hiding (fromIntegral, Segments)
+import Data.Array.Accelerate.Prelude                      as A
 import qualified Data.Array.Accelerate                    as A (fromIntegral)--, fromRational, fromInteger)
 import Data.Array.Accelerate.Interpreter                  as I
+import Data.Array.Accelerate.Data.Bits
 
 import qualified Prelude as P
 import Prelude as P (String, return, IO)

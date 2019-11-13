@@ -2,7 +2,7 @@
 {-# language FlexibleContexts #-}
 {-# language ScopedTypeVariables #-}
 
-module QuickSort (quicksort, quickerror, initialFlags) where
+module QuickSort (quicksort, quickerror, initialFlags, writeFlags, propagateSegmentHead, propagateSegmentLast, postscanSegHead, undef) where
 
 import qualified Data.Array.Accelerate as A
 -- import qualified Data.Array.Accelerate.Unsafe as A
