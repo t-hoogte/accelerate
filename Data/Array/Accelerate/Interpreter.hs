@@ -809,24 +809,13 @@ evalUndef :: forall a. Elt a => a
 evalUndef = toElt (undef (eltType (undefined::a)))
   where
     undef :: TupleType t -> t
-    undef TypeRunit       = ()
-    undef (TypeRpair a b) = (undef a, undef b)
-    undef (TypeRscalar t) = scalar t
+    undef UnitTuple       = ()
+    undef (PairTuple a b) = (undef a, undef b)
+    undef (SingleTuple t) = single t
 
-    scalar :: ScalarType t -> t
-    scalar (SingleScalarType t) = single t
-    scalar (VectorScalarType t) = vector t
-
-    single :: SingleType t -> t
-    single (NumSingleType    t) = num t
-    single (NonNumSingleType t) = nonnum t
-
-    vector :: VectorType t -> t
-    vector (Vector2Type t)  = let x = single t in V2 x x
-    vector (Vector3Type t)  = let x = single t in V3 x x x
-    vector (Vector4Type t)  = let x = single t in V4 x x x x
-    vector (Vector8Type t)  = let x = single t in V8 x x x x x x x x
-    vector (Vector16Type t) = let x = single t in V16 x x x x x x x x x x x x x x x x
+    single :: ScalarType t -> t
+    single (NumScalarType    t) = num t
+    single (NonNumScalarType t) = nonnum t
 
     num :: NumType t -> t
     num (IntegralNumType t) | IntegralDict <- integralDict t = 0

@@ -530,7 +530,7 @@ data PreExp acc seq exp t where
                 -> PreExp acc seq exp t
 
   Undef         :: Elt t
-                => PreExp acc exp t
+                => PreExp acc seq exp t
 
   Tuple         :: (Elt t, IsTuple t)
                 => Tuple exp (TupleRepr t)

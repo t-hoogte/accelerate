@@ -1845,6 +1845,7 @@ liftExp vectAcc ctx size exp
       Let bnd body       -> letL bnd body
       Var ix             -> varL ix
       Const c            -> unlifted (Const c)
+      Undef              -> unlifted Undef
       Tuple tup          -> cvtTuple tup
       Prj ix t           -> cvtE1 (Prj ix) (cvtE t)
       IndexNil           -> unlifted IndexNil
