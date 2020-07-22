@@ -116,3 +116,7 @@ runQ $
   in
   mapM mkT [2..16]
 
+mapTupR :: (forall s. a s -> b s) -> TupR a t -> TupR b t
+mapTupR f (TupRsingle a)   = TupRsingle $ f a
+mapTupR _ TupRunit         = TupRunit
+mapTupR f (TupRpair a1 a2) = mapTupR f a1 `TupRpair` mapTupR f a2

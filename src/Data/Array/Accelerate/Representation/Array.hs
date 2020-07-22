@@ -4,6 +4,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell     #-}
 {-# LANGUAGE TypeApplications    #-}
+{-# LANGUAGE TypeFamilies        #-}
 {-# OPTIONS_HADDOCK hide #-}
 -- |
 -- Module      : Data.Array.Accelerate.Representation.Array
@@ -40,6 +41,13 @@ data Array sh e where
   Array :: sh                         -- extent of dimensions = shape
         -> ArrayData e                -- array payload
         -> Array sh e
+
+newtype Buffer e = Buffer (ScalarArrayData e)
+
+type family Buffers e where
+  Buffers ()     = ()
+  Buffers (a, b) = (Buffers a, Buffers b)
+  Buffers t      = t
 
 -- | Segment descriptor (vector of segment lengths).
 --

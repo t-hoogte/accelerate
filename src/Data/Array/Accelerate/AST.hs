@@ -512,7 +512,7 @@ data OpenExp env aenv t where
                 -> OpenExp env' aenv body_t
                 -> OpenExp env  aenv body_t
 
-  -- Variable index, ranging only over tuples or scalars
+  -- Variable index, ranging only over scalars
   Evar          :: ExpVar env t
                 -> OpenExp env aenv t
 
@@ -596,7 +596,6 @@ data OpenExp env aenv t where
                 -> OpenExp env aenv r
 
   -- Project a single scalar from an array.
-  -- The array expression can not contain any free scalar variables.
   Index         :: ArrayVar    aenv (Array dim t)
                 -> OpenExp env aenv dim
                 -> OpenExp env aenv t
@@ -606,7 +605,6 @@ data OpenExp env aenv t where
                 -> OpenExp env aenv t
 
   -- Array shape.
-  -- The array expression can not contain any free scalar variables.
   Shape         :: ArrayVar    aenv (Array dim e)
                 -> OpenExp env aenv dim
 
