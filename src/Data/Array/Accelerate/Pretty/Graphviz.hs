@@ -213,8 +213,8 @@ prettyDelayedOpenAcc detail ctx aenv atop@(Manifest pacc) =
           deps = (vt, Just "T") : (ve, Just "F") : map (,port) vs
       return $ PNode ident doc deps
 
-    Apply _ afun acc         -> apply <$> prettyDelayedAfun    detail     aenv afun
-                                      <*> prettyDelayedOpenAcc detail ctx aenv acc
+    Apply _ afun acc         -> apply' <$> prettyDelayedAfun    detail     aenv afun
+                                       <*> prettyDelayedOpenAcc detail ctx aenv acc
 
     Awhile p f x             -> do
       ident <- mkNodeId atop
@@ -303,7 +303,7 @@ prettyDelayedOpenAcc detail ctx aenv atop@(Manifest pacc) =
       ident <- mkNode acc' (Just v)
       return $ PDoc (pretty v) [Vertex ident Nothing]
     ppA (Delayed _ sh f _)
-      | Shape a    <- sh                   -- identical shape
+      | (ArrayInstr (Shape a) _) <- sh     -- identical shape
       , Just b     <- isIdentityIndexing f -- function is `\ix -> b ! ix`
       , Just Refl  <- matchVar a b         -- function thus is `\ix -> a ! ix`
       = ppA $ Manifest $ Avar a
@@ -339,8 +339,8 @@ prettyDelayedOpenAcc detail ctx aenv atop@(Manifest pacc) =
       ident <- mkNode acc' Nothing
       return $ Vertex ident Nothing
 
-    apply :: Label -> PNode -> PNode
-    apply f (PNode ident x vs) =
+    apply' :: Label -> PNode -> PNode
+    apply' f (PNode ident x vs) =
       let x' = case x of
                  Leaf (p,d) -> Leaf (p, pretty f <+> d)
                  Forest ts  -> Forest (Leaf (Nothing,pretty f) : ts)
@@ -516,10 +516,12 @@ fvOpenExp env aenv = fv
     fvF = fvOpenFun env aenv
 
     fv :: OpenExp env aenv e -> [Vertex]
-    fv (Shape acc)              = if cfgIncludeShape then fvAvar aenv acc else []
-    fv (Index acc i)            = concat [ fvAvar aenv acc, fv i ]
-    fv (LinearIndex acc i)      = concat [ fvAvar aenv acc, fv i ]
-    --
+    fv (ArrayInstr arr e)       = concat [ avars, fv e ]
+      where
+        avars = case arr of
+          Shape acc       -> if cfgIncludeShape then fvAvar aenv acc else []
+          Index acc       -> fvAvar aenv acc
+          LinearIndex acc -> fvAvar aenv acc
     fv (Let lhs e1 e2)          = concat [ fv e1, fvOpenExp env' aenv e2 ]
       where
         (env', _) = prettyELhs False env lhs

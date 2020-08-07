@@ -76,3 +76,7 @@ avarsOut extract = \case
     -> Just (TupRpair as bs)
   _ -> Nothing
 
+identity :: TypeR a -> PreOpenFun arr env (a -> a)
+identity t
+  | DeclareVars lhs _ value <- declareVars t
+  = Lam lhs $ Body $ expVars $ value weakenId

@@ -432,9 +432,10 @@ matchArrayR _ _ = Nothing
 --
 {-# INLINEABLE matchOpenExp #-}
 matchOpenExp
-    :: forall env aenv s t.
-       OpenExp env aenv s
-    -> OpenExp env aenv t
+    :: forall arr env s t.
+       IsArrayInstr arr
+    => PreOpenExp arr env s
+    -> PreOpenExp arr env t
     -> Maybe (s :~: t)
 
 matchOpenExp (Let lhs1 x1 e1) (Let lhs2 x2 e2)
@@ -523,18 +524,9 @@ matchOpenExp (PrimApp f1 x1) (PrimApp f2 x2)
   , Just Refl <- matchPrimFun f1 f2
   = Just Refl
 
-matchOpenExp (Index a1 x1) (Index a2 x2)
-  | Just Refl <- matchVar a1 a2
-  , Just Refl <- matchOpenExp x1 x2
-  = Just Refl
-
-matchOpenExp (LinearIndex a1 x1) (LinearIndex a2 x2)
-  | Just Refl <- matchVar a1 a2
-  , Just Refl <- matchOpenExp x1 x2
-  = Just Refl
-
-matchOpenExp (Shape a1) (Shape a2)
-  | Just Refl <- matchVar a1 a2
+matchOpenExp (ArrayInstr arr1 e1) (ArrayInstr arr2 e2)
+  | Just Refl <- matchArrayInstr arr1 arr2
+  , Just Refl <- matchOpenExp e1 e2
   = Just Refl
 
 matchOpenExp (ShapeSize _ sh1) (ShapeSize _ sh2)
@@ -549,8 +541,9 @@ matchOpenExp _ _
 --
 {-# INLINEABLE matchOpenFun #-}
 matchOpenFun
-    :: OpenFun env aenv s
-    -> OpenFun env aenv t
+    :: IsArrayInstr arr
+    => PreOpenFun arr env s
+    -> PreOpenFun arr env t
     -> Maybe (s :~: t)
 matchOpenFun (Lam lhs1 s) (Lam lhs2 t)
   | Just Refl <- matchELeftHandSide lhs1 lhs2
@@ -580,29 +573,6 @@ evalEqVector VectorType{} = uncurry (==)
 evalEqNum :: NumType a -> (a, a) -> Bool
 evalEqNum (IntegralNumType t) | IntegralDict <- integralDict t  = uncurry (==)
 evalEqNum (FloatingNumType t) | FloatingDict <- floatingDict t  = uncurry (==)
-
-
--- Environment projection indices
---
-{-# INLINEABLE matchIdx #-}
-matchIdx :: Idx env s -> Idx env t -> Maybe (s :~: t)
-matchIdx ZeroIdx     ZeroIdx     = Just Refl
-matchIdx (SuccIdx u) (SuccIdx v) = matchIdx u v
-matchIdx _           _           = Nothing
-
-{-# INLINEABLE matchVar #-}
-matchVar :: Var s env t1 -> Var s env t2 -> Maybe (t1 :~: t2)
-matchVar (Var _ v1) (Var _ v2) = matchIdx v1 v2
-
-{-# INLINEABLE matchVars #-}
-matchVars :: Vars s env t1 -> Vars s env t2 -> Maybe (t1 :~: t2)
-matchVars TupRunit         TupRunit = Just Refl
-matchVars (TupRsingle v1) (TupRsingle v2)
-  | Just Refl <- matchVar v1 v2 = Just Refl
-matchVars (TupRpair v w) (TupRpair x y)
-  | Just Refl <- matchVars v x
-  , Just Refl <- matchVars w y  = Just Refl
-matchVars _ _ = Nothing
 
 
 -- Slice specifications
@@ -890,10 +860,11 @@ matchFloatingType _            _            = Nothing
 -- commutativity.
 --
 commutes
-    :: forall env aenv a r.
-       PrimFun (a -> r)
-    -> OpenExp env aenv a
-    -> Maybe (OpenExp env aenv a)
+    :: forall arr env a r.
+       IsArrayInstr arr
+    => PrimFun (a -> r)
+    -> PreOpenExp arr env a
+    -> Maybe (PreOpenExp arr env a)
 commutes f x = case f of
   PrimAdd{}     -> Just (swizzle x)
   PrimMul{}     -> Just (swizzle x)
@@ -908,7 +879,7 @@ commutes f x = case f of
   PrimLOr       -> Just (swizzle x)
   _             -> Nothing
   where
-    swizzle :: OpenExp env aenv (a',a') -> OpenExp env aenv (a',a')
+    swizzle :: PreOpenExp arr env (a',a') -> PreOpenExp arr env (a',a')
     swizzle exp
       | (a `Pair` b)  <- exp
       , hashOpenExp a > hashOpenExp b = b `Pair` a

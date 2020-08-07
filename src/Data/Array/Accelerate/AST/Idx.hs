@@ -1,5 +1,6 @@
 {-# LANGUAGE GADTs           #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeOperators   #-}
 {-# OPTIONS_HADDOCK hide #-}
 -- |
 -- Module      : Data.Array.Accelerate.AST.Idx
@@ -17,6 +18,7 @@ module Data.Array.Accelerate.AST.Idx
   where
 
 import Language.Haskell.TH
+import Data.Typeable                                                ( (:~:)(..) )
 
 -- De Bruijn variable index projecting a specific type from a type
 -- environment.  Type environments are nested pairs (..((), t1), t2, ..., tn).
@@ -41,4 +43,10 @@ rnfIdx (SuccIdx ix) = rnfIdx ix
 liftIdx :: Idx env t -> Q (TExp (Idx env t))
 liftIdx ZeroIdx      = [|| ZeroIdx ||]
 liftIdx (SuccIdx ix) = [|| SuccIdx $$(liftIdx ix) ||]
+
+{-# INLINEABLE matchIdx #-}
+matchIdx :: Idx env s -> Idx env t -> Maybe (s :~: t)
+matchIdx ZeroIdx     ZeroIdx     = Just Refl
+matchIdx (SuccIdx u) (SuccIdx v) = matchIdx u v
+matchIdx _           _           = Nothing
 

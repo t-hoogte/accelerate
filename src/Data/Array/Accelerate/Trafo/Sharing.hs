@@ -1,5 +1,6 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE BangPatterns        #-}
+{-# LANGUAGE EmptyCase           #-}
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE FlexibleInstances   #-}
 {-# LANGUAGE GADTs               #-}
@@ -44,7 +45,7 @@ module Data.Array.Accelerate.Trafo.Sharing (
 
 ) where
 
-import Data.Array.Accelerate.AST                                    hiding ( PreOpenAcc(..), OpenAcc(..), Acc, OpenExp(..), Exp, Boundary(..), HasArraysR(..), showPreAccOp )
+import Data.Array.Accelerate.AST                                    hiding ( PreOpenAcc(..), OpenAcc(..), Acc, ArrayInstr(..), PreOpenExp(..), OpenExp, Exp, Boundary(..), HasArraysR(..), showPreAccOp )
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.LeftHandSide
@@ -769,11 +770,11 @@ convertSharingExp config lyt alyt env aenv exp@(ScopedExp lams _) = cvt exp
           While tp p it i       -> AST.While (cvtFun1 tp p) (cvtFun1 tp it) (cvt i)
           PrimConst c           -> AST.PrimConst c
           PrimApp f e           -> cvtPrimFun f (cvt e)
-          Index _ a e           -> AST.Index (cvtAvar a) (cvt e)
-          LinearIndex _ a i     -> AST.LinearIndex (cvtAvar a) (cvt i)
-          Shape _ a             -> AST.Shape (cvtAvar a)
+          Index _ a e           -> AST.ArrayInstr (AST.Index $ cvtAvar a) (cvt e)
+          LinearIndex _ a i     -> AST.ArrayInstr (AST.LinearIndex $ cvtAvar a) (cvt i)
+          Shape _ a             -> AST.ArrayInstr (AST.Shape $ cvtAvar a) AST.Nil
           ShapeSize shr e       -> AST.ShapeSize shr (cvt e)
-          Foreign repr ff f e   -> AST.Foreign repr ff (convertSmartFun config (typeR e) f) (cvt e)
+          Foreign repr ff f e   -> AST.Foreign repr ff (cvtNoArrayInstr $ convertSmartFun config (typeR e) f) (cvt e)
           Coerce t1 t2 e        -> AST.Coerce t1 t2 (cvt e)
 
     cvtPrj :: forall a b c env1 aenv1. PairIdx (a, b) c -> AST.OpenExp env1 aenv1 (a, b) -> AST.OpenExp env1 aenv1 c
@@ -799,6 +800,14 @@ convertSharingExp config lyt alyt env aenv exp@(ScopedExp lams _) = cvt exp
           body = f undefined
         in
           Lam lhs $ Body $ convertSharingExp config lyt' alyt env' aenv body
+
+    cvtNoArrayInstr :: AST.OpenFun env' () f -> AST.PreOpenFun NoArrayInstr env' f
+    cvtNoArrayInstr = rebuildArrayInstr k
+      where
+        k :: AST.ArrayInstr () (s -> u) -> AST.PreOpenExp NoArrayInstr env' s -> AST.PreOpenExp NoArrayInstr env' u
+        k (AST.Shape       (Var _ ix)) = case ix of {}
+        k (AST.Index       (Var _ ix)) = case ix of {}
+        k (AST.LinearIndex (Var _ ix)) = case ix of {}
 
     -- Push primitive function applications down through let bindings so that
     -- they are adjacent to their arguments. It looks a bit nicer this way.

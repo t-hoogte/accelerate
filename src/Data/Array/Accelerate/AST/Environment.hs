@@ -3,6 +3,7 @@
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications    #-}
 {-# LANGUAGE TypeOperators       #-}
 {-# OPTIONS_HADDOCK hide #-}
 -- |
@@ -21,27 +22,55 @@ module Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.Error
+import Data.Array.Accelerate.Representation.Type
+import Data.Array.Accelerate.Analysis.Match         ((:~:)(..))
 
 
 -- Valuation for an environment
 --
-data Val env where
-  Empty :: Val ()
-  Push  :: Val env -> t -> Val (env, t)
+data Env f env where
+  Empty :: Env f ()
+  Push  :: Env f env -> f t -> Env f (env, t)
+
+type Val = Env Identity
 
 -- Push a set of variables into an environment
 --
 push :: Val env -> (LeftHandSide s t env env', t) -> Val env'
 push env (LeftHandSideWildcard _, _     ) = env
-push env (LeftHandSideSingle _  , a     ) = env `Push` a
+push env (LeftHandSideSingle _  , a     ) = env `Push` Identity a
 push env (LeftHandSidePair l1 l2, (a, b)) = push env (l1, a) `push` (l2, b)
+
+push' :: forall f s t env env'. Distributes s => Env f env -> (LeftHandSide s t env env', Distribute f t) -> Env f env'
+push' env (LeftHandSideWildcard _, _     ) = env
+push' env (LeftHandSidePair l1 l2, (a, b)) = push' env (l1, a) `push'` (l2, b)
+push' env (LeftHandSideSingle s  , a     )
+  | Refl <- reprIsSingle @s @t @f s        = env `Push` a
 
 -- Projection of a value from a valuation using a de Bruijn index
 --
 prj :: Idx env t -> Val env -> t
-prj ZeroIdx       (Push _   v) = v
-prj (SuccIdx idx) (Push val _) = prj idx val
+prj ix v = runIdentity $ prj' ix v
 
+prj' :: Idx env t -> Env f env -> f t
+prj' ZeroIdx       (Push _   v) = v
+prj' (SuccIdx idx) (Push val _) = prj' idx val
+
+mapEnv :: (forall t. a t -> b t) -> Env a env -> Env b env
+mapEnv _ Empty = Empty
+mapEnv g (Push env f) = Push (mapEnv g env) (g f)
+
+data Identity a = Identity { runIdentity :: a }
+
+instance Functor Identity where
+  {-# INLINE fmap #-}
+  fmap f (Identity a) = Identity (f a)
+
+instance Applicative Identity where
+  {-# INLINE (<*>) #-}
+  {-# INLINE pure  #-}
+  Identity f <*> Identity a = Identity (f a)
+  pure a                    = Identity a
 
 -- The type of shifting terms from one context into another
 --

@@ -60,3 +60,7 @@ liftLeftHandSide f (LeftHandSideSingle s)   = [|| LeftHandSideSingle $$(f s) ||]
 liftLeftHandSide f (LeftHandSideWildcard r) = [|| LeftHandSideWildcard $$(liftTupR f r) ||]
 liftLeftHandSide f (LeftHandSidePair as bs) = [|| LeftHandSidePair $$(liftLeftHandSide f as) $$(liftLeftHandSide f bs) ||]
 
+mapLeftHandSide :: (forall v. s v -> u v) -> LeftHandSide s t env env' -> LeftHandSide u t env env'
+mapLeftHandSide f (LeftHandSideSingle s)   = LeftHandSideSingle $ f s
+mapLeftHandSide f (LeftHandSideWildcard r) = LeftHandSideWildcard $ mapTupR f r
+mapLeftHandSide f (LeftHandSidePair as bs) = LeftHandSidePair (mapLeftHandSide f as) (mapLeftHandSide f bs)

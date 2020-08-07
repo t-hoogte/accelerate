@@ -52,7 +52,7 @@ import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Trafo.Delayed
 import Data.Array.Accelerate.Trafo.Environment
 import Data.Array.Accelerate.Trafo.Shrink
-import Data.Array.Accelerate.Trafo.Simplify
+import Data.Array.Accelerate.Trafo.Exp.Simplify
 import Data.Array.Accelerate.Trafo.Substitution
 import Data.Array.Accelerate.Representation.Array       ( Array, ArrayR(..), ArraysR )
 import Data.Array.Accelerate.Representation.Shape       ( ShapeR(..), shapeType )
@@ -420,9 +420,9 @@ embedPreOpenAcc config matchAcc embedAcc elimAcc pacc
     Scan  d f z a       -> embed  aR  (into2M (Scan  d)      (cvtF f) (cvtE <$> z)) a
     Scan' d f z a       -> embed  aR  (into2  (Scan' d)      (cvtF f) (cvtE z)) a
     Permute f d p a     -> embed2 aR  (into2  permute        (cvtF f) (cvtF p)) d a
-    Stencil s t f x a   -> embed  aR  (into2  (stencil1 s t) (cvtF f) (cvtB x)) a
+    Stencil s t f x a   -> embed  aR  (into2B (stencil1 s t) (cvtF f) (cvtB x)) a
     Stencil2 s1 s2 t f x a y b
-                        -> embed2 aR  (into3  (stencil2 s1 s2 t) (cvtF f) (cvtB x) (cvtB y)) a b
+                        -> embed2 aR  (into3B (stencil2 s1 s2 t) (cvtF f) (cvtB x) (cvtB y)) a b
 
   where
     aR = arraysR pacc
@@ -480,37 +480,45 @@ embedPreOpenAcc config matchAcc embedAcc elimAcc pacc
 
     -- Helpers to embed and fuse delayed terms
     --
-    into :: (HasCallStack, Sink f)
-         => (f env' a -> b)
-         -> f env a
+    into :: (HasCallStack, RebuildableExp f)
+         => (f (ArrayInstr env') () a -> b)
+         -> f (ArrayInstr env) () a
          -> Extend ArrayR OpenAcc env env'
          -> b
-    into op a env = op (sinkA env a)
+    into op a env = op (sinkArrayInstr env a)
 
-    into2 :: (HasCallStack, Sink f1, Sink f2)
-          => (f1 env' a -> f2 env' b -> c)
-          -> f1 env a
+    into2 :: (HasCallStack, RebuildableExp f1, RebuildableExp f2)
+          => (f1 (ArrayInstr env') () a -> f2 (ArrayInstr env') () b -> c)
+          -> f1 (ArrayInstr env) () a
+          -> f2 (ArrayInstr env) () b
+          -> Extend ArrayR OpenAcc env env'
+          -> c
+    into2 op a b env = op (sinkArrayInstr env a) (sinkArrayInstr env b)
+
+    into2B :: (HasCallStack, RebuildableExp f1, Sink f2)
+          => (f1 (ArrayInstr env') () a -> f2 env' b -> c)
+          -> f1 (ArrayInstr env) () a
           -> f2 env b
           -> Extend ArrayR OpenAcc env env'
           -> c
-    into2 op a b env = op (sinkA env a) (sinkA env b)
+    into2B op a b env = op (sinkArrayInstr env a) (sinkA env b)
 
-    into2M :: (HasCallStack, Sink f1, Sink f2)
-           => (f1 env' a -> Maybe (f2 env' b) -> c)
-           -> f1 env a
-           -> Maybe (f2 env b)
+    into2M :: (HasCallStack, RebuildableExp f1, RebuildableExp f2)
+           => (f1 (ArrayInstr env') () a -> Maybe (f2 (ArrayInstr env') () b) -> c)
+           -> f1 (ArrayInstr env) () a
+           -> Maybe (f2 (ArrayInstr env) () b)
            -> Extend ArrayR acc env env'
            -> c
-    into2M op a b env = op (sinkA env a) (sinkA env <$> b)
+    into2M op a b env = op (sinkArrayInstr env a) (sinkArrayInstr env <$> b)
 
-    into3 :: (HasCallStack, Sink f1, Sink f2, Sink f3)
-          => (f1 env' a -> f2 env' b -> f3 env' c -> d)
-          -> f1 env a
+    into3B :: (HasCallStack, RebuildableExp f1, Sink f2, Sink f3)
+          => (f1 (ArrayInstr env') () a -> f2 env' b -> f3 env' c -> d)
+          -> f1 (ArrayInstr env) () a
           -> f2 env b
           -> f3 env c
           -> Extend ArrayR OpenAcc env env'
           -> d
-    into3 op a b c env = op (sinkA env a) (sinkA env b) (sinkA env c)
+    into3B op a b c env = op (sinkArrayInstr env a) (sinkA env b) (sinkA env c)
 
     -- Operations which can be fused into consumers. Move all of the local
     -- bindings out of the way so that the fusible function operates
@@ -807,8 +815,8 @@ instance HasArraysR Cunctation where
 instance Sink Cunctation where
   weaken k = \case
     Done v              -> Done (weakenVars k v)
-    Step repr sh p f v  -> Step  repr (weaken k sh) (weaken k p) (weaken k f) (weaken k v)
-    Yield repr sh f     -> Yield repr (weaken k sh) (weaken k f)
+    Step repr sh p f v  -> Step  repr (weakenArrayInstr k sh) (weakenArrayInstr k p) (weakenArrayInstr k f) (weaken k v)
+    Yield repr sh f     -> Yield repr (weakenArrayInstr k sh) (weakenArrayInstr k f)
 
 simplifyCC :: HasCallStack => Cunctation aenv a -> Cunctation aenv a
 simplifyCC = \case
@@ -1032,8 +1040,8 @@ mapD tR f (Embed env cc)
   = Stats.ruleFired "mapD"
   $ Embed env (go cc)
   where
-    go (step  -> Just (Step (ArrayR shR _) sh ix g v)) = Step  (ArrayR shR tR) sh ix (sinkA env f `compose` g) v
-    go (yield -> Yield (ArrayR shR _) sh g)            = Yield (ArrayR shR tR) sh    (sinkA env f `compose` g)
+    go (step  -> Just (Step (ArrayR shR _) sh ix g v)) = Step  (ArrayR shR tR) sh ix (sinkArrayInstr env f `compose` g) v
+    go (yield -> Yield (ArrayR shR _) sh g)            = Yield (ArrayR shR tR) sh    (sinkArrayInstr env f `compose` g)
 
 
 -- If we are unzipping a manifest array then force the term to be computed;
@@ -1092,13 +1100,12 @@ transformD (ArrayR shR' tR) sh' p f
          -> Embed OpenAcc aenv bs
     fuse op (Embed env cc) = Embed env (op env cc)
 
-    into2 :: (HasCallStack, Sink f1, Sink f2)
-          => (f1 env' a -> f2 env' b -> c)
-          -> f1 env a
-          -> f2 env b
-          -> Extend ArrayR OpenAcc env env'
+    into2 :: (OpenExp env aenv' a -> OpenFun env aenv' b -> c)
+          -> OpenExp env aenv a
+          -> OpenFun env aenv b
+          -> Extend ArrayR OpenAcc aenv aenv'
           -> c
-    into2 op a b env = op (sinkA env a) (sinkA env b)
+    into2 op a b env = op (sinkArrayInstr env a) (sinkArrayInstr env b)
 
 
 -- Replicate as a backwards permutation
@@ -1147,7 +1154,7 @@ reshapeD
     -> Embed OpenAcc aenv (Array sh e)
     -> Exp           aenv sl
     -> Embed OpenAcc aenv (Array sl e)
-reshapeD slr (Embed env cc) (sinkA env -> sl)
+reshapeD slr (Embed env cc) (sinkArrayInstr env -> sl)
   | Done v <- cc
   = Embed (env `pushArrayEnv` OpenAcc (Reshape slr sl (avarsIn OpenAcc v))) $ doneZeroIdx repr
 
@@ -1412,8 +1419,8 @@ aletD' embedAcc elimAcc (LeftHandSideSingle ArrayR{}) (Embed env1 cc1) (Embed en
              -> Fun aenv' (sh -> e)
              -> Embed OpenAcc aenv brrs
         elim r sh1 f1
-          | sh1'              <- weaken (weakenSucc' weakenId) sh1
-          , f1'               <- weaken (weakenSucc' weakenId) f1
+          | sh1'              <- weakenArrayInstr (weakenSucc' weakenId) sh1
+          , f1'               <- weakenArrayInstr (weakenSucc' weakenId) f1
           , Embed env0' cc0'  <- embedAcc $ rebuildA (subAtop bnd) $ kmap (replaceA sh1' f1' $ Var r ZeroIdx) body
           = Embed (env1 `append` env0') cc0'
 
@@ -1454,23 +1461,23 @@ aletD' embedAcc elimAcc (LeftHandSideSingle ArrayR{}) (Embed env1 cc1) (Embed en
         While p f x                     -> While (replaceF sh' f' avar p) (replaceF sh' f' avar f) (cvtE x)
         Coerce t1 t2 e                  -> Coerce t1 t2 (cvtE e)
 
-        Shape a
+        ArrayInstr (Shape a) _
           | Just Refl <- matchVar a avar -> Stats.substitution "replaceE/shape" sh'
           | otherwise                    -> exp
 
-        Index a sh
+        ArrayInstr (Index a) sh
           | Just Refl        <- matchVar a avar
           , Lam lhs (Body b) <- f'      -> Stats.substitution "replaceE/!" . cvtE $ Let lhs sh b
-          | otherwise                   -> Index a (cvtE sh)
+          | otherwise                   -> ArrayInstr (Index a) (cvtE sh)
 
-        LinearIndex a i
+        ArrayInstr (LinearIndex a) i
           | Just Refl        <- matchVar a avar
           , Lam lhs (Body b) <- f'
                                         -> Stats.substitution "replaceE/!!" . cvtE
                                          $ Let lhs
                                                (Let (LeftHandSideSingle scalarTypeInt) i $ FromIndex shR (weakenE (weakenSucc' weakenId) sh') $ Evar $ Var scalarTypeInt ZeroIdx)
                                                b
-          | otherwise                   -> LinearIndex a (cvtE i)
+          | otherwise                   -> ArrayInstr (LinearIndex a) (cvtE i)
 
       where
         cvtE :: OpenExp env aenv s -> OpenExp env aenv s
@@ -1503,8 +1510,8 @@ aletD' embedAcc elimAcc (LeftHandSideSingle ArrayR{}) (Embed env1 cc1) (Embed en
         Alet lhs bnd (body :: OpenAcc aenv1 a) ->
           let w :: aenv :> aenv1
               w    = weakenWithLHS lhs
-              sh'' = weaken w sh'
-              f''  = weaken w f'
+              sh'' = weakenArrayInstr w sh'
+              f''  = weakenArrayInstr w f'
           in
           Alet lhs (cvtA bnd) (kmap (replaceA sh'' f'' (weaken w avar)) body)
 
@@ -1560,8 +1567,8 @@ aletD' embedAcc elimAcc (LeftHandSideSingle ArrayR{}) (Embed env1 cc1) (Embed en
                 -> PreOpenAfun OpenAcc aenv a
             cvt sh'' f'' avar' (Abody a) = Abody $ kmap (replaceA sh'' f'' avar') a
             cvt sh'' f'' avar' (Alam lhs (af :: PreOpenAfun OpenAcc aenv1 b)) =
-              Alam lhs $ cvt (weaken w sh'')
-                (weaken w f'')
+              Alam lhs $ cvt (weakenArrayInstr w sh'')
+                (weakenArrayInstr w f'')
                 (weaken w avar')
                 af
               where
@@ -1635,11 +1642,6 @@ acondD matchAcc embedAcc p t e
 -- Scalar expressions
 -- ------------------
 
-identity :: TypeR a -> OpenFun env aenv (a -> a)
-identity t
-  | DeclareVars lhs _ value <- declareVars t
-  = Lam lhs $ Body $ expVars $ value weakenId
-
 toIndex :: ShapeR sh -> OpenExp env aenv sh -> OpenFun env aenv (sh -> Int)
 toIndex shR sh
   | DeclareVars lhs k value <- declareVars $ shapeType shR
@@ -1704,15 +1706,15 @@ restrict sliceIndex slix
   = Lam lhs $ Body $ IndexFull sliceIndex (weakenE k slix) $ expVars $ value weakenId
 
 arrayShape :: ArrayVar aenv (Array sh e) -> Exp aenv sh
-arrayShape = simplifyExp . Shape
+arrayShape var = simplifyExp $ ArrayInstr (Shape var) Nil
 
 indexArray :: ArrayVar aenv (Array sh e) -> Fun aenv (sh -> e)
 indexArray v@(Var (ArrayR shR _) _)
   | DeclareVars lhs _ value <- declareVars $ shapeType shR
-  = Lam lhs $ Body $ Index v $ expVars $ value weakenId
+  = Lam lhs $ Body $ ArrayInstr (Index v) $ expVars $ value weakenId
 
 linearIndex :: ArrayVar aenv (Array sh e) -> Fun aenv (Int -> e)
-linearIndex v = Lam (LeftHandSideSingle scalarTypeInt) $ Body $ LinearIndex v $ Evar $ Var scalarTypeInt ZeroIdx
+linearIndex v = Lam (LeftHandSideSingle scalarTypeInt) $ Body $ ArrayInstr (LinearIndex v) $ Evar $ Var scalarTypeInt ZeroIdx
 
 
 extractOpenAcc :: ExtractAcc OpenAcc

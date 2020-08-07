@@ -1,3 +1,4 @@
+{-# LANGUAGE AllowAmbiguousTypes   #-}
 {-# LANGUAGE BangPatterns          #-}
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE FlexibleInstances     #-}
@@ -6,6 +7,7 @@
 {-# LANGUAGE RankNTypes            #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
 {-# LANGUAGE TemplateHaskell       #-}
+{-# LANGUAGE TypeApplications      #-}
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE TypeOperators         #-}
 {-# OPTIONS_HADDOCK hide #-}
@@ -82,8 +84,9 @@ module Data.Array.Accelerate.AST (
 
   -- ** Scalar expressions
   ELeftHandSide, ExpVar, ExpVars, expVars,
-  Fun, OpenFun(..),
-  Exp, OpenExp(..),
+  Fun, OpenFun, PreOpenFun(..),
+  Exp, OpenExp, PreOpenExp(..),
+  ArrayInstr(..), IsArrayInstr(..), NoArrayInstr,
   Boundary(..),
   PrimConst(..),
   PrimFun(..),
@@ -126,6 +129,7 @@ module Data.Array.Accelerate.AST (
   liftPrimFun,
 
   -- ** Miscellaneous
+  encodeArrayVar,
   showPreAccOp,
   showExpOp,
 
@@ -134,25 +138,23 @@ module Data.Array.Accelerate.AST (
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.AST.Var
-import Data.Array.Accelerate.Error
+import Data.Array.Accelerate.AST.Exp
+import Data.Array.Accelerate.Analysis.Hash.Exp
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Elt
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Slice
 import Data.Array.Accelerate.Representation.Stencil
-import Data.Array.Accelerate.Representation.Tag
 import Data.Array.Accelerate.Representation.Type
-import Data.Array.Accelerate.Representation.Vec
 import Data.Array.Accelerate.Sugar.Foreign
 import Data.Array.Accelerate.Type
-import Data.Primitive.Vec
 
 import Control.DeepSeq
 import Data.Kind
 import Language.Haskell.TH                                          ( Q, TExp )
 import Prelude
-
-import GHC.TypeLits
+import Data.Typeable                                                ( (:~:)(..) )
+import Data.ByteString.Builder.Extra
 
 
 -- Array expressions
@@ -189,11 +191,6 @@ type Acc = OpenAcc ()
 type ALeftHandSide  = LeftHandSide ArrayR
 type ArrayVar       = Var ArrayR
 type ArrayVars aenv = Vars ArrayR aenv
-
--- Bool is not a primitive type
-type PrimBool    = TAG
-type PrimMaybe a = (TAG, ((), a))
-
 
 -- | Collective array computations parametrised over array variables
 -- represented with de Bruijn indices.
@@ -468,34 +465,43 @@ data Boundary aenv t where
             -> Boundary aenv (Array sh e)
 
 
--- Embedded expressions
--- --------------------
+data ArrayInstr aenv f where
+  -- Array shape.
+  Shape       :: ArrayVar aenv (Array dim t) -> ArrayInstr aenv (() -> dim)
 
--- | Vanilla open function abstraction
---
-data OpenFun env aenv t where
-  Body ::                             OpenExp env  aenv t -> OpenFun env aenv t
-  Lam  :: ELeftHandSide a env env' -> OpenFun env' aenv t -> OpenFun env aenv (a -> t)
+  -- Project a single scalar from an array.
+  Index       :: ArrayVar aenv (Array dim t) -> ArrayInstr aenv (dim -> t)
+  LinearIndex :: ArrayVar aenv (Array dim t) -> ArrayInstr aenv (Int -> t)
 
--- | Vanilla function without free scalar variables
---
-type Fun = OpenFun ()
+instance IsArrayInstr (ArrayInstr aenv) where
+  arrayInstrType (Shape       (Var (ArrayR shr _) _)) = shapeType shr
+  arrayInstrType (Index       (Var (ArrayR _  tp) _)) = tp
+  arrayInstrType (LinearIndex (Var (ArrayR _  tp) _)) = tp
 
--- | Vanilla expression without free scalar variables
---
-type Exp = OpenExp ()
+  liftArrayInstr (Shape       var) = [|| Shape       $$(liftArrayVar var) ||]
+  liftArrayInstr (Index       var) = [|| Index       $$(liftArrayVar var) ||]
+  liftArrayInstr (LinearIndex var) = [|| LinearIndex $$(liftArrayVar var) ||]
 
--- Types for scalar bindings
---
-type ELeftHandSide = LeftHandSide ScalarType
-type ExpVar        = Var ScalarType
-type ExpVars env   = Vars ScalarType env
+  rnfArrayInstr  (Shape       var) = rnfArrayVar var
+  rnfArrayInstr  (Index       var) = rnfArrayVar var
+  rnfArrayInstr  (LinearIndex var) = rnfArrayVar var
 
-expVars :: ExpVars env t -> OpenExp env aenv t
-expVars TupRunit         = Nil
-expVars (TupRsingle var) = Evar var
-expVars (TupRpair v1 v2) = expVars v1 `Pair` expVars v2
+  showArrayInstrOp Shape{}         = "Shape"
+  showArrayInstrOp Index{}         = "Index"
+  showArrayInstrOp LinearIndex{}   = "LinearIndex"
 
+  matchArrayInstr (Shape v1)       (Shape v2)       | Just Refl <- matchVar v1 v2 = Just Refl
+  matchArrayInstr (Index v1)       (Index v2)       | Just Refl <- matchVar v1 v2 = Just Refl
+  matchArrayInstr (LinearIndex v1) (LinearIndex v2) | Just Refl <- matchVar v1 v2 = Just Refl
+  matchArrayInstr _                _                                              = Nothing
+
+  encodeArrayInstr arr = case arr of
+    Index a                     -> intHost $(hashQ "Index")       <> encodeArrayVar a
+    LinearIndex a               -> intHost $(hashQ "LinearIndex") <> encodeArrayVar a
+    Shape a                     -> intHost $(hashQ "Shape")       <> encodeArrayVar a
+
+encodeArrayVar :: ArrayVar aenv a -> Builder
+encodeArrayVar (Var repr v) = encodeArrayType repr <> encodeIdx v
 
 -- | Vanilla open expressions using de Bruijn indices for variables ranging
 -- over tuples of scalars and arrays of tuples. All code, except Cond, is
@@ -504,234 +510,19 @@ expVars (TupRpair v1 v2) = expVars v1 `Pair` expVars v2
 -- The data type is parametrised over the representation type (not the
 -- surface types).
 --
-data OpenExp env aenv t where
+type OpenExp env aenv = PreOpenExp (ArrayInstr aenv) env
 
-  -- Local binding of a scalar expression
-  Let           :: ELeftHandSide bnd_t env env'
-                -> OpenExp env  aenv bnd_t
-                -> OpenExp env' aenv body_t
-                -> OpenExp env  aenv body_t
-
-  -- Variable index, ranging only over scalars
-  Evar          :: ExpVar env t
-                -> OpenExp env aenv t
-
-  -- Apply a backend-specific foreign function
-  Foreign       :: Foreign asm
-                => TypeR y
-                -> asm    (x -> y)    -- foreign function
-                -> Fun () (x -> y)    -- alternate implementation (for other backends)
-                -> OpenExp env aenv x
-                -> OpenExp env aenv y
-
-  -- Tuples
-  Pair          :: OpenExp env aenv t1
-                -> OpenExp env aenv t2
-                -> OpenExp env aenv (t1, t2)
-
-  Nil           :: OpenExp env aenv ()
-
-  -- SIMD vectors
-  VecPack       :: KnownNat n
-                => VecR n s tup
-                -> OpenExp env aenv tup
-                -> OpenExp env aenv (Vec n s)
-
-  VecUnpack     :: KnownNat n
-                => VecR n s tup
-                -> OpenExp env aenv (Vec n s)
-                -> OpenExp env aenv tup
-
-  -- Array indices & shapes
-  IndexSlice    :: SliceIndex slix sl co sh
-                -> OpenExp env aenv slix
-                -> OpenExp env aenv sh
-                -> OpenExp env aenv sl
-
-  IndexFull     :: SliceIndex slix sl co sh
-                -> OpenExp env aenv slix
-                -> OpenExp env aenv sl
-                -> OpenExp env aenv sh
-
-  -- Shape and index conversion
-  ToIndex       :: ShapeR sh
-                -> OpenExp env aenv sh           -- shape of the array
-                -> OpenExp env aenv sh           -- index into the array
-                -> OpenExp env aenv Int
-
-  FromIndex     :: ShapeR sh
-                -> OpenExp env aenv sh           -- shape of the array
-                -> OpenExp env aenv Int          -- index into linear representation
-                -> OpenExp env aenv sh
-
-  -- Case statement
-  Case          :: OpenExp env aenv TAG
-                -> [(TAG, OpenExp env aenv b)]      -- list of equations
-                -> Maybe (OpenExp env aenv b)       -- default case
-                -> OpenExp env aenv b
-
-  -- Conditional expression (non-strict in 2nd and 3rd argument)
-  Cond          :: OpenExp env aenv PrimBool
-                -> OpenExp env aenv t
-                -> OpenExp env aenv t
-                -> OpenExp env aenv t
-
-  -- Value recursion
-  While         :: OpenFun env aenv (a -> PrimBool) -- continue while true
-                -> OpenFun env aenv (a -> a)        -- function to iterate
-                -> OpenExp env aenv a               -- initial value
-                -> OpenExp env aenv a
-
-  -- Constant values
-  Const         :: ScalarType t
-                -> t
-                -> OpenExp env aenv t
-
-  PrimConst     :: PrimConst t
-                -> OpenExp env aenv t
-
-  -- Primitive scalar operations
-  PrimApp       :: PrimFun (a -> r)
-                -> OpenExp env aenv a
-                -> OpenExp env aenv r
-
-  -- Project a single scalar from an array.
-  Index         :: ArrayVar    aenv (Array dim t)
-                -> OpenExp env aenv dim
-                -> OpenExp env aenv t
-
-  LinearIndex   :: ArrayVar    aenv (Array dim t)
-                -> OpenExp env aenv Int
-                -> OpenExp env aenv t
-
-  -- Array shape.
-  Shape         :: ArrayVar    aenv (Array dim e)
-                -> OpenExp env aenv dim
-
-  -- Number of elements of an array given its shape
-  ShapeSize     :: ShapeR dim
-                -> OpenExp env aenv dim
-                -> OpenExp env aenv Int
-
-  -- Unsafe operations (may fail or result in undefined behaviour)
-  -- An unspecified bit pattern
-  Undef         :: ScalarType t
-                -> OpenExp env aenv t
-
-  -- Reinterpret the bits of a value as a different type
-  Coerce        :: BitSizeEq a b
-                => ScalarType a
-                -> ScalarType b
-                -> OpenExp env aenv a
-                -> OpenExp env aenv b
-
--- |Primitive constant values
+-- | Vanilla open function abstraction
 --
-data PrimConst ty where
+type OpenFun env aenv = PreOpenFun (ArrayInstr aenv) env
 
-  -- constants from Bounded
-  PrimMinBound  :: BoundedType a -> PrimConst a
-  PrimMaxBound  :: BoundedType a -> PrimConst a
-
-  -- constant from Floating
-  PrimPi        :: FloatingType a -> PrimConst a
-
-
--- |Primitive scalar operations
+-- | Vanilla function without free scalar variables
 --
-data PrimFun sig where
+type Fun aenv = OpenFun () aenv
 
-  -- operators from Num
-  PrimAdd  :: NumType a -> PrimFun ((a, a) -> a)
-  PrimSub  :: NumType a -> PrimFun ((a, a) -> a)
-  PrimMul  :: NumType a -> PrimFun ((a, a) -> a)
-  PrimNeg  :: NumType a -> PrimFun (a      -> a)
-  PrimAbs  :: NumType a -> PrimFun (a      -> a)
-  PrimSig  :: NumType a -> PrimFun (a      -> a)
-
-  -- operators from Integral
-  PrimQuot     :: IntegralType a -> PrimFun ((a, a)   -> a)
-  PrimRem      :: IntegralType a -> PrimFun ((a, a)   -> a)
-  PrimQuotRem  :: IntegralType a -> PrimFun ((a, a)   -> (a, a))
-  PrimIDiv     :: IntegralType a -> PrimFun ((a, a)   -> a)
-  PrimMod      :: IntegralType a -> PrimFun ((a, a)   -> a)
-  PrimDivMod   :: IntegralType a -> PrimFun ((a, a)   -> (a, a))
-
-  -- operators from Bits & FiniteBits
-  PrimBAnd               :: IntegralType a -> PrimFun ((a, a)   -> a)
-  PrimBOr                :: IntegralType a -> PrimFun ((a, a)   -> a)
-  PrimBXor               :: IntegralType a -> PrimFun ((a, a)   -> a)
-  PrimBNot               :: IntegralType a -> PrimFun (a        -> a)
-  PrimBShiftL            :: IntegralType a -> PrimFun ((a, Int) -> a)
-  PrimBShiftR            :: IntegralType a -> PrimFun ((a, Int) -> a)
-  PrimBRotateL           :: IntegralType a -> PrimFun ((a, Int) -> a)
-  PrimBRotateR           :: IntegralType a -> PrimFun ((a, Int) -> a)
-  PrimPopCount           :: IntegralType a -> PrimFun (a -> Int)
-  PrimCountLeadingZeros  :: IntegralType a -> PrimFun (a -> Int)
-  PrimCountTrailingZeros :: IntegralType a -> PrimFun (a -> Int)
-
-  -- operators from Fractional and Floating
-  PrimFDiv        :: FloatingType a -> PrimFun ((a, a) -> a)
-  PrimRecip       :: FloatingType a -> PrimFun (a      -> a)
-  PrimSin         :: FloatingType a -> PrimFun (a      -> a)
-  PrimCos         :: FloatingType a -> PrimFun (a      -> a)
-  PrimTan         :: FloatingType a -> PrimFun (a      -> a)
-  PrimAsin        :: FloatingType a -> PrimFun (a      -> a)
-  PrimAcos        :: FloatingType a -> PrimFun (a      -> a)
-  PrimAtan        :: FloatingType a -> PrimFun (a      -> a)
-  PrimSinh        :: FloatingType a -> PrimFun (a      -> a)
-  PrimCosh        :: FloatingType a -> PrimFun (a      -> a)
-  PrimTanh        :: FloatingType a -> PrimFun (a      -> a)
-  PrimAsinh       :: FloatingType a -> PrimFun (a      -> a)
-  PrimAcosh       :: FloatingType a -> PrimFun (a      -> a)
-  PrimAtanh       :: FloatingType a -> PrimFun (a      -> a)
-  PrimExpFloating :: FloatingType a -> PrimFun (a      -> a)
-  PrimSqrt        :: FloatingType a -> PrimFun (a      -> a)
-  PrimLog         :: FloatingType a -> PrimFun (a      -> a)
-  PrimFPow        :: FloatingType a -> PrimFun ((a, a) -> a)
-  PrimLogBase     :: FloatingType a -> PrimFun ((a, a) -> a)
-
-  -- FIXME: add missing operations from RealFrac & RealFloat
-
-  -- operators from RealFrac
-  PrimTruncate :: FloatingType a -> IntegralType b -> PrimFun (a -> b)
-  PrimRound    :: FloatingType a -> IntegralType b -> PrimFun (a -> b)
-  PrimFloor    :: FloatingType a -> IntegralType b -> PrimFun (a -> b)
-  PrimCeiling  :: FloatingType a -> IntegralType b -> PrimFun (a -> b)
-  -- PrimProperFraction :: FloatingType a -> IntegralType b -> PrimFun (a -> (b, a))
-
-  -- operators from RealFloat
-  PrimAtan2      :: FloatingType a -> PrimFun ((a, a) -> a)
-  PrimIsNaN      :: FloatingType a -> PrimFun (a -> PrimBool)
-  PrimIsInfinite :: FloatingType a -> PrimFun (a -> PrimBool)
-
-  -- relational and equality operators
-  PrimLt   :: SingleType a -> PrimFun ((a, a) -> PrimBool)
-  PrimGt   :: SingleType a -> PrimFun ((a, a) -> PrimBool)
-  PrimLtEq :: SingleType a -> PrimFun ((a, a) -> PrimBool)
-  PrimGtEq :: SingleType a -> PrimFun ((a, a) -> PrimBool)
-  PrimEq   :: SingleType a -> PrimFun ((a, a) -> PrimBool)
-  PrimNEq  :: SingleType a -> PrimFun ((a, a) -> PrimBool)
-  PrimMax  :: SingleType a -> PrimFun ((a, a) -> a)
-  PrimMin  :: SingleType a -> PrimFun ((a, a) -> a)
-
-  -- logical operators
-  --
-  -- Note that these operators are strict in both arguments. That is, the
-  -- second argument of PrimLAnd is always evaluated even when the first
-  -- argument is false.
-  --
-  -- We define (surface level) (&&) and (||) using if-then-else to enable
-  -- short-circuiting, while (&&!) and (||!) are strict versions of these
-  -- operators, which are defined using PrimLAnd and PrimLOr.
-  --
-  PrimLAnd :: PrimFun ((PrimBool, PrimBool) -> PrimBool)
-  PrimLOr  :: PrimFun ((PrimBool, PrimBool) -> PrimBool)
-  PrimLNot :: PrimFun (PrimBool             -> PrimBool)
-
-  -- general conversion between types
-  PrimFromIntegral :: IntegralType a -> NumType b -> PrimFun (a -> b)
-  PrimToFloating   :: NumType a -> FloatingType b -> PrimFun (a -> b)
+-- | Vanilla expression without free scalar variables
+--
+type Exp aenv = OpenExp () aenv
 
 
 -- Type utilities
@@ -784,145 +575,6 @@ instance HasArraysR acc => HasArraysR (PreOpenAcc acc) where
                                          in arraysRarray sh tR
   arraysR (Stencil2 _ _ tR _ _ a _ _) = let ArrayR sh _ = arrayR a
                                          in arraysRarray sh tR
-
-expType :: HasCallStack => OpenExp aenv env t -> TypeR t
-expType = \case
-  Let _ _ body                 -> expType body
-  Evar (Var tR _)              -> TupRsingle tR
-  Foreign tR _ _ _             -> tR
-  Pair e1 e2                   -> TupRpair (expType e1) (expType e2)
-  Nil                          -> TupRunit
-  VecPack   vecR _             -> TupRsingle $ VectorScalarType $ vecRvector vecR
-  VecUnpack vecR _             -> vecRtuple vecR
-  IndexSlice si _ _            -> shapeType $ sliceShapeR si
-  IndexFull  si _ _            -> shapeType $ sliceDomainR si
-  ToIndex{}                    -> TupRsingle scalarTypeInt
-  FromIndex shr _ _            -> shapeType shr
-  Case _ ((_,e):_) _           -> expType e
-  Case _ [] (Just e)           -> expType e
-  Case{}                       -> internalError "empty case encountered"
-  Cond _ e _                   -> expType e
-  While _ (Lam lhs _) _        -> lhsToTupR lhs
-  While{}                      -> error "What's the matter, you're running in the shadows"
-  Const tR _                   -> TupRsingle tR
-  PrimConst c                  -> TupRsingle $ SingleScalarType $ primConstType c
-  PrimApp f _                  -> snd $ primFunType f
-  Index (Var repr _) _         -> arrayRtype repr
-  LinearIndex (Var repr _) _   -> arrayRtype repr
-  Shape (Var repr _)           -> shapeType $ arrayRshape repr
-  ShapeSize{}                  -> TupRsingle scalarTypeInt
-  Undef tR                     -> TupRsingle tR
-  Coerce _ tR _                -> TupRsingle tR
-
-primConstType :: PrimConst a -> SingleType a
-primConstType = \case
-  PrimMinBound t -> bounded t
-  PrimMaxBound t -> bounded t
-  PrimPi       t -> floating t
-  where
-    bounded :: BoundedType a -> SingleType a
-    bounded (IntegralBoundedType t) = NumSingleType $ IntegralNumType t
-
-    floating :: FloatingType t -> SingleType t
-    floating = NumSingleType . FloatingNumType
-
-primFunType :: PrimFun (a -> b) -> (TypeR a, TypeR b)
-primFunType = \case
-  -- Num
-  PrimAdd t                 -> binary' $ num t
-  PrimSub t                 -> binary' $ num t
-  PrimMul t                 -> binary' $ num t
-  PrimNeg t                 -> unary'  $ num t
-  PrimAbs t                 -> unary'  $ num t
-  PrimSig t                 -> unary'  $ num t
-
-  -- Integral
-  PrimQuot t                -> binary' $ integral t
-  PrimRem  t                -> binary' $ integral t
-  PrimQuotRem t             -> unary' $ integral t `TupRpair` integral t
-  PrimIDiv t                -> binary' $ integral t
-  PrimMod  t                -> binary' $ integral t
-  PrimDivMod t              -> unary' $ integral t `TupRpair` integral t
-
-  -- Bits & FiniteBits
-  PrimBAnd t                -> binary' $ integral t
-  PrimBOr t                 -> binary' $ integral t
-  PrimBXor t                -> binary' $ integral t
-  PrimBNot t                -> unary' $ integral t
-  PrimBShiftL t             -> (integral t `TupRpair` int, integral t)
-  PrimBShiftR t             -> (integral t `TupRpair` int, integral t)
-  PrimBRotateL t            -> (integral t `TupRpair` int, integral t)
-  PrimBRotateR t            -> (integral t `TupRpair` int, integral t)
-  PrimPopCount t            -> unary (integral t) int
-  PrimCountLeadingZeros t   -> unary (integral t) int
-  PrimCountTrailingZeros t  -> unary (integral t) int
-
-  -- Fractional, Floating
-  PrimFDiv t                -> binary' $ floating t
-  PrimRecip t               -> unary'  $ floating t
-  PrimSin t                 -> unary'  $ floating t
-  PrimCos t                 -> unary'  $ floating t
-  PrimTan t                 -> unary'  $ floating t
-  PrimAsin t                -> unary'  $ floating t
-  PrimAcos t                -> unary'  $ floating t
-  PrimAtan t                -> unary'  $ floating t
-  PrimSinh t                -> unary'  $ floating t
-  PrimCosh t                -> unary'  $ floating t
-  PrimTanh t                -> unary'  $ floating t
-  PrimAsinh t               -> unary'  $ floating t
-  PrimAcosh t               -> unary'  $ floating t
-  PrimAtanh t               -> unary'  $ floating t
-  PrimExpFloating t         -> unary'  $ floating t
-  PrimSqrt t                -> unary'  $ floating t
-  PrimLog t                 -> unary'  $ floating t
-  PrimFPow t                -> binary' $ floating t
-  PrimLogBase t             -> binary' $ floating t
-
-  -- RealFrac
-  PrimTruncate a b          -> unary (floating a) (integral b)
-  PrimRound a b             -> unary (floating a) (integral b)
-  PrimFloor a b             -> unary (floating a) (integral b)
-  PrimCeiling a b           -> unary (floating a) (integral b)
-
-  -- RealFloat
-  PrimAtan2 t               -> binary' $ floating t
-  PrimIsNaN t               -> unary (floating t) bool
-  PrimIsInfinite t          -> unary (floating t) bool
-
-  -- Relational and equality
-  PrimLt t                  -> compare' t
-  PrimGt t                  -> compare' t
-  PrimLtEq t                -> compare' t
-  PrimGtEq t                -> compare' t
-  PrimEq t                  -> compare' t
-  PrimNEq t                 -> compare' t
-  PrimMax t                 -> binary' $ single t
-  PrimMin t                 -> binary' $ single t
-
-  -- Logical
-  PrimLAnd                  -> binary' bool
-  PrimLOr                   -> binary' bool
-  PrimLNot                  -> unary' bool
-
-  -- general conversion between types
-  PrimFromIntegral a b      -> unary (integral a) (num b)
-  PrimToFloating   a b      -> unary (num a) (floating b)
-
-  where
-    unary a b  = (a, b)
-    unary' a   = unary a a
-    binary a b = (a `TupRpair` a, b)
-    binary' a  = binary a a
-    compare' a = binary (single a) bool
-
-    single   = TupRsingle . SingleScalarType
-    num      = TupRsingle . SingleScalarType . NumSingleType
-    integral = num . IntegralNumType
-    floating = num . FloatingNumType
-
-    bool     = TupRsingle scalarTypeWord8
-    int      = TupRsingle scalarTypeInt
-
 
 -- Normal form data
 -- ================
@@ -1016,135 +668,6 @@ rnfBoundary _             Wrap         = ()
 rnfBoundary (ArrayR _ tR) (Constant c) = rnfConst tR c
 rnfBoundary _             (Function f) = rnfOpenFun f
 
-rnfMaybe :: (a -> ()) -> Maybe a -> ()
-rnfMaybe _ Nothing  = ()
-rnfMaybe f (Just x) = f x
-
-rnfList :: (a -> ()) -> [a] -> ()
-rnfList r = go
-  where
-    go []     = ()
-    go (x:xs) = r x `seq` go xs
-
-rnfOpenFun :: OpenFun env aenv t -> ()
-rnfOpenFun (Body b)    = rnfOpenExp b
-rnfOpenFun (Lam lhs f) = rnfELeftHandSide lhs `seq` rnfOpenFun f
-
-rnfOpenExp :: forall env aenv t. OpenExp env aenv t -> ()
-rnfOpenExp topExp =
-  let
-      rnfF :: OpenFun env' aenv' t' -> ()
-      rnfF = rnfOpenFun
-
-      rnfE :: OpenExp env' aenv' t' -> ()
-      rnfE = rnfOpenExp
-  in
-  case topExp of
-    Let lhs bnd body          -> rnfELeftHandSide lhs `seq` rnfE bnd `seq` rnfE body
-    Evar v                    -> rnfExpVar v
-    Foreign tp asm f x        -> rnfTypeR tp `seq` rnf (strForeign asm) `seq` rnfF f `seq` rnfE x
-    Const tp c                -> c `seq` rnfScalarType tp -- scalars should have (nf == whnf)
-    Undef tp                  -> rnfScalarType tp
-    Pair a b                  -> rnfE a `seq` rnfE b
-    Nil                       -> ()
-    VecPack   vecr e          -> rnfVecR vecr `seq` rnfE e
-    VecUnpack vecr e          -> rnfVecR vecr `seq` rnfE e
-    IndexSlice slice slix sh  -> rnfSliceIndex slice `seq` rnfE slix `seq` rnfE sh
-    IndexFull slice slix sl   -> rnfSliceIndex slice `seq` rnfE slix `seq` rnfE sl
-    ToIndex shr sh ix         -> rnfShapeR shr `seq` rnfE sh `seq` rnfE ix
-    FromIndex shr sh ix       -> rnfShapeR shr `seq` rnfE sh `seq` rnfE ix
-    Case e rhs def            -> rnfE e `seq` rnfList (\(t,c) -> t `seq` rnfE c) rhs `seq` rnfMaybe rnfE def
-    Cond p e1 e2              -> rnfE p `seq` rnfE e1 `seq` rnfE e2
-    While p f x               -> rnfF p `seq` rnfF f `seq` rnfE x
-    PrimConst c               -> rnfPrimConst c
-    PrimApp f x               -> rnfPrimFun f `seq` rnfE x
-    Index a ix                -> rnfArrayVar a `seq` rnfE ix
-    LinearIndex a ix          -> rnfArrayVar a `seq` rnfE ix
-    Shape a                   -> rnfArrayVar a
-    ShapeSize shr sh          -> rnfShapeR shr `seq` rnfE sh
-    Coerce t1 t2 e            -> rnfScalarType t1 `seq` rnfScalarType t2 `seq` rnfE e
-
-rnfExpVar :: ExpVar env t -> ()
-rnfExpVar = rnfVar rnfScalarType
-
-rnfELeftHandSide :: ELeftHandSide t env env' -> ()
-rnfELeftHandSide= rnfLeftHandSide rnfScalarType
-
-rnfConst :: TypeR t -> t -> ()
-rnfConst TupRunit          ()    = ()
-rnfConst (TupRsingle t)    !_    = rnfScalarType t  -- scalars should have (nf == whnf)
-rnfConst (TupRpair ta tb)  (a,b) = rnfConst ta a `seq` rnfConst tb b
-
-rnfPrimConst :: PrimConst c -> ()
-rnfPrimConst (PrimMinBound t) = rnfBoundedType t
-rnfPrimConst (PrimMaxBound t) = rnfBoundedType t
-rnfPrimConst (PrimPi t)       = rnfFloatingType t
-
-rnfPrimFun :: PrimFun f -> ()
-rnfPrimFun (PrimAdd t)                = rnfNumType t
-rnfPrimFun (PrimSub t)                = rnfNumType t
-rnfPrimFun (PrimMul t)                = rnfNumType t
-rnfPrimFun (PrimNeg t)                = rnfNumType t
-rnfPrimFun (PrimAbs t)                = rnfNumType t
-rnfPrimFun (PrimSig t)                = rnfNumType t
-rnfPrimFun (PrimQuot t)               = rnfIntegralType t
-rnfPrimFun (PrimRem t)                = rnfIntegralType t
-rnfPrimFun (PrimQuotRem t)            = rnfIntegralType t
-rnfPrimFun (PrimIDiv t)               = rnfIntegralType t
-rnfPrimFun (PrimMod t)                = rnfIntegralType t
-rnfPrimFun (PrimDivMod t)             = rnfIntegralType t
-rnfPrimFun (PrimBAnd t)               = rnfIntegralType t
-rnfPrimFun (PrimBOr t)                = rnfIntegralType t
-rnfPrimFun (PrimBXor t)               = rnfIntegralType t
-rnfPrimFun (PrimBNot t)               = rnfIntegralType t
-rnfPrimFun (PrimBShiftL t)            = rnfIntegralType t
-rnfPrimFun (PrimBShiftR t)            = rnfIntegralType t
-rnfPrimFun (PrimBRotateL t)           = rnfIntegralType t
-rnfPrimFun (PrimBRotateR t)           = rnfIntegralType t
-rnfPrimFun (PrimPopCount t)           = rnfIntegralType t
-rnfPrimFun (PrimCountLeadingZeros t)  = rnfIntegralType t
-rnfPrimFun (PrimCountTrailingZeros t) = rnfIntegralType t
-rnfPrimFun (PrimFDiv t)               = rnfFloatingType t
-rnfPrimFun (PrimRecip t)              = rnfFloatingType t
-rnfPrimFun (PrimSin t)                = rnfFloatingType t
-rnfPrimFun (PrimCos t)                = rnfFloatingType t
-rnfPrimFun (PrimTan t)                = rnfFloatingType t
-rnfPrimFun (PrimAsin t)               = rnfFloatingType t
-rnfPrimFun (PrimAcos t)               = rnfFloatingType t
-rnfPrimFun (PrimAtan t)               = rnfFloatingType t
-rnfPrimFun (PrimSinh t)               = rnfFloatingType t
-rnfPrimFun (PrimCosh t)               = rnfFloatingType t
-rnfPrimFun (PrimTanh t)               = rnfFloatingType t
-rnfPrimFun (PrimAsinh t)              = rnfFloatingType t
-rnfPrimFun (PrimAcosh t)              = rnfFloatingType t
-rnfPrimFun (PrimAtanh t)              = rnfFloatingType t
-rnfPrimFun (PrimExpFloating t)        = rnfFloatingType t
-rnfPrimFun (PrimSqrt t)               = rnfFloatingType t
-rnfPrimFun (PrimLog t)                = rnfFloatingType t
-rnfPrimFun (PrimFPow t)               = rnfFloatingType t
-rnfPrimFun (PrimLogBase t)            = rnfFloatingType t
-rnfPrimFun (PrimTruncate f i)         = rnfFloatingType f `seq` rnfIntegralType i
-rnfPrimFun (PrimRound f i)            = rnfFloatingType f `seq` rnfIntegralType i
-rnfPrimFun (PrimFloor f i)            = rnfFloatingType f `seq` rnfIntegralType i
-rnfPrimFun (PrimCeiling f i)          = rnfFloatingType f `seq` rnfIntegralType i
-rnfPrimFun (PrimIsNaN t)              = rnfFloatingType t
-rnfPrimFun (PrimIsInfinite t)         = rnfFloatingType t
-rnfPrimFun (PrimAtan2 t)              = rnfFloatingType t
-rnfPrimFun (PrimLt t)                 = rnfSingleType t
-rnfPrimFun (PrimGt t)                 = rnfSingleType t
-rnfPrimFun (PrimLtEq t)               = rnfSingleType t
-rnfPrimFun (PrimGtEq t)               = rnfSingleType t
-rnfPrimFun (PrimEq t)                 = rnfSingleType t
-rnfPrimFun (PrimNEq t)                = rnfSingleType t
-rnfPrimFun (PrimMax t)                = rnfSingleType t
-rnfPrimFun (PrimMin t)                = rnfSingleType t
-rnfPrimFun PrimLAnd                   = ()
-rnfPrimFun PrimLOr                    = ()
-rnfPrimFun PrimLNot                   = ()
-rnfPrimFun (PrimFromIntegral i n)     = rnfIntegralType i `seq` rnfNumType n
-rnfPrimFun (PrimToFloating n f)       = rnfNumType n `seq` rnfFloatingType f
-
-
 -- Template Haskell
 -- ================
 
@@ -1222,63 +745,6 @@ liftDirection :: Direction -> Q (TExp Direction)
 liftDirection LeftToRight = [|| LeftToRight ||]
 liftDirection RightToLeft = [|| RightToLeft ||]
 
-liftMaybe :: (a -> Q (TExp a)) -> Maybe a -> Q (TExp (Maybe a))
-liftMaybe _ Nothing  = [|| Nothing ||]
-liftMaybe f (Just x) = [|| Just $$(f x) ||]
-
-liftList :: (a -> Q (TExp a)) -> [a] -> Q (TExp [a])
-liftList _ []     = [|| [] ||]
-liftList f (x:xs) = [|| $$(f x) : $$(liftList f xs) ||]
-
-liftOpenFun
-    :: OpenFun env aenv t
-    -> Q (TExp (OpenFun env aenv t))
-liftOpenFun (Lam lhs f)  = [|| Lam $$(liftELeftHandSide lhs) $$(liftOpenFun f) ||]
-liftOpenFun (Body b)     = [|| Body $$(liftOpenExp b) ||]
-
-liftOpenExp
-    :: forall env aenv t.
-       OpenExp env aenv t
-    -> Q (TExp (OpenExp env aenv t))
-liftOpenExp pexp =
-  let
-      liftE :: OpenExp env aenv e -> Q (TExp (OpenExp env aenv e))
-      liftE = liftOpenExp
-
-      liftF :: OpenFun env aenv f -> Q (TExp (OpenFun env aenv f))
-      liftF = liftOpenFun
-  in
-  case pexp of
-    Let lhs bnd body          -> [|| Let $$(liftELeftHandSide lhs) $$(liftOpenExp bnd) $$(liftOpenExp body) ||]
-    Evar var                  -> [|| Evar $$(liftExpVar var) ||]
-    Foreign repr asm f x      -> [|| Foreign $$(liftTypeR repr) $$(liftForeign asm) $$(liftOpenFun f) $$(liftE x) ||]
-    Const tp c                -> [|| Const $$(liftScalarType tp) $$(liftElt (TupRsingle tp) c) ||]
-    Undef tp                  -> [|| Undef $$(liftScalarType tp) ||]
-    Pair a b                  -> [|| Pair $$(liftE a) $$(liftE b) ||]
-    Nil                       -> [|| Nil ||]
-    VecPack   vecr e          -> [|| VecPack   $$(liftVecR vecr) $$(liftE e) ||]
-    VecUnpack vecr e          -> [|| VecUnpack $$(liftVecR vecr) $$(liftE e) ||]
-    IndexSlice slice slix sh  -> [|| IndexSlice $$(liftSliceIndex slice) $$(liftE slix) $$(liftE sh) ||]
-    IndexFull slice slix sl   -> [|| IndexFull $$(liftSliceIndex slice) $$(liftE slix) $$(liftE sl) ||]
-    ToIndex shr sh ix         -> [|| ToIndex $$(liftShapeR shr) $$(liftE sh) $$(liftE ix) ||]
-    FromIndex shr sh ix       -> [|| FromIndex $$(liftShapeR shr) $$(liftE sh) $$(liftE ix) ||]
-    Case p rhs def            -> [|| Case $$(liftE p) $$(liftList (\(t,c) -> [|| (t, $$(liftE c)) ||]) rhs) $$(liftMaybe liftE def) ||]
-    Cond p t e                -> [|| Cond $$(liftE p) $$(liftE t) $$(liftE e) ||]
-    While p f x               -> [|| While $$(liftF p) $$(liftF f) $$(liftE x) ||]
-    PrimConst t               -> [|| PrimConst $$(liftPrimConst t) ||]
-    PrimApp f x               -> [|| PrimApp $$(liftPrimFun f) $$(liftE x) ||]
-    Index a ix                -> [|| Index $$(liftArrayVar a) $$(liftE ix) ||]
-    LinearIndex a ix          -> [|| LinearIndex $$(liftArrayVar a) $$(liftE ix) ||]
-    Shape a                   -> [|| Shape $$(liftArrayVar a) ||]
-    ShapeSize shr ix          -> [|| ShapeSize $$(liftShapeR shr) $$(liftE ix) ||]
-    Coerce t1 t2 e            -> [|| Coerce $$(liftScalarType t1) $$(liftScalarType t2) $$(liftE e) ||]
-
-liftELeftHandSide :: ELeftHandSide t env env' -> Q (TExp (ELeftHandSide t env env'))
-liftELeftHandSide = liftLeftHandSide liftScalarType
-
-liftExpVar :: ExpVar env t -> Q (TExp (ExpVar env t))
-liftExpVar = liftVar liftScalarType
-
 liftBoundary
     :: forall aenv sh e.
        ArrayR (Array sh e)
@@ -1289,75 +755,6 @@ liftBoundary _             Mirror       = [|| Mirror ||]
 liftBoundary _             Wrap         = [|| Wrap ||]
 liftBoundary (ArrayR _ tp) (Constant v) = [|| Constant $$(liftElt tp v) ||]
 liftBoundary _             (Function f) = [|| Function $$(liftOpenFun f) ||]
-
-liftPrimConst :: PrimConst c -> Q (TExp (PrimConst c))
-liftPrimConst (PrimMinBound t) = [|| PrimMinBound $$(liftBoundedType t) ||]
-liftPrimConst (PrimMaxBound t) = [|| PrimMaxBound $$(liftBoundedType t) ||]
-liftPrimConst (PrimPi t)       = [|| PrimPi $$(liftFloatingType t) ||]
-
-liftPrimFun :: PrimFun f -> Q (TExp (PrimFun f))
-liftPrimFun (PrimAdd t)                = [|| PrimAdd $$(liftNumType t) ||]
-liftPrimFun (PrimSub t)                = [|| PrimSub $$(liftNumType t) ||]
-liftPrimFun (PrimMul t)                = [|| PrimMul $$(liftNumType t) ||]
-liftPrimFun (PrimNeg t)                = [|| PrimNeg $$(liftNumType t) ||]
-liftPrimFun (PrimAbs t)                = [|| PrimAbs $$(liftNumType t) ||]
-liftPrimFun (PrimSig t)                = [|| PrimSig $$(liftNumType t) ||]
-liftPrimFun (PrimQuot t)               = [|| PrimQuot $$(liftIntegralType t) ||]
-liftPrimFun (PrimRem t)                = [|| PrimRem $$(liftIntegralType t) ||]
-liftPrimFun (PrimQuotRem t)            = [|| PrimQuotRem $$(liftIntegralType t) ||]
-liftPrimFun (PrimIDiv t)               = [|| PrimIDiv $$(liftIntegralType t) ||]
-liftPrimFun (PrimMod t)                = [|| PrimMod $$(liftIntegralType t) ||]
-liftPrimFun (PrimDivMod t)             = [|| PrimDivMod $$(liftIntegralType t) ||]
-liftPrimFun (PrimBAnd t)               = [|| PrimBAnd $$(liftIntegralType t) ||]
-liftPrimFun (PrimBOr t)                = [|| PrimBOr $$(liftIntegralType t) ||]
-liftPrimFun (PrimBXor t)               = [|| PrimBXor $$(liftIntegralType t) ||]
-liftPrimFun (PrimBNot t)               = [|| PrimBNot $$(liftIntegralType t) ||]
-liftPrimFun (PrimBShiftL t)            = [|| PrimBShiftL $$(liftIntegralType t) ||]
-liftPrimFun (PrimBShiftR t)            = [|| PrimBShiftR $$(liftIntegralType t) ||]
-liftPrimFun (PrimBRotateL t)           = [|| PrimBRotateL $$(liftIntegralType t) ||]
-liftPrimFun (PrimBRotateR t)           = [|| PrimBRotateR $$(liftIntegralType t) ||]
-liftPrimFun (PrimPopCount t)           = [|| PrimPopCount $$(liftIntegralType t) ||]
-liftPrimFun (PrimCountLeadingZeros t)  = [|| PrimCountLeadingZeros $$(liftIntegralType t) ||]
-liftPrimFun (PrimCountTrailingZeros t) = [|| PrimCountTrailingZeros $$(liftIntegralType t) ||]
-liftPrimFun (PrimFDiv t)               = [|| PrimFDiv $$(liftFloatingType t) ||]
-liftPrimFun (PrimRecip t)              = [|| PrimRecip $$(liftFloatingType t) ||]
-liftPrimFun (PrimSin t)                = [|| PrimSin $$(liftFloatingType t) ||]
-liftPrimFun (PrimCos t)                = [|| PrimCos $$(liftFloatingType t) ||]
-liftPrimFun (PrimTan t)                = [|| PrimTan $$(liftFloatingType t) ||]
-liftPrimFun (PrimAsin t)               = [|| PrimAsin $$(liftFloatingType t) ||]
-liftPrimFun (PrimAcos t)               = [|| PrimAcos $$(liftFloatingType t) ||]
-liftPrimFun (PrimAtan t)               = [|| PrimAtan $$(liftFloatingType t) ||]
-liftPrimFun (PrimSinh t)               = [|| PrimSinh $$(liftFloatingType t) ||]
-liftPrimFun (PrimCosh t)               = [|| PrimCosh $$(liftFloatingType t) ||]
-liftPrimFun (PrimTanh t)               = [|| PrimTanh $$(liftFloatingType t) ||]
-liftPrimFun (PrimAsinh t)              = [|| PrimAsinh $$(liftFloatingType t) ||]
-liftPrimFun (PrimAcosh t)              = [|| PrimAcosh $$(liftFloatingType t) ||]
-liftPrimFun (PrimAtanh t)              = [|| PrimAtanh $$(liftFloatingType t) ||]
-liftPrimFun (PrimExpFloating t)        = [|| PrimExpFloating $$(liftFloatingType t) ||]
-liftPrimFun (PrimSqrt t)               = [|| PrimSqrt $$(liftFloatingType t) ||]
-liftPrimFun (PrimLog t)                = [|| PrimLog $$(liftFloatingType t) ||]
-liftPrimFun (PrimFPow t)               = [|| PrimFPow $$(liftFloatingType t) ||]
-liftPrimFun (PrimLogBase t)            = [|| PrimLogBase $$(liftFloatingType t) ||]
-liftPrimFun (PrimTruncate ta tb)       = [|| PrimTruncate $$(liftFloatingType ta) $$(liftIntegralType tb) ||]
-liftPrimFun (PrimRound ta tb)          = [|| PrimRound $$(liftFloatingType ta) $$(liftIntegralType tb) ||]
-liftPrimFun (PrimFloor ta tb)          = [|| PrimFloor $$(liftFloatingType ta) $$(liftIntegralType tb) ||]
-liftPrimFun (PrimCeiling ta tb)        = [|| PrimCeiling $$(liftFloatingType ta) $$(liftIntegralType tb) ||]
-liftPrimFun (PrimIsNaN t)              = [|| PrimIsNaN $$(liftFloatingType t) ||]
-liftPrimFun (PrimIsInfinite t)         = [|| PrimIsInfinite $$(liftFloatingType t) ||]
-liftPrimFun (PrimAtan2 t)              = [|| PrimAtan2 $$(liftFloatingType t) ||]
-liftPrimFun (PrimLt t)                 = [|| PrimLt $$(liftSingleType t) ||]
-liftPrimFun (PrimGt t)                 = [|| PrimGt $$(liftSingleType t) ||]
-liftPrimFun (PrimLtEq t)               = [|| PrimLtEq $$(liftSingleType t) ||]
-liftPrimFun (PrimGtEq t)               = [|| PrimGtEq $$(liftSingleType t) ||]
-liftPrimFun (PrimEq t)                 = [|| PrimEq $$(liftSingleType t) ||]
-liftPrimFun (PrimNEq t)                = [|| PrimNEq $$(liftSingleType t) ||]
-liftPrimFun (PrimMax t)                = [|| PrimMax $$(liftSingleType t) ||]
-liftPrimFun (PrimMin t)                = [|| PrimMin $$(liftSingleType t) ||]
-liftPrimFun PrimLAnd                   = [|| PrimLAnd ||]
-liftPrimFun PrimLOr                    = [|| PrimLOr ||]
-liftPrimFun PrimLNot                   = [|| PrimLNot ||]
-liftPrimFun (PrimFromIntegral ta tb)   = [|| PrimFromIntegral $$(liftIntegralType ta) $$(liftNumType tb) ||]
-liftPrimFun (PrimToFloating ta tb)     = [|| PrimToFloating $$(liftNumType ta) $$(liftFloatingType tb) ||]
 
 
 showPreAccOp :: forall acc aenv arrs. PreOpenAcc acc aenv arrs -> String
@@ -1390,29 +787,3 @@ showPreAccOp Stencil2{}          = "Stencil2"
 showsDirection :: Direction -> ShowS
 showsDirection LeftToRight = ('l':)
 showsDirection RightToLeft = ('r':)
-
-showExpOp :: forall aenv env t. OpenExp aenv env t -> String
-showExpOp Let{}             = "Let"
-showExpOp (Evar (Var _ ix)) = "Var x" ++ show (idxToInt ix)
-showExpOp (Const tp c)      = "Const " ++ showElt (TupRsingle tp) c
-showExpOp Undef{}           = "Undef"
-showExpOp Foreign{}         = "Foreign"
-showExpOp Pair{}            = "Pair"
-showExpOp Nil{}             = "Nil"
-showExpOp VecPack{}         = "VecPack"
-showExpOp VecUnpack{}       = "VecUnpack"
-showExpOp IndexSlice{}      = "IndexSlice"
-showExpOp IndexFull{}       = "IndexFull"
-showExpOp ToIndex{}         = "ToIndex"
-showExpOp FromIndex{}       = "FromIndex"
-showExpOp Case{}            = "Case"
-showExpOp Cond{}            = "Cond"
-showExpOp While{}           = "While"
-showExpOp PrimConst{}       = "PrimConst"
-showExpOp PrimApp{}         = "PrimApp"
-showExpOp Index{}           = "Index"
-showExpOp LinearIndex{}     = "LinearIndex"
-showExpOp Shape{}           = "Shape"
-showExpOp ShapeSize{}       = "ShapeSize"
-showExpOp Coerce{}          = "Coerce"
-

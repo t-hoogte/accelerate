@@ -27,7 +27,7 @@ module Data.Array.Accelerate.Trafo.Algebra (
 
 ) where
 
-import Data.Array.Accelerate.AST
+import Data.Array.Accelerate.AST.Exp
 import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.Analysis.Match
 import Data.Array.Accelerate.Pretty.Print                           ( primOperator, isInfix, opName )
@@ -50,13 +50,14 @@ import qualified Prelude                                            as P
 -- or constant let bindings. Be careful not to follow self-cycles.
 --
 propagate
-    :: forall env aenv exp.
-       Gamma env env aenv
-    -> OpenExp env aenv exp
+    :: forall arr env exp.
+       IsArrayInstr arr
+    => Gamma arr env env
+    -> PreOpenExp arr env exp
     -> Maybe exp
 propagate env = cvtE
   where
-    cvtE :: OpenExp env aenv e -> Maybe e
+    cvtE :: PreOpenExp arr env e -> Maybe e
     cvtE exp = case exp of
       Const _ c                                 -> Just c
       PrimConst c                               -> Just (evalPrimConst c)
@@ -71,11 +72,12 @@ propagate env = cvtE
 -- Attempt to evaluate primitive function applications
 --
 evalPrimApp
-    :: forall env aenv a r.
-       Gamma env env aenv
+    :: forall arr env a r.
+       IsArrayInstr arr
+    => Gamma arr env env
     -> PrimFun (a -> r)
-    -> OpenExp env aenv a
-    -> (Any, OpenExp env aenv r)
+    -> PreOpenExp arr env a
+    -> (Any, PreOpenExp arr env r)
 evalPrimApp env f x
   -- First attempt to move constant values towards the left
   | Just r      <- commutes f x env     = evalPrimApp env f r
@@ -154,11 +156,12 @@ evalPrimApp env f x
 -- to the left of the operator. Returning Nothing indicates no change is made.
 --
 commutes
-    :: forall env aenv a r.
-       PrimFun (a -> r)
-    -> OpenExp env aenv a
-    -> Gamma env env aenv
-    -> Maybe (OpenExp env aenv a)
+    :: forall arr env a r.
+       IsArrayInstr arr
+    => PrimFun (a -> r)
+    -> PreOpenExp arr env a
+    -> Gamma arr env env
+    -> Maybe (PreOpenExp arr env a)
 commutes f x env = case f of
   PrimAdd _     -> swizzle x
   PrimMul _     -> swizzle x
@@ -171,7 +174,7 @@ commutes f x env = case f of
   PrimMin _     -> swizzle x
   _             -> Nothing
   where
-    swizzle :: OpenExp env aenv (b,b) -> Maybe (OpenExp env aenv (b,b))
+    swizzle :: PreOpenExp arr env (b,b) -> Maybe (PreOpenExp arr env (b,b))
     swizzle (Pair a b)
       | Nothing         <- propagate env a
       , Just _          <- propagate env b
@@ -208,8 +211,8 @@ commutes f x env = case f of
 associates
     :: (Elt a, Elt r)
     => PrimFun (a -> r)
-    -> OpenExp env aenv a
-    -> Maybe (OpenExp env aenv r)
+    -> PreOpenExp arr env a
+    -> Maybe (PreOpenExp arr env r)
 associates fun exp = case fun of
   PrimAdd _     -> swizzle fun exp [PrimAdd ty, PrimSub ty]
   PrimSub _     -> swizzle fun exp [PrimAdd ty, PrimSub ty]
@@ -221,7 +224,7 @@ associates fun exp = case fun of
     ty  = undefined
     ops = [ PrimMul ty, PrimFDiv ty, PrimAdd ty, PrimSub ty, PrimBAnd ty, PrimBOr ty, PrimBXor ty ]
 
-    swizzle :: (Elt a, Elt r) => PrimFun (a -> r) -> OpenExp env aenv a -> [PrimFun (a -> r)] -> Maybe (OpenExp env aenv r)
+    swizzle :: (Elt a, Elt r) => PrimFun (a -> r) -> PreOpenExp arr env a -> [PrimFun (a -> r)] -> Maybe (PreOpenExp arr env r)
     swizzle f x lvl
       | Just Refl       <- matches f ops
       , Just (a,bc)     <- untup2 x
@@ -248,7 +251,7 @@ associates fun exp = case fun of
 -- Helper functions
 -- ----------------
 
-type a :-> b = forall env aenv. OpenExp env aenv a -> Gamma env env aenv -> Maybe (OpenExp env aenv b)
+type a :-> b = forall arr env. IsArrayInstr arr => PreOpenExp arr env a -> Gamma arr env env -> Maybe (PreOpenExp arr env b)
 
 eval1 :: SingleType b -> (a -> b) -> a :-> b
 eval1 tp f x env
@@ -289,10 +292,10 @@ bool2 f (untup2 -> Just (x,y)) env
 bool2 _ _ _
   = Nothing
 
-tup2 :: (OpenExp env aenv a, OpenExp env aenv b) -> OpenExp env aenv (a, b)
+tup2 :: (PreOpenExp arr env a, PreOpenExp arr env b) -> PreOpenExp arr env (a, b)
 tup2 (a,b) = Pair a b
 
-untup2 :: OpenExp env aenv (a, b) -> Maybe (OpenExp env aenv a, OpenExp env aenv b)
+untup2 :: PreOpenExp arr env (a, b) -> Maybe (PreOpenExp arr env a, PreOpenExp arr env b)
 untup2 exp
   | Pair a b <- exp = Just (a, b)
   | otherwise       = Nothing

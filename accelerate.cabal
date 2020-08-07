@@ -316,10 +316,13 @@ Library
         -- For backend development (hidden)
         Data.Array.Accelerate.AST
         Data.Array.Accelerate.AST.Environment
+        Data.Array.Accelerate.AST.Exp
         Data.Array.Accelerate.AST.Idx
         Data.Array.Accelerate.AST.LeftHandSide
+        Data.Array.Accelerate.AST.Operation
         Data.Array.Accelerate.AST.Var
         Data.Array.Accelerate.Analysis.Hash
+        Data.Array.Accelerate.Analysis.Hash.Exp
         Data.Array.Accelerate.Analysis.Match
         Data.Array.Accelerate.Array.Data
         Data.Array.Accelerate.Array.Remote
@@ -349,6 +352,9 @@ Library
         Data.Array.Accelerate.Trafo
         Data.Array.Accelerate.Trafo.Config
         Data.Array.Accelerate.Trafo.Delayed
+        Data.Array.Accelerate.Trafo.Desugar
+        Data.Array.Accelerate.Trafo.Exp.Shrink
+        Data.Array.Accelerate.Trafo.Exp.Substitution
         Data.Array.Accelerate.Trafo.Fusion
         Data.Array.Accelerate.Trafo.Sharing
         Data.Array.Accelerate.Trafo.Substitution
@@ -402,9 +408,9 @@ Library
         Data.Array.Accelerate.Pretty.Print
         Data.Array.Accelerate.Trafo.Algebra
         Data.Array.Accelerate.Trafo.Environment
+        Data.Array.Accelerate.Trafo.Exp.Simplify
         Data.Array.Accelerate.Trafo.LetSplit
         Data.Array.Accelerate.Trafo.Shrink
-        Data.Array.Accelerate.Trafo.Simplify
         Data.Array.Accelerate.Trafo.Var
         Data.Atomic
 

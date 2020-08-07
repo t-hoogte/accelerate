@@ -1,7 +1,15 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE ConstraintKinds   #-}
+{-# LANGUAGE DataKinds         #-}
+{-# LANGUAGE EmptyCase         #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs             #-}
 {-# LANGUAGE RankNTypes        #-}
 {-# LANGUAGE TemplateHaskell   #-}
+{-# LANGUAGE TypeOperators     #-}
+{-# LANGUAGE TypeFamilies      #-}
+{-# LANGUAGE TypeFamilyDependencies #-}
+{-# LANGUAGE QuantifiedConstraints #-}
 {-# OPTIONS_HADDOCK hide #-}
 -- |
 -- Module      : Data.Array.Accelerate.Representation.Type
@@ -18,6 +26,7 @@ module Data.Array.Accelerate.Representation.Type
 
 import Data.Array.Accelerate.Type
 import Data.Primitive.Vec
+import Data.Type.Equality
 
 import Language.Haskell.TH
 
@@ -46,6 +55,36 @@ instance Show (TupR ScalarType a) where
   show (TupRpair a b) = "(" ++ show a ++ "," ++ show b ++")"
 
 type TypeR = TupR ScalarType
+
+-- | Distributes a type constructor over the elements of a tuple.
+-- TODO: Could we make this type class injective? Then we wouldn't
+-- need the type class Distributes any more.
+--
+type family Distribute f a = b where
+  Distribute f () = ()
+  Distribute f (a, b) = (Distribute f a, Distribute f b)
+  Distribute f a = f a
+
+class Distributes s where
+  -- Shows that a single element isn't unit or a pair
+  reprIsSingle :: s t -> Distribute f t :~: f t
+
+instance Distributes ScalarType where
+  reprIsSingle (VectorScalarType _) = Refl
+  reprIsSingle (SingleScalarType (NumSingleType tp)) = case tp of
+    IntegralNumType TypeInt    -> Refl
+    IntegralNumType TypeInt8   -> Refl
+    IntegralNumType TypeInt16  -> Refl
+    IntegralNumType TypeInt32  -> Refl
+    IntegralNumType TypeInt64  -> Refl
+    IntegralNumType TypeWord   -> Refl
+    IntegralNumType TypeWord8  -> Refl
+    IntegralNumType TypeWord16 -> Refl
+    IntegralNumType TypeWord32 -> Refl
+    IntegralNumType TypeWord64 -> Refl
+    FloatingNumType TypeHalf   -> Refl
+    FloatingNumType TypeFloat  -> Refl
+    FloatingNumType TypeDouble -> Refl
 
 rnfTupR :: (forall b. s b -> ()) -> TupR s a -> ()
 rnfTupR _ TupRunit       = ()
@@ -120,3 +159,8 @@ mapTupR :: (forall s. a s -> b s) -> TupR a t -> TupR b t
 mapTupR f (TupRsingle a)   = TupRsingle $ f a
 mapTupR _ TupRunit         = TupRunit
 mapTupR f (TupRpair a1 a2) = mapTupR f a1 `TupRpair` mapTupR f a2
+
+functionImpossible :: TypeR (s -> t) -> a
+functionImpossible (TupRsingle (SingleScalarType (NumSingleType tp))) = case tp of
+  IntegralNumType t -> case t of {}
+  FloatingNumType t -> case t of {}

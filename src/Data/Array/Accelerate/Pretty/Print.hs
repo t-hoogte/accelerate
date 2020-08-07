@@ -399,10 +399,13 @@ prettyOpenExp ctx env aenv exp =
     FromIndex _ sh ix     -> ppF2 "fromIndex"   (ppE sh) (ppE ix)
     While p f x           -> ppF3 "while"       (ppF p) (ppF f) (ppE x)
     Foreign _ ff _ e      -> ppF2 "foreign"     (\_ -> pretty (strForeign ff)) (ppE e)
-    Shape arr             -> ppF1 "shape"       (ppA arr)
+    ArrayInstr (Shape arr) _
+                          -> ppF1 "shape"       (ppA arr)
     ShapeSize _ sh        -> ppF1 "shapeSize"   (ppE sh)
-    Index arr ix          -> ppF2 (Operator (pretty '!') Infix L 9) (ppA arr) (ppE ix)
-    LinearIndex arr ix    -> ppF2 (Operator "!!"         Infix L 9) (ppA arr) (ppE ix)
+    ArrayInstr (Index arr) ix
+                          -> ppF2 (Operator (pretty '!') Infix L 9) (ppA arr) (ppE ix)
+    ArrayInstr (LinearIndex arr) ix
+                          -> ppF2 (Operator "!!"         Infix L 9) (ppA arr) (ppE ix)
     Coerce _ tp x         -> ppF1 (Operator (withTypeRep tp "coerce") App L 10) (ppE x)
     Undef tp              -> withTypeRep tp "undef"
 

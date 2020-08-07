@@ -44,10 +44,7 @@ data Array sh e where
 
 newtype Buffer e = Buffer (ScalarArrayData e)
 
-type family Buffers e where
-  Buffers ()     = ()
-  Buffers (a, b) = (Buffers a, Buffers b)
-  Buffers t      = t
+type Buffers e = Distribute Buffer e
 
 -- | Segment descriptor (vector of segment lengths).
 --

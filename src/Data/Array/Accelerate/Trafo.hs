@@ -29,18 +29,19 @@ module Data.Array.Accelerate.Trafo (
 
 ) where
 
-import Data.Array.Accelerate.Sugar.Array                ( ArraysR )
-import Data.Array.Accelerate.Sugar.Elt                  ( EltR )
+import Data.Array.Accelerate.Sugar.Array                  ( ArraysR )
+import Data.Array.Accelerate.Sugar.Elt                    ( EltR )
 import Data.Array.Accelerate.Smart
 import Data.Array.Accelerate.Trafo.Config
 import Data.Array.Accelerate.Trafo.Delayed
-import Data.Array.Accelerate.Trafo.Sharing              ( Afunction, ArraysFunctionR, Function, EltFunctionR )
-import qualified Data.Array.Accelerate.AST              as AST
-import qualified Data.Array.Accelerate.Trafo.Fusion     as Fusion
-import qualified Data.Array.Accelerate.Trafo.LetSplit   as LetSplit
-import qualified Data.Array.Accelerate.Trafo.Simplify   as Rewrite
-import qualified Data.Array.Accelerate.Trafo.Sharing    as Sharing
--- import qualified Data.Array.Accelerate.Trafo.Vectorise  as Vectorise
+import Data.Array.Accelerate.Trafo.Sharing                ( Afunction, ArraysFunctionR, Function, EltFunctionR )
+import qualified Data.Array.Accelerate.AST                as AST
+import qualified Data.Array.Accelerate.Trafo.Fusion       as Fusion
+import qualified Data.Array.Accelerate.Trafo.LetSplit     as LetSplit
+import qualified Data.Array.Accelerate.Trafo.Exp.Simplify as Rewrite
+import qualified Data.Array.Accelerate.Trafo.Sharing      as Sharing
+import qualified Data.Array.Accelerate.Trafo.Desugar      as Desugar
+-- import qualified Data.Array.Accelerate.Trafo.Vectorise    as Vectorise
 
 import Control.DeepSeq
 

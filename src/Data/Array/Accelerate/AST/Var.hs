@@ -1,6 +1,7 @@
 {-# LANGUAGE GADTs           #-}
 {-# LANGUAGE RankNTypes      #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeOperators #-}
 {-# OPTIONS_HADDOCK hide #-}
 -- |
 -- Module      : Data.Array.Accelerate.AST.Var
@@ -19,6 +20,7 @@ import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.AST.Idx
 
 import Language.Haskell.TH
+import Data.Typeable                                                ( (:~:)(..) )
 
 
 data Var  s env t = Var (s t) (Idx env t)
@@ -41,4 +43,18 @@ liftVar f (Var s idx) = [|| Var $$(f s) $$(liftIdx idx) ||]
 
 liftVars :: (forall b. s b -> Q (TExp (s b))) -> Vars s env t -> Q (TExp (Vars s env t))
 liftVars f = liftTupR (liftVar f)
+
+{-# INLINEABLE matchVar #-}
+matchVar :: Var s env t1 -> Var s env t2 -> Maybe (t1 :~: t2)
+matchVar (Var _ v1) (Var _ v2) = matchIdx v1 v2
+
+{-# INLINEABLE matchVars #-}
+matchVars :: Vars s env t1 -> Vars s env t2 -> Maybe (t1 :~: t2)
+matchVars TupRunit         TupRunit = Just Refl
+matchVars (TupRsingle v1) (TupRsingle v2)
+  | Just Refl <- matchVar v1 v2 = Just Refl
+matchVars (TupRpair v w) (TupRpair x y)
+  | Just Refl <- matchVars v x
+  , Just Refl <- matchVars w y  = Just Refl
+matchVars _ _ = Nothing
 

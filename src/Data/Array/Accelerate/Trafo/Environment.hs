@@ -32,18 +32,18 @@ import Data.Array.Accelerate.Debug.Stats                            as Stats
 -- environment variable env' is used to project out the corresponding
 -- index when looking up in the environment congruent expressions.
 --
-data Gamma env env' aenv where
-  EmptyExp :: Gamma env env' aenv
+data Gamma arr env env' where
+  EmptyExp :: Gamma arr env env'
 
-  PushExp  :: Gamma env env' aenv
-           -> WeakOpenExp env aenv t
-           -> Gamma env (env', t) aenv
+  PushExp  :: Gamma arr env env'
+           -> WeakOpenExp arr env t
+           -> Gamma arr env (env', t)
 
-data WeakOpenExp env aenv t where
+data WeakOpenExp arr env t where
   Subst    :: env :> env'
-           -> OpenExp     env  aenv t
-           -> OpenExp     env' aenv t {- LAZY -}
-           -> WeakOpenExp env' aenv t
+           -> PreOpenExp  arr env  t
+           -> PreOpenExp  arr env' t {- LAZY -}
+           -> WeakOpenExp arr env' t
 
 -- XXX: The simplifier calls this function every time it moves under a let
 -- binding. This means we have a number of calls to 'weakenE' exponential in the
@@ -57,45 +57,31 @@ data WeakOpenExp env aenv t where
 -- <https://github.com/AccelerateHS/accelerate-llvm/issues/20>
 --
 incExp
-    :: Gamma env     env' aenv
-    -> Gamma (env,s) env' aenv
+    :: Gamma arr env     env'
+    -> Gamma arr (env,s) env'
 incExp EmptyExp        = EmptyExp
 incExp (PushExp env w) = incExp env `PushExp` subs w
   where
-    subs :: forall env aenv s t. WeakOpenExp env aenv t -> WeakOpenExp (env,s) aenv t
-    subs (Subst k (e :: OpenExp env_ aenv t) _) = Subst (weakenSucc' k) e (weakenE (weakenSucc' k) e)
+    subs :: forall arr env s t. WeakOpenExp arr env t -> WeakOpenExp arr (env,s) t
+    subs (Subst k (e :: PreOpenExp arr env_ t) _) = Subst (weakenSucc' k) e (weakenE (weakenSucc' k) e)
 
-prjExp :: HasCallStack => Idx env' t -> Gamma env env' aenv -> OpenExp env aenv t
+prjExp :: HasCallStack => Idx env' t -> Gamma arr env env' -> PreOpenExp arr env t
 prjExp ZeroIdx      (PushExp _   (Subst _ _ e)) = e
 prjExp (SuccIdx ix) (PushExp env _)             = prjExp ix env
 prjExp _            _                           = internalError "inconsistent valuation"
 
-pushExp :: Gamma env env' aenv -> OpenExp env aenv t -> Gamma env (env',t) aenv
+pushExp :: Gamma arr env env' -> PreOpenExp arr env t -> Gamma arr env (env',t)
 pushExp env e = env `PushExp` Subst weakenId e e
 
 {--
 lookupExp
-    :: Gamma   env env' aenv
-    -> OpenExp env      aenv t
+    :: Gamma      arr env env'
+    -> PreOpenExp arr env      t
     -> Maybe (Idx env' t)
 lookupExp EmptyExp        _ = Nothing
 lookupExp (PushExp env e) x
   | Just Refl <- match e x  = Just ZeroIdx
   | otherwise               = SuccIdx `fmap` lookupExp env x
-
-weakenGamma1
-    :: Gamma env env' aenv
-    -> Gamma env env' (aenv,t)
-weakenGamma1 EmptyExp        = EmptyExp
-weakenGamma1 (PushExp env e) = PushExp (weakenGamma1 env) (weaken SuccIdx e)
-
-sinkGamma
-    :: Kit acc
-    => Extend acc aenv aenv'
-    -> Gamma env env' aenv
-    -> Gamma env env' aenv'
-sinkGamma _   EmptyExp        = EmptyExp
-sinkGamma ext (PushExp env e) = PushExp (sinkGamma ext env) (sinkA ext e)
 --}
 
 -- As part of various transformations we often need to lift out array valued
@@ -151,6 +137,9 @@ sinkWeaken (PushEnv e (LeftHandSideWildcard _) _) = sinkWeaken e
 sinkWeaken (PushEnv e (LeftHandSideSingle _)   _) = weakenSucc' $ sinkWeaken e
 sinkWeaken (PushEnv e (LeftHandSidePair l1 l2) _) = sinkWeaken (PushEnv (PushEnv e l1 undefined) l2 undefined)
 sinkWeaken BaseEnv = Stats.substitution "sink" weakenId
+
+sinkArrayInstr :: RebuildableExp f => Extend s acc aenv aenv' -> f (ArrayInstr aenv) env t -> f (ArrayInstr aenv') env t
+sinkArrayInstr env = weakenArrayInstr (sinkWeaken env)
 
 -- Wrapper around OpenExp, with the order of type arguments env and aenv flipped
 newtype OpenExp' aenv env e = OpenExp' (OpenExp env aenv e)

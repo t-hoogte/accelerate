@@ -54,6 +54,7 @@ import Data.Array.Accelerate.Representation.Tag
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Representation.Vec
 import Data.Array.Accelerate.Trafo
+import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Data.Array.Accelerate.Trafo.Delayed                          ( DelayedOpenAfun, DelayedOpenAcc )
 import Data.Array.Accelerate.Trafo.Sharing                          ( AfunctionR, AfunctionRepr(..), afunctionRepr )
 import Data.Array.Accelerate.Type
@@ -976,14 +977,15 @@ evalOpenExp pexp env aenv =
           | toBool (p x) = go (f x)
           | otherwise    = x
 
-    Index acc ix                -> let (TupRsingle repr, a) = evalA acc
+    ArrayInstr (Index acc) ix   -> let (TupRsingle repr, a) = evalA acc
                                    in (repr, a) ! evalE ix
-    LinearIndex acc i           -> let (TupRsingle repr, a) = evalA acc
+    ArrayInstr (LinearIndex acc) i
+                                -> let (TupRsingle repr, a) = evalA acc
                                        ix   = fromIndex (arrayRshape repr) (shape a) (evalE i)
                                    in (repr, a) ! ix
-    Shape acc                   -> shape $ snd $ evalA acc
+    ArrayInstr (Shape acc) _    -> shape $ snd $ evalA acc
     ShapeSize shr sh            -> size shr (evalE sh)
-    Foreign _ _ f e             -> evalOpenFun f Empty Empty $ evalE e
+    Foreign _ _ f e             -> evalOpenFun (rebuildNoArrayInstr f) Empty Empty $ evalE e
     Coerce t1 t2 e              -> evalCoerceScalar t1 t2 (evalE e)
 
 

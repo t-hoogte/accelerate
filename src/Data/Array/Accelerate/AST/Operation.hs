@@ -7,6 +7,7 @@
 {-# LANGUAGE RankNTypes            #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
 {-# LANGUAGE TemplateHaskell       #-}
+{-# LANGUAGE TypeApplications      #-}
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE TypeOperators         #-}
 {-# OPTIONS_HADDOCK hide #-}
@@ -24,35 +25,39 @@ module Data.Array.Accelerate.AST.Operation (
   PreOpenAcc(..), PreOpenAfun(..),
   OperationAcc, OperationAfun, Execute(..),
 
-  GroundR(..), GroundsR, GroundVar, GroundVars, GLeftHandSide,
+  GroundR(..), GroundsR, GroundVar, GroundVars, GLeftHandSide, Var(..), Vars,
 
-  PreArgs(..), Arg(..), Args, Modifier(..),
+  PreArgs(..), Arg(..), Args, Modifier(..), argArrayR, argExpType,
 
   Exp', Fun', In, Out, Mut,
 
-  OpenExp(..), OpenFun(..),
+  OpenExp, OpenFun, Exp, Fun, ArrayInstr(..),
 
-  PrimConst, PrimFun, PrimBool, PrimMaybe, ExpVar, ExpVars,
+  encodeGroundR, encodeGroundsR, encodeGroundVar, encodeGroundVars,
+  rnfGroundR, rnfGroundsR, rnfGroundVar, rnfGroundVars,
+  liftGroundR, liftGroundsR, liftGroundVar, liftGroundVars,
+
+  paramIn, paramsIn,
+
+  module Data.Array.Accelerate.AST.Exp
 ) where
 
-import Data.Array.Accelerate.AST (PrimConst, PrimFun, PrimBool, PrimMaybe, ExpVar, ExpVars, primFunType, primConstType)
+import Data.Array.Accelerate.AST.Exp
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.AST.Var
+import Data.Array.Accelerate.Analysis.Hash.Exp
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Shape
-import Data.Array.Accelerate.Representation.Slice
-import Data.Array.Accelerate.Representation.Tag
 import Data.Array.Accelerate.Representation.Type
-import Data.Array.Accelerate.Representation.Vec
-import Data.Array.Accelerate.Sugar.Foreign
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Error
-import Data.Primitive.Vec
+import Data.Typeable                                ( (:~:)(..) )
 
-import GHC.TypeNats
+import Data.ByteString.Builder.Extra
+import Language.Haskell.TH                                          ( Q, TExp )
 
--- | An intermediate representation consisting parameterized over executable
--- operations. This data type only consists of the control flow structure and
+-- | An intermediate representation parameterized over executable operations.
+-- This data type only consists of the control flow structure and
 -- bookkeeping (allocating or copying buffers).
 --
 -- The data type is parameterized over the type of executable operations. In
@@ -83,7 +88,7 @@ data PreOpenAcc exe env a where
 
   -- | Evaluates the expression and returns its value.
   --
-  Compute :: OpenExp env t
+  Compute :: Exp env t
           -> PreOpenAcc exe env t
 
   -- | Local binding of ground values.
@@ -140,9 +145,9 @@ data PreOpenAcc exe env a where
 
 -- | Function abstraction over parametrised array computations
 --
-data PreOpenAfun com env t where
-  Abody ::                             PreOpenAcc  com env  t -> PreOpenAfun acc env t
-  Alam  :: GLeftHandSide a env env' -> PreOpenAfun acc env' t -> PreOpenAfun acc env (a -> t)
+data PreOpenAfun op env t where
+  Abody ::                             PreOpenAcc  op  env t -> PreOpenAfun op env t
+  Alam  :: GLeftHandSide a env env' -> PreOpenAfun op env' t -> PreOpenAfun op env (a -> t)
 
 
 -- | Ground values are buffers or scalars.
@@ -177,14 +182,14 @@ data Arg env t where
 
   ArgMaybeExp :: Maybe (ExpVars env e) -> Arg env (Maybe (Exp' e))
 
-  ArgFun      :: OpenFun env e         -> Arg env (Fun' e)
+  ArgFun      :: Fun env e             -> Arg env (Fun' e)
 
   -- | An array is represented as scalar variables denoting the size and buffer variables.
   -- We assume that all the buffer variables stored in 'ArgBuffers' have the same size,
   -- as specified by the scalar variables of the size.
   --
   ArgArray    :: Modifier m
-              -> ShapeR sh
+              -> ArrayR (Array sh e)
               -> GroundVars env sh
               -> GroundVars env (Buffers e)
               -> Arg env (m sh e)
@@ -210,6 +215,12 @@ data In  sh e where
 data Out sh e where
 data Mut sh e where
 
+argExpType :: Arg env (Exp' e) -> TypeR e
+argExpType (ArgExp vars) = varsType vars
+
+argArrayR :: Arg env (m sh e) -> ArrayR (Array sh e)
+argArrayR (ArgArray _ repr _ _) = repr
+
 -- | Executes a single operation. Provides the operation arguments
 -- from the environment.
 --
@@ -227,136 +238,6 @@ type OperationAcc op = PreOpenAcc (Execute op)
 -- copying buffers). It is parameterized over the actual type of operations.
 --
 type OperationAfun op = PreOpenAfun (Execute op)
-
-
--- | Vanilla open expressions using de Bruijn indices for variables ranging
--- over tuples of scalars and arrays of tuples. All code, except Cond, is
--- evaluated eagerly. N-tuples are represented as nested pairs.
---
--- The data type is parametrised over the representation type (not the
--- surface types). The environment contains buffers and scalar values,
--- in contrary to earlier stages in the compiler which have separate
--- environments for arrays and for scalars
---
-data OpenExp env t where
-
-  -- Local binding of a scalar expression and buffer variables
-  Let           :: GLeftHandSide bnd_t env env'
-                -> OpenExp env  bnd_t
-                -> OpenExp env' body_t
-                -> OpenExp env  body_t
-
-  -- Variable index, ranging only over scalars or buffers
-  ExpVar        :: GroundVar env t
-                -> OpenExp env t
-
-  -- Apply a backend-specific foreign function
-  Foreign       :: Foreign asm
-                => GroundsR y
-                -> asm         (x -> y)    -- foreign function
-                -> OpenFun env (x -> y)    -- alternate implementation (for other backends)
-                -> OpenExp env x
-                -> OpenExp env y
-
-  -- Tuples
-  Pair          :: OpenExp env t1
-                -> OpenExp env t2
-                -> OpenExp env (t1, t2)
-
-  Nil           :: OpenExp env ()
-
-  -- SIMD vectors
-  VecPack       :: KnownNat n
-                => VecR n s tup
-                -> OpenExp env tup
-                -> OpenExp env (Vec n s)
-
-  VecUnpack     :: KnownNat n
-                => VecR n s tup
-                -> OpenExp env (Vec n s)
-                -> OpenExp env tup
-
-  -- Array indices & shapes
-  IndexSlice    :: SliceIndex slix sl co sh
-                -> OpenExp env slix
-                -> OpenExp env sh
-                -> OpenExp env sl
-
-  IndexFull     :: SliceIndex slix sl co sh
-                -> OpenExp env slix
-                -> OpenExp env sl
-                -> OpenExp env sh
-
-  -- Shape and index conversion
-  ToIndex       :: ShapeR sh
-                -> OpenExp env sh           -- shape of the array
-                -> OpenExp env sh           -- index into the array
-                -> OpenExp env Int
-
-  FromIndex     :: ShapeR sh
-                -> OpenExp env sh           -- shape of the array
-                -> OpenExp env Int          -- index into linear representation
-                -> OpenExp env sh
-
-  -- Case statement
-  Case          :: OpenExp env TAG
-                -> [(TAG, OpenExp env b)]      -- list of equations
-                -> Maybe (OpenExp env b)       -- default case
-                -> OpenExp env b
-
-  -- Conditional expression (non-strict in 2nd and 3rd argument)
-  Cond          :: OpenExp env PrimBool
-                -> OpenExp env t
-                -> OpenExp env t
-                -> OpenExp env t
-
-  -- Value recursion
-  While         :: OpenFun env (a -> PrimBool) -- continue while true
-                -> OpenFun env (a -> a)        -- function to iterate
-                -> OpenExp env a               -- initial value
-                -> OpenExp env a
-
-  -- Constant values
-  Const         :: ScalarType t
-                -> t
-                -> OpenExp env t
-
-  PrimConst     :: PrimConst t
-                -> OpenExp env t
-
-  -- Primitive scalar operations
-  PrimApp       :: PrimFun (a -> r)
-                -> OpenExp env a
-                -> OpenExp env r
-
-  -- Project a single scalar from an array.
-  -- The array expression can not contain any free scalar variables.
-  LinearIndex   :: GroundVar env (Buffer t)
-                -> OpenExp env Int
-                -> OpenExp env t
-
-  -- Number of elements of an array given its shape
-  ShapeSize     :: ShapeR dim
-                -> OpenExp env dim
-                -> OpenExp env Int
-
-  -- Unsafe operations (may fail or result in undefined behaviour)
-  -- An unspecified bit pattern
-  Undef         :: ScalarType t
-                -> OpenExp env t
-
-  -- Reinterpret the bits of a value as a different type
-  Coerce        :: BitSizeEq a b
-                => ScalarType a
-                -> ScalarType b
-                -> OpenExp env a
-                -> OpenExp env b
-
--- | Vanilla open function abstraction
---
-data OpenFun env t where
-  Body ::                             OpenExp env  t -> OpenFun env t
-  Lam  :: GLeftHandSide a env env' -> OpenFun env' t -> OpenFun env (a -> t)
 
 class HasGroundsR f where
   groundsR :: f a -> GroundsR a
@@ -379,34 +260,8 @@ instance HasGroundsR (GroundVar env) where
 instance HasGroundsR (GroundVars env) where
   groundsR = varsType
 
-instance HasGroundsR (OpenExp env) where
-  groundsR (Let _ _ e)             = groundsR e
-  groundsR (ExpVar (Var tp _))     = TupRsingle tp
-  groundsR (Foreign tp _ _ _)      = tp
-  groundsR (Pair e1 e2)            = groundsR e1 `TupRpair` groundsR e2
-  groundsR Nil                     = TupRunit
-  groundsR (VecPack   vecR _)      = TupRsingle $ GroundRscalar $ VectorScalarType $ vecRvector vecR
-  groundsR (VecUnpack vecR _)      = typeRtoGroundsR $ vecRtuple vecR
-  groundsR (IndexSlice si _ _)     = typeRtoGroundsR $ shapeType $ sliceShapeR si
-  groundsR (IndexFull  si _ _)     = typeRtoGroundsR $ shapeType $ sliceDomainR si
-  groundsR ToIndex{}               = TupRsingle $ GroundRscalar scalarTypeInt
-  groundsR (FromIndex shr _ _)     = typeRtoGroundsR $ shapeType shr
-  groundsR (Case _ ((_,e):_) _)    = groundsR e
-  groundsR (Case _ [] (Just e))    = groundsR e
-  groundsR Case{}                  = internalError "empty case encountered"
-  groundsR (Cond _ e _)            = groundsR e
-  groundsR (While _ (Lam lhs _) _) = lhsToTupR lhs
-  groundsR While{}                 = error "What's the matter, you're running in the shadows"
-  groundsR (Const tR _)            = TupRsingle $ GroundRscalar tR
-  groundsR (PrimConst c)           = TupRsingle $ GroundRscalar $ SingleScalarType $ primConstType c
-  groundsR (PrimApp f _)           = typeRtoGroundsR $ snd $ primFunType f
-  groundsR (LinearIndex (Var (GroundRbuffer tp) _) _)
-                                   = TupRsingle $ GroundRscalar tp
-  groundsR (LinearIndex (Var (GroundRscalar tp) _) _)
-                                   = bufferImpossible tp
-  groundsR (ShapeSize{})           = TupRsingle $ GroundRscalar scalarTypeInt
-  groundsR (Undef tR)              = TupRsingle $ GroundRscalar tR
-  groundsR (Coerce _ tR _)         = TupRsingle $ GroundRscalar tR
+instance HasGroundsR (OpenExp env benv) where
+  groundsR = typeRtoGroundsR . expType
 
 typeRtoGroundsR :: TypeR t -> GroundsR t
 typeRtoGroundsR = mapTupR GroundRscalar
@@ -414,3 +269,82 @@ typeRtoGroundsR = mapTupR GroundRscalar
 bufferImpossible :: ScalarType (Buffer e) -> a
 bufferImpossible (SingleScalarType (NumSingleType (IntegralNumType tp))) = case tp of {}
 bufferImpossible (SingleScalarType (NumSingleType (FloatingNumType tp))) = case tp of {}
+
+type OpenExp env benv = PreOpenExp (ArrayInstr benv) env
+type OpenFun env benv = PreOpenFun (ArrayInstr benv) env
+type Fun benv = OpenFun () benv
+type Exp benv = OpenExp () benv
+
+data ArrayInstr benv t where
+  Index     :: GroundVar benv (Buffer e) -> ArrayInstr benv (Int -> e)
+  Parameter :: ExpVar benv e -> ArrayInstr benv (() -> e)
+
+instance IsArrayInstr (ArrayInstr benv) where
+  arrayInstrType arr = TupRsingle $ case arr of
+    Index (Var (GroundRbuffer tp) _) -> tp
+    Index (Var (GroundRscalar tp) _) -> bufferImpossible tp
+    Parameter (Var tp _)             -> tp
+
+  liftArrayInstr (Index var)     = [|| Index $$(liftGroundVar var) ||]
+  liftArrayInstr (Parameter var) = [|| Parameter $$(liftExpVar var) ||]
+
+  rnfArrayInstr  (Index var)     = rnfGroundVar var
+  rnfArrayInstr  (Parameter var) = rnfExpVar var
+
+  showArrayInstrOp Index{}       = "Index"
+  showArrayInstrOp Parameter{}   = "Parameter"
+
+  matchArrayInstr (Index v1)     (Index v2)     | Just Refl <- matchVar v1 v2 = Just Refl
+  matchArrayInstr (Parameter v1) (Parameter v2) | Just Refl <- matchVar v1 v2 = Just Refl
+  matchArrayInstr _              _              = Nothing
+
+  encodeArrayInstr (Index v)     = intHost $(hashQ "Index")     <> encodeGroundVar v
+  encodeArrayInstr (Parameter v) = intHost $(hashQ "Parameter") <> encodeExpVar v
+
+encodeGroundR :: GroundR t -> Builder
+encodeGroundR (GroundRscalar tp) = intHost $(hashQ "Scalar")    <> encodeScalarType tp
+encodeGroundR (GroundRbuffer tp) = intHost $(hashQ "Buffer")    <> encodeScalarType tp
+
+encodeGroundsR :: GroundsR t -> Builder
+encodeGroundsR = encodeTupR encodeGroundR
+
+encodeGroundVar :: GroundVar env t -> Builder
+encodeGroundVar (Var repr ix) = encodeGroundR repr <> encodeIdx ix
+
+encodeGroundVars :: GroundVars env t -> Builder
+encodeGroundVars = encodeTupR encodeGroundVar
+
+rnfGroundR :: GroundR t -> ()
+rnfGroundR (GroundRscalar tp) = rnfScalarType tp
+rnfGroundR (GroundRbuffer tp) = rnfScalarType tp
+
+rnfGroundsR :: GroundsR t -> ()
+rnfGroundsR = rnfTupR rnfGroundR
+
+rnfGroundVar :: GroundVar env t -> ()
+rnfGroundVar = rnfVar rnfGroundR
+
+rnfGroundVars :: GroundVars env t -> ()
+rnfGroundVars = rnfTupR rnfGroundVar
+
+liftGroundR :: GroundR t -> Q (TExp (GroundR t))
+liftGroundR (GroundRscalar tp) = [|| GroundRscalar $$(liftScalarType tp) ||]
+liftGroundR (GroundRbuffer tp) = [|| GroundRbuffer $$(liftScalarType tp) ||]
+
+liftGroundsR :: GroundsR t -> Q (TExp (GroundsR t))
+liftGroundsR = liftTupR liftGroundR
+
+liftGroundVar :: GroundVar env t -> Q (TExp (GroundVar env t))
+liftGroundVar = liftVar liftGroundR
+
+liftGroundVars :: GroundVars env t -> Q (TExp (GroundVars env t))
+liftGroundVars = liftTupR liftGroundVar
+
+paramIn :: ScalarType e -> GroundVar benv e -> OpenExp env benv e
+paramIn t (Var _ ix) = ArrayInstr (Parameter $ Var t ix) Nil
+
+paramsIn :: HasCallStack => TypeR e -> GroundVars benv e -> OpenExp env benv e
+paramsIn TupRunit         TupRunit                = Nil
+paramsIn (TupRpair t1 t2) (TupRpair v1 v2)        = paramsIn t1 v1 `Pair` paramsIn t2 v2
+paramsIn (TupRsingle t)   (TupRsingle (Var _ ix)) = ArrayInstr (Parameter $ Var t ix) Nil
+paramsIn _                _                       = internalError "Tuple mismatch"
