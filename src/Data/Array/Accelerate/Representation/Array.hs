@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns        #-}
+{-# LANGUAGE EmptyCase           #-}
 {-# LANGUAGE FlexibleInstances   #-}
 {-# LANGUAGE GADTs               #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -84,6 +85,9 @@ arraysRarray shR eR = TupRsingle (ArrayR shR eR)
 
 arraysRpair :: ArrayR a -> ArrayR b -> ArraysR (((), a), b)
 arraysRpair a b = TupRunit `TupRpair` TupRsingle a `TupRpair` TupRsingle b
+
+arraysRFunctionImpossible :: ArraysR (s -> t) -> a
+arraysRFunctionImpossible (TupRsingle repr) = case repr of {}
 
 -- | Creates a new, uninitialized Accelerate array.
 --

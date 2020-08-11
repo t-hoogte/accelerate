@@ -26,6 +26,7 @@ module Data.Array.Accelerate.AST.Operation (
   OperationAcc, OperationAfun, Execute(..),
 
   GroundR(..), GroundsR, GroundVar, GroundVars, GLeftHandSide, Var(..), Vars,
+  HasGroundsR(..),
 
   PreArgs(..), Arg(..), Args, Modifier(..), argArrayR, argExpType,
 
@@ -37,18 +38,26 @@ module Data.Array.Accelerate.AST.Operation (
   rnfGroundR, rnfGroundsR, rnfGroundVar, rnfGroundVars,
   liftGroundR, liftGroundsR, liftGroundVar, liftGroundVars,
 
+  bufferImpossible, groundFunctionImpossible,
+
   paramIn, paramsIn,
+
+  IsExecutableAcc(..),
+  ReindexPartial, reindexArg, reindexArgs, reindexExp, reindexVar, reindexVars,
 
   module Data.Array.Accelerate.AST.Exp
 ) where
 
 import Data.Array.Accelerate.AST.Exp
 import Data.Array.Accelerate.AST.LeftHandSide
+import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.Analysis.Hash.Exp
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Shape
+import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
+import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Error
 import Data.Typeable                                ( (:~:)(..) )
@@ -95,7 +104,7 @@ data PreOpenAcc exe env a where
   -- As it is common in this intermediate representation to evaluate some program
   -- resulting in unit, for instance when execution some operation, and then
   -- and then do some other code, we write 'a; b' to denote 'let () = a in b'.
-  Alet     :: GLeftHandSide t env env'
+  Alet    :: GLeftHandSide t env env'
           -> PreOpenAcc exe env  t
           -> PreOpenAcc exe env' b
           -> PreOpenAcc exe env  b
@@ -270,6 +279,9 @@ bufferImpossible :: ScalarType (Buffer e) -> a
 bufferImpossible (SingleScalarType (NumSingleType (IntegralNumType tp))) = case tp of {}
 bufferImpossible (SingleScalarType (NumSingleType (FloatingNumType tp))) = case tp of {}
 
+groundFunctionImpossible :: GroundsR (s -> t) -> a
+groundFunctionImpossible (TupRsingle (GroundRscalar t)) = functionImpossible (TupRsingle t)
+
 type OpenExp env benv = PreOpenExp (ArrayInstr benv) env
 type OpenFun env benv = PreOpenFun (ArrayInstr benv) env
 type Fun benv = OpenFun () benv
@@ -348,3 +360,37 @@ paramsIn TupRunit         TupRunit                = Nil
 paramsIn (TupRpair t1 t2) (TupRpair v1 v2)        = paramsIn t1 v1 `Pair` paramsIn t2 v2
 paramsIn (TupRsingle t)   (TupRsingle (Var _ ix)) = ArrayInstr (Parameter $ Var t ix) Nil
 paramsIn _                _                       = internalError "Tuple mismatch"
+
+type ReindexPartial f env env' = forall a. Idx env a -> f (Idx env' a)
+
+reindexVar :: Applicative f => ReindexPartial f env env' -> Var s env t -> f (Var s env' t)
+reindexVar k (Var repr ix) = Var repr <$> k ix
+
+reindexVars :: Applicative f => ReindexPartial f env env' -> Vars s env t -> f (Vars s env' t)
+reindexVars k (TupRsingle var) = TupRsingle <$> reindexVar k var
+reindexVars k (TupRpair v1 v2) = TupRpair <$> reindexVars k v1 <*> reindexVars k v2
+reindexVars _ TupRunit         = pure TupRunit
+
+reindexArrayInstr :: Applicative f => ReindexPartial f env env' -> ArrayInstr env (s -> t) -> f (ArrayInstr env' (s -> t))
+reindexArrayInstr k (Index     v) = Index     <$> reindexVar k v
+reindexArrayInstr k (Parameter v) = Parameter <$> reindexVar k v
+
+reindexExp :: (Applicative f, RebuildableExp e) => ReindexPartial f benv benv' -> e (ArrayInstr benv) env t -> f (e (ArrayInstr benv') env t)
+reindexExp k = rebuildArrayInstrPartial (rebuildArrayInstrMap $ reindexArrayInstr k)
+
+reindexArg :: Applicative f => ReindexPartial f env env' -> Arg env t -> f (Arg env' t)
+reindexArg k (ArgExp vars)                = ArgExp <$> reindexVars k vars
+reindexArg k (ArgMaybeExp (Just vars))    = ArgMaybeExp . Just <$> reindexVars k vars
+reindexArg _ (ArgMaybeExp Nothing)        = pure $ ArgMaybeExp Nothing
+reindexArg k (ArgFun f)                   = ArgFun <$> reindexExp k f
+reindexArg k (ArgArray m repr sh buffers) = ArgArray m repr <$> reindexVars k sh <*> reindexVars k buffers
+
+reindexArgs :: Applicative f => ReindexPartial f env env' -> Args env t -> f (Args env' t)
+reindexArgs _ ArgsNil    = pure ArgsNil
+reindexArgs k (a :>: as) = (:>:) <$> reindexArg k a <*> reindexArgs k as
+
+class IsExecutableAcc exe where
+  reindexExecPartial :: Applicative f => ReindexPartial f env env' -> exe env -> f (exe env')
+
+instance IsExecutableAcc (Execute op) where
+  reindexExecPartial k (Execute op args) = Execute op <$> reindexArgs k args

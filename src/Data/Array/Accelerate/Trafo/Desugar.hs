@@ -33,6 +33,7 @@ import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Representation.Vec
 import Data.Array.Accelerate.Sugar.Foreign
 import Data.Array.Accelerate.Trafo.Exp.Substitution
+import Data.Array.Accelerate.Trafo.Operation.Substitution
 import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Error
@@ -161,6 +162,12 @@ class DesugarAcc (op :: Type -> Type) where
                 -> OperationAcc op env ()
   -- TODO: Default implementation with awhile & generate
 
+  mkForeign     :: Foreign asm
+                => ArraysR bs
+                -> asm (as -> bs)
+                -> GroundVars env (DesugaredArrays as)
+                -> Maybe (OperationAcc op env (DesugaredArrays bs))
+  mkForeign _ _ _ = Nothing
 
 type family DesugaredArrays a where
   DesugaredArrays ()           = ()
@@ -178,13 +185,12 @@ desugarAfun :: (HasCallStack, DesugarAcc op) => Named.Afun a -> OperationAfun op
 desugarAfun = desugarOpenAfun Empty
 
 data ArrayDescriptor env a where
-  ArrayDescriptor :: ArrayR (Array sh e)
-                  -> GroundVars env sh
+  ArrayDescriptor :: GroundVars env sh
                   -> GroundVars env (Buffers e)
                   -> ArrayDescriptor env (Array sh e)
 
 weakenArrayDescriptor :: (env :> env') -> ArrayDescriptor env a -> ArrayDescriptor env' a
-weakenArrayDescriptor k (ArrayDescriptor repr sh buffers) = ArrayDescriptor repr (weakenVars k sh) (weakenVars k buffers)
+weakenArrayDescriptor k (ArrayDescriptor sh buffers) = ArrayDescriptor (weakenVars k sh) (weakenVars k buffers)
 
 type BEnv benv = Env (ArrayDescriptor benv)
 
@@ -196,7 +202,18 @@ desugarOpenAcc :: forall op benv aenv a.
 desugarOpenAcc env = travA
   where
     travA :: Named.OpenAcc aenv arr -> OperationAcc op benv (DesugaredArrays arr)
-    travA = undefined
+    travA (Named.OpenAcc acc) = case acc of
+      Named.Alet lhs bnd a
+        | DesugaredLHS env' lhs' <- desugarLHS env lhs -> alet lhs' (travA bnd) (desugarOpenAcc env' a)
+      Named.Avar (Var _ ix)
+        | ArrayDescriptor sh bf <- prj' ix env -> Return (TupRpair sh bf)
+      Named.Apair a b -> pair (travA a) (travA b)
+      Named.Anil       -> Return TupRunit
+      Named.Apply repr f arg -> case f of
+        Named.Alam lhs (Named.Abody a) -> travA $ Named.OpenAcc $ Named.Alet lhs arg a
+        Named.Abody a                  -> arraysRFunctionImpossible $ Named.arraysR a
+        Named.Alam _ Named.Alam{}      -> arraysRFunctionImpossible repr
+
 
 desugarOpenAfun :: (HasCallStack, DesugarAcc op)
                 => BEnv benv aenv
@@ -220,11 +237,10 @@ desugarLHS env (LeftHandSideWildcard repr)      = DesugaredLHS env $ LeftHandSid
 desugarLHS env (LeftHandSidePair l1 l2)
   | DesugaredLHS env1 l1' <- desugarLHS env  l1
   , DesugaredLHS env2 l2' <- desugarLHS env1 l2 = DesugaredLHS env2 $ LeftHandSidePair l1' l2'
-desugarLHS env (LeftHandSideSingle repr@(ArrayR shr tp))
+desugarLHS env (LeftHandSideSingle (ArrayR shr tp))
   | DeclareVars lhsSh kSh valueSh <- declareVars $ mapTupR GroundRscalar $ shapeType shr
   , DeclareVars lhsBf kBf valueBf <- declareVars $ buffersR tp
-  = DesugaredLHS (mapEnv (weakenArrayDescriptor $ kBf .> kSh) env `Push` ArrayDescriptor repr (valueSh kBf) (valueBf weakenId)) $ LeftHandSidePair lhsSh lhsBf
-
+  = DesugaredLHS (mapEnv (weakenArrayDescriptor $ kBf .> kSh) env `Push` ArrayDescriptor (valueSh kBf) (valueBf weakenId)) $ LeftHandSidePair lhsSh lhsBf
 
 desugarArraysR :: ArraysR arr -> GroundsR (DesugaredArrays arr)
 desugarArraysR TupRunit          = TupRunit
@@ -254,18 +270,18 @@ desugarFun :: HasCallStack
 desugarFun env = rebuildArrayInstr (desugarArrayInstr env)
 
 desugarArrayInstr :: BEnv benv aenv -> Named.ArrayInstr aenv (s -> t) -> OpenExp env benv s -> OpenExp env benv t
-desugarArrayInstr env (Named.Shape (Var _ ix)) _
-  | ArrayDescriptor (ArrayR shr _) sh _ <- prj' ix env = paramsIn (shapeType shr) sh
-desugarArrayInstr env (Named.LinearIndex (Var (ArrayR _ tp) a)) ix
+desugarArrayInstr env (Named.Shape (Var (ArrayR shr _) array)) _
+  | ArrayDescriptor sh _ <- prj' array env = paramsIn (shapeType shr) sh
+desugarArrayInstr env (Named.LinearIndex (Var (ArrayR _ tp) array)) ix
   = Let lhs ix $ linearIndex tp buffers $ Var int ZeroIdx
   where
-    ArrayDescriptor _ _ buffers = prj' a env
+    ArrayDescriptor _ buffers = prj' array env
     int = SingleScalarType $ NumSingleType $ IntegralNumType TypeInt
     lhs = LeftHandSideSingle int
-desugarArrayInstr env (Named.Index (Var (ArrayR _ tp) a)) ix
+desugarArrayInstr env (Named.Index (Var (ArrayR shr tp) array)) ix
   = Let lhs (ToIndex shr sh' ix) $ linearIndex tp buffers $ Var int ZeroIdx
   where
-    ArrayDescriptor (ArrayR shr _) sh buffers = prj' a env
+    ArrayDescriptor sh buffers = prj' array env
     sh' = paramsIn (shapeType shr) sh
     int = SingleScalarType $ NumSingleType $ IntegralNumType TypeInt
     lhs = LeftHandSideSingle int
@@ -274,7 +290,7 @@ weakenBEnv :: forall benv benv' aenv. benv :> benv' -> BEnv benv aenv -> BEnv be
 weakenBEnv k = mapEnv f
   where
     f :: ArrayDescriptor benv a -> ArrayDescriptor benv' a
-    f (ArrayDescriptor shr sh buffers) = ArrayDescriptor shr (weakenVars k sh) (weakenVars k buffers)
+    f (ArrayDescriptor sh buffers) = ArrayDescriptor (weakenVars k sh) (weakenVars k buffers)
 
 -- Utilities
 --

@@ -20,6 +20,7 @@ module Data.Array.Accelerate.AST.Environment
   where
 
 import Data.Array.Accelerate.AST.Idx
+import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Type
@@ -117,3 +118,18 @@ weakenWithLHS = go weakenId
     go k (LeftHandSideSingle _)   = weakenSucc k
     go k (LeftHandSidePair l1 l2) = go (go k l2) l1
 
+substituteLHS :: forall s t env env'. LeftHandSide s t env env' -> Vars s env t -> env' :> env
+substituteLHS lhs vars = Weaken f
+  where
+    f :: Idx env' a -> Idx env a
+    f ix = case go lhs vars ix of
+      Left  ix' -> ix'
+      Right ix' -> ix'
+
+    go :: LeftHandSide s u env1 env2 -> Vars s env u -> Idx env2 a -> Either (Idx env a) (Idx env1 a)
+    go (LeftHandSideWildcard _) _ idx = Right idx
+    go (LeftHandSideSingle _)   (TupRsingle (Var _ var)) idx = case idx of
+      ZeroIdx      -> Left var
+      SuccIdx idx' -> Right idx'
+    go (LeftHandSidePair l1 l2) (TupRpair v1 v2) idx = go l2 v2 idx >>= go l1 v1
+    go _ _ _ = error "LHS and tuple mismatch"
