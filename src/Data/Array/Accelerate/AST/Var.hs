@@ -58,3 +58,8 @@ matchVars (TupRpair v w) (TupRpair x y)
   , Just Refl <- matchVars w y  = Just Refl
 matchVars _ _ = Nothing
 
+mapVar :: (forall u. s u -> s' u) -> Var s env t -> Var s' env t
+mapVar f (Var t ix) = Var (f t) ix
+
+mapVars :: (forall u. s u -> s' u) -> Vars s env t -> Vars s' env t
+mapVars f = mapTupR (mapVar f)

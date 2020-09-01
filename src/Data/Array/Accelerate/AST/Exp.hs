@@ -60,7 +60,7 @@ module Data.Array.Accelerate.AST.Exp (
 
   -- ** Miscellaneous
   mkConstant, mkBinary, unBody,
-  showExpOp,
+  showExpOp, Direction(..),
 
 ) where
 
@@ -256,6 +256,8 @@ instance IsArrayInstr NoArrayInstr where
   encodeArrayInstr = \case {}
   matchArrayInstr  = \case{}
 
+data Direction = LeftToRight | RightToLeft
+  deriving Eq
 
 -- |Primitive constant values
 --

@@ -439,11 +439,6 @@ data PreOpenAcc (acc :: Type -> Type -> Type) aenv a where
               -> acc             aenv (Array sh b)                -- source array #2
               -> PreOpenAcc acc  aenv (Array sh c)
 
-
-data Direction = LeftToRight | RightToLeft
-  deriving Eq
-
-
 -- | Vanilla boundary condition specification for stencil operations
 --
 data Boundary aenv t where

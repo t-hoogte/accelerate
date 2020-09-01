@@ -132,5 +132,16 @@ pair a b = goA weakenId a
 alet :: IsExecutableAcc exe => GLeftHandSide t env env' -> PreOpenAcc exe env t -> PreOpenAcc exe env' s -> PreOpenAcc exe env s
 alet lhs1 (Alet lhs2 a1 a2) a3
   | Exists lhs1' <- rebuildLHS lhs1 = Alet lhs2 a1 $ alet lhs1' a2 $ weaken (sinkWithLHS lhs1 lhs1' $ weakenWithLHS lhs2) a3
-alet lhs  (Return vars)     a       = weaken (substituteLHS lhs vars) a
-alet lhs  bnd               a       = Alet lhs bnd a
+alet     (LeftHandSideWildcard TupRunit) (Return TupRunit) a = a
+alet     (LeftHandSideWildcard TupRunit) (Compute Nil) a = a
+alet lhs@(LeftHandSideWildcard TupRunit) bnd a = Alet lhs bnd a
+alet lhs  (Return vars)     a    = weaken (substituteLHS lhs vars) a
+alet lhs  (Compute e)       a
+  | Just vars <- extractParams e = weaken (substituteLHS lhs vars) a
+alet lhs  bnd               a    = Alet lhs bnd a
+
+extractParams :: OpenExp env benv t -> Maybe (ExpVars benv t)
+extractParams Nil                          = Just TupRunit
+extractParams (Pair e1 e2)                 = TupRpair <$> extractParams e1 <*> extractParams e2
+extractParams (ArrayInstr (Parameter v) _) = Just $ TupRsingle v
+extractParams _                            = Nothing

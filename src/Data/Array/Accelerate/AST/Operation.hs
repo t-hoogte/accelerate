@@ -28,9 +28,9 @@ module Data.Array.Accelerate.AST.Operation (
   GroundR(..), GroundsR, GroundVar, GroundVars, GLeftHandSide, Var(..), Vars,
   HasGroundsR(..),
 
-  PreArgs(..), Arg(..), Args, Modifier(..), argArrayR, argExpType,
+  PreArgs(..), Arg(..), Args, Modifier(..), argArrayR, argVarType,
 
-  Exp', Fun', In, Out, Mut,
+  Var', Exp', Fun', In, Out, Mut,
 
   OpenExp, OpenFun, Exp, Fun, ArrayInstr(..),
 
@@ -54,7 +54,6 @@ import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.Analysis.Hash.Exp
 import Data.Array.Accelerate.Representation.Array
-import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Trafo.Exp.Substitution
@@ -140,14 +139,14 @@ data PreOpenAcc exe env a where
 
   -- | If-then-else for array-level computations
   --
-  Acond   :: ExpVar env Bool
+  Acond   :: ExpVar env PrimBool
           -> PreOpenAcc exe env a
           -> PreOpenAcc exe env a
           -> PreOpenAcc exe env a
 
   -- Value-recursion for array-level computations
   --
-  Awhile  :: PreOpenAfun exe env (arrs -> Bool)
+  Awhile  :: PreOpenAfun exe env (arrs -> PrimBool)
           -> PreOpenAfun exe env (arrs -> arrs)
           -> PreOpenAcc  exe env arrs
           -> PreOpenAcc  exe env arrs
@@ -187,9 +186,10 @@ data PreArgs a t where
 -- | A single argument to an operation.
 --
 data Arg env t where
-  ArgExp      :: ExpVars env e         -> Arg env (Exp' e)
+  -- TODO: Do we need this?
+  ArgVars     :: ExpVars env e         -> Arg env (Var' e)
 
-  ArgMaybeExp :: Maybe (ExpVars env e) -> Arg env (Maybe (Exp' e))
+  ArgExp      :: Exp env e             -> Arg env (Exp' e)
 
   ArgFun      :: Fun env e             -> Arg env (Fun' e)
 
@@ -218,14 +218,15 @@ data Modifier m where
   Mut :: Modifier Mut
 
 -- Empty data types, which are only used for the types of 'Arg'.
+data Var' e   where
 data Exp' e   where
 data Fun' t   where
 data In  sh e where
 data Out sh e where
 data Mut sh e where
 
-argExpType :: Arg env (Exp' e) -> TypeR e
-argExpType (ArgExp vars) = varsType vars
+argVarType :: Arg env (Var' e) -> TypeR e
+argVarType (ArgVars vars) = varsType vars
 
 argArrayR :: Arg env (m sh e) -> ArrayR (Array sh e)
 argArrayR (ArgArray _ repr _ _) = repr
@@ -379,10 +380,9 @@ reindexExp :: (Applicative f, RebuildableExp e) => ReindexPartial f benv benv' -
 reindexExp k = rebuildArrayInstrPartial (rebuildArrayInstrMap $ reindexArrayInstr k)
 
 reindexArg :: Applicative f => ReindexPartial f env env' -> Arg env t -> f (Arg env' t)
-reindexArg k (ArgExp vars)                = ArgExp <$> reindexVars k vars
-reindexArg k (ArgMaybeExp (Just vars))    = ArgMaybeExp . Just <$> reindexVars k vars
-reindexArg _ (ArgMaybeExp Nothing)        = pure $ ArgMaybeExp Nothing
-reindexArg k (ArgFun f)                   = ArgFun <$> reindexExp k f
+reindexArg k (ArgVars vars)               = ArgVars <$> reindexVars k vars
+reindexArg k (ArgExp e)                   = ArgExp  <$> reindexExp k e
+reindexArg k (ArgFun f)                   = ArgFun  <$> reindexExp k f
 reindexArg k (ArgArray m repr sh buffers) = ArgArray m repr <$> reindexVars k sh <*> reindexVars k buffers
 
 reindexArgs :: Applicative f => ReindexPartial f env env' -> Args env t -> f (Args env' t)

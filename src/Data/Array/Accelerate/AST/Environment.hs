@@ -118,7 +118,7 @@ weakenWithLHS = go weakenId
     go k (LeftHandSideSingle _)   = weakenSucc k
     go k (LeftHandSidePair l1 l2) = go (go k l2) l1
 
-substituteLHS :: forall s t env env'. LeftHandSide s t env env' -> Vars s env t -> env' :> env
+substituteLHS :: forall s s' t env env'. LeftHandSide s t env env' -> Vars s' env t -> env' :> env
 substituteLHS lhs vars = Weaken f
   where
     f :: Idx env' a -> Idx env a
@@ -126,7 +126,7 @@ substituteLHS lhs vars = Weaken f
       Left  ix' -> ix'
       Right ix' -> ix'
 
-    go :: LeftHandSide s u env1 env2 -> Vars s env u -> Idx env2 a -> Either (Idx env a) (Idx env1 a)
+    go :: LeftHandSide s u env1 env2 -> Vars s' env u -> Idx env2 a -> Either (Idx env a) (Idx env1 a)
     go (LeftHandSideWildcard _) _ idx = Right idx
     go (LeftHandSideSingle _)   (TupRsingle (Var _ var)) idx = case idx of
       ZeroIdx      -> Left var
