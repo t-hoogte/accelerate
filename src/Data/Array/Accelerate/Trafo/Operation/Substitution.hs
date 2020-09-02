@@ -96,7 +96,6 @@ reindexA' k = \case
     Alloc shr tp sh -> Alloc shr tp <$> reindexVars' k sh
     Use tp buffer -> pure $ Use tp buffer
     Unit var -> Unit <$> reindexVar' k var
-    Clone shr sh buffer -> Clone shr <$> reindexVars' k sh <*> reindexVar' k buffer
     Acond c t f -> Acond <$> reindexVar' k c <*> travA t <*> travA f
     Awhile c f i -> Awhile <$> reindexAfun' k c <*> reindexAfun' k f <*> travA i
   where

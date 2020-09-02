@@ -128,15 +128,6 @@ data PreOpenAcc exe env a where
   Unit    :: ExpVar env e
           -> PreOpenAcc exe env (Buffer e)
 
-  -- | Copies a buffer. This is used before passing a buffer to a 'Mut' argument,
-  -- to make sure it is unique. This may be removed during fusion to facilitate
-  -- in-place updates
-  --
-  Clone   :: ShapeR sh
-          -> ExpVars env sh
-          -> GroundVar env (Buffer e)
-          -> PreOpenAcc exe env (Buffer e)
-
   -- | If-then-else for array-level computations
   --
   Acond   :: ExpVar env PrimBool
@@ -260,7 +251,6 @@ instance HasGroundsR (PreOpenAcc exe env) where
   groundsR (Alloc _ tp _)    = TupRsingle $ GroundRbuffer tp
   groundsR (Use tp _)        = TupRsingle $ GroundRbuffer tp
   groundsR (Unit (Var tp _)) = TupRsingle $ GroundRbuffer tp
-  groundsR (Clone _ _ var)   = groundsR var
   groundsR (Acond _ a _)     = groundsR a
   groundsR (Awhile _ _ a)    = groundsR a
 

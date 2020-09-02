@@ -3,6 +3,7 @@
 {-# LANGUAGE RankNTypes           #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE ViewPatterns         #-}
 {-# LANGUAGE TypeApplications     #-}
 {-# LANGUAGE TypeFamilies         #-}
 {-# LANGUAGE TypeOperators        #-}
@@ -99,6 +100,34 @@ class DesugarAcc (op :: Type -> Type) where
                 -> Arg env (Out sh t)
                 -> OperationAcc op env ()
 
+  -- Copies the contents of the (prefix of the) input to the output.
+  -- The size of the input array is smaller than or equal to the size output.
+  mkShrink      :: Arg env (In  sh t)
+                -> Arg env (Out sh t)
+                -> OperationAcc op env ()
+  mkShrink input@(ArgArray _ (ArrayR shr _) _ _) output = mkBackpermute (ArgFun $ identity $ shapeType shr) input output
+ 
+  -- Copies a buffer. This is used before passing a buffer to a 'Mut' argument,
+  -- to make sure it is unique. This may be removed during fusion to facilitate
+  -- in-place updates
+  -- TODO: Perform one map per buffer, instead of one for the whole array?
+  mkCopy        :: Arg env (In  sh t)
+                -> Arg env (Out sh t)
+                -> OperationAcc op env ()
+  mkCopy input@(ArgArray _ (ArrayR _ tp) _ _) output = mkMap (ArgFun $ identity tp) input output
+
+  mkZipWith     :: Arg env (Fun' (e1 -> e2 -> e3))
+                -> Arg env (In  sh e1)
+                -> Arg env (In  sh e2)
+                -> Arg env (Out sh e3)
+                -> OperationAcc op env ()
+  mkZipWith (ArgFun f) (ArgArray _ repr1@(ArrayR shr _) sh1 buffers1) (ArgArray _ repr2 sh2 buffers2) output@(ArgArray _ (ArrayR _ tp) _ _)
+    | DeclareVars lhs _ value <- declareVars $ shapeType shr =
+      let
+        ix = expVars $ value weakenId
+        g = Lam lhs $ Body $ apply2 tp f (index repr1 sh1 buffers1 ix) (index repr2 sh2 buffers2 ix)
+      in mkGenerate (ArgFun g) output
+
   mkReplicate   :: SliceIndex slix sl co sh
                 -> Arg env (Var' slix)
                 -> Arg env (In  sl e)
@@ -115,7 +144,7 @@ class DesugarAcc (op :: Type -> Type) where
 
   mkPermute     :: Arg env (Fun' (e -> e -> e))
                 -> Arg env (Mut sh' e)
-                -> Arg env (Fun' (sh -> sh'))
+                -> Arg env (Fun' (sh -> PrimMaybe sh'))
                 -> Arg env (In sh e)
                 -> OperationAcc op env ()
 
@@ -227,9 +256,6 @@ desugarOpenAcc env = travA
     travE :: Named.Exp aenv t -> Exp benv t
     travE = desugarExp env
 
-    travF :: Named.Fun aenv t -> Fun benv t
-    travF = desugarFun env
-
     travA :: Named.OpenAcc aenv arr -> OperationAcc op benv (DesugaredArrays arr)
     travA (Named.OpenAcc acc) = case acc of
       Named.Alet lhs bnd a
@@ -264,7 +290,7 @@ desugarOpenAcc env = travA
             f'            = desugarOpenAfun env f
             i'            = travA i
           in Awhile c' f' i'
-      Named.Use repr array -> undefined
+      Named.Use repr array -> undefined -- TODO: Desugar Use
       Named.Unit tp e
         | DeclareVars lhs _ value <- declareVars tp ->
           let
@@ -290,6 +316,36 @@ desugarOpenAcc env = travA
       -- the type class DesugarAcc. We must here allocate the output arrays of the appropriate size and call
       -- the corresponding mkXX function.
       --
+
+      Named.Permute c def f src
+        | ArrayR shr' tp <- Named.arrayR def
+        , ArrayR shr  _  <- Named.arrayR src
+        , DeclareVars lhsSh' kSh' valueSh' <- declareVars $ shapeType shr'
+        , DeclareVars lhsDef kDef valueDef <- declareVars $ buffersR tp
+        -- Clone defaults array, to make sure that it is unique. The clone may be removed in a later pass.
+        , DeclareVars lhsOut kOut valueOut <- declareVars $ buffersR tp
+        , DeclareVars lhsSh  kSh  valueSh  <- declareVars $ shapeType shr
+        , DeclareVars lhsSrc kSrc valueSrc <- declareVars $ buffersR tp ->
+          let
+            lhs'   = LeftHandSidePair (mapLeftHandSide GroundRscalar lhsSh') lhsDef
+            lhs    = LeftHandSidePair (mapLeftHandSide GroundRscalar lhsSh)  lhsSrc
+            sh'    = mapVars GroundRscalar $ valueSh' (kSrc .> kSh .> kOut .> kDef)
+            sh     = mapVars GroundRscalar $ valueSh kSrc
+            env'   = weakenBEnv (kSrc .> kSh .> kOut .> kDef .> kSh') env
+            valOut = valueOut $ kSrc .> kSh
+            argDef = ArgArray In  (ArrayR shr' tp) sh' (valueDef $ kSrc .> kSh .> kOut)
+            argOut = ArgArray Out (ArrayR shr' tp) sh' valOut
+            argMut = ArgArray Mut (ArrayR shr' tp) sh' valOut
+            argSrc = ArgArray In  (ArrayR shr  tp) sh  (valueSrc weakenId)
+            argC   = ArgFun $ desugarFun env' c
+            argF   = ArgFun $ desugarFun env' f
+          in
+            alet lhs' (travA def)
+              $ alet lhsOut (desugarAlloc (ArrayR shr' tp) (valueSh' kDef))
+              $ alet lhs    (desugarOpenAcc (weakenBEnv (kOut .> kDef .> kSh') env) src)
+              $ alet (LeftHandSideWildcard TupRunit) (mkCopy argDef argOut)
+              $ alet (LeftHandSideWildcard TupRunit) (mkPermute argC argMut argF argSrc)
+              $ Return (sh' `TupRpair` valOut)
 
       Named.Generate (ArrayR shr tp) sh f
         | DeclareVars lhsSh kSh valueSh <- declareVars $ shapeType shr
@@ -370,6 +426,65 @@ desugarOpenAcc env = travA
               $ alet (LeftHandSideWildcard TupRunit) (mkBackpermute argF argIn argOut)
               $ Return (shOut `TupRpair` bfOut)
 
+      -- Zip (or a combination of unzip & zip)
+      Named.ZipWith _ (Lam elhs1 (Lam elhs2 (Body e))) a1 a2
+        | Just vars <- extractExpVars e
+        , ArrayR shr t1 <- Named.arrayR a1
+        , ArrayR _   t2 <- Named.arrayR a2
+        , DeclareVars lhsSh1  kSh1  valueSh1  <- declareVars $ shapeType shr
+        , DeclareVars lhsIn1  kIn1  valueIn1  <- declareVars $ buffersR t1
+        , DeclareVars lhsSh2  kSh2  valueSh2  <- declareVars $ shapeType shr
+        , DeclareVars lhsIn2  kIn2  valueIn2  <- declareVars $ buffersR t2
+        , DeclareVars lhsSh   kSh   valueSh   <- declareVars $ shapeType shr
+        , DeclareVars lhsOut1 kOut1 valueOut1 <- declareVars $ buffersR t1
+        , DeclareVars lhsOut2 kOut2 valueOut2 <- declareVars $ buffersR t2 ->
+          let
+            lhs1    = LeftHandSidePair (mapLeftHandSide GroundRscalar lhsSh1) lhsIn1
+            lhs2    = LeftHandSidePair (mapLeftHandSide GroundRscalar lhsSh2) lhsIn2
+            sh1     = mapVars GroundRscalar $ valueSh1 $ kOut2 .> kOut1 .> kSh .> kIn2 .> kSh2 .> kIn1
+            sh2     = mapVars GroundRscalar $ valueSh2 $ kOut2 .> kOut1 .> kSh .> kIn2
+            sh      = mapVars GroundRscalar $ valueSh (kOut2 .> kOut1)
+            argIn1  = ArgArray In  (ArrayR shr t1) sh1 (valueIn1 $ kOut2 .> kOut1 .> kSh .> kIn2 .> kSh2)
+            argIn2  = ArgArray In  (ArrayR shr t2) sh2 (valueIn2 $ kOut2 .> kOut1 .> kSh)
+            argOut1 = ArgArray Out (ArrayR shr t1) sh  (valueOut1 kOut2)
+            argOut2 = ArgArray Out (ArrayR shr t2) sh  (valueOut2 weakenId)
+          in
+            alet lhs1 (travA a1)
+              $ alet lhs2 (desugarOpenAcc (weakenBEnv (kIn1 .> kSh1) env) a2)
+              $ alet (mapLeftHandSide GroundRscalar lhsSh) (Compute $ mkIntersect shr (valueSh1 $ kIn2 .> kSh2 .> kIn1) (valueSh2 kIn2))
+              $ alet lhsOut1 (desugarAlloc (ArrayR shr t1) (valueSh weakenId))
+              $ alet lhsOut2 (desugarAlloc (ArrayR shr t2) (valueSh kOut1))
+              $ alet (LeftHandSideWildcard TupRunit) (mkShrink argIn1 argOut1)
+              $ alet (LeftHandSideWildcard TupRunit) (mkShrink argIn2 argOut2)
+              $ Return (sh `TupRpair` desugarUnzip (valueOut1 kOut2 `TupRpair` valueOut2 weakenId) (LeftHandSidePair elhs1 elhs2) vars)
+
+      Named.ZipWith tp f a1 a2
+        | ArrayR shr t1 <- Named.arrayR a1
+        , ArrayR _   t2 <- Named.arrayR a2
+        , DeclareVars lhsSh1  kSh1  valueSh1  <- declareVars $ shapeType shr
+        , DeclareVars lhsIn1  kIn1  valueIn1  <- declareVars $ buffersR t1
+        , DeclareVars lhsSh2  kSh2  valueSh2  <- declareVars $ shapeType shr
+        , DeclareVars lhsIn2  kIn2  valueIn2  <- declareVars $ buffersR t2
+        , DeclareVars lhsSh   kSh   valueSh   <- declareVars $ shapeType shr
+        , DeclareVars lhsOut  kOut  valueOut  <- declareVars $ buffersR tp ->
+          let
+            lhs1    = LeftHandSidePair (mapLeftHandSide GroundRscalar lhsSh1) lhsIn1
+            lhs2    = LeftHandSidePair (mapLeftHandSide GroundRscalar lhsSh2) lhsIn2
+            sh1     = mapVars GroundRscalar $ valueSh1 $ kOut .> kSh .> kIn2 .> kSh2 .> kIn1
+            sh2     = mapVars GroundRscalar $ valueSh2 $ kOut .> kSh .> kIn2
+            sh      = mapVars GroundRscalar $ valueSh kOut
+            argF    = ArgFun $ desugarFun (weakenBEnv (kOut .> kSh .> kIn2 .> kSh2 .> kIn1 .> kSh1) env) f
+            argIn1  = ArgArray In  (ArrayR shr t1) sh1 (valueIn1 $ kOut .> kSh .> kIn2 .> kSh2)
+            argIn2  = ArgArray In  (ArrayR shr t2) sh2 (valueIn2 $ kOut .> kSh)
+            argOut  = ArgArray Out (ArrayR shr tp) sh  (valueOut weakenId)
+          in
+            alet lhs1 (travA a1)
+              $ alet lhs2 (desugarOpenAcc (weakenBEnv (kIn1 .> kSh1) env) a2)
+              $ alet (mapLeftHandSide GroundRscalar lhsSh) (Compute $ mkIntersect shr (valueSh1 $ kIn2 .> kSh2 .> kIn1) (valueSh2 kIn2))
+              $ alet lhsOut (desugarAlloc (ArrayR shr tp) (valueSh weakenId))
+              $ alet (LeftHandSideWildcard TupRunit) (mkZipWith argF argIn1 argIn2 argOut)
+              $ Return (sh `TupRpair` valueOut weakenId)
+            
       Named.Slice sliceIx a slix
         | ArrayR shr tp <- Named.arrayR a
         , slr <- sliceShapeR sliceIx
@@ -419,7 +534,7 @@ desugarOpenAcc env = travA
               $ Return (sh `TupRpair` valueOut weakenId)
 
       Named.Fold f def a
-        | ArrayR (ShapeRsnoc shr) tp <- Named.arrayR a
+        | ArrayR (shapeInit -> shr) tp <- Named.arrayR a
         , DeclareVars lhsSh  kSh  valueSh  <- declareVars $ shapeType $ ShapeRsnoc shr
         , DeclareVars lhsIn  kIn  valueIn  <- declareVars $ buffersR tp
         , DeclareVars lhsOut kOut valueOut <- declareVars $ buffersR tp ->
@@ -525,7 +640,7 @@ desugarOpenAcc env = travA
               $ Return (shOut `TupRpair` valueOut weakenId)
 
       Named.Scan' dir f def a
-        | ArrayR (ShapeRsnoc shr) tp <- Named.arrayR a
+        | ArrayR (shapeInit -> shr) tp <- Named.arrayR a
         , DeclareVars lhsSh kSh valueSh <- declareVars $ shapeType $ ShapeRsnoc shr
         , DeclareVars lhsIn kIn valueIn <- declareVars $ buffersR tp
         -- The prefix values
@@ -607,11 +722,6 @@ desugarOpenAcc env = travA
               $ alet lhsOut (desugarAlloc (ArrayR shr tp3) (valueSh weakenId))
               $ alet (LeftHandSideWildcard TupRunit) (mkStencil2 sr1 sr2 argF b1' argIn1 b2' argIn2 argOut)
               $ Return (sh `TupRpair` valueOut weakenId)
-      -- TODO:
-      -- Use
-      -- Permute
-      -- ZipWith
-      -- Zip
 
 desugarAlloc :: forall benv op sh a. ArrayR (Array sh a) -> ExpVars benv sh -> OperationAcc op benv (Buffers a)
 desugarAlloc (ArrayR _   TupRunit        ) _  = Return TupRunit
@@ -758,6 +868,12 @@ restrict :: SliceIndex slix sl co sh
 restrict sliceIx (ArgVar slix)
   | DeclareVars lhs _ value <- declareVars $ shapeType $ sliceShapeR sliceIx
   = Lam lhs $ Body $ IndexFull sliceIx (paramsIn' slix) $ expVars $ value weakenId
+
+-- Utility function to reduce the dimension by one. Defined as a function,
+-- as doing pattern matching in the guards in desugarOpenAcc will cause
+-- a false warning "pattern matches are non-exhaustive".
+shapeInit :: ShapeR (sh, Int) -> ShapeR sh
+shapeInit (ShapeRsnoc shr) = shr
 
 desugarBoundaryToFunction :: forall benv sh e. Boundary benv (Array sh e) -> Arg benv (In sh e) -> Fun benv (sh -> e)
 desugarBoundaryToFunction boundary (ArgArray _ repr@(ArrayR shr tp) sh buffers) = case boundary of
