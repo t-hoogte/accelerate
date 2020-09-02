@@ -19,6 +19,8 @@ module Data.Array.Accelerate.Representation.Slice
   where
 
 import Data.Array.Accelerate.Representation.Shape
+import Data.Array.Accelerate.Representation.Type
+import Data.Array.Accelerate.Type
 
 import Language.Haskell.TH
 
@@ -71,6 +73,11 @@ sliceShape :: forall slix co sl dim.
 sliceShape SliceNil        ()      = ()
 sliceShape (SliceAll   sl) (sh, n) = (sliceShape sl sh, n)
 sliceShape (SliceFixed sl) (sh, _) = sliceShape sl sh
+
+sliceEltR :: SliceIndex slix sl co dim -> TypeR slix
+sliceEltR SliceNil        = TupRunit
+sliceEltR (SliceAll   sl) = sliceEltR sl `TupRpair` TupRunit
+sliceEltR (SliceFixed sl) = sliceEltR sl `TupRpair` TupRsingle scalarTypeInt
 
 sliceShapeR :: SliceIndex slix sl co dim -> ShapeR sl
 sliceShapeR SliceNil        = ShapeRz

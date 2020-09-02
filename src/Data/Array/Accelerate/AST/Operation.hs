@@ -40,7 +40,7 @@ module Data.Array.Accelerate.AST.Operation (
 
   bufferImpossible, groundFunctionImpossible,
 
-  paramIn, paramsIn,
+  paramIn, paramsIn, paramIn', paramsIn',
 
   IsExecutableAcc(..),
   ReindexPartial, reindexArg, reindexArgs, reindexExp, reindexVar, reindexVars,
@@ -187,7 +187,7 @@ data PreArgs a t where
 --
 data Arg env t where
   -- TODO: Do we need this?
-  ArgVars     :: ExpVars env e         -> Arg env (Var' e)
+  ArgVar      :: ExpVars env e         -> Arg env (Var' e)
 
   ArgExp      :: Exp env e             -> Arg env (Exp' e)
 
@@ -226,7 +226,7 @@ data Out sh e where
 data Mut sh e where
 
 argVarType :: Arg env (Var' e) -> TypeR e
-argVarType (ArgVars vars) = varsType vars
+argVarType (ArgVar vars) = varsType vars
 
 argArrayR :: Arg env (m sh e) -> ArrayR (Array sh e)
 argArrayR (ArgArray _ repr _ _) = repr
@@ -362,6 +362,14 @@ paramsIn (TupRpair t1 t2) (TupRpair v1 v2)        = paramsIn t1 v1 `Pair` params
 paramsIn (TupRsingle t)   (TupRsingle (Var _ ix)) = ArrayInstr (Parameter $ Var t ix) Nil
 paramsIn _                _                       = internalError "Tuple mismatch"
 
+paramIn' :: ExpVar benv e -> OpenExp env benv e
+paramIn' v = ArrayInstr (Parameter v) Nil
+
+paramsIn' :: ExpVars benv e -> OpenExp env benv e
+paramsIn' TupRunit         = Nil
+paramsIn' (TupRpair v1 v2) = paramsIn' v1 `Pair` paramsIn' v2
+paramsIn' (TupRsingle v)   = ArrayInstr (Parameter v) Nil
+
 type ReindexPartial f env env' = forall a. Idx env a -> f (Idx env' a)
 
 reindexVar :: Applicative f => ReindexPartial f env env' -> Var s env t -> f (Var s env' t)
@@ -380,9 +388,9 @@ reindexExp :: (Applicative f, RebuildableExp e) => ReindexPartial f benv benv' -
 reindexExp k = rebuildArrayInstrPartial (rebuildArrayInstrMap $ reindexArrayInstr k)
 
 reindexArg :: Applicative f => ReindexPartial f env env' -> Arg env t -> f (Arg env' t)
-reindexArg k (ArgVars vars)               = ArgVars <$> reindexVars k vars
-reindexArg k (ArgExp e)                   = ArgExp  <$> reindexExp k e
-reindexArg k (ArgFun f)                   = ArgFun  <$> reindexExp k f
+reindexArg k (ArgVar vars)                = ArgVar <$> reindexVars k vars
+reindexArg k (ArgExp e)                   = ArgExp <$> reindexExp k e
+reindexArg k (ArgFun f)                   = ArgFun <$> reindexExp k f
 reindexArg k (ArgArray m repr sh buffers) = ArgArray m repr <$> reindexVars k sh <*> reindexVars k buffers
 
 reindexArgs :: Applicative f => ReindexPartial f env env' -> Args env t -> f (Args env' t)

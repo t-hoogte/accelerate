@@ -1,3 +1,4 @@
+{-# LANGUAGE EmptyCase            #-}
 {-# LANGUAGE GADTs                #-}
 {-# LANGUAGE RankNTypes           #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
@@ -97,6 +98,20 @@ class DesugarAcc (op :: Type -> Type) where
   mkGenerate    :: Arg env (Fun' (sh -> t))
                 -> Arg env (Out sh t)
                 -> OperationAcc op env ()
+
+  mkReplicate   :: SliceIndex slix sl co sh
+                -> Arg env (Var' slix)
+                -> Arg env (In  sl e)
+                -> Arg env (Out sh e)
+                -> OperationAcc op env ()
+  mkReplicate sliceIx slix = mkBackpermute (ArgFun $ extend sliceIx slix)
+
+  mkSlice       :: SliceIndex slix sl co sh
+                -> Arg env (Var' slix)
+                -> Arg env (In  sh e)
+                -> Arg env (Out sl e)
+                -> OperationAcc op env ()
+  mkSlice sliceIx slix = mkBackpermute (ArgFun $ restrict sliceIx slix)
 
   mkPermute     :: Arg env (Fun' (e -> e -> e))
                 -> Arg env (Mut sh' e)
@@ -309,6 +324,14 @@ desugarOpenAcc env = travA
               $ alet lhsOut (desugarAlloc (ArrayR shrOut tpOut) (valueShOut weakenId))
               $ alet (LeftHandSideWildcard TupRunit) (mkTransform argIdxF argValF argIn argOut)
               $ Return (shOut `TupRpair` bfOut)
+      
+      Named.Map _ (Lam lhs (Body e)) a
+        | Just vars <- extractExpVars e
+        , ArrayR shr oldTp <- Named.arrayR a
+        , DeclareVars lhsSh _   valueSh <- declareVars $ mapTupR GroundRscalar $ shapeType shr
+        , DeclareVars lhsIn kIn valueIn <- declareVars $ buffersR oldTp ->
+          alet (LeftHandSidePair lhsSh lhsIn) (travA a)
+            $ Return (valueSh kIn `TupRpair` desugarUnzip (valueIn weakenId) lhs vars)
 
       Named.Map tp f a
         | ArrayR shr oldTp <- Named.arrayR a
@@ -346,6 +369,54 @@ desugarOpenAcc env = travA
               $ alet lhsOut (desugarAlloc (ArrayR shrOut tp) (valueShOut weakenId))
               $ alet (LeftHandSideWildcard TupRunit) (mkBackpermute argF argIn argOut)
               $ Return (shOut `TupRpair` bfOut)
+
+      Named.Slice sliceIx a slix
+        | ArrayR shr tp <- Named.arrayR a
+        , slr <- sliceShapeR sliceIx
+        , DeclareVars lhsSh   kSh   valueSh   <- declareVars $ shapeType shr
+        , DeclareVars lhsIn   kIn   valueIn   <- declareVars $ buffersR tp
+        , DeclareVars lhsSlix kSlix valueSlix <- declareVars $ sliceEltR sliceIx
+        , DeclareVars lhsSl   kSl   valueSl   <- declareVars $ shapeType slr
+        , DeclareVars lhsOut  kOut  valueOut  <- declareVars $ buffersR tp ->
+          let
+            lhs     = LeftHandSidePair (mapLeftHandSide GroundRscalar lhsSh) lhsIn
+            slix'   = desugarExp (weakenBEnv (kIn .> kSh) env) slix
+            sh      = mapVars GroundRscalar $ valueSh $ kOut .> kSl .> kSlix .> kIn
+            sl      = mapVars GroundRscalar $ valueSl kOut
+            argSlix = ArgVar $ valueSlix $ kOut .> kSl
+            argIn   = ArgArray In  (ArrayR shr tp) sh (valueIn $ kOut .> kSl .> kSlix)
+            argOut  = ArgArray Out (ArrayR slr tp) sl (valueOut weakenId)
+          in
+            alet lhs (travA a)
+              $ alet (mapLeftHandSide GroundRscalar lhsSlix) (Compute slix')
+              $ alet (mapLeftHandSide GroundRscalar lhsSl)   (Compute $ IndexSlice sliceIx (paramsIn' $ valueSlix weakenId) (paramsIn' $ valueSh $ kSlix .> kIn))
+              $ alet lhsOut (desugarAlloc (ArrayR slr tp) (valueSl weakenId))
+              $ alet (LeftHandSideWildcard TupRunit) (mkSlice sliceIx argSlix argIn argOut)
+              $ Return (sl `TupRpair` valueOut weakenId)
+
+      Named.Replicate sliceIx slix a
+        | ArrayR slr tp <- Named.arrayR a
+        , shr <- sliceDomainR sliceIx
+        , DeclareVars lhsSl   kSl   valueSl   <- declareVars $ shapeType slr
+        , DeclareVars lhsIn   kIn   valueIn   <- declareVars $ buffersR tp
+        , DeclareVars lhsSlix kSlix valueSlix <- declareVars $ sliceEltR sliceIx
+        , DeclareVars lhsSh   kSh   valueSh   <- declareVars $ shapeType shr
+        , DeclareVars lhsOut  kOut  valueOut  <- declareVars $ buffersR tp ->
+          let
+            lhs     = LeftHandSidePair (mapLeftHandSide GroundRscalar lhsSl) lhsIn
+            slix'   = desugarExp (weakenBEnv (kIn .> kSl) env) slix
+            sl      = mapVars GroundRscalar $ valueSl $ kOut .> kSh .> kSlix .> kIn
+            sh      = mapVars GroundRscalar $ valueSh kOut
+            argSlix = ArgVar $ valueSlix $ kOut .> kSh
+            argIn   = ArgArray In  (ArrayR slr tp) sl (valueIn $ kOut .> kSh .> kSlix)
+            argOut  = ArgArray Out (ArrayR shr tp) sh (valueOut weakenId)
+          in
+            alet lhs (travA a)
+              $ alet (mapLeftHandSide GroundRscalar lhsSlix) (Compute slix')
+              $ alet (mapLeftHandSide GroundRscalar lhsSh)   (Compute $ IndexFull sliceIx (paramsIn' $ valueSlix weakenId) (paramsIn' $ valueSl $ kSlix .> kIn))
+              $ alet lhsOut (desugarAlloc (ArrayR shr tp) (valueSh weakenId))
+              $ alet (LeftHandSideWildcard TupRunit) (mkReplicate sliceIx argSlix argIn argOut)
+              $ Return (sh `TupRpair` valueOut weakenId)
 
       Named.Fold f def a
         | ArrayR (ShapeRsnoc shr) tp <- Named.arrayR a
@@ -519,21 +590,28 @@ desugarOpenAcc env = travA
           let
             lhs1      = LeftHandSidePair (mapLeftHandSide GroundRscalar lhsSh1) lhsIn1
             lhs2      = LeftHandSidePair (mapLeftHandSide GroundRscalar lhsSh2) lhsIn2
+            sh        = mapVars GroundRscalar $ valueSh kOut
+            sh1       = mapVars GroundRscalar $ valueSh1 (kOut .> kSh .> kIn2 .> kSh2 .> kIn1)
+            sh2       = mapVars GroundRscalar $ valueSh2 (kOut .> kSh .> kIn2)
+            env'      = weakenBEnv (kOut .> kSh .> kIn2 .> kSh2 .> kIn1 .> kSh1) env
+            argF      = ArgFun $ desugarFun env' f
+            b1'       = desugarBoundary env' b1
+            b2'       = desugarBoundary env' b2
+            argIn1    = ArgArray In (ArrayR shr tp1) sh1 (valueIn1 $ kOut .> kSh .> kIn2 .> kSh2)
+            argIn2    = ArgArray In (ArrayR shr tp2) sh2 (valueIn2 $ kOut .> kSh)
+            argOut    = ArgArray Out (ArrayR shr tp3) sh (valueOut weakenId)
           in
             alet lhs1 (travA a1)
               $ alet lhs2 (desugarOpenAcc (weakenBEnv (kIn1 .> kSh1) env) a2)
-              $ alet (mapLeftHandSide GroundRscalar lhsSh) (Compute $ undefined) -- intersect valueSh1 valueSh2
+              $ alet (mapLeftHandSide GroundRscalar lhsSh) (Compute $ mkIntersect shr (valueSh1 $ kIn2 .> kSh2 .> kIn1) (valueSh2 kIn2))
               $ alet lhsOut (desugarAlloc (ArrayR shr tp3) (valueSh weakenId))
-              undefined
-              -- $ alet (LeftHandSideWildcard TupRunit) (mkStencil2 sr1 sr2 argB1 argA1 argB2 argA2) 
+              $ alet (LeftHandSideWildcard TupRunit) (mkStencil2 sr1 sr2 argF b1' argIn1 b2' argIn2 argOut)
+              $ Return (sh `TupRpair` valueOut weakenId)
       -- TODO:
-      -- Replicate
-      -- Slice
+      -- Use
+      -- Permute
       -- ZipWith
-      -- Stencil2
-
-data MaybeExpInfo env env' e where
-  MaybeExpInfo :: GLeftHandSide env env' t -> env :> env' -> OperationAcc op benv t -> Arg benv' (Maybe (Exp' e)) -> MaybeExpInfo env env' e
+      -- Zip
 
 desugarAlloc :: forall benv op sh a. ArrayR (Array sh a) -> ExpVars benv sh -> OperationAcc op benv (Buffers a)
 desugarAlloc (ArrayR _   TupRunit        ) _  = Return TupRunit
@@ -628,6 +706,24 @@ weakenBEnv k = mapEnv f
     f :: ArrayDescriptor benv a -> ArrayDescriptor benv' a
     f (ArrayDescriptor sh buffers) = ArrayDescriptor (weakenVars k sh) (weakenVars k buffers)
 
+desugarUnzip :: GroundVars benv (Buffers s) -> ELeftHandSide s () env -> ExpVars env t -> GroundVars benv (Buffers t)
+desugarUnzip _       _   TupRunit                 = TupRunit
+desugarUnzip buffers lhs (TupRpair v1 v2)         = desugarUnzip buffers lhs v1 `TupRpair` desugarUnzip buffers lhs v2
+desugarUnzip buffers lhs (TupRsingle (Var _ idx)) = case lookupVar buffers lhs idx of
+    Right u -> u
+    Left ix' -> case ix' of {}
+    -- Left branch is unreachable, as `Idx () y` is an empty type
+  where
+    lookupVar :: GroundVars benv (Buffers x) -> ELeftHandSide x env1 env2 -> Idx env2 y -> Either (Idx env1 y) (GroundVars benv (Buffers y))
+    lookupVar _                (LeftHandSideWildcard _) ix = Left ix
+    lookupVar buffers'         (LeftHandSideSingle _)   ix = case ix of
+      ZeroIdx     -> Right buffers'
+      SuccIdx ix' -> Left ix'
+    lookupVar (TupRpair b1 b2) (LeftHandSidePair l1 l2) ix = case lookupVar b2 l2 ix of
+      Right u  -> Right u
+      Left ix' -> lookupVar b1 l1 ix'
+    lookupVar _ _ _ = error "Impossible pair"
+
 -- Utilities
 --
 
@@ -648,6 +744,20 @@ linearIndex (TupRpair t1 t2) (TupRpair b1 b2) ix  = linearIndex t1 b1 ix `Pair` 
 linearIndex (TupRsingle t)   (TupRsingle var@(Var (GroundRbuffer _) _)) ix
   | Refl <- reprIsSingle @ScalarType @e @Buffer t = ArrayInstr (Index var) (Evar ix)
 linearIndex _                _                _   = internalError "Tuple mismatch"
+
+extend :: SliceIndex slix sl co sh
+       -> Arg env (Var' slix)
+       -> Fun env (sh -> sl)
+extend sliceIx (ArgVar slix)
+  | DeclareVars lhs _ value <- declareVars $ shapeType $ sliceDomainR sliceIx
+  = Lam lhs $ Body $ IndexSlice sliceIx (paramsIn' slix) $ expVars $ value weakenId
+
+restrict :: SliceIndex slix sl co sh
+         -> Arg env (Var' slix)
+         -> Fun env (sl -> sh)
+restrict sliceIx (ArgVar slix)
+  | DeclareVars lhs _ value <- declareVars $ shapeType $ sliceShapeR sliceIx
+  = Lam lhs $ Body $ IndexFull sliceIx (paramsIn' slix) $ expVars $ value weakenId
 
 desugarBoundaryToFunction :: forall benv sh e. Boundary benv (Array sh e) -> Arg benv (In sh e) -> Fun benv (sh -> e)
 desugarBoundaryToFunction boundary (ArgArray _ repr@(ArrayR shr tp) sh buffers) = case boundary of
@@ -819,3 +929,8 @@ uncons (ShapeRsnoc shr) (TupRpair v1 v3)
   = let (i, v1') = uncons shr v1
     in  (i, TupRpair v1' v3)
 uncons _ _ = internalError "Illegal shape tuple"
+
+mkIntersect :: ShapeR sh -> ExpVars benv sh -> ExpVars benv sh -> PreOpenExp (ArrayInstr benv) env sh
+mkIntersect ShapeRz          _                _                = Nil
+mkIntersect (ShapeRsnoc shr) (TupRpair s1 x1) (TupRpair s2 x2) = mkIntersect shr s1 s2 `Pair` mkBinary (PrimMin singleType) (paramsIn' x1) (paramsIn' x2)
+mkIntersect (ShapeRsnoc _)   _                _                = error "Impossible pair"
