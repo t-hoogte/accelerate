@@ -59,6 +59,8 @@ type TypeR = TupR ScalarType
 -- | Distributes a type constructor over the elements of a tuple.
 -- TODO: Could we make this type class injective? Then we wouldn't
 -- need the type class Distributes any more.
+-- Note that we must use a standard, lazy pair here, as we rely on
+-- laziness in type alias Buffers to make host-device copies lazy.
 --
 type family Distribute f a = b where
   Distribute f () = ()

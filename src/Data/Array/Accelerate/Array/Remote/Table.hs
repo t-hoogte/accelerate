@@ -34,7 +34,7 @@ module Data.Array.Accelerate.Array.Remote.Table (
   MemoryTable, new, lookup, malloc, free, freeStable, insertUnmanaged, reclaim,
 
   -- Internals
-  StableArray, makeStableArray,
+  StableBuffer, makeStableBuffer,
   makeWeakArrayData,
 
 ) where
@@ -57,7 +57,7 @@ import qualified Data.HashTable.IO                              as HT
 import Data.Array.Accelerate.Error                              ( internalError )
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Array.Unique                       ( UniqueArray(..) )
-import Data.Array.Accelerate.Array.Data
+import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Array.Remote.Class
 import Data.Array.Accelerate.Array.Remote.Nursery               ( Nursery(..) )
 import Data.Array.Accelerate.Lifetime
@@ -81,7 +81,7 @@ import GHC.Stack
 -- semantics of weak pointers in the documentation).
 --
 type HashTable key val  = HT.CuckooHashTable key val
-type MT p               = MVar ( HashTable StableArray (RemoteArray p) )
+type MT p               = MVar ( HashTable StableBuffer (RemoteArray p) )
 data MemoryTable p      = MemoryTable {-# UNPACK #-} !(MT p)
                                       {-# UNPACK #-} !(Weak (MT p))
                                       {-# UNPACK #-} !(Nursery p)
@@ -93,13 +93,13 @@ data RemoteArray p where
               -> {-# UNPACK #-} !(Weak ())  -- Keep track of host array liveness
               -> RemoteArray p
 
--- | An untyped reference to an array, similar to a StableName.
+-- | An untyped reference to a buffer, similar to a StableName.
 --
-newtype StableArray = StableArray Unique
+newtype StableBuffer = StableBuffer Unique
   deriving (Eq, Hashable)
 
-instance Show StableArray where
-  show (StableArray u) = show (hash u)
+instance Show StableBuffer where
+  show (StableBuffer u) = show (hash u)
 
 -- | Create a new memory table from host to remote arrays.
 --
@@ -123,11 +123,11 @@ new release = do
 lookup :: forall m a. (HasCallStack, RemoteMemory m)
        => MemoryTable (RemotePtr m)
        -> SingleType a
-       -> ArrayData a
+       -> MutableBuffer a
        -> IO (Maybe (RemotePtr m (ScalarArrayDataR a)))
 lookup (MemoryTable !ref _ _ _) !tp !arr
   | SingleArrayDict <- singleArrayDict tp = do
-    sa <- makeStableArray tp arr
+    sa <- makeStableBuffer tp arr
     mw <- withMVar ref (`HT.lookup` sa)
     case mw of
       Nothing                      -> trace ("lookup/not found: " ++ show sa) $ return Nothing
@@ -149,7 +149,7 @@ lookup (MemoryTable !ref _ _ _) !tp !arr
           -- above in the error message.
           --
           Nothing ->
-            makeStableArray tp arr >>= \x -> internalError $ "dead weak pair: " ++ show x
+            makeStableBuffer tp arr >>= \x -> internalError $ "dead weak pair: " ++ show x
 
 -- | Allocate a new device array to be associated with the given host-side array.
 -- This may not always use the `malloc` provided by the `RemoteMemory` instance.
@@ -160,7 +160,7 @@ lookup (MemoryTable !ref _ _ _) !tp !arr
 malloc :: forall a m. (HasCallStack, RemoteMemory m, MonadIO m)
        => MemoryTable (RemotePtr m)
        -> SingleType a
-       -> ArrayData a
+       -> MutableBuffer a
        -> Int
        -> m (Maybe (RemotePtr m (ScalarArrayDataR a)))
 malloc mt@(MemoryTable _ _ !nursery _) !tp !ad !n
@@ -224,20 +224,20 @@ malloc mt@(MemoryTable _ _ !nursery _) !tp !ad !n
 free :: forall m a. (RemoteMemory m)
      => MemoryTable (RemotePtr m)
      -> SingleType a
-     -> ArrayData a
+     -> MutableBuffer a
      -> IO ()
 free mt tp !arr = do
-  sa <- makeStableArray tp arr
+  sa <- makeStableBuffer tp arr
   freeStable @m mt sa
 
 
--- | Deallocate the device array associated with the given StableArray. This
+-- | Deallocate the device array associated with the given StableBuffer. This
 -- is useful for other memory managers built on top of the memory table.
 --
 freeStable
     :: forall m. RemoteMemory m
     => MemoryTable (RemotePtr m)
-    -> StableArray
+    -> StableBuffer
     -> IO ()
 freeStable (MemoryTable !ref _ !nrs _) !sa =
   withMVar ref      $ \mt ->
@@ -262,12 +262,12 @@ insert
     :: forall m a. (RemoteMemory m, MonadIO m)
     => MemoryTable (RemotePtr m)
     -> SingleType a
-    -> ArrayData a
+    -> MutableBuffer a
     -> RemotePtr m (ScalarArrayDataR a)
     -> Int
     -> m ()
 insert mt@(MemoryTable !ref _ _ _) !tp !arr !ptr !bytes | SingleArrayDict <- singleArrayDict tp = do
-  key  <- makeStableArray tp arr
+  key  <- makeStableBuffer tp arr
   weak <- liftIO $ makeWeakArrayData tp arr () (Just $ freeStable @m mt key)
   message $ "insert: " ++ show key
   liftIO  $ D.increaseCurrentBytesRemote (fromIntegral bytes)
@@ -284,11 +284,11 @@ insertUnmanaged
     :: forall m a. (MonadIO m, RemoteMemory m)
     => MemoryTable (RemotePtr m)
     -> SingleType a
-    -> ArrayData a
+    -> MutableBuffer a
     -> RemotePtr m (ScalarArrayDataR a)
     -> m ()
 insertUnmanaged (MemoryTable !ref !weak_ref _ _) tp !arr !ptr | SingleArrayDict  <- singleArrayDict tp = do
-  key  <- makeStableArray tp arr
+  key  <- makeStableBuffer tp arr
   weak <- liftIO $ makeWeakArrayData tp arr () (Just $ remoteFinalizer weak_ref key)
   message $ "insertUnmanaged: " ++ show key
   liftIO  $ withMVar ref $ \tbl -> HT.insert tbl key (RemoteArray (castRemotePtr @m ptr) 0 weak)
@@ -340,7 +340,7 @@ purge (MemoryTable _ _ nursery@(Nursery nrs _) release)
 reclaim :: forall m. (RemoteMemory m, MonadIO m) => MemoryTable (RemotePtr m) -> m ()
 reclaim mt = clean mt >> purge mt
 
-remoteFinalizer :: Weak (MT p) -> StableArray -> IO ()
+remoteFinalizer :: Weak (MT p) -> StableBuffer -> IO ()
 remoteFinalizer !weak_ref !key = do
   mr <- deRefWeak weak_ref
   case mr of
@@ -351,17 +351,17 @@ remoteFinalizer !weak_ref !key = do
 -- Miscellaneous
 -- -------------
 
--- | Make a new 'StableArray'.
+-- | Make a new 'StableBuffer'.
 --
-{-# INLINE makeStableArray #-}
-makeStableArray
+{-# INLINE makeStableBuffer #-}
+makeStableBuffer
     :: MonadIO m
     => SingleType a
-    -> ArrayData a
-    -> m StableArray
-makeStableArray !tp !ad
+    -> MutableBuffer a
+    -> m StableBuffer
+makeStableBuffer !tp !(MutableBuffer ad)
   | SingleArrayDict <- singleArrayDict tp
-  = return $! StableArray (uniqueArrayId ad)
+  = return $! StableBuffer (uniqueArrayId ad)
 
 
 -- Weak arrays
@@ -373,11 +373,11 @@ makeStableArray !tp !ad
 makeWeakArrayData
     :: forall e c.
        SingleType e
-    -> ArrayData e
+    -> MutableBuffer e
     -> c
     -> Maybe (IO ())
     -> IO (Weak c)
-makeWeakArrayData !tp !ad !c !mf | SingleArrayDict <- singleArrayDict tp = do
+makeWeakArrayData !tp !(MutableBuffer ad) !c !mf | SingleArrayDict <- singleArrayDict tp = do
   let !uad = uniqueArrayData ad
   case mf of
     Nothing -> return ()

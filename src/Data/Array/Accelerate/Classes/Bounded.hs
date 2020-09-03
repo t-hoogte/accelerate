@@ -21,7 +21,7 @@ module Data.Array.Accelerate.Classes.Bounded (
 
 ) where
 
-import Data.Array.Accelerate.Array.Data
+import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Pattern
 import Data.Array.Accelerate.Smart
 import Data.Array.Accelerate.Sugar.Elt

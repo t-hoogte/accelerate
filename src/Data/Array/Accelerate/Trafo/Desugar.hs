@@ -31,18 +31,14 @@ import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Slice
 import Data.Array.Accelerate.Representation.Stencil
-import Data.Array.Accelerate.Representation.Tag
 import Data.Array.Accelerate.Representation.Type
-import Data.Array.Accelerate.Representation.Vec
 import Data.Array.Accelerate.Sugar.Foreign
 import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Data.Array.Accelerate.Trafo.Operation.Substitution
 import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Error
-import Data.Primitive.Vec
 import Data.Kind
-import GHC.Stack
 
 type a $ b = a b
 infixr 0 $
@@ -290,7 +286,7 @@ desugarOpenAcc env = travA
             f'            = desugarOpenAfun env f
             i'            = travA i
           in Awhile c' f' i'
-      Named.Use repr array -> undefined -- TODO: Desugar Use
+      Named.Use repr array -> desugarUse repr array
       Named.Unit tp e
         | DeclareVars lhs _ value <- declareVars tp ->
           let
@@ -874,6 +870,15 @@ restrict sliceIx (ArgVar slix)
 -- a false warning "pattern matches are non-exhaustive".
 shapeInit :: ShapeR (sh, Int) -> ShapeR sh
 shapeInit (ShapeRsnoc shr) = shr
+
+desugarUse :: ArrayR (Array sh e) -> Array sh e -> OperationAcc op benv (DesugaredArrays (Array sh e))
+desugarUse (ArrayR shr tp) (Array sh buffers) = Compute (mkConstant (shapeType shr) sh) `pair` desugarBuffers tp buffers
+
+desugarBuffers :: forall e op benv. TypeR e -> Buffers e -> OperationAcc op benv (Buffers e)
+desugarBuffers TupRunit         ()       = Return TupRunit
+desugarBuffers (TupRpair t1 t2) (b1, b2) = desugarBuffers t1 b1 `pair` desugarBuffers t2 b2
+desugarBuffers (TupRsingle tp)  buffer
+  | Refl <- reprIsSingle @ScalarType @e @Buffer tp = Use tp buffer
 
 desugarBoundaryToFunction :: forall benv sh e. Boundary benv (Array sh e) -> Arg benv (In sh e) -> Fun benv (sh -> e)
 desugarBoundaryToFunction boundary (ArgArray _ repr@(ArrayR shr tp) sh buffers) = case boundary of

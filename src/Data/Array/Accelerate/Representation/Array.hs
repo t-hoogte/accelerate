@@ -18,9 +18,10 @@
 --
 
 module Data.Array.Accelerate.Representation.Array
+  ( module Data.Array.Accelerate.Representation.Array, Buffer, Buffers )
   where
 
-import Data.Array.Accelerate.Array.Data
+import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Representation.Elt
@@ -40,12 +41,9 @@ import qualified Data.Vector.Unboxed                                as U
 --
 data Array sh e where
   Array :: sh                         -- extent of dimensions = shape
-        -> ArrayData e                -- array payload
+        -> Buffers e                  -- array payload
         -> Array sh e
 
-newtype Buffer e = Buffer (ScalarArrayData e)
-
-type Buffers e = Distribute Buffer e
 
 -- | Segment descriptor (vector of segment lengths).
 --
@@ -68,7 +66,7 @@ data ArrayR a where
          -> ArrayR (Array sh e)
 
 instance Show (ArrayR a) where
-  show (ArrayR shR eR) = "Array DIM" ++ show (rank shR) ++ " " ++ show eR
+  show (ArrayR shR tp) = "Array DIM" ++ show (rank shR) ++ " " ++ show tp
 
 type ArraysR = TupR ArrayR
 
@@ -81,7 +79,7 @@ showArraysR :: ArraysR a -> ShowS
 showArraysR = shows
 
 arraysRarray :: ShapeR sh -> TypeR e -> ArraysR (Array sh e)
-arraysRarray shR eR = TupRsingle (ArrayR shR eR)
+arraysRarray shR tp = TupRsingle (ArrayR shR tp)
 
 arraysRpair :: ArrayR a -> ArrayR b -> ArraysR (((), a), b)
 arraysRpair a b = TupRunit `TupRpair` TupRsingle a `TupRpair` TupRsingle b
@@ -92,9 +90,10 @@ arraysRFunctionImpossible (TupRsingle repr) = case repr of {}
 -- | Creates a new, uninitialized Accelerate array.
 --
 allocateArray :: ArrayR (Array sh e) -> sh -> IO (Array sh e)
-allocateArray (ArrayR shR eR) sh = do
-  adata  <- newArrayData eR (size shR sh)
-  return $! Array sh adata
+allocateArray (ArrayR shR tp) sh = do
+  mbuffers <- newBuffers tp (size shR sh)
+  let buffers = unsafeFreezeBuffers tp mbuffers
+  return $! Array sh buffers
 
 -- | Create an array from its representation function, applied at each
 -- index of the array.
@@ -107,63 +106,64 @@ fromFunction repr sh f = unsafePerformIO $! fromFunctionM repr sh (return . f)
 -- @since 1.2.0.0
 --
 fromFunctionM :: ArrayR (Array sh e) -> sh -> (sh -> IO e) -> IO (Array sh e)
-fromFunctionM (ArrayR shR eR) sh f = do
+fromFunctionM (ArrayR shR tp) sh f = do
   let !n = size shR sh
-  arr <- newArrayData eR n
+  mbuffers <- newBuffers tp n
   --
   let write !i
         | i >= n    = return ()
         | otherwise = do
             v <- f (fromIndex shR sh i)
-            writeArrayData eR arr i v
+            writeBuffers tp mbuffers i v
             write (i+1)
   --
   write 0
-  return $! arr `seq` Array sh arr
+  let buffers = unsafeFreezeBuffers tp mbuffers
+  return $! buffers `seq` Array sh buffers
 
 
 -- | Convert a list into an Accelerate 'Array' in dense row-major order.
 --
 fromList :: forall sh e. ArrayR (Array sh e) -> sh -> [e] -> Array sh e
-fromList (ArrayR shR eR) sh xs = adata `seq` Array sh adata
+fromList (ArrayR shR tp) sh xs = buffers `seq` Array sh buffers
   where
     -- Assume the array is in dense row-major order. This is safe because
     -- otherwise backends would not be able to directly memcpy.
     --
     !n    = size shR sh
-    (adata, _) = runArrayData @e $ do
-                  arr <- newArrayData eR n
+    (buffers, _) = runBuffers tp $ do
+                  mbuffers <- newBuffers tp n
                   let go !i _ | i >= n = return ()
-                      go !i (v:vs)     = writeArrayData eR arr i v >> go (i+1) vs
+                      go !i (v:vs)     = writeBuffers tp mbuffers i v >> go (i+1) vs
                       go _  []         = error "Data.Array.Accelerate.fromList: not enough input data"
                   --
                   go 0 xs
-                  return (arr, undefined)
+                  return (mbuffers, undefined)
 
 
 -- | Convert an accelerated 'Array' to a list in row-major order.
 --
 toList :: ArrayR (Array sh e) -> Array sh e -> [e]
-toList (ArrayR shR eR) (Array sh adata) = go 0
+toList (ArrayR shR tp) (Array sh buffers) = go 0
   where
     -- Assume underling array is in row-major order. This is safe because
     -- otherwise backends would not be able to directly memcpy.
     --
     !n                  = size shR sh
     go !i | i >= n      = []
-          | otherwise   = indexArrayData eR adata i : go (i+1)
+          | otherwise   = indexBuffers tp buffers i : go (i+1)
 
 concatVectors :: forall e. TypeR e -> [Vector e] -> Vector e
-concatVectors tR vs = adata `seq` Array ((), len) adata
+concatVectors tp vs = buffers `seq` Array ((), len) buffers
   where
-    offsets     = scanl (+) 0 (map (size dim1 . shape) vs)
-    len         = last offsets
-    (adata, _)  = runArrayData @e $ do
-      arr <- newArrayData tR len
-      sequence_ [ writeArrayData tR arr (i + k) (indexArrayData tR ad i)
+    offsets      = scanl (+) 0 (map (size dim1 . shape) vs)
+    len          = last offsets
+    (buffers, _) = runBuffers tp $ do
+      mbuffers <- newBuffers tp len
+      sequence_ [ writeBuffers tp mbuffers (i + k) (indexBuffers tp ad i)
                 | (Array ((), n) ad, k) <- vs `zip` offsets
                 , i <- [0 .. n - 1] ]
-      return (arr, undefined)
+      return (mbuffers, undefined)
 
 shape :: Array sh e -> sh
 shape (Array sh _) = sh
@@ -180,10 +180,10 @@ reshape shR sh shR' (Array sh' adata)
 (!!) = uncurry linearIndexArray
 
 indexArray :: ArrayR (Array sh e) -> Array sh e -> sh -> e
-indexArray (ArrayR shR adR) (Array sh adata) ix = indexArrayData adR adata (toIndex shR sh ix)
+indexArray (ArrayR shR tp) (Array sh buffers) ix = indexBuffers tp buffers (toIndex shR sh ix)
 
 linearIndexArray :: TypeR e -> Array sh e -> Int -> e
-linearIndexArray adR (Array _ adata) = indexArrayData adR adata
+linearIndexArray tp (Array _ buffers) = indexBuffers tp buffers
 
 showArray :: (e -> ShowS) -> ArrayR (Array sh e) -> Array sh e -> String
 showArray f arrR@(ArrayR shR _) arr@(Array sh _) = case shR of
@@ -240,10 +240,10 @@ reduceRank :: ArrayR (Array (sh, Int) e) -> ArrayR (Array sh e)
 reduceRank (ArrayR (ShapeRsnoc shR) aeR) = ArrayR shR aeR
 
 rnfArray :: ArrayR a -> a -> ()
-rnfArray (ArrayR shR adR) (Array sh ad) = rnfShape shR sh `seq` rnfArrayData adR ad
+rnfArray (ArrayR shR tp) (Array sh buffers) = rnfShape shR sh `seq` rnfBuffers tp buffers
 
 rnfArrayR :: ArrayR arr -> ()
-rnfArrayR (ArrayR shR tR) = rnfShapeR shR `seq` rnfTupR rnfScalarType tR
+rnfArrayR (ArrayR shR tp) = rnfShapeR shR `seq` rnfTupR rnfScalarType tp
 
 rnfArraysR :: ArraysR arrs -> arrs -> ()
 rnfArraysR TupRunit           ()      = ()
@@ -251,7 +251,7 @@ rnfArraysR (TupRsingle arrR)  arr     = rnfArray arrR arr
 rnfArraysR (TupRpair aR1 aR2) (a1,a2) = rnfArraysR aR1 a1 `seq` rnfArraysR aR2 a2
 
 liftArrayR :: ArrayR a -> Q (TExp (ArrayR a))
-liftArrayR (ArrayR shR tR) = [|| ArrayR $$(liftShapeR shR) $$(liftTypeR tR) ||]
+liftArrayR (ArrayR shR tp) = [|| ArrayR $$(liftShapeR shR) $$(liftTypeR tp) ||]
 
 liftArraysR :: ArraysR arrs -> Q (TExp (ArraysR arrs))
 liftArraysR TupRunit          = [|| TupRunit ||]
@@ -259,8 +259,8 @@ liftArraysR (TupRsingle repr) = [|| TupRsingle $$(liftArrayR repr) ||]
 liftArraysR (TupRpair a b)    = [|| TupRpair $$(liftArraysR a) $$(liftArraysR b) ||]
 
 liftArray :: forall sh e. ArrayR (Array sh e) -> Array sh e -> Q (TExp (Array sh e))
-liftArray (ArrayR shR adR) (Array sh adata) =
-  [|| Array $$(liftElt (shapeType shR) sh) $$(liftArrayData sz adR adata) ||] `at` [t| Array $(liftTypeQ (shapeType shR)) $(liftTypeQ adR) |]
+liftArray (ArrayR shR tp) (Array sh buffers) =
+  [|| Array $$(liftElt (shapeType shR) sh) $$(liftBuffers sz tp buffers) ||] `at` [t| Array $(liftTypeQ (shapeType shR)) $(liftTypeQ tp) |]
   where
     sz :: Int
     sz = size shR sh
