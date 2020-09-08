@@ -30,6 +30,7 @@ module Data.Array.Accelerate.Trafo.Operation.Substitution (
   reindexPartial,
   reindexPartialAfun,
   pair, alet,
+  weakenArrayInstr,
 ) where
 
 import Data.Array.Accelerate.AST.Idx
@@ -57,6 +58,13 @@ instance IsExecutableAcc exe => Sink (PreOpenAcc exe) where
 
 instance IsExecutableAcc exe => Sink (PreOpenAfun exe) where
   weaken k = runIdentity . reindexPartialAfun (Identity . (k >:>))
+
+instance Sink Arg where
+  weaken k = runIdentity . reindexArg (weakenReindex k)
+
+instance Sink ArrayInstr where
+  weaken k (Index     v) = Index     $ weaken k v
+  weaken k (Parameter v) = Parameter $ weaken k v
 
 sinkReindexWithLHS :: LeftHandSide s t env1 env1' -> LeftHandSide s t env2 env2' -> SunkReindexPartial f env1 env2 -> SunkReindexPartial f env1' env2'
 sinkReindexWithLHS (LeftHandSideWildcard _) (LeftHandSideWildcard _) k = k
@@ -97,7 +105,7 @@ reindexA' k = \case
     Use tp buffer -> pure $ Use tp buffer
     Unit var -> Unit <$> reindexVar' k var
     Acond c t f -> Acond <$> reindexVar' k c <*> travA t <*> travA f
-    Awhile c f i -> Awhile <$> reindexAfun' k c <*> reindexAfun' k f <*> travA i
+    Awhile c f i -> Awhile <$> reindexAfun' k c <*> reindexAfun' k f <*> reindexVars' k i
   where
     travA :: PreOpenAcc exe env s -> f (PreOpenAcc exe env' s)
     travA = reindexA' k
@@ -144,3 +152,11 @@ extractParams Nil                          = Just TupRunit
 extractParams (Pair e1 e2)                 = TupRpair <$> extractParams e1 <*> extractParams e2
 extractParams (ArrayInstr (Parameter v) _) = Just $ TupRsingle v
 extractParams _                            = Nothing
+
+-- We cannot use 'weaken' to weaken the array environment of an 'OpenExp',
+-- as OpenExp is a type synonym for 'PreOpenExp (ArrayInstr aenv) env',
+-- and 'weaken' would thus affect the expression environment. Hence we
+-- have a separate function for OpenExp and OpenFun.
+--
+weakenArrayInstr :: RebuildableExp f => aenv :> aenv' -> f (ArrayInstr aenv) env t -> f (ArrayInstr aenv') env t
+weakenArrayInstr k = rebuildArrayInstr (ArrayInstr . weaken k)

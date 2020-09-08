@@ -41,6 +41,7 @@ import qualified Data.Array.Accelerate.Trafo.LetSplit     as LetSplit
 import qualified Data.Array.Accelerate.Trafo.Exp.Simplify as Rewrite
 import qualified Data.Array.Accelerate.Trafo.Sharing      as Sharing
 import qualified Data.Array.Accelerate.Trafo.Desugar      as Desugar
+import qualified Data.Array.Accelerate.Trafo.NewNewFusion as NewNewFusion
 -- import qualified Data.Array.Accelerate.Trafo.Vectorise    as Vectorise
 
 import Control.DeepSeq

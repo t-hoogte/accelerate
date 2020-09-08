@@ -20,7 +20,7 @@ module Data.Array.Accelerate.Test.NoFib.Issues.Issue286 (
 ) where
 
 import Data.Array.Accelerate                                        as A hiding ( (>->), (==) )
-import Data.Array.Accelerate.Array.Data
+import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Array.Sugar                            as Sugar
 import Data.Array.Accelerate.Array.Unique
 import Data.Array.Accelerate.Error

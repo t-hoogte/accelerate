@@ -177,8 +177,23 @@ class DesugarAcc (op :: Type -> Type) where
                 -> Arg env (In  (sh, Int) e)
                 -> Arg env (Out sh        e)
                 -> OperationAcc op env ()
-  -- TODO: Default implementation in terms of generate & awhile, or a sequential one in terms of generate
-  -- Altough it may not be that efficient, it will make it easier to implement new backends
+  mkFold f def input@(ArgArray _ repr@(ArrayR shr tp) _ _) output
+    -- Binding of the result of the first step
+    | DeclareVars lhs1 k1 value1 <- declareVars $ desugarArrayR repr
+    -- Binding in the iteration and condition function for the first step
+    , DeclareVars lhsSh kSh valueSh <- declareVars $ mapTupR GroundRscalar $ shapeType shr
+    , DeclareVars lhsBf kBf valueBf <- declareVars $ buffersR tp
+    = let
+        lhs2 = LeftHandSidePair lhsSh lhsBf
+        argTmp = ArgArray In (ArrayR shr tp) (valueSh kBf) (valueBf weakenId)
+        c = Alam lhs2 $ Abody $ case valueSh kBf of
+          TupRpair _ ix -> Compute $ mkBinary (PrimLtEq singleType) (paramsIn (TupRsingle scalarTypeInt) ix) (mkConstant (TupRsingle scalarTypeInt) 1)
+          _ -> error "Impossible pair"
+        g = Alam lhs2 $ Abody $ mkDefaultFoldStep2 (weaken (kBf .> kSh .> k1) f) argTmp (weaken (kBf .> kSh .> k1) output)
+      in
+        alet lhs1 (mkDefaultFoldStep1 f def input output)
+          $ alet (LeftHandSideWildcard $ desugarArrayR repr) (Awhile c g $ value1 weakenId)
+          $ Return TupRunit
 
   mkFoldSeg     :: IntegralType i
                 -> Arg env (Fun' (e -> e -> e))
@@ -187,6 +202,11 @@ class DesugarAcc (op :: Type -> Type) where
                 -> Arg env (In  DIM1      i)
                 -> Arg env (Out (sh, Int) e)
                 -> OperationAcc op env ()
+  -- TODO: Default implementation. We could do this using:
+  --   generate: just a simple implementation which is sequential for each segment
+  --   scan (segmented scan)
+  --   awhile & generate
+  -- I think a segmented scan would be the most efficient
 
   mkScan        :: Direction
                 -> Arg env (Fun' (e -> e -> e))
@@ -203,7 +223,7 @@ class DesugarAcc (op :: Type -> Type) where
                 -> Arg env (Out (sh, Int) e)
                 -> Arg env (Out sh        e)
                 -> OperationAcc op env ()
-  -- TODO: Default implementation with awhile & generate
+  -- TODO: Default implementation in terms of scan
 
   mkForeign     :: Foreign asm
                 => ArraysR bs
@@ -276,16 +296,18 @@ desugarOpenAcc env = travA
           var  = Var scalarTypeWord8 ZeroIdx
         in alet lhs (Compute $ travE c) $ Acond var (desugarOpenAcc env' t) (desugarOpenAcc env' f)
       Named.Awhile c f i
-        | Refl <- desugaredAfunIsBody $ Named.arraysR acc ->
+        | repr <- Named.arraysR acc
+        , Refl <- desugaredAfunIsBody repr
+        , DeclareVars lhs k value <- declareVars $ desugarArraysR repr ->
           let
             bufferType    = GroundRbuffer $ scalarTypeWord8
             lhsScalarBool = LeftHandSidePair (LeftHandSideWildcard TupRunit) (LeftHandSideSingle bufferType)
-            c'            = case desugarOpenAfun env c of
+            env'          = weakenBEnv k env
+            c'            = case desugarOpenAfun env' c of
               Alam lhs (Abody body) -> Alam lhs $ Abody $ Alet lhsScalarBool body $ Compute $ ArrayInstr (Index $ Var bufferType ZeroIdx) $ Const scalarTypeInt 0
               Abody _               -> error "It's a long time since we last met"
-            f'            = desugarOpenAfun env f
-            i'            = travA i
-          in Awhile c' f' i'
+            f'            = desugarOpenAfun env' f
+          in alet lhs (travA i) $ Awhile c' f' (value weakenId)
       Named.Use repr array -> desugarUse repr array
       Named.Unit tp e
         | DeclareVars lhs _ value <- declareVars tp ->
@@ -1055,3 +1077,123 @@ mkIntersect :: ShapeR sh -> ExpVars benv sh -> ExpVars benv sh -> PreOpenExp (Ar
 mkIntersect ShapeRz          _                _                = Nil
 mkIntersect (ShapeRsnoc shr) (TupRpair s1 x1) (TupRpair s2 x2) = mkIntersect shr s1 s2 `Pair` mkBinary (PrimMin singleType) (paramsIn' x1) (paramsIn' x2)
 mkIntersect (ShapeRsnoc _)   _                _                = error "Impossible pair"
+
+-- Default implementation for the first step of a fold.
+-- The output of the inner dimension is guaranteed to
+-- be a power of two.
+mkDefaultFoldStep1 :: forall benv op sh e. DesugarAcc op => Arg benv (Fun' (e -> e -> e)) -> Maybe (Arg benv (Exp' e)) -> Arg benv (In (sh, Int) e) -> Arg benv (Out sh e) -> OperationAcc op benv (DesugaredArrays (Array (sh, Int) e))
+mkDefaultFoldStep1 (ArgFun f) def argIn@(ArgArray _ (ArrayR shr tp) (sh `TupRpair` n) _) argOut
+  | DeclareVars lhsTmp kTmp valueTmp <- declareVars $ buffersR tp
+  = let
+      lhsN1 = LeftHandSideSingle $ GroundRscalar scalarTypeInt
+      kN1   = weakenSucc weakenId
+
+      -- n-1 in case of fold1.
+      -- For fold, we have one additional element (the default value), and thus have (n+1)-1
+      nMinus1
+        | Just _ <- def = paramsIn (TupRsingle scalarType) n
+        | otherwise = mkBinary (PrimSub numType) (paramsIn (TupRsingle scalarType) n) (mkConstant (TupRsingle scalarTypeInt) 1)
+
+      shBase' = weakenVars (weakenSucc weakenId) sh
+      shTmp'  = shBase' `TupRpair` TupRsingle (Var (GroundRscalar scalarTypeInt) ZeroIdx)
+
+      shTmp   = weakenVars kTmp shTmp'
+      tmp     = valueTmp weakenId
+      k       = weakenSucc kTmp
+      argG    = ArgFun $ mkDefaultFoldStep1Function (weakenArrayInstr k f) (weaken k <$> def) (weaken kTmp $ Var (GroundRscalar scalarTypeInt) ZeroIdx) (weaken k argIn)
+      argTmp  = ArgArray Out (ArrayR shr tp) shTmp tmp
+    in
+      alet lhsN1 (Compute $ mkBinary (PrimBShiftL integralType) (mkConstant (TupRsingle scalarTypeInt) 1) $ mkLog2 nMinus1)
+        $ alet lhsTmp (mkDefaultFoldAllocOrOutput (weaken kN1 argOut) $ groundToExpVar (shapeType shr) shTmp')
+        $ alet (LeftHandSideWildcard TupRunit) (mkGenerate argG argTmp)
+        $ Return (shTmp `TupRpair` tmp)
+
+-- log_2(x) = 63 − clz(x) (for 64-bit integers)
+mkLog2 :: OpenExp env benv Int -> OpenExp env benv Int
+mkLog2 = mkBinary (PrimSub numType) (mkConstant (TupRsingle scalarTypeInt) 63) . PrimApp (PrimCountLeadingZeros integralType)
+
+mkDefaultFoldStep1Function :: forall benv sh e. HasCallStack => Fun benv (e -> e -> e) -> Maybe (Arg benv (Exp' e)) -> GroundVar benv Int -> Arg benv (In (sh, Int) e) -> Fun benv ((sh, Int) -> e)
+mkDefaultFoldStep1Function f def n1' argIn@(ArgArray _ (ArrayR (ShapeRsnoc shr) tp) (sh' `TupRpair` n') buffers)
+  | DeclareVars lhsX kX valueX <- declareVars $ shapeType shr
+  = let
+      x  = expVars $ valueX (weakenSucc weakenId)
+      y  = Evar $ Var scalarTypeInt ZeroIdx
+      y2 = mkBinary (PrimMul numType) y (mkConstant (TupRsingle scalarTypeInt) 2)
+      n1 = paramIn scalarTypeInt n1'
+
+      -- When a default or initial value is given, we just pretend that the input array is one
+      -- element larger, i.e., prefixed with that default value.
+      n
+        | Just _ <- def = mkBinary (PrimAdd numType) (paramsIn (TupRsingle scalarTypeInt) n') (mkConstant (TupRsingle scalarTypeInt) 1)
+        | otherwise     = paramsIn (TupRsingle scalarTypeInt) n'
+
+      index' :: OpenExp env' benv sh -> OpenExp env' benv Int -> OpenExp env' benv e
+      index' x' y'
+        | Just (ArgExp d) <- def =
+            Cond (mkBinary (PrimEq singleType) y' $ mkConstant (TupRsingle scalarTypeInt) 0)
+            (weakenE weakenEmpty d)
+            (index (ArrayR (ShapeRsnoc shr) tp) (sh' `TupRpair` n') buffers $ Pair x' $ mkBinary (PrimSub numType) y' $ mkConstant (TupRsingle scalarTypeInt) 1)
+      index' x' y' = 
+            (index (ArrayR (ShapeRsnoc shr) tp) (sh' `TupRpair` n') buffers $ Pair x' y')
+    in
+      -- \(x, y) ->
+      Lam (lhsX `LeftHandSidePair` LeftHandSideSingle scalarTypeInt)
+        $ Body
+          -- if (y < n-n1)
+        $ Cond (mkBinary (PrimLt singleType) y $ mkBinary (PrimSub numType) n n1)
+          -- then {reduce y*2 and y*2+1}
+          (apply2 tp f (index' x y2) (index' x $ mkBinary (PrimAdd numType) y2 $ mkConstant (TupRsingle scalarTypeInt) 1))
+          -- else {just copy the value from index (y+n-n1)}
+          (index' x $ mkBinary (PrimAdd numType) y $ mkBinary (PrimSub numType) n n1)
+
+-- Halves the inner dimension of the array
+mkDefaultFoldStep2 :: DesugarAcc op => Arg benv (Fun' (e -> e -> e)) -> Arg benv (In (sh, Int) e) -> Arg benv (Out sh e) -> OperationAcc op benv (DesugaredArrays (Array (sh, Int) e))
+mkDefaultFoldStep2 (ArgFun f) argIn@(ArgArray _ (ArrayR shr@(ShapeRsnoc shr') tp) (TupRpair sh n) input) argOut
+  | DeclareVars lhsSh  kSh  valueSh  <- declareVars $ TupRsingle $ GroundRscalar scalarTypeInt
+  , DeclareVars lhsTmp kTmp valueTmp <- declareVars $ buffersR tp
+  = let
+      shBase' = weakenVars kSh sh
+      shTmp'  = shBase' `TupRpair` valueSh weakenId
+
+      shBase  = weakenVars kTmp shBase'
+      shIn    = shBase `TupRpair` weakenVars (kTmp .> kSh) n
+      shTmp   = shBase `TupRpair` valueSh kTmp
+
+      temp    = valueTmp weakenId
+      argG    = weaken (kTmp .> kSh) $ ArgFun $ mkDefaultFoldStep2Function f argIn
+      argTmp  = ArgArray Out (ArrayR shr tp) shTmp temp
+    in
+      alet lhsSh (Compute $ mkBinary (PrimRem integralType) (paramsIn (TupRsingle scalarTypeInt) n) (Const scalarTypeInt 2))
+        $ alet lhsTmp (mkDefaultFoldAllocOrOutput (weaken kSh argOut) $ groundToExpVar (shapeType shr) shTmp')
+        $ alet (LeftHandSideWildcard TupRunit) (mkGenerate argG argTmp)
+        $ Return (shTmp `TupRpair` temp)
+
+-- Allocates a new intermediate array or returns the output array.
+-- If the inner dimension is 1, returns the output array, as we are in the last iteration.
+-- Otherwise, allocates a new intermediate array.
+--
+mkDefaultFoldAllocOrOutput :: Arg benv (Out sh e) -> ExpVars benv (sh, Int) -> OperationAcc op benv (Buffers e)
+mkDefaultFoldAllocOrOutput (ArgArray _ (ArrayR shr e) _ output) sh@(TupRpair _ y)
+  = Alet (LeftHandSideSingle $ GroundRscalar scalarType) (Compute $ mkBinary (PrimEq singleType) (paramsIn' y) $ mkConstant (TupRsingle scalarTypeInt) 1)
+    $ Acond (Var scalarTypeWord8 ZeroIdx)
+    (Return $ weakenVars (weakenSucc weakenId) output)
+    (desugarAlloc (ArrayR (ShapeRsnoc shr) e) $ weakenVars (weakenSucc weakenId) sh)
+
+--     \(x, y) -> f (a !! (x, 2*y)) (a !! (x, 2*y+1))
+-- ==> \(x, y) -> let z = toIndex (x, 2*y) in f (a ! z) (a ! z+1)
+mkDefaultFoldStep2Function :: forall benv sh e. HasCallStack => Fun benv (e -> e -> e) -> Arg benv (In (sh, Int) e) -> Fun benv ((sh, Int) -> e)
+mkDefaultFoldStep2Function f (ArgArray _ (ArrayR (ShapeRsnoc shr) tp) sh input)
+  | DeclareVars lhsX kX valueX <- declareVars $ shapeType shr
+  , DeclareVars lhsY kY valueY <- declareVars $ TupRsingle scalarTypeInt
+  -- \(x, y) ->
+  = Lam (lhsX `LeftHandSidePair` lhsY)
+  $ Body
+  -- let z = toIndex (x, 2*y)
+  $ Let (LeftHandSideSingle scalarTypeInt) (ToIndex (ShapeRsnoc shr) (paramsIn (shapeType $ ShapeRsnoc shr) sh) (expVars (valueX kY) `Pair` mkBinary (PrimMul numType) (expVars $ valueY weakenId) (mkConstant (TupRsingle scalarTypeInt) 2)))
+  -- f
+  $ apply2 tp f
+      -- (a ! z)
+      (linearIndex tp input $ {- z -} Var scalarTypeInt ZeroIdx)
+      -- (let w = z + 1 in a ! w)
+      (Let (LeftHandSideSingle scalarTypeInt) (mkBinary (PrimAdd numType) (Evar $ Var scalarTypeInt ZeroIdx) (mkConstant (TupRsingle scalarTypeInt) 1))
+        $ linearIndex tp input $ Var scalarTypeInt ZeroIdx)

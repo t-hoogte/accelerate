@@ -22,7 +22,7 @@ module Data.Array.Accelerate.Test.NoFib.Prelude.Permute (
 ) where
 
 import Data.Array.Accelerate                                        as A
-import Data.Array.Accelerate.Array.Data
+import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Sugar.Array                            as S
 import Data.Array.Accelerate.Sugar.Elt                              as S
 import Data.Array.Accelerate.Sugar.Shape                            as S

@@ -324,7 +324,7 @@ Library
         Data.Array.Accelerate.Analysis.Hash
         Data.Array.Accelerate.Analysis.Hash.Exp
         Data.Array.Accelerate.Analysis.Match
-        Data.Array.Accelerate.Array.Data
+        Data.Array.Accelerate.Array.Buffer
         Data.Array.Accelerate.Array.Remote
         Data.Array.Accelerate.Array.Remote.Class
         Data.Array.Accelerate.Array.Remote.LRU

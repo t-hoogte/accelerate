@@ -26,7 +26,7 @@ module Data.Array.Accelerate.AST.Operation (
   OperationAcc, OperationAfun, Execute(..),
 
   GroundR(..), GroundsR, GroundVar, GroundVars, GLeftHandSide, Var(..), Vars,
-  HasGroundsR(..),
+  HasGroundsR(..), groundToExpVar,
 
   PreArgs(..), Arg(..), Args, Modifier(..), argArrayR, argVarType,
 
@@ -44,10 +44,14 @@ module Data.Array.Accelerate.AST.Operation (
 
   IsExecutableAcc(..),
   ReindexPartial, reindexArg, reindexArgs, reindexExp, reindexVar, reindexVars,
+  weakenReindex,
+
+  mapAccExecutable, mapAfunExecutable,
 
   module Data.Array.Accelerate.AST.Exp
 ) where
 
+import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Exp
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.AST.Idx
@@ -139,7 +143,7 @@ data PreOpenAcc exe env a where
   --
   Awhile  :: PreOpenAfun exe env (arrs -> PrimBool)
           -> PreOpenAfun exe env (arrs -> arrs)
-          -> PreOpenAcc  exe env arrs
+          -> GroundVars      env arrs
           -> PreOpenAcc  exe env arrs
 
 -- | Function abstraction over parametrised array computations
@@ -177,7 +181,6 @@ data PreArgs a t where
 -- | A single argument to an operation.
 --
 data Arg env t where
-  -- TODO: Do we need this?
   ArgVar      :: ExpVars env e         -> Arg env (Var' e)
 
   ArgExp      :: Exp env e             -> Arg env (Exp' e)
@@ -387,8 +390,33 @@ reindexArgs :: Applicative f => ReindexPartial f env env' -> Args env t -> f (Ar
 reindexArgs _ ArgsNil    = pure ArgsNil
 reindexArgs k (a :>: as) = (:>:) <$> reindexArg k a <*> reindexArgs k as
 
+weakenReindex :: benv :> benv' -> ReindexPartial Identity benv benv'
+weakenReindex k = Identity . (k >:>)
+
 class IsExecutableAcc exe where
   reindexExecPartial :: Applicative f => ReindexPartial f env env' -> exe env -> f (exe env')
 
 instance IsExecutableAcc (Execute op) where
   reindexExecPartial k (Execute op args) = Execute op <$> reindexArgs k args
+
+mapAccExecutable :: (forall benv'. exe benv' -> exe' benv') -> PreOpenAcc exe benv t -> PreOpenAcc exe' benv t
+mapAccExecutable f = \case
+  Exec exe -> Exec $ f exe
+  Return vars -> Return vars
+  Compute e   -> Compute e
+  Alet lhs bnd body -> Alet lhs (mapAccExecutable f bnd) (mapAccExecutable f body)
+  Alloc shr tp sh -> Alloc shr tp sh
+  Use tp buffer -> Use tp buffer
+  Unit vars -> Unit vars
+  Acond var a1 a2 -> Acond var (mapAccExecutable f a1) (mapAccExecutable f a2)
+  Awhile c g a -> Awhile (mapAfunExecutable f c) (mapAfunExecutable f g) a
+
+mapAfunExecutable :: (forall benv'. exe benv' -> exe' benv') -> PreOpenAfun exe benv t -> PreOpenAfun exe' benv t
+mapAfunExecutable f (Abody a)    = Abody    $ mapAccExecutable  f a
+mapAfunExecutable f (Alam lhs a) = Alam lhs $ mapAfunExecutable f a
+
+groundToExpVar :: TypeR e -> GroundVars benv e -> ExpVars benv e
+groundToExpVar (TupRsingle t)   (TupRsingle (Var _ ix)) = TupRsingle (Var t ix)
+groundToExpVar (TupRpair t1 t2) (TupRpair v1 v2)        = groundToExpVar t1 v1 `TupRpair` groundToExpVar t2 v2
+groundToExpVar TupRunit         TupRunit                = TupRunit
+groundToExpVar _                _                       = error "Impossible pair"

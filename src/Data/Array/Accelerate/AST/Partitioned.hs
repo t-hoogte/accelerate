@@ -19,12 +19,13 @@
 -- Portability : non-portable (GHC extensions)
 --
 
-module Data.Array.Accelerate.AST.Partitioned ( ) where
+module Data.Array.Accelerate.AST.Partitioned ( module Data.Array.Accelerate.AST.Operation, Cluster(..), PartitionedAcc, PartitionedAfun ) where
 
-import Data.Array.Accelerate.AST.Partitioned
+import Data.Array.Accelerate.AST.Operation hiding ( OperationAcc, Execute(..) )
 
 data Cluster op env where
-  Base :: op args -> Args env args -> Command op env
+  Base :: op args -> Args env args -> Cluster op env
   -- TODO: Vertical, Horizontal, Diagonal
 
-type PartitionedAcc op = PreOpenAcc (Cluster op)
+type PartitionedAcc  op = PreOpenAcc  (Cluster op)
+type PartitionedAfun op = PreOpenAfun (Cluster op)
