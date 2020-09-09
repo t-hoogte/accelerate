@@ -202,11 +202,8 @@ class DesugarAcc (op :: Type -> Type) where
                 -> Arg env (In  DIM1      i)
                 -> Arg env (Out (sh, Int) e)
                 -> OperationAcc op env ()
-  -- TODO: Default implementation. We could do this using:
-  --   generate: just a simple implementation which is sequential for each segment
-  --   scan (segmented scan)
-  --   awhile & generate
-  -- I think a segmented scan would be the most efficient
+  -- Default implementation using generate. It is sequential per segment, which is inefficient for some backends.
+  mkFoldSeg itp f def input segments output = mkGenerate (ArgFun $ mkDefaultFoldSegFunction itp f def input segments) output
 
   mkScan        :: Direction
                 -> Arg env (Fun' (e -> e -> e))
@@ -214,7 +211,55 @@ class DesugarAcc (op :: Type -> Type) where
                 -> Arg env (In  (sh, Int) e)
                 -> Arg env (Out (sh, Int) e)
                 -> OperationAcc op env ()
-  -- TODO: Default implementation with awhile & generate
+  mkScan dir f (Just def) argIn@(ArgArray _ (ArrayR shr tp) _ _) argOut@(ArgArray _ _ shOut _)
+    | DeclareVars lhsTmp kTmp valueTmp <- declareVars $ buffersR tp -- Allocate buffers to prepend the default value
+    = let
+        shOut' = weakenVars kTmp shOut
+
+        argG = ArgFun $ mkDefaultScanPrepend dir (weaken kTmp def) (weaken kTmp argIn)
+        argTmp' = ArgArray Out (ArrayR shr tp) shOut' (valueTmp weakenId)
+        argTmp  = ArgArray In  (ArrayR shr tp) shOut' (valueTmp weakenId)
+      in
+        alet lhsTmp (desugarAlloc (ArrayR shr tp) $ groundToExpVar (shapeType shr) shOut)
+          $ alet (LeftHandSideWildcard TupRunit) (mkGenerate argG argTmp')
+          $ mkScan dir (weaken kTmp f) Nothing argTmp (weaken kTmp argOut)
+  mkScan dir f Nothing (ArgArray _ (ArrayR shr tp) sh input) argOut
+  -- (inc, tmp) = awhile (\(inc, _) -> inc <= n / 4) (\(inc, a) -> (inc*2, generate {\i -> reduce i and i +/- inc in a})) input
+  -- generate {\i -> reduce i and i +/- inc in tmp}
+  -- 
+  -- Note that the last iteration of the loop is decoupled, as that will output into argOut,
+  -- instead of a temporary array.
+    | DeclareVars lhsTmp   kTmp   valueTmp   <- declareVars $ buffersR tp
+    , DeclareVars lhsAlloc kAlloc valueAlloc <- declareVars $ buffersR tp
+    = let
+        lhs = LeftHandSidePair (LeftHandSideSingle $ GroundRscalar scalarTypeInt) lhsTmp
+        argTmp = ArgArray In (ArrayR shr tp) (weakenVars (weakenSucc $ weakenSucc kTmp) sh) (valueTmp weakenId)
+        reduce = ArgFun $ mkDefaultScanFunction dir (weaken kTmp (Var (GroundRscalar $ scalarTypeInt) ZeroIdx)) (weaken (weakenSucc $ weakenSucc kTmp) f) argTmp
+
+        n = case sh of
+          TupRpair _ n' -> paramsIn (TupRsingle scalarTypeInt) $ weakenVars (weakenSucc $ weakenSucc weakenId) n'
+          _ -> error "Impossible pair"
+
+        -- Awhile condition
+        c = Alam (LeftHandSidePair (LeftHandSideSingle $ GroundRscalar scalarTypeInt) $ LeftHandSideWildcard $ buffersR tp)
+              $ Abody
+              $ Compute
+              $ mkBinary (PrimLtEq singleType) (paramIn' $ Var scalarTypeInt ZeroIdx)
+              $ mkBinary (PrimBShiftR integralType) n (mkConstant (TupRsingle scalarTypeInt) 2) -- n/4
+
+        argAlloc = ArgArray Out (ArrayR shr tp) (weakenVars (weakenSucc $ weakenSucc $ kAlloc .> kTmp) sh) (valueAlloc weakenId)
+        -- Awhile step function
+        g = Alam lhs
+              $ Abody
+              $ alet lhsAlloc (desugarAlloc (ArrayR shr tp) $ groundToExpVar (shapeType shr) $ weakenVars (weakenSucc $ weakenSucc kTmp) sh)
+              $ alet (LeftHandSideWildcard TupRunit) (mkGenerate (weaken kAlloc reduce) argAlloc)
+              $ alet (LeftHandSideSingle $ GroundRscalar scalarTypeInt)
+                (Compute $ mkBinary (PrimAdd numType) (paramIn' $ weaken (kAlloc .> kTmp) $ Var scalarTypeInt ZeroIdx) (mkConstant (TupRsingle scalarTypeInt) 1))
+              $ Return $ TupRsingle (Var (GroundRscalar scalarTypeInt) ZeroIdx) `TupRpair` valueAlloc (weakenSucc weakenId)
+      in
+        alet (LeftHandSideSingle $ GroundRscalar scalarTypeInt) (Compute $ mkConstant (TupRsingle scalarTypeInt) 1)
+          $ alet lhs (Awhile c g (TupRsingle (Var (GroundRscalar scalarTypeInt) ZeroIdx) `TupRpair` weakenVars (weakenSucc weakenId) input))
+          $ mkGenerate reduce (weaken (weakenSucc $ weakenSucc kTmp) argOut)
 
   mkScan'       :: Direction
                 -> Arg env (Fun' (e -> e -> e))
@@ -223,7 +268,42 @@ class DesugarAcc (op :: Type -> Type) where
                 -> Arg env (Out (sh, Int) e)
                 -> Arg env (Out sh        e)
                 -> OperationAcc op env ()
-  -- TODO: Default implementation in terms of scan
+  mkScan' dir f def input@(ArgArray _ (ArrayR shr@(ShapeRsnoc shr') tp) sh _) out1 out2
+    | DeclareVars lhsTmp kTmp valueTmp <- declareVars $ buffersR tp -- Allocate buffers for the output of scan
+    , DeclareVars lhsSh  _    valueSh  <- declareVars $ shapeType shr' -- Used in the function in backpermute
+    = let
+        (x, y) = case sh of
+          TupRpair x' y' -> (x', y')
+          _ -> error "Impossible pair"
+
+        shTmp'  = weakenVars (weakenSucc weakenId) x `TupRpair` TupRsingle (Var (GroundRscalar scalarTypeInt) ZeroIdx)
+        shTmp   = weakenVars kTmp shTmp'
+        k       = kTmp .> weakenSucc weakenId
+        argTmp  = ArgArray In (ArrayR shr tp) shTmp (valueTmp weakenId)
+        argTmp' = ArgArray Out (ArrayR shr tp) shTmp (valueTmp weakenId)
+
+        -- Fills 'out2'
+        argG = ArgFun $ Lam lhsSh $ Body $ Pair (expVars $ valueSh weakenId) $ case dir of
+          LeftToRight -> paramsIn (TupRsingle scalarTypeInt) $ weakenVars k y
+          RightToLeft -> mkConstant (TupRsingle scalarTypeInt) 0
+
+        -- Fills 'out1' in case of a RightToLeft scan
+        argH = ArgFun
+              $ Lam (LeftHandSidePair lhsSh $ LeftHandSideSingle scalarTypeInt)
+              $ Body
+              $ Pair
+                  (expVars $ valueSh $ weakenSucc weakenId)
+                  (mkBinary (PrimAdd numType) (Evar (Var scalarTypeInt ZeroIdx)) (mkConstant (TupRsingle scalarTypeInt) 0))
+      in
+        alet (LeftHandSideSingle $ GroundRscalar scalarTypeInt) (Compute $ mkBinary (PrimAdd numType) (paramsIn (TupRsingle scalarTypeInt) y) $ mkConstant (TupRsingle scalarTypeInt) 1)
+          $ alet lhsTmp (desugarAlloc (ArrayR shr tp) $ groundToExpVar (shapeType shr) shTmp')
+          $ alet (LeftHandSideWildcard TupRunit) (mkScan dir (weaken k f) (Just $ weaken k def) (weaken k input) argTmp')
+          $ alet (LeftHandSideWildcard TupRunit) (case dir of
+              LeftToRight -> mkShrink argTmp $ weaken k out1
+              RightToLeft -> mkBackpermute argH argTmp $ weaken k out1
+            )
+          $ alet (LeftHandSideWildcard TupRunit) (mkBackpermute argG argTmp $ weaken k out2)
+          $ Return TupRunit
 
   mkForeign     :: Foreign asm
                 => ArraysR bs
@@ -304,8 +384,8 @@ desugarOpenAcc env = travA
             lhsScalarBool = LeftHandSidePair (LeftHandSideWildcard TupRunit) (LeftHandSideSingle bufferType)
             env'          = weakenBEnv k env
             c'            = case desugarOpenAfun env' c of
-              Alam lhs (Abody body) -> Alam lhs $ Abody $ Alet lhsScalarBool body $ Compute $ ArrayInstr (Index $ Var bufferType ZeroIdx) $ Const scalarTypeInt 0
-              Abody _               -> error "It's a long time since we last met"
+              Alam lhs' (Abody body) -> Alam lhs' $ Abody $ Alet lhsScalarBool body $ Compute $ ArrayInstr (Index $ Var bufferType ZeroIdx) $ Const scalarTypeInt 0
+              Abody _                -> error "It's a long time since we last met"
             f'            = desugarOpenAfun env' f
           in alet lhs (travA i) $ Awhile c' f' (value weakenId)
       Named.Use repr array -> desugarUse repr array
@@ -1197,3 +1277,86 @@ mkDefaultFoldStep2Function f (ArgArray _ (ArrayR (ShapeRsnoc shr) tp) sh input)
       -- (let w = z + 1 in a ! w)
       (Let (LeftHandSideSingle scalarTypeInt) (mkBinary (PrimAdd numType) (Evar $ Var scalarTypeInt ZeroIdx) (mkConstant (TupRsingle scalarTypeInt) 1))
         $ linearIndex tp input $ Var scalarTypeInt ZeroIdx)
+
+-- In case of a scan with a default value, prepends the initial value before the other elements
+-- The default value is placed as the first value in case of a left-to-right scan, or as the
+-- last value for a right-to-left scan.
+mkDefaultScanPrepend :: Direction -> Arg benv (Exp' e) -> Arg benv (In (sh, Int) e) -> Fun benv ((sh, Int) -> e)
+mkDefaultScanPrepend dir (ArgExp def) (ArgArray _ repr@(ArrayR (ShapeRsnoc shr) tp) sh input)
+  | DeclareVars lhs k value <- declareVars $ shapeType shr
+  = let
+      first = case dir of
+        LeftToRight -> mkConstant (TupRsingle scalarTypeInt) 0
+        RightToLeft -> case sh of
+          TupRpair _ n -> paramsIn (TupRsingle scalarTypeInt) n
+          _ -> error "Impossible pair"
+      x = case dir of
+        LeftToRight -> mkBinary (PrimAdd numType) (Evar $ Var scalarTypeInt ZeroIdx) (mkConstant (TupRsingle scalarType) 1)
+        RightToLeft -> Evar $ Var scalarTypeInt ZeroIdx
+    in
+      Lam (lhs `LeftHandSidePair` LeftHandSideSingle scalarTypeInt)
+        $ Body
+        $ Cond (mkBinary (PrimEq singleType) (Evar $ Var scalarTypeInt ZeroIdx) first) (weakenE (weakenSucc' k) def)
+        $ index repr sh input
+        $ Pair (expVars $ value $ weakenSucc weakenId) x
+
+-- TODO: Is the order of arguments to 'f' correct, in both directions?
+mkDefaultScanFunction :: Direction -> GroundVar benv Int -> Arg benv (Fun' (e -> e -> e)) -> Arg benv (In (sh, Int) e) -> Fun benv ((sh, Int) -> e)
+mkDefaultScanFunction dir inc (ArgFun f) (ArgArray _ repr@(ArrayR (ShapeRsnoc shr) tp) sh input)
+  | DeclareVars lhs k value <- declareVars $ shapeType shr
+  = let
+      op = case dir of
+        LeftToRight -> PrimSub
+        RightToLeft -> PrimAdd
+      x = Evar $ Var scalarTypeInt ZeroIdx
+      y = mkBinary (op numType) x (paramIn scalarTypeInt inc)
+      condition = case dir of
+        LeftToRight -> mkBinary (PrimGtEq singleType) y (mkConstant (TupRsingle scalarTypeInt) 0)
+        RightToLeft -> case sh of
+          TupRpair _ n -> mkBinary (PrimLt singleType) y (paramsIn (TupRsingle scalarTypeInt) n)
+          _ -> error "Impossible pair"
+      ix = expVars $ value $ weakenSucc weakenId
+      index' = index repr sh input . Pair ix
+    in
+      Lam (lhs `LeftHandSidePair` LeftHandSideSingle scalarTypeInt)
+        $ Body
+        $ Cond condition
+          (index' x)
+          (apply2 tp f (index' x) (index' y))
+
+mkDefaultFoldSegFunction
+  :: IntegralType i
+  -> Arg benv (Fun' (e -> e -> e))
+  -> Maybe (Arg benv (Exp' e))
+  -> Arg benv (In  (sh, Int) e)
+  -> Arg benv (In  DIM1      i)
+  -> Fun benv ((sh, Int) -> e)
+mkDefaultFoldSegFunction itp (ArgFun f) def (ArgArray _ (ArrayR shr tp) sh input) (ArgArray _ reprSeg shSeg segments)
+  | DeclareVars lhsSh kSh valueSh <- declareVars $ shapeType shr
+  , DeclareVars lhsE  kE  valueE  <- declareVars tp =
+    let
+      x1 = case valueSh weakenId of
+        TupRpair _ x' -> expVars x'
+        _ -> error "Impossible pair"
+      x2 = case valueSh (weakenSucc' kE) of
+        TupRpair _ x' -> expVars x'
+        _ -> error "Impossible pair"
+      start  = PrimApp (PrimFromIntegral itp numType) $ index reprSeg shSeg segments $ Pair Nil x1
+      end    = PrimApp (PrimFromIntegral itp numType) $ index reprSeg shSeg segments $ Pair Nil $ mkBinary (PrimAdd numType) x2 (mkConstant (TupRsingle scalarTypeInt) 1)
+      index' = index (ArrayR shr tp) sh input
+      cond   = Lam (lhsE `LeftHandSidePair` LeftHandSideSingle scalarTypeInt) $ Body $ mkBinary (PrimLt singleType) (Evar $ Var scalarTypeInt ZeroIdx) end
+      step   = Lam (lhsE `LeftHandSidePair` LeftHandSideSingle scalarTypeInt) $ Body $ Pair
+        (apply2 tp f (expVars $ valueE $ weakenSucc weakenId) (index' $ Pair (expVars $ fst' $ valueSh (weakenSucc' kE)) $ Evar $ Var scalarTypeInt ZeroIdx))
+        (mkBinary (PrimAdd numType) (Evar $ Var scalarTypeInt ZeroIdx) (mkConstant (TupRsingle scalarTypeInt) 1))
+      initial = case def of
+        Just (ArgExp d) -> Pair (weakenE kSh d) start
+        Nothing -> Pair (index (ArrayR shr tp) sh input $ Pair (expVars $ fst' $ valueSh weakenId) start) (mkBinary (PrimAdd numType) start $ mkConstant (TupRsingle scalarTypeInt) 1)
+      
+      fst' :: ExpVars env (a, b) -> ExpVars env a
+      fst' (TupRpair a _) = a
+      fst' _ = error "Impossible pair"
+    in
+      Lam lhsSh
+        $ Body
+        $ Let (lhsE `LeftHandSidePair` LeftHandSideWildcard (TupRsingle scalarTypeInt)) (While cond step initial)
+        $ expVars $ valueE weakenId
