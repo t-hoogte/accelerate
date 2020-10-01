@@ -27,6 +27,20 @@ data Idx env t where
   ZeroIdx ::              Idx (env, t) t
   SuccIdx :: Idx env t -> Idx (env, s) t
 
+instance Eq (Idx env t) where
+  ZeroIdx    == ZeroIdx     = True
+  SuccIdx ix == SuccIdx ix' = ix == ix'
+  _          == _           = False
+
+instance Ord (Idx env t) where
+  ZeroIdx    < SuccIdx _   = True
+  SuccIdx ix < SuccIdx ix' = ix < ix'
+  _          < _           = False
+
+  ZeroIdx    <= _           = True
+  SuccIdx ix <= SuccIdx ix' = ix <= ix'
+  _          <= _           = False
+
 data PairIdx p a where
   PairIdxLeft  :: PairIdx (a, b) a
   PairIdxRight :: PairIdx (a, b) b

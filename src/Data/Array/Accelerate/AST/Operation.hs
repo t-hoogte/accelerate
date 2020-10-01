@@ -24,6 +24,7 @@
 module Data.Array.Accelerate.AST.Operation (
   PreOpenAcc(..), PreOpenAfun(..),
   OperationAcc, OperationAfun, Execute(..),
+  Uniqueness(..), Uniquenesses, shared,
 
   GroundR(..), GroundsR, GroundVar, GroundVars, GLeftHandSide, Var(..), Vars,
   HasGroundsR(..), groundToExpVar,
@@ -107,10 +108,11 @@ data PreOpenAcc exe env a where
   -- As it is common in this intermediate representation to evaluate some program
   -- resulting in unit, for instance when execution some operation, and then
   -- and then do some other code, we write 'a; b' to denote 'let () = a in b'.
-  Alet    :: GLeftHandSide t env env'
+  Alet    :: GLeftHandSide bnd env env'
+          -> Uniquenesses bnd
+          -> PreOpenAcc exe env  bnd
+          -> PreOpenAcc exe env' t
           -> PreOpenAcc exe env  t
-          -> PreOpenAcc exe env' b
-          -> PreOpenAcc exe env  b
 
   -- | Allocates a new buffer of the given size.
   --
@@ -140,11 +142,14 @@ data PreOpenAcc exe env a where
           -> PreOpenAcc exe env a
 
   -- Value-recursion for array-level computations
+  -- The uniqueness guarantees are an invariant of the loop
+  -- and should hold before and after each iteration.
   --
-  Awhile  :: PreOpenAfun exe env (arrs -> PrimBool)
-          -> PreOpenAfun exe env (arrs -> arrs)
-          -> GroundVars      env arrs
-          -> PreOpenAcc  exe env arrs
+  Awhile  :: Uniquenesses a
+          -> PreOpenAfun exe env (a -> PrimBool)
+          -> PreOpenAfun exe env (a -> a)
+          -> GroundVars      env a
+          -> PreOpenAcc  exe env a
 
 -- | Function abstraction over parametrised array computations
 --
@@ -164,9 +169,21 @@ data GroundR a where
 type GroundsR = TupR GroundR
 
 -- | Types for local bindings
+--
 type GLeftHandSide = LeftHandSide GroundR
 type GroundVar      = Var  GroundR
 type GroundVars env = Vars GroundR env
+
+-- | Uniqueness annotations for buffers
+--
+data Uniqueness t where
+  Unique :: Uniqueness (Buffer t)
+  Shared :: Uniqueness t
+
+type Uniquenesses = TupR Uniqueness
+
+shared :: TupR s t -> Uniquenesses t
+shared = mapTupR (\_ -> Shared)
 
 -- | The arguments to be passed to an operation of type `t`.
 -- This type is represented as a cons list, separated by (->) and ending
@@ -250,12 +267,12 @@ instance HasGroundsR (PreOpenAcc exe env) where
   groundsR (Exec _)          = TupRunit
   groundsR (Return vars)     = groundsR vars
   groundsR (Compute e)       = groundsR e
-  groundsR (Alet _ _ a)      = groundsR a
+  groundsR (Alet _ _ _ a)    = groundsR a
   groundsR (Alloc _ tp _)    = TupRsingle $ GroundRbuffer tp
   groundsR (Use tp _)        = TupRsingle $ GroundRbuffer tp
   groundsR (Unit (Var tp _)) = TupRsingle $ GroundRbuffer tp
   groundsR (Acond _ a _)     = groundsR a
-  groundsR (Awhile _ _ a)    = groundsR a
+  groundsR (Awhile _ _ _ a)  = groundsR a
 
 instance HasGroundsR (GroundVar env) where
   groundsR (Var repr _) = TupRsingle repr
@@ -401,15 +418,15 @@ instance IsExecutableAcc (Execute op) where
 
 mapAccExecutable :: (forall benv'. exe benv' -> exe' benv') -> PreOpenAcc exe benv t -> PreOpenAcc exe' benv t
 mapAccExecutable f = \case
-  Exec exe -> Exec $ f exe
-  Return vars -> Return vars
-  Compute e   -> Compute e
-  Alet lhs bnd body -> Alet lhs (mapAccExecutable f bnd) (mapAccExecutable f body)
-  Alloc shr tp sh -> Alloc shr tp sh
-  Use tp buffer -> Use tp buffer
-  Unit vars -> Unit vars
-  Acond var a1 a2 -> Acond var (mapAccExecutable f a1) (mapAccExecutable f a2)
-  Awhile c g a -> Awhile (mapAfunExecutable f c) (mapAfunExecutable f g) a
+  Exec exe                      -> Exec $ f exe
+  Return vars                   -> Return vars
+  Compute e                     -> Compute e
+  Alet lhs uniqueness bnd body  -> Alet lhs uniqueness (mapAccExecutable f bnd) (mapAccExecutable f body)
+  Alloc shr tp sh               -> Alloc shr tp sh
+  Use tp buffer                 -> Use tp buffer
+  Unit vars                     -> Unit vars
+  Acond var a1 a2               -> Acond var (mapAccExecutable f a1) (mapAccExecutable f a2)
+  Awhile uniqueness c g a       -> Awhile uniqueness (mapAfunExecutable f c) (mapAfunExecutable f g) a
 
 mapAfunExecutable :: (forall benv'. exe benv' -> exe' benv') -> PreOpenAfun exe benv t -> PreOpenAfun exe' benv t
 mapAfunExecutable f (Abody a)    = Abody    $ mapAccExecutable  f a

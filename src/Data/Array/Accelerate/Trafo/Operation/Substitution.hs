@@ -31,6 +31,8 @@ module Data.Array.Accelerate.Trafo.Operation.Substitution (
   reindexPartialAfun,
   pair, alet,
   weakenArrayInstr,
+  strengthenArrayInstr,
+  expGroundVars, funGroundVars,
 ) where
 
 import Data.Array.Accelerate.AST.Idx
@@ -42,6 +44,7 @@ import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Trafo.Substitution       (Sink(..))
 import Data.Array.Accelerate.Trafo.Exp.Substitution
+import Data.Array.Accelerate.Trafo.Exp.Shrink
 
 data SunkReindexPartial f env env' where
   Sink     :: SunkReindexPartial f env env' -> SunkReindexPartial f (env, s) (env', s)
@@ -99,13 +102,13 @@ reindexA' k = \case
     Exec exe -> Exec <$> reindexExecPartial (reindex' k) exe
     Return vars -> Return <$> reindexVars' k vars
     Compute e -> Compute <$> reindexExp' k e
-    Alet lhs bnd body
-      | Exists lhs' <- rebuildLHS lhs -> Alet lhs' <$> travA bnd <*> reindexA' (sinkReindexWithLHS lhs lhs' k) body
+    Alet lhs uniqueness bnd body
+      | Exists lhs' <- rebuildLHS lhs -> Alet lhs' uniqueness <$> travA bnd <*> reindexA' (sinkReindexWithLHS lhs lhs' k) body
     Alloc shr tp sh -> Alloc shr tp <$> reindexVars' k sh
     Use tp buffer -> pure $ Use tp buffer
     Unit var -> Unit <$> reindexVar' k var
     Acond c t f -> Acond <$> reindexVar' k c <*> travA t <*> travA f
-    Awhile c f i -> Awhile <$> reindexAfun' k c <*> reindexAfun' k f <*> reindexVars' k i
+    Awhile uniqueness c f i -> Awhile uniqueness <$> reindexAfun' k c <*> reindexAfun' k f <*> reindexVars' k i
   where
     travA :: PreOpenAcc exe env s -> f (PreOpenAcc exe env' s)
     travA = reindexA' k
@@ -123,29 +126,31 @@ pair a b = goA weakenId a
     -- and then use the newly defined variables instead.
     --
     goA :: env :> env' -> PreOpenAcc exe env' a -> PreOpenAcc exe env' (a, b)
-    goA k (Alet lhs bnd x) = Alet lhs bnd $ goA (weakenWithLHS lhs .> k) x
+    goA k (Alet lhs uniqueness bnd x) 
+                           = Alet lhs uniqueness bnd $ goA (weakenWithLHS lhs .> k) x
     goA k (Return vars)    = goB vars $ weaken k b
     goA k acc
       | DeclareVars lhs k' value <- declareVars $ groundsR acc
-                           = Alet lhs acc $ goB (value weakenId) $ weaken (k' .> k) b
+                           = Alet lhs (shared $ groundsR acc) acc $ goB (value weakenId) $ weaken (k' .> k) b
 
     goB :: GroundVars env' a -> PreOpenAcc exe env' b -> PreOpenAcc exe env' (a, b)
-    goB varsA (Alet lhs bnd x) = Alet lhs bnd $ goB (weakenVars (weakenWithLHS lhs) varsA) x
+    goB varsA (Alet lhs uniqueness bnd x)
+                               = Alet lhs uniqueness bnd $ goB (weakenVars (weakenWithLHS lhs) varsA) x
     goB varsA (Return varsB)   = Return (TupRpair varsA varsB)
     goB varsA acc
       | DeclareVars lhs k value <- declareVars $ groundsR b
-                               = Alet lhs acc $ Return (TupRpair (weakenVars k varsA) (value weakenId))
+                               = Alet lhs (shared $ groundsR b) acc $ Return (TupRpair (weakenVars k varsA) (value weakenId))
 
 alet :: IsExecutableAcc exe => GLeftHandSide t env env' -> PreOpenAcc exe env t -> PreOpenAcc exe env' s -> PreOpenAcc exe env s
-alet lhs1 (Alet lhs2 a1 a2) a3
-  | Exists lhs1' <- rebuildLHS lhs1 = Alet lhs2 a1 $ alet lhs1' a2 $ weaken (sinkWithLHS lhs1 lhs1' $ weakenWithLHS lhs2) a3
+alet lhs1 (Alet lhs2 uniqueness a1 a2) a3
+  | Exists lhs1' <- rebuildLHS lhs1 = Alet lhs2 uniqueness a1 $ alet lhs1' a2 $ weaken (sinkWithLHS lhs1 lhs1' $ weakenWithLHS lhs2) a3
 alet     (LeftHandSideWildcard TupRunit) (Return TupRunit) a = a
 alet     (LeftHandSideWildcard TupRunit) (Compute Nil) a = a
-alet lhs@(LeftHandSideWildcard TupRunit) bnd a = Alet lhs bnd a
+alet lhs@(LeftHandSideWildcard TupRunit) bnd a = Alet lhs TupRunit bnd a
 alet lhs  (Return vars)     a    = weaken (substituteLHS lhs vars) a
 alet lhs  (Compute e)       a
   | Just vars <- extractParams e = weaken (substituteLHS lhs vars) a
-alet lhs  bnd               a    = Alet lhs bnd a
+alet lhs  bnd               a    = Alet lhs (shared $ lhsToTupR lhs) bnd a
 
 extractParams :: OpenExp env benv t -> Maybe (ExpVars benv t)
 extractParams Nil                          = Just TupRunit
@@ -160,3 +165,40 @@ extractParams _                            = Nothing
 --
 weakenArrayInstr :: RebuildableExp f => aenv :> aenv' -> f (ArrayInstr aenv) env t -> f (ArrayInstr aenv') env t
 weakenArrayInstr k = rebuildArrayInstr (ArrayInstr . weaken k)
+
+strengthenArrayInstr :: forall f benv benv' env t. RebuildableExp f => benv :?> benv' -> f (ArrayInstr benv) env t -> Maybe (f (ArrayInstr benv') env t)
+strengthenArrayInstr k = rebuildArrayInstrPartial f
+  where
+    f :: ArrayInstr benv (u -> s) -> Maybe (OpenExp env' benv' u -> OpenExp env' benv' s)
+    f (Parameter (Var tp ix)) = ArrayInstr . Parameter . Var tp <$> k ix
+    f (Index     (Var tp ix)) = ArrayInstr . Index     . Var tp <$> k ix
+
+expGroundVars :: OpenExp env benv t -> [Exists (GroundVar benv)]
+expGroundVars = map arrayInstrGroundVars . arrayInstrsInExp
+
+funGroundVars :: OpenFun env benv t -> [Exists (GroundVar benv)]
+funGroundVars = map arrayInstrGroundVars . arrayInstrsInFun
+
+arrayInstrGroundVars :: Exists (ArrayInstr benv) -> Exists (GroundVar benv)
+arrayInstrGroundVars (Exists (Parameter (Var tp ix))) = Exists $ Var (GroundRscalar tp) ix
+arrayInstrGroundVars (Exists (Index var))             = Exists var
+
+argVars :: Arg benv t -> [(Exists (GroundVar benv), {- Mutable -} Bool)]
+argVars (ArgExp e)    = map (, False) $ expGroundVars e
+argVars (ArgFun f)    = map (, False) $ funGroundVars f
+argVars (ArgVar vars) = map (, False) $ flattenTupR $ mapVars GroundRscalar vars
+argVars (ArgArray m _ sh buffers)
+                      = map (, False) (flattenTupR sh)
+                      ++ map (, mut)  (flattenTupR buffers)
+  where
+    mut = case m of
+      In -> False
+      _  -> True
+
+flattenTupR :: TupR s t -> [Exists s]
+flattenTupR = (`go` [])
+  where
+    go :: TupR s t -> [Exists s] -> [Exists s]
+    go (TupRsingle s)   accum = Exists s : accum
+    go (TupRpair t1 t2) accum = go t1 $ go t2 accum
+    go TupRunit         accum = accum

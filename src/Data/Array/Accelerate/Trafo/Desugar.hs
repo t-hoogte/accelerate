@@ -192,7 +192,7 @@ class DesugarAcc (op :: Type -> Type) where
         g = Alam lhs2 $ Abody $ mkDefaultFoldStep2 (weaken (kBf .> kSh .> k1) f) argTmp (weaken (kBf .> kSh .> k1) output)
       in
         alet lhs1 (mkDefaultFoldStep1 f def input output)
-          $ alet (LeftHandSideWildcard $ desugarArrayR repr) (Awhile c g $ value1 weakenId)
+          $ alet (LeftHandSideWildcard $ desugarArrayR repr) (Awhile (shared $ desugarArrayR repr) c g $ value1 weakenId)
           $ Return TupRunit
 
   mkFoldSeg     :: IntegralType i
@@ -258,7 +258,7 @@ class DesugarAcc (op :: Type -> Type) where
               $ Return $ TupRsingle (Var (GroundRscalar scalarTypeInt) ZeroIdx) `TupRpair` valueAlloc (weakenSucc weakenId)
       in
         alet (LeftHandSideSingle $ GroundRscalar scalarTypeInt) (Compute $ mkConstant (TupRsingle scalarTypeInt) 1)
-          $ alet lhs (Awhile c g (TupRsingle (Var (GroundRscalar scalarTypeInt) ZeroIdx) `TupRpair` weakenVars (weakenSucc weakenId) input))
+          $ alet lhs (Awhile (shared $ lhsToTupR lhs) c g (TupRsingle (Var (GroundRscalar scalarTypeInt) ZeroIdx) `TupRpair` weakenVars (weakenSucc weakenId) input))
           $ mkGenerate reduce (weaken (weakenSucc $ weakenSucc kTmp) argOut)
 
   mkScan'       :: Direction
@@ -384,10 +384,10 @@ desugarOpenAcc env = travA
             lhsScalarBool = LeftHandSidePair (LeftHandSideWildcard TupRunit) (LeftHandSideSingle bufferType)
             env'          = weakenBEnv k env
             c'            = case desugarOpenAfun env' c of
-              Alam lhs' (Abody body) -> Alam lhs' $ Abody $ Alet lhsScalarBool body $ Compute $ ArrayInstr (Index $ Var bufferType ZeroIdx) $ Const scalarTypeInt 0
+              Alam lhs' (Abody body) -> Alam lhs' $ Abody $ Alet lhsScalarBool (TupRsingle Shared) body $ Compute $ ArrayInstr (Index $ Var bufferType ZeroIdx) $ Const scalarTypeInt 0
               Abody _                -> error "It's a long time since we last met"
             f'            = desugarOpenAfun env' f
-          in alet lhs (travA i) $ Awhile c' f' (value weakenId)
+          in alet lhs (travA i) $ Awhile (shared $ desugarArraysR repr) c' f' (value weakenId)
       Named.Use repr array -> desugarUse repr array
       Named.Unit tp e
         | DeclareVars lhs _ value <- declareVars tp ->
@@ -1254,7 +1254,7 @@ mkDefaultFoldStep2 (ArgFun f) argIn@(ArgArray _ (ArrayR shr@(ShapeRsnoc shr') tp
 --
 mkDefaultFoldAllocOrOutput :: Arg benv (Out sh e) -> ExpVars benv (sh, Int) -> OperationAcc op benv (Buffers e)
 mkDefaultFoldAllocOrOutput (ArgArray _ (ArrayR shr e) _ output) sh@(TupRpair _ y)
-  = Alet (LeftHandSideSingle $ GroundRscalar scalarType) (Compute $ mkBinary (PrimEq singleType) (paramsIn' y) $ mkConstant (TupRsingle scalarTypeInt) 1)
+  = Alet (LeftHandSideSingle $ GroundRscalar scalarType) (TupRsingle Shared) (Compute $ mkBinary (PrimEq singleType) (paramsIn' y) $ mkConstant (TupRsingle scalarTypeInt) 1)
     $ Acond (Var scalarTypeWord8 ZeroIdx)
     (Return $ weakenVars (weakenSucc weakenId) output)
     (desugarAlloc (ArrayR (ShapeRsnoc shr) e) $ weakenVars (weakenSucc weakenId) sh)

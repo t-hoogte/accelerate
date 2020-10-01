@@ -4,6 +4,7 @@
 {-# LANGUAGE FlexibleInstances    #-}
 {-# LANGUAGE GADTs                #-}
 {-# LANGUAGE InstanceSigs         #-}
+{-# LANGUAGE KindSignatures       #-}
 {-# LANGUAGE LambdaCase           #-}
 {-# LANGUAGE OverloadedStrings    #-}
 {-# LANGUAGE PatternGuards        #-}
@@ -43,8 +44,11 @@ import qualified Data.Array.Accelerate.Debug.Stats      as Stats
 import System.IO.Unsafe -- for debugging
 #endif
 
+
 -- Array Fusion
 -- ============
+
+class FusibleAcc (op :: * -> *) where
 
 -- | Apply the fusion transformation to a de Bruijn AST
 --
