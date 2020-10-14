@@ -32,7 +32,6 @@ module Data.Array.Accelerate.Trafo.Operation.Substitution (
   pair, alet,
   weakenArrayInstr,
   strengthenArrayInstr,
-  expGroundVars, funGroundVars,
 ) where
 
 import Data.Array.Accelerate.AST.Idx
@@ -44,7 +43,6 @@ import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Trafo.Substitution       (Sink(..))
 import Data.Array.Accelerate.Trafo.Exp.Substitution
-import Data.Array.Accelerate.Trafo.Exp.Shrink
 
 data SunkReindexPartial f env env' where
   Sink     :: SunkReindexPartial f env env' -> SunkReindexPartial f (env, s) (env', s)
@@ -172,33 +170,3 @@ strengthenArrayInstr k = rebuildArrayInstrPartial f
     f :: ArrayInstr benv (u -> s) -> Maybe (OpenExp env' benv' u -> OpenExp env' benv' s)
     f (Parameter (Var tp ix)) = ArrayInstr . Parameter . Var tp <$> k ix
     f (Index     (Var tp ix)) = ArrayInstr . Index     . Var tp <$> k ix
-
-expGroundVars :: OpenExp env benv t -> [Exists (GroundVar benv)]
-expGroundVars = map arrayInstrGroundVars . arrayInstrsInExp
-
-funGroundVars :: OpenFun env benv t -> [Exists (GroundVar benv)]
-funGroundVars = map arrayInstrGroundVars . arrayInstrsInFun
-
-arrayInstrGroundVars :: Exists (ArrayInstr benv) -> Exists (GroundVar benv)
-arrayInstrGroundVars (Exists (Parameter (Var tp ix))) = Exists $ Var (GroundRscalar tp) ix
-arrayInstrGroundVars (Exists (Index var))             = Exists var
-
-argVars :: Arg benv t -> [(Exists (GroundVar benv), {- Mutable -} Bool)]
-argVars (ArgExp e)    = map (, False) $ expGroundVars e
-argVars (ArgFun f)    = map (, False) $ funGroundVars f
-argVars (ArgVar vars) = map (, False) $ flattenTupR $ mapVars GroundRscalar vars
-argVars (ArgArray m _ sh buffers)
-                      = map (, False) (flattenTupR sh)
-                      ++ map (, mut)  (flattenTupR buffers)
-  where
-    mut = case m of
-      In -> False
-      _  -> True
-
-flattenTupR :: TupR s t -> [Exists s]
-flattenTupR = (`go` [])
-  where
-    go :: TupR s t -> [Exists s] -> [Exists s]
-    go (TupRsingle s)   accum = Exists s : accum
-    go (TupRpair t1 t2) accum = go t1 $ go t2 accum
-    go TupRunit         accum = accum

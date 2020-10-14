@@ -34,9 +34,10 @@ import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.AST.Schedule.Uniform
 import Data.Array.Accelerate.AST.Environment
 import qualified Data.Array.Accelerate.AST.Partitioned  as C
+import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Trafo.Substitution
 import Data.Array.Accelerate.Trafo.Exp.Substitution
-import Data.Array.Accelerate.Trafo.Operation.Substitution (expGroundVars, strengthenArrayInstr)
+import Data.Array.Accelerate.Trafo.Operation.Substitution (strengthenArrayInstr)
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Type
@@ -265,6 +266,8 @@ data Acquire genv t where
           -> Acquire genv (Signal, SignalResolver)
 
 data ConvertEnv genv fenv fenv' where
+  ConvertEnvNil     :: ConvertEnv genv fenv fenv
+
   ConvertEnvSeq     :: ConvertEnv genv fenv1 fenv2
                     -> ConvertEnv genv fenv2 fenv3
                     -> ConvertEnv genv fenv1 fenv3
@@ -291,16 +294,16 @@ data OutputEnv fenv fenv' t r where
 
   OutputEnvUnit     :: OutputEnv fenv  fenv () ()
 
-data DeclareOutput op fenv t where
+data DeclareOutput fenv t where
   DeclareOutput :: OutputEnv fenv fenv' t r
                 -> fenv :> fenv'
                 -> (forall fenv'' . fenv' :> fenv'' -> BaseVars fenv'' r)
-                -> DeclareOutput op fenv t
+                -> DeclareOutput fenv t
 
-declareOutput :: forall op fenv t.
+declareOutput :: forall fenv t.
                  GroundsR t
               -> Uniquenesses t
-              -> DeclareOutput op fenv t
+              -> DeclareOutput fenv t
 declareOutput (TupRsingle tp)  (TupRsingle Unique)   = DeclareOutput env subst value
   where
     env = OutputEnvUnique lhs tp
@@ -326,6 +329,20 @@ declareOutput (TupRpair t1 t2) us
     (u1, u2) = pairUniqueness us
 declareOutput TupRunit         _                     = DeclareOutput OutputEnvUnit weakenId (const TupRunit)
 
+writeOutput :: OutputEnv fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule (Cluster op) fenv''
+writeOutput outputEnv outputVars valueVars = go outputEnv outputVars valueVars Return
+  where
+    go :: OutputEnv fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule (Cluster op) fenv'' -> UniformSchedule (Cluster op) fenv''
+    go OutputEnvUnit _ _ = id
+    go (OutputEnvPair o1 o2) (TupRpair r1 r2) (TupRpair v1 v2) = go o1 r1 v1 . go o2 r2 v2
+    go (OutputEnvShared _ _) (TupRpair (TupRsingle signal) (TupRsingle ref)) (TupRsingle v)
+      = Effect (RefWrite ref v)
+      . Effect (SignalResolve [varIdx signal])
+    go (OutputEnvUnique _ _) (TupRpair (TupRpair (TupRsingle s1) (TupRsingle s2)) (TupRsingle ref)) (TupRsingle v)
+      = Effect (RefWrite ref v)
+      . Effect (SignalResolve [varIdx s1])
+      . Effect (SignalResolve [varIdx s2])
+
 data ReEnv genv fenv where
   ReEnvEnd  :: ReEnv genv fenv
   ReEnvSkip :: ReEnv genv fenv -> ReEnv (genv, t) fenv
@@ -336,21 +353,63 @@ reEnvIdx (ReEnvKeep _) ZeroIdx = Just ZeroIdx
 reEnvIdx (ReEnvKeep r) (SuccIdx ix) = SuccIdx <$> reEnvIdx r ix
 reEnvIdx (ReEnvSkip r) (SuccIdx ix) = reEnvIdx r ix
 reEnvIdx _             _            = Nothing
-
+{-
 data ConvertEnvRead op genv fenv1 where
   ConvertEnvRead :: (UniformSchedule (Cluster op) fenv2 -> UniformSchedule (Cluster op) fenv1)
                  -> (forall fenv3. ReEnv genv fenv2 fenv3 -> ReEnv genv fenv1 fenv3) -- TODO: This doesn't work. We need to assure that genv and fenv are in the same order
                  -> fenv1 :> fenv2
                  -> ConvertEnvRead op genv fenv1
+-}
+-- Void data type with orphan type argument.
+-- Used to mark that a variable of the ground environment is used.
+--
+data FutureRef fenv t = FutureRef (BaseVar fenv (Ref t))
 
-convertEnvRead :: ConvertEnv genv fenv fenv1 -> ConvertEnvRead op genv fenv1
-convertEnvRead (ConvertEnvAcquire _) = ConvertEnvRead id id weakenId
-convertEnvRead env = undefined
+convertEnvRefs :: forall genv fenv fenv'. ConvertEnv genv fenv fenv' -> PartialEnv (FutureRef fenv') genv
+convertEnvRefs env = partialEnvFromList const $ snd $ go weakenId env []
+  where
+    go :: fenv2 :> fenv' -> ConvertEnv genv fenv1 fenv2 -> [EnvBinding (FutureRef fenv') genv] -> (fenv1 :> fenv', [EnvBinding (FutureRef fenv') genv])
+    go k ConvertEnvNil                 accum = (k, accum)
+    go k (ConvertEnvSeq e1 e2)         accum = (k1, bs')
+      where
+        (k2, bs) = go k e2 accum
+        (k1, bs') = go k2 e1 bs
+    go k (ConvertEnvAcquire _)         accum = (weakenSucc $ weakenSucc k, accum)
+    go k (ConvertEnvFuture (Var tp ix)) accum = (weakenSucc $ weakenSucc k, EnvBinding ix (FutureRef $ Var (BaseRref tp) $ k >:> ZeroIdx) : accum)
+
+data Reads exe genv fenv where
+  Reads :: ReEnv genv fenv'
+        -> (fenv :> fenv')
+        -> (UniformSchedule exe fenv' -> UniformSchedule exe fenv)
+        -> Reads exe genv fenv
+
+readRefs :: PartialEnv (FutureRef fenv) genv -> Reads exe genv fenv
+readRefs PEnd = Reads ReEnvEnd weakenId id
+readRefs (PPush env (FutureRef (Var tp idx)))
+  | Reads r k f <- readRefs env =
+    let
+      tp' = case tp of
+        BaseRref t -> BaseRground t
+        _ -> error "Impossible Ref base type"
+      r' = ReEnvKeep r
+      k' = weakenSucc' k
+      f' = f . Alet (LeftHandSideSingle tp') (RefRead $ Var tp $ k >:> idx)
+    in
+      Reads r' k' f'
+readRefs (PNone env)
+  | Reads r k f <- readRefs env = Reads (ReEnvSkip r) k f
+
+convertEnvWeaken :: ConvertEnv genv fenv fenv' -> fenv :> fenv'
+convertEnvWeaken ConvertEnvNil = weakenId
+convertEnvWeaken (ConvertEnvAcquire _) = weakenSucc (weakenSucc weakenId)
+convertEnvWeaken (ConvertEnvFuture _)  = weakenSucc (weakenSucc weakenId)
+convertEnvWeaken (ConvertEnvSeq e1 e2) = convertEnvWeaken e2 .> convertEnvWeaken e1
 
 convertEnvSignals :: forall genv fenv fenv'. ConvertEnv genv fenv fenv' -> [Idx fenv' Signal]
 convertEnvSignals = snd . flip (go weakenId) []
   where
     go :: fenv2 :> fenv' -> ConvertEnv genv fenv1 fenv2 -> [Idx fenv' Signal] -> (fenv1 :> fenv', [Idx fenv' Signal])
+    go k ConvertEnvNil         accum = (k, accum)
     go k (ConvertEnvAcquire _) accum = (weakenSucc $ weakenSucc k, k >:> SuccIdx ZeroIdx : accum)
     go k (ConvertEnvFuture _)  accum = (weakenSucc $ weakenSucc k, k >:> SuccIdx ZeroIdx : accum)
     go k (ConvertEnvSeq e1 e2) accum = go k' e1 accum'
@@ -361,24 +420,49 @@ convertEnvSignalResolvers :: forall genv fenv fenv' fenv''. fenv' :> fenv'' -> C
 convertEnvSignalResolvers k1 = snd . flip (go k1) []
   where
     go :: fenv2 :> fenv'' -> ConvertEnv genv fenv1 fenv2 -> [Idx fenv'' SignalResolver] -> (fenv1 :> fenv'', [Idx fenv'' SignalResolver])
+    go k ConvertEnvNil         accum = (k, accum)
     go k (ConvertEnvAcquire _) accum = (weakenSucc $ weakenSucc k, k >:> ZeroIdx : accum)
     go k (ConvertEnvFuture _)  accum = (weakenSucc $ weakenSucc k, accum)
     go k (ConvertEnvSeq e1 e2) accum = go k' e1 accum'
       where
         (k', accum') = go k e2 accum
 
+convertEnvReadonlyFromList :: [Exists (GroundVar genv)] -> Exists (ConvertEnv genv fenv)
+convertEnvReadonlyFromList []
+    = Exists ConvertEnvNil
+convertEnvReadonlyFromList [Exists var]
+  | Exists e1 <- convertEnvReadonlyVar var
+    = Exists e1
+convertEnvReadonlyFromList (Exists var:vars)
+  | Exists e1 <- convertEnvReadonlyVar var
+  , Exists e2 <- convertEnvReadonlyFromList vars
+    = Exists $ e1 `ConvertEnvSeq` e2
+
+convertEnvReadonlyVar :: GroundVar genv t -> Exists (ConvertEnv genv fenv)
+convertEnvReadonlyVar var@(Var tp _)
+  | GroundRbuffer _ <- tp = Exists $ future `ConvertEnvSeq` ConvertEnvAcquire (Acquire In var)
+  | otherwise             = Exists future
+    where
+      future = ConvertEnvFuture var
+
+convertEnvFromList :: [Exists (Var AccessGroundR genv)] -> Exists (ConvertEnv genv fenv) 
+convertEnvFromList [] = Exists ConvertEnvNil
+convertEnvFromList [Exists var]
+  | Exists e1 <- convertEnvVar var
+    = Exists e1
+convertEnvFromList (Exists var:vars)
+  | Exists e1 <- convertEnvVar var
+  , Exists e2 <- convertEnvFromList vars
+    = Exists $ e1 `ConvertEnvSeq` e2
+
+convertEnvVar :: Var AccessGroundR genv t -> Exists (ConvertEnv genv fenv)
+convertEnvVar (Var (AccessGroundRscalar   tp) ix) = Exists $ ConvertEnvFuture $ Var (GroundRscalar tp) ix
+convertEnvVar (Var (AccessGroundRbuffer m tp) ix) = Exists $ ConvertEnvFuture var `ConvertEnvSeq` ConvertEnvAcquire (Acquire m var)
+  where
+    var = Var (GroundRbuffer tp) ix
+
 lhsSignalResolver :: BLeftHandSide SignalResolver fenv (fenv, SignalResolver)
 lhsSignalResolver = LeftHandSideSingle BaseRsignalResolver
-
-data DeclareFutures genv fenv t where
-  DeclareFutures :: ConvertEnv genv fenv fenv'
-                 -> (fenv :> fenv')
-                 -> (forall fenv''. fenv' :> fenv'' -> [BaseVar fenv'' Signal])
-                 -> (forall fenv''. fenv' :> fenv'' -> BaseVars fenv'' t)
-                 -> DeclareFutures genv fenv t
-
-declareFutures :: GroundVar genv e -> DeclareFutures genv fenv t
-declareFutures = undefined
 
 -- In PartialDeclare, we try to reuse the return address of the computation,
 -- if this variable will be returned.
@@ -396,7 +480,7 @@ data PartialSchedule op genv t where
   PartialDo     :: OutputEnv () fenv t r
                 -> ConvertEnv genv fenv fenv'
                 -> UniformSchedule (Cluster op) fenv'
-                -> PartialSchedule op genv ()
+                -> PartialSchedule op genv t
 
   -- Returns a tuple of variables. Note that (some of) these
   -- variables may already have been resolved, as they may be
@@ -522,13 +606,42 @@ unionVars TupRunit         _                = TupRunit
 unionVars _                TupRunit         = TupRunit
 unionVars _                _                = TupRsingle NoVars
 
-partialSchedule :: forall op genv1 t1. C.PartitionedAcc (Cluster op) genv1 t1 -> PartialSchedule op genv1 t1
+data Exists' (a :: (* -> * -> *) -> *) where
+  Exists' :: a m -> Exists' a
+
+partialSchedule :: forall op genv1 t1. C.PartitionedAcc op genv1 t1 -> PartialSchedule op genv1 t1
 partialSchedule = fst . travA (TupRsingle Shared)
   where
-    travA :: forall genv t. Uniquenesses t -> C.PartitionedAcc (Cluster op) genv t -> (PartialSchedule op genv t, MaybeVars genv t)
-    travA _  (C.Exec cluster) = undefined
+    travA :: forall genv t. Uniquenesses t -> C.PartitionedAcc op genv t -> (PartialSchedule op genv t, MaybeVars genv t)
+    travA _  (C.Exec cluster)
+      | Exists env <- convertEnvFromList $ map (foldr1 combineMod) $ groupBy (\(Exists v1) (Exists v2) -> isJust $ matchIdx (varIdx v1) (varIdx v2)) $ execVars cluster -- TODO: Remove duplicates more efficiently
+      , Reads reEnv k inputBindings <- readRefs $ convertEnvRefs env
+      , Just cluster' <- reindexExecPartial (reEnvIdx reEnv) cluster
+        = let
+            signals = convertEnvSignals env
+            resolvers = convertEnvSignalResolvers k env
+          in
+            ( PartialDo OutputEnvUnit env
+                $ Effect (SignalAwait signals)
+                $ inputBindings
+                $ Effect (Exec cluster')
+                $ Effect (SignalResolve resolvers)
+                $ Return
+            , TupRunit
+            )
+      | otherwise = error "partialSchedule: reindexExecPartial returned Nothing. Probably some variable is missing in 'execVars'"
+      where
+        combineMod :: Exists (Var AccessGroundR env) -> Exists (Var AccessGroundR env) -> Exists (Var AccessGroundR env)
+        combineMod (Exists (Var (AccessGroundRbuffer m1 tp) ix)) var@(Exists (Var (AccessGroundRbuffer m2 _) _))
+          | Exists' m <- combineMod' m1 m2 = Exists $ Var (AccessGroundRbuffer m tp) ix
+          | otherwise = var
+
+        combineMod' :: Modifier m -> Modifier m' -> Exists' Modifier
+        combineMod' In  In  = Exists' In
+        combineMod' Out Out = Exists' Out
+        combineMod' _   _   = Exists' Mut
     travA us (C.Return vars)  = (PartialReturn us vars, mapTupR ReturnVar vars)
-    travA _  (C.Compute e)    = partialLift f (expGroundVars e)
+    travA _  (C.Compute e)    = partialLift (mapTupR GroundRscalar $ expType e) f (expGroundVars e)
       where
         f :: genv :?> fenv -> Maybe (Binding fenv t)
         f k = Compute <$> strengthenArrayInstr k e
@@ -537,9 +650,9 @@ partialSchedule = fst . travA (TupRsingle Shared)
         dest = lhsDestination lhs vars
         (a', vars) = travA us a
         vars' = weakenMaybeVars lhs vars
-    travA _  (C.Alloc shr tp sh) = partialLift1 (Alloc shr tp) sh
-    travA _  (C.Use tp buffer) = partialLift1 (const $ Use tp buffer) TupRunit
-    travA _  (C.Unit var) = partialLift1 f (TupRsingle var)
+    travA _  (C.Alloc shr tp sh) = partialLift1 (TupRsingle $ GroundRbuffer tp) (Alloc shr tp) sh
+    travA _  (C.Use tp buffer) = partialLift1 (TupRsingle $ GroundRbuffer tp) (const $ Use tp buffer) TupRunit
+    travA _  (C.Unit var@(Var tp _)) = partialLift1 (TupRsingle $ GroundRbuffer tp) f (TupRsingle var)
       where
         f (TupRsingle var') = Unit var'
     travA us (C.Acond c t f) = (partialAcond c t' f', vars)
@@ -552,15 +665,50 @@ partialSchedule = fst . travA (TupRsingle Shared)
         c' = partialScheduleFun c
         f' = partialScheduleFun f
 
-partialScheduleFun :: C.PartitionedAfun (Cluster op) genv t -> PartialScheduleFun op genv t
+partialScheduleFun :: C.PartitionedAfun op genv t -> PartialScheduleFun op genv t
 partialScheduleFun (C.Alam lhs f) = Plam lhs $ partialScheduleFun f
 partialScheduleFun (C.Abody b)    = Pbody $ partialSchedule b
 
-partialLift1 :: (forall fenv. ExpVars fenv t -> Binding fenv s) -> ExpVars genv t -> (PartialSchedule op genv s, MaybeVars genv s)
-partialLift1 f = undefined
+partialLift1 :: GroundsR s -> (forall fenv. ExpVars fenv t -> Binding fenv s) -> ExpVars genv t -> (PartialSchedule op genv s, MaybeVars genv s)
+partialLift1 tp f vars = partialLift tp (\k -> f <$> strengthenVars k vars) (expVarsList vars)
 
-partialLift :: (forall fenv. (genv :?> fenv) -> Maybe (Binding fenv s)) -> [Exists (GroundVar genv)] -> (PartialSchedule op genv s, MaybeVars genv s)
-partialLift f = undefined
+expVarsList :: ExpVars genv t -> [Exists (GroundVar genv)]
+expVarsList = (`go` [])
+  where
+    go :: ExpVars genv t -> [Exists (GroundVar genv)] -> [Exists (GroundVar genv)]
+    go TupRunit                 accum = accum
+    go (TupRsingle (Var tp ix)) accum = Exists (Var (GroundRscalar tp) ix) : accum
+    go (TupRpair v1 v2)         accum = go v1 $ go v2 accum
+
+strengthenVars :: genv :?> fenv -> Vars s genv t -> Maybe (Vars s fenv t)
+strengthenVars k TupRunit                = pure TupRunit
+strengthenVars k (TupRsingle (Var t ix)) = TupRsingle . Var t <$> k ix
+strengthenVars k (TupRpair v1 v2)        = TupRpair <$> strengthenVars k v1 <*> strengthenVars k v2
+
+partialLift :: forall op genv s. GroundsR s -> (forall fenv. genv :?> fenv -> Maybe (Binding fenv s)) -> [Exists (GroundVar genv)] -> (PartialSchedule op genv s, MaybeVars genv s)
+partialLift tp f vars
+  | DeclareOutput outputEnv kOut varsOut <- declareOutput @() @s tp (mapTupR uniqueIfBuffer tp)
+  , Exists env <- convertEnvReadonlyFromList $ nubBy (\(Exists v1) (Exists v2) -> isJust $ matchVar v1 v2) vars -- TODO: Remove duplicates more efficiently
+  , Reads reEnv k inputBindings <- readRefs $ convertEnvRefs env
+  , DeclareVars lhs k' value <- declareVars $ mapTupR BaseRground tp
+  , Just binding <- f (reEnvIdx reEnv)
+  =
+    let
+      signals = convertEnvSignals env
+      resolvers = convertEnvSignalResolvers (k' .> k) env
+    in
+      ( PartialDo outputEnv env
+          $ Effect (SignalAwait signals)
+          $ inputBindings
+          $ Alet lhs binding
+          $ Effect (SignalResolve resolvers)
+          $ writeOutput outputEnv (varsOut (k' .> k .> convertEnvWeaken env)) (value weakenId)
+      , mapTupR (const NoVars) tp
+      )
+
+uniqueIfBuffer :: GroundR t -> Uniqueness t
+uniqueIfBuffer (GroundRbuffer _) = Unique
+uniqueIfBuffer _                 = Shared
 
 syncEnv :: PartialSchedule op genv t -> SyncEnv genv
 syncEnv (PartialDo _ env _)          = convertEnvToSyncEnv env

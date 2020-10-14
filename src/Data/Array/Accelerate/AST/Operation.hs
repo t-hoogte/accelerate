@@ -34,6 +34,7 @@ module Data.Array.Accelerate.AST.Operation (
   Var', Exp', Fun', In, Out, Mut,
 
   OpenExp, OpenFun, Exp, Fun, ArrayInstr(..),
+  expGroundVars, funGroundVars, arrayInstrsInExp, arrayInstrsInFun,
 
   encodeGroundR, encodeGroundsR, encodeGroundVar, encodeGroundVars,
   rnfGroundR, rnfGroundsR, rnfGroundVar, rnfGroundVars,
@@ -46,6 +47,7 @@ module Data.Array.Accelerate.AST.Operation (
   IsExecutableAcc(..),
   ReindexPartial, reindexArg, reindexArgs, reindexExp, reindexVar, reindexVars,
   weakenReindex,
+  argVars, argsVars, AccessGroundR(..),
 
   mapAccExecutable, mapAfunExecutable,
 
@@ -62,6 +64,7 @@ import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Trafo.Exp.Substitution
+import Data.Array.Accelerate.Trafo.Exp.Shrink
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Error
 import Data.Typeable                                ( (:~:)(..) )
@@ -412,9 +415,53 @@ weakenReindex k = Identity . (k >:>)
 
 class IsExecutableAcc exe where
   reindexExecPartial :: Applicative f => ReindexPartial f env env' -> exe env -> f (exe env')
+  execVars :: exe env -> [Exists (Var AccessGroundR env)]
 
 instance IsExecutableAcc (Execute op) where
   reindexExecPartial k (Execute op args) = Execute op <$> reindexArgs k args
+  execVars (Execute _ args) = argsVars args
+
+data AccessGroundR tp where
+  AccessGroundRscalar :: ScalarType tp -> AccessGroundR tp
+  AccessGroundRbuffer :: Modifier m -> ScalarType tp -> AccessGroundR (Buffer tp)
+
+readonlyGroundRToAccessGroundR :: Exists (GroundVar env) -> Exists (Var AccessGroundR env)
+readonlyGroundRToAccessGroundR (Exists (Var (GroundRscalar tp) ix)) = Exists $ Var (AccessGroundRscalar    tp) ix
+readonlyGroundRToAccessGroundR (Exists (Var (GroundRbuffer tp) ix)) = Exists $ Var (AccessGroundRbuffer In tp) ix
+
+argVars :: Arg env t -> [Exists (Var AccessGroundR env)]
+argVars (ArgVar vars) = flattenTupR $ mapTupR (\(Var tp ix) -> Var (AccessGroundRscalar tp) ix) vars
+argVars (ArgExp e) = map readonlyGroundRToAccessGroundR $ expGroundVars e
+argVars (ArgFun e) = map readonlyGroundRToAccessGroundR $ funGroundVars e
+argVars (ArgArray m _ sh buffers) = go buffers $ map readonlyGroundRToAccessGroundR $ flattenTupR sh
+  where
+    go :: GroundVars env s -> [Exists (Var AccessGroundR env)] -> [Exists (Var AccessGroundR env)]
+    go TupRunit                                 accum = accum
+    go (TupRsingle (Var (GroundRbuffer tp) ix)) accum = Exists (Var (AccessGroundRbuffer m tp) ix) : accum
+    go (TupRsingle _)                           _     = error "Expected buffer"
+    go (TupRpair v1 v2)                         accum = go v1 $ go v2 accum
+
+argsVars :: Args env t -> [Exists (Var AccessGroundR env)]
+argsVars (a :>: as) = argVars a ++ argsVars as
+argsVars ArgsNil    = []
+
+expGroundVars :: OpenExp env benv t -> [Exists (GroundVar benv)]
+expGroundVars = map arrayInstrGroundVars . arrayInstrsInExp
+
+funGroundVars :: OpenFun env benv t -> [Exists (GroundVar benv)]
+funGroundVars = map arrayInstrGroundVars . arrayInstrsInFun
+
+arrayInstrGroundVars :: Exists (ArrayInstr benv) -> Exists (GroundVar benv)
+arrayInstrGroundVars (Exists (Parameter (Var tp ix))) = Exists $ Var (GroundRscalar tp) ix
+arrayInstrGroundVars (Exists (Index var))             = Exists var
+
+flattenTupR :: TupR s t -> [Exists s]
+flattenTupR = (`go` [])
+  where
+    go :: TupR s t -> [Exists s] -> [Exists s]
+    go (TupRsingle s)   accum = Exists s : accum
+    go (TupRpair t1 t2) accum = go t1 $ go t2 accum
+    go TupRunit         accum = accum
 
 mapAccExecutable :: (forall benv'. exe benv' -> exe' benv') -> PreOpenAcc exe benv t -> PreOpenAcc exe' benv t
 mapAccExecutable f = \case

@@ -23,9 +23,7 @@ module Data.Array.Accelerate.AST.Schedule.Uniform (
   module Partitioned,
 ) where
 
-import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Exp
-import Data.Array.Accelerate.AST.Operation (GroundR(..), GroundsR, GroundVar, GroundVars, Exp, OpenExp, Fun, OpenFun, Arg(..), Args, PreArgs(..), ArrayInstr(..))
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.AST.Var
@@ -128,9 +126,9 @@ data Effect exe env where
   Exec          :: exe env
                 -> Effect exe env
 
-  SignalAwait   :: [BaseVar env Signal] -> Effect exe env
+  SignalAwait   :: [Idx env Signal] -> Effect exe env
 
-  SignalResolve :: [BaseVar env SignalResolver] -> Effect exe env
+  SignalResolve :: [Idx env SignalResolver] -> Effect exe env
 
   RefWrite      :: BaseVar env (OutputRef t) -> BaseVar env t -> Effect exe env
 

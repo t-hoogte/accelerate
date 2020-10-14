@@ -27,5 +27,9 @@ data Cluster op env where
   Base :: op args -> Args env args -> Cluster op env
   -- TODO: Vertical, Horizontal, Diagonal
 
+instance IsExecutableAcc (Cluster op) where
+  reindexExecPartial k (Base op args) = Base op <$> reindexArgs k args
+  execVars (Base _ args) = argsVars args
+
 type PartitionedAcc  op = PreOpenAcc  (Cluster op)
 type PartitionedAfun op = PreOpenAfun (Cluster op)
