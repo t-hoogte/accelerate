@@ -44,6 +44,7 @@ import Data.Array.Accelerate.Type
 import Data.Maybe
 import Data.List
 import qualified Data.Set                               as S
+import GHC.Stack
 
 -- * Compilation from PartitionedAcc to UniformSchedule
 data FutureValue senv t
@@ -283,6 +284,8 @@ data OutputEnv fenv fenv' t r where
                     -> OutputEnv fenv2 fenv3 t' r'
                     -> OutputEnv fenv1 fenv3 (t, t') (r, r')
 
+  -- First SignalResolver grants read access, second guarantees that all reads have been finished.
+  -- Together they thus grant write access.
   OutputEnvUnique   :: BLeftHandSide ((SignalResolver, SignalResolver), OutputRef (Buffer t)) fenv fenv'
                     -> GroundR (Buffer t)
                     -> OutputEnv fenv  fenv' (Buffer t) ((SignalResolver, SignalResolver), OutputRef (Buffer t))
@@ -293,6 +296,18 @@ data OutputEnv fenv fenv' t r where
                     -> OutputEnv fenv  fenv' t (SignalResolver, OutputRef t)
 
   OutputEnvUnit     :: OutputEnv fenv  fenv () ()
+
+data OutputVars t r where
+  OutputVarsPair :: OutputVars t  r
+                 -> OutputVars t' r'
+                 -> OutputVars (t, t') (r, r')
+
+  OutputVarsUnique :: OutputVars (Buffer t) ((SignalResolver, SignalResolver), OutputRef (Buffer t))
+
+  OutputVarsShared :: OutputVars t (SignalResolver, OutputRef t)
+
+  -- No need to propagate the output, as we reused the same variables (using Destination in PartialDeclare)
+  OutputVarsIgnore :: OutputVars t r
 
 data DeclareOutput fenv t where
   DeclareOutput :: OutputEnv fenv fenv' t r
@@ -779,3 +794,61 @@ maxSync (SyncRead r)    (SyncRead r')     = SyncRead (max r r')
 maxSync (SyncRead r)    (SyncWrite w' r') = SyncWrite w' (max r r')
 maxSync (SyncWrite w r) (SyncRead r')     = SyncWrite w (max r r')
 maxSync (SyncWrite w r) (SyncWrite w' r') = SyncWrite (max w w') (max r r') 
+
+data SyncedValue fenv t where
+  SyncedScalar :: ScalarType t
+               -> Idx fenv Signal
+               -> Idx fenv (Ref t)
+               -> SyncedValue fenv t
+
+  SyncedBuffer :: [Idx fenv Signal] -- Signals which give read access
+               -> [Idx fenv Signal] -- Signals which give write access
+               -> [Idx fenv SignalResolver] -- SignalResolvers to denote that the write operations have finished
+               -> Idx fenv (Ref (Buffer t))
+               -> SyncedValue fenv (Buffer t)
+
+
+
+fromPartial :: forall fenvO1 fenvO2 op fenv genv t r.
+               HasCallStack
+            => OutputVars t r
+            -> BaseVars fenv r
+            -> PartialEnv (SyncedValue fenv) genv
+            -> PartialSchedule (Cluster op) genv t
+            -> UniformSchedule (Cluster op) fenv
+fromPartial outputEnv outputVars env = \case
+    PartialDo outputEnv' convertEnv schedule -> undefined -- Something with a substitution
+    PartialReturn uniquenesses vars -> undefined
+    PartialDeclare syncEnv lhs dest uniquenesses bnd body -> undefined -- Something with fork
+    PartialAcond syncEnv condition true false -> undefined
+    PartialAwhile syncEnv uniquenesses condition step vars -> undefined
+  where
+    travReturn' :: OutputVars t r -> BaseVars fenv r -> GroundVars fenv t -> [([Idx fenv Signal], UniformSchedule (Cluster op) fenv -> UniformSchedule (Cluster op) fenv)] -> [([Idx fenv Signal], UniformSchedule (Cluster op) fenv)]
+    travReturn' (OutputVarsPair o1 o2) (TupRpair r1 r2) (TupRpair v1 v2) accum = travReturn' o1 r1 v1 $ travReturn' o2 r2 v2 accum
+    travReturn' OutputVarsIgnore _ _ accum = accum
+    travReturn' (OutputEnvShared _ _) (TupRpair (TupRsingle signal) (TupRsingle ref)) (TupRsingle (Var tp ix)) accum = task : accum
+      where
+        task = case prjPartial ix env of
+          Nothing -> internalError "Variable not present in environment"
+          Just (SyncedScalar _ signal ref) -> ([signal], undefined)
+          Just (SyncedBuffer readAccess _ _ ref) -> (readAccess, Alet (LeftHandSideSingle $ BaseRground tp) (RefRead ref) $ Effect (RefWrite undefined undefined) $ Effect (SignalResolve undefined))
+    travReturn' (OutputEnvUnique _ _) (TupRpair (TupRpair (TupRsingle signalRead) (TupRsingle signalWrite)) (TupRsingle ref)) (TupRsingle v) accum = undefined : accum
+
+forks :: [UniformSchedule (Cluster op) fenv] -> UniformSchedule (Cluster op) fenv
+forks [] = Return
+forks [u] = s
+forks (u:us) = Fork (forks us) u
+
+serial :: forall op fenv. [UniformSchedule (Cluster op) fenv] -> UniformSchedule (Cluster op) fenv
+serial = go weakenId
+  where
+    go :: fenv :> fenv' -> [UniformSchedule (Cluster op) fenv] -> UniformSchedule (Cluster op) fenv'
+    go k [] = Return
+    go k (u:us) = case u of
+      Return -> go k us
+      Alet lhs bnd u'
+        | Exists lhs' <- rebuildLHS lhs -> go (weakenWithLHS lhs' .> k) $ u' : us
+      Effect effect u' -> Effect (weaken k effect) $ go k $ u' : us
+      Acond cond true false u' -> Acond (weaken k cond) (weaken k true) (weaken k false) $ go k $ u' : us
+      Awhile io cond step input u' -> Awhile io (weaken k cond) (weaken k step) (weaken k) input $ go k $ u' : us
+      Fork u' u'' -> Fork (go k $ u' : us) (weaken k u'')

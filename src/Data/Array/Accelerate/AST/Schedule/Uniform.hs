@@ -53,16 +53,21 @@ data UniformSchedule exe env where
           -> UniformSchedule exe env
 
   Acond   :: ExpVar env PrimBool
-          -> UniformSchedule exe env
-          -> UniformSchedule exe env
+          -> UniformSchedule exe env -- True branch
+          -> UniformSchedule exe env -- False branch
+          -> UniformSchedule exe env -- Operations after the if-then-else
           -> UniformSchedule exe env
 
   Awhile  :: InputOutputR input output
           -> UniformScheduleFun exe env (input -> Output PrimBool -> ())
           -> UniformScheduleFun exe env (input -> output -> ())
           -> BaseVars env input
+          -> UniformSchedule exe env -- Operations after the while loop
           -> UniformSchedule exe env
 
+  -- Whereas Fork is symmetric, we generate programs in a way in which it is usually better
+  -- to execute the first branch first. A fork should thus be evaluated by delegating the second branch
+  -- (eg by putting the second branch in a queue) and continueing with the first branch
   Fork    :: UniformSchedule exe env
           -> UniformSchedule exe env
           -> UniformSchedule exe env
