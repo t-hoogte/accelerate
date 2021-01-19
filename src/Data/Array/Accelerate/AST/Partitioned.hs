@@ -18,8 +18,12 @@
 -- Stability   : experimental
 -- Portability : non-portable (GHC extensions)
 --
-{-# OPTIONS_GHC -Wno-unused-binds #-} -- for a more pleasant IDE experience :)
-module Data.Array.Accelerate.AST.Partitioned ( module Data.Array.Accelerate.AST.Operation, Cluster(..), PartitionedAcc, PartitionedAfun ) where
+module Data.Array.Accelerate.AST.Partitioned 
+  ( module Data.Array.Accelerate.AST.Operation
+  , Cluster(..)
+  , PartitionedAcc
+  , PartitionedAfun
+  ) where
 
 import Data.Array.Accelerate.AST.Operation hiding ( OperationAcc, Execute(..) )
 
