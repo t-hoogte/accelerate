@@ -40,6 +40,7 @@ import Data.Array.Accelerate.Error
 
 import Data.Array.Accelerate.Debug.Flags                ( array_fusion )
 import qualified Data.Array.Accelerate.Debug.Stats      as Stats
+import Data.Kind
 #ifdef ACCELERATE_DEBUG
 import System.IO.Unsafe -- for debugging
 #endif
@@ -48,7 +49,7 @@ import System.IO.Unsafe -- for debugging
 -- Array Fusion
 -- ============
 
-class FusibleAcc (op :: * -> *) where
+class FusibleAcc (op :: Type -> Type) where
 
 -- | Apply the fusion transformation to a de Bruijn AST
 --
@@ -78,4 +79,4 @@ withSimplStats x = x
 #endif
 
 dontFuse :: Execute op benv -> Cluster op benv
-dontFuse (Execute op args) = Base op args
+dontFuse = undefined 

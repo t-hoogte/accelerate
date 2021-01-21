@@ -43,7 +43,6 @@ module Data.Array.Accelerate.Interpreter (
 import Data.Array.Accelerate.AST                                    hiding ( Boundary(..) )
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Var
-import Data.Array.Accelerate.Array.Data
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Elt

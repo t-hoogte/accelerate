@@ -2,7 +2,7 @@
 {-# LANGUAGE KindSignatures, RankNTypes #-}
 module Data.Array.Accelerate.Trafo.Clustering.ILP where
 import qualified Data.IntMap as M
-import Data.Array.Accelerate.AST.Operation (PreOpenAcc, Execute)
+import Data.Array.Accelerate.AST.Operation (Execute)
 import Data.Kind
 import Data.Array.Accelerate.AST.Idx
 import qualified Data.Set as S
@@ -22,6 +22,7 @@ class MakesILP op where
   mkMap :: PreOpenAcc (Execute op) () a -> M.IntMap (UnsafeConstruction op)
 
 
+
 -- Describes how, given a list of indices into 'env', we can reconstruct an 'Execute op env'.
 -- as the name suggests, this cannot be done 'safely': we're in the business of constructing 
 -- a strongly typed AST from untyped ILP output.
@@ -36,7 +37,7 @@ data ILP
 -- you `can` encode this in the ILP, but since the solutions are independant of each other it should be much more efficient
 -- to solve them separately. This avoids many 'infusible edges', and significantly reduces the search space. The extracted
 -- subtree gets encoded as a sort of 'foreign call', preventing all fusion.
-makeILPs :: Graph -> [ILP]
+makeILPs :: Graph -> (ILP, M.IntMap ILP)
 makeILPs = undefined
 
 -- call the solver, and interpret the result as a list (in order of execution) of clusters (sets of nodes).
@@ -44,14 +45,14 @@ makeILPs = undefined
 solveILP :: ILP -> [S.Set Int]
 solveILP = undefined
 
--- Order all lists of clusters in a logical way
-combineSets :: [[S.Set Int]] -> [S.Set Int]
-combineSets = undefined 
 
 -- "open research question"
 -- Each set of ints corresponds to a set of unsafeConstructions, which themselves contain a set of ints (the things they depend on).
 -- Some of those ints will refer to nodes in previous clusters, others to nodes in this cluster.
 -- One pass over these datatypes (back-to-front) should identify the 'output type' of each cluster: which nodes are needed in later clusters?
--- Then, we can construct the clusters front-to-back.
-reconstruct :: [S.Set Int] -> M.IntMap (UnsafeConstruction op) -> Exists (PreOpenAcc (Cluster op) ())
+-- Then, we can construct the clusters front-to-back:
+--    identify the nodes that only depend on nodes outside of the cluster, they are the initials
+--    the `output type` indicates which nodes we will need to keep: they are all either a final node in the cluster, or get diagonally fused
+--  how exactly we can use this information (and a dep. graph) to construct a cluster of ver,hor,diag is not clear.. Will also depend on the exact cluster definition.
+reconstruct :: Graph -> [S.Set Int] -> M.IntMap [S.Set Int] -> M.IntMap (UnsafeConstruction op) -> Exists (PreOpenAcc (Cluster op) ())
 reconstruct = undefined
