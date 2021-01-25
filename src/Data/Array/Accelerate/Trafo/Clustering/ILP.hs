@@ -18,6 +18,8 @@ import qualified Data.Set as S
 -- Limp is a Linear Integer Mixed Programming library.
 -- We only use the Integer part. It has a backend that
 -- binds to CBC, which is apparently a good one?
+-- We can always switch to a different ILP library
+-- later, the interfaces are all quite similar
 import qualified Numeric.Limp.Program as P
 import qualified Numeric.Limp.Rep.IntDouble as R
 
@@ -42,7 +44,7 @@ data Graph = Graph
 -- The graph is the 'common part' of the ILP,
 -- each backend has to encode their own constraints
 -- describing the fusion rules.
-data Information op = Information Graph (S.Set (BackendCon op))
+data Information op = Information Graph (S.Set (Constraint op))
 
 
 class MakesILP op where
@@ -66,7 +68,6 @@ data Variable op
 -- We have integer variables, and no reals.
 type ILP        op = P.Program    (Variable   op) () R.IntDouble
 type Constraint op = P.Constraint (Variable   op) () R.IntDouble
-type BackendCon op = P.Constraint (BackendVar op) () R.IntDouble 
 
 
 -- Describes how, given a list of indices into 'env', we can reconstruct an 'Execute op env'.
@@ -81,7 +82,27 @@ data UnsafeConstruction (op :: Type -> Type) = forall a. UnsafeConstruction (S.S
 -- to solve them separately. This avoids many 'infusible edges', and significantly reduces the search space. The extracted
 -- subtree gets encoded as a sort of 'foreign call', preventing all fusion.
 makeILPs :: Information op -> (ILP op, M.IntMap (ILP op))
-makeILPs (Information graph backendcons) = undefined
+makeILPs (Information graph backendcons) = somehowCombine graphILPs backendcons
+  where
+    somehowCombine = undefined -- Put all backend-specific constraints into each ILP? Or can we be smarter,
+                               -- only adding ones that somehow 'matter' for the ILPs? Is the solver smart
+                               -- enough, and will it disregard these other constraints? What if the backend
+                               -- somehow needs the values that the backend-specific variables take in the
+                               -- solution, then we need to find out which solution is the relevant one?
+    graphILPs :: forall op. (ILP op, M.IntMap (ILP op))
+    graphILPs = undefined -- Formula's from the papers, such that:
+                          --  - clusters are acyclic (w.r.t. infusible edges and non-fused fusible edges)
+                          --  - infusible edges are respected
+                          --  - number of clusters is minimised
+                          -- 
+                          -- New stuff: control flow cannot be fused, so we make separate ILPs for e.g.
+                          -- then-branch and else-branch. In the future, a possible optimisation is to 
+                          -- generate code for the awhile-condition twice: once maybe fused after the body, 
+                          -- once maybe fused after input. For now, condition and body are both treated
+                          -- as 'foreign calls', like if-then-else.
+                          -- The IntMap maps from a label to the corresponding ILP (only for things treated
+                          -- as 'foreign calls', like control flow).
+                      
 
 -- call the solver, and interpret the result as a list (in order of execution) of clusters (sets of nodes).
 -- gets called for each ILP
