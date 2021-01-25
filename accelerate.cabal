@@ -284,6 +284,7 @@ Library
         , hashtables                    >= 1.2.3
         , hedgehog                      >= 0.5
         , lens                          >= 4.0
+        , limp                          >= 0.3.2.3
         , mtl                           >= 2.0
         , prettyprinter                 >= 1.2
         , prettyprinter-ansi-terminal   >= 1.0
