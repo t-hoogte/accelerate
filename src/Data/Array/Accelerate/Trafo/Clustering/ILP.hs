@@ -4,20 +4,24 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE PatternSynonyms #-}
+
 module Data.Array.Accelerate.Trafo.Clustering.ILP where
-import qualified Data.IntMap as M
+
 import Data.Array.Accelerate.AST.Operation (Execute)
 import Data.Array.Accelerate.AST.Idx ( Idx )
 import Data.Array.Accelerate.AST.Partitioned ( PreOpenAcc, Cluster )
 import Data.Array.Accelerate.AST.LeftHandSide ( Exists )
 
+import qualified Data.IntMap as M
+import Data.List (foldl')
 import Data.Kind ( Type )
 
 
 -- In this file, order very often subly does matter.
 -- To keep this clear, we use S.Set whenever it does not,
 -- and [] only when it does.
-import qualified Data.Set as S 
+import qualified Data.Set as S
 
 -- Limp is a Linear Integer Mixed Programming library.
 -- We only use the Integer part. It has a backend that
@@ -25,13 +29,16 @@ import qualified Data.Set as S
 -- We can always switch to a different ILP library
 -- later, the interfaces are all quite similar
 import qualified Numeric.Limp.Program as P
-import qualified Numeric.Limp.Rep.IntDouble as R
-import Data.List (foldl')
+import Numeric.Limp.Program hiding ( Constraint )
+import Numeric.Limp.Rep.Rep ( Assignment )
+import Numeric.Limp.Rep.IntDouble ( IntDouble )
 
 
 
 
--- the graph datatype, including fusible/infusible edges, .., 
+
+
+-- the graph datatype, including fusible/infusible edges, ..,
 -- identifies nodes with unique Ints
 type Label = Int
 
@@ -49,7 +56,7 @@ data Graph = Graph
 -- The graph is the 'common part' of the ILP,
 -- each backend has to encode their own constraints
 -- describing the fusion rules.
-data Information op = Information Graph (Constraint op) (S.Set (P.Bounds (Variable op) () R.IntDouble))
+data Information op = Information Graph (Constraint op) (S.Set (Bounds (Variable op) () IntDouble))
 
 
 class MakesILP op where
@@ -57,8 +64,8 @@ class MakesILP op where
   type BackendVar op
 
   -- Control flow cannot be fused, so we make separate ILPs for e.g.
-  -- then-branch and else-branch. In the future, a possible optimisation is to 
-  -- generate code for the awhile-condition twice: once maybe fused after the body, 
+  -- then-branch and else-branch. In the future, a possible optimisation is to
+  -- generate code for the awhile-condition twice: once maybe fused after the body,
   -- once maybe fused after input. For now, condition and body are both treated
   -- as 'foreign calls', like if-then-else.
   -- The IntMap maps from a label to the corresponding ILP (only for things treated
@@ -82,12 +89,12 @@ data Variable op
 
 
 -- We have integer variables, and no reals.
-type ILP        op = P.Program    (Variable   op) () R.IntDouble
-type Constraint op = P.Constraint (Variable   op) () R.IntDouble
+type ILP        op = Program      (Variable op) () IntDouble
+type Constraint op = P.Constraint (Variable op) () IntDouble
 
 
 -- Describes how, given a list of indices into 'env', we can reconstruct an 'Execute op env'.
--- as the name suggests, this cannot be done 'safely': we're in the business of constructing 
+-- as the name suggests, this cannot be done 'safely': we're in the business of constructing
 -- a strongly typed AST from untyped ILP output.
 -- note that 'a list of indices' is akin to a weakening (that possibly reorders the env too)
 -- todo: not all Idxs need to have the same 'a', so `list` should be `hlist` or tuplist :)
@@ -95,48 +102,51 @@ data UnsafeConstruction (op :: Type -> Type) = forall a. UnsafeConstruction (S.S
 
 
 makeILP :: Information op -> ILP op
-makeILP  (Information 
+makeILP  (Information
             (Graph nodes fuseEdges nofuseEdges)
             backendconstraints
             backendbounds
           ) = combine graphILP
   where
-    combine (P.Program dir fun cons bnds) = 
-             P.Program dir fun (cons <> backendconstraints) 
-                               (bnds <> S.toList backendbounds) 
-    
-    n = S.size nodes
-    --                                  __ | don't know why the objFun has to be
-    --                                 /   | 'real', everything else is integral 
-    --                                 v
-    graphILP = P.Program P.Minimise (P.toR objFun) constraints bounds
+    combine (Program dir fun cons bnds) =
+             Program dir fun (cons <> backendconstraints)
+                             (bnds <> S.toList backendbounds)
 
-    -- placeholder, currently maximising the number of vertical/diagonal fusions.    
-    objFun = foldl' (\f (i, j) -> f P..+. P.z1 (Fused i j)) P.c0 (S.toList fuseEdges)
+    n = S.size nodes
+    --                             __ | don't know why the objFun has to be
+    --                            /   | 'real', everything else is integral
+    --                            v
+    graphILP = Program Minimise (toR objFun) constraints bounds
+
+    -- placeholder, currently maximising the number of vertical/diagonal fusions.
+    objFun = foldl' (\f (i, j) -> f .+. z1 (Fused i j)) c0 (S.toList fuseEdges)
 
     constraints = acyclic <> infusible
 
     -- x_ij <= pi_j - pi_i <= n*x_ij for all fusible edges
-    acyclic = foldMap (\(i, j) -> P.Between 
-                                    (P.z1 (Fused i j))
-                                    (P.z1 (Pi j) P..-. P.z1 (Pi i))
-                                    (P.z  (Fused i j) (fromIntegral n))) fuseEdges
+    acyclic = foldMap
+                (\(i, j) -> Between
+                              ( z1 (Fused i j)                  )
+                              ( z1 (Pi j) .-. z1 (Pi i)         )
+                              ( z  (Fused i j) (fromIntegral n) ))
+                fuseEdges
 
     -- pi_j - pi_i >= 1 for all infusible edges (i,j)
-    infusible = foldMap (\(i, j) -> (P.z1 (Pi j) P..-. P.z1 (Pi i)) P.:>= P.c1) nofuseEdges
+    infusible = foldMap (\(i, j) -> (z1 (Pi j) .-. z1 (Pi i)) :>= c1)
+                        nofuseEdges
 
-    bounds = map (\i      -> P.lowerUpperZ 0 (Pi i) (fromIntegral n)) 
+    --            0 <= pi_i <= n
+    bounds = map (\i -> lowerUpperZ 0 (Pi i) (fromIntegral n))
                  (S.toList nodes)
-          ++ map (\(i, j) -> P.binary (Fused i j)) 
+             <>  -- x_ij \in {0, 1}
+             map (\(i, j) -> binary (Fused i j))
                  (S.toList fuseEdges)
 
-    
 
-                      
 
--- call the solver, and interpret the result as a list (in order of execution) of clusters (sets of nodes).
--- gets called for each ILP
-solveILP :: ILP op -> [S.Set Int]
+
+-- call the solver. Gets called for each ILP
+solveILP :: ILP op -> Assignment (Variable op) () IntDouble
 solveILP = undefined
 
 
