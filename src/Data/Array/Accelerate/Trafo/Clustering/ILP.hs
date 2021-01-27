@@ -8,9 +8,9 @@
 
 module Data.Array.Accelerate.Trafo.Clustering.ILP where
 
-import Data.Array.Accelerate.AST.Operation (Execute)
+import Data.Array.Accelerate.AST.Operation
 import Data.Array.Accelerate.AST.Idx ( Idx )
-import Data.Array.Accelerate.AST.Partitioned ( PreOpenAcc, Cluster )
+import Data.Array.Accelerate.AST.Partitioned ( Cluster )
 import Data.Array.Accelerate.AST.LeftHandSide ( Exists )
 
 import qualified Data.IntMap as M
@@ -34,15 +34,18 @@ import Numeric.Limp.Rep.Rep ( Assignment )
 import Numeric.Limp.Rep.IntDouble ( IntDouble )
 
 
+-- before we do the ILP pass, we label each 'Exec' node
+data LabelledOp op args = LabelledOp Int (op args)
 
-
+labelAcc :: PreOpenAcc op env a -> PreOpenAcc (LabelledOp op) env a
+labelAcc = undefined
 
 
 -- the graph datatype, including fusible/infusible edges, ..,
 -- identifies nodes with unique Ints
 type Label = Int
 
--- | Directed edge (a,b): `a` must be computed [possibly strictly] before `b`.
+-- | Directed edge (a,b): `b` depends on `a`.
 type Edge = (Label, Label)
 
 -- TODO: at some point, set fusibleEdges := fusibleEdges \\ infusibleEdges. Makes ILP smaller.
@@ -75,11 +78,10 @@ class MakesILP op where
   -- to solve them separately. This avoids many 'infusible edges', and significantly reduces the search space. The extracted
   -- subtree gets encoded as a sort of 'foreign call', preventing all fusion.
   -- todo: maybe we can extract more commonality from this, making the class more complicated but instances smaller/easier
-  mkGraph :: PreOpenAcc (Execute op) () a-> (Information op, M.IntMap (Information op))
+  mkGraph :: PreOpenAcc (LabelledOp op) () a-> (Information op, M.IntMap (Information op))
 
-  -- for efficient reconstruction - important that the numbers match the numbers in mkGraph. Can fuse the two to ensure,
-  -- or do a separate 'labelling' pass first (:: Execute op -> LabelledExe op).
-  mkMap :: PreOpenAcc (Execute op) () a -> M.IntMap (UnsafeConstruction op)
+  -- for efficient reconstruction
+  mkMap :: PreOpenAcc (LabelledOp op) () a -> M.IntMap (UnsafeConstruction op)
 
 
 data Variable op
@@ -98,7 +100,8 @@ type Constraint op = P.Constraint (Variable op) () IntDouble
 -- a strongly typed AST from untyped ILP output.
 -- note that 'a list of indices' is akin to a weakening (that possibly reorders the env too)
 -- todo: not all Idxs need to have the same 'a', so `list` should be `hlist` or tuplist :)
-data UnsafeConstruction (op :: Type -> Type) = forall a. UnsafeConstruction (S.Set Int) (forall env. [Idx a env] -> Execute op env)
+-- todo: figure out how this works with 'args'
+data UnsafeConstruction (op :: Type -> Type) = forall a. UnsafeConstruction (S.Set Int) (forall args. [Idx a args] -> op args)
 
 
 makeILP :: Information op -> ILP op
@@ -113,8 +116,9 @@ makeILP  (Information
                              (bnds <> S.toList backendbounds)
 
     n = S.size nodes
-    --                             __ | don't know why the objFun has to be
-    --                            /   | 'real', everything else is integral
+    --                              __ | don't know why the objFun has to be
+    --                             /   | 'real', everything else is integral
+    --                            |    | hope this doesn't slow the solving
     --                            v
     graphILP = Program Minimise (toR objFun) constraints bounds
 

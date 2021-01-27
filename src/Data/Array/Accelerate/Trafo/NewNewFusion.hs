@@ -78,5 +78,5 @@ withSimplStats x = unsafePerformIO Stats.resetSimplCount `seq` x
 withSimplStats x = x
 #endif
 
-dontFuse :: Execute op benv -> Cluster op benv
-dontFuse = undefined 
+dontFuse :: op args -> Cluster op args
+dontFuse = Leaf 
