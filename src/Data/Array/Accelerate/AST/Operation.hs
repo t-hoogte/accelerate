@@ -153,7 +153,7 @@ data PreOpenAcc (op :: Type -> Type) env a where
   Awhile  :: Uniquenesses a
           -> PreOpenAfun op env (a -> PrimBool)
           -> PreOpenAfun op env (a -> a)
-          -> GroundVars      env a
+          -> GroundVars     env a
           -> PreOpenAcc  op env a
 
 -- | Function abstraction over parametrised array computations

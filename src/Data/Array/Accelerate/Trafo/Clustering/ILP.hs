@@ -1,3 +1,4 @@
+{-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE GADTs #-}
@@ -9,9 +10,9 @@
 module Data.Array.Accelerate.Trafo.Clustering.ILP where
 
 import Data.Array.Accelerate.AST.Operation
-import Data.Array.Accelerate.AST.Idx ( Idx )
+import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Partitioned ( Cluster )
-import Data.Array.Accelerate.AST.LeftHandSide ( Exists )
+import Data.Array.Accelerate.AST.LeftHandSide
 
 import qualified Data.IntMap as M
 import Data.List (foldl')
@@ -32,10 +33,16 @@ import qualified Numeric.Limp.Program as P
 import Numeric.Limp.Program hiding ( Constraint )
 import Numeric.Limp.Rep.Rep ( Assignment )
 import Numeric.Limp.Rep.IntDouble ( IntDouble )
+import Data.Array.Accelerate.Representation.Type
 
 
 -- before we do the ILP pass, we label each 'Exec' node
-data LabelledOp op args = LabelledOp Int (op args)
+data LabelledOp op args = LabelledOp Label (op args)
+-- with the Operation-base acc, that might not be enough..
+-- kind of need to label each array, so each Use/Unit too?
+-- Don't need to label Allocs, we only care about the dependencies.
+-- so.. probably need to back the recursive knot into the Operation
+-- ast too, so we can label everything?
 
 labelAcc :: PreOpenAcc op env a -> PreOpenAcc (LabelledOp op) env a
 labelAcc = undefined
@@ -54,13 +61,56 @@ data Graph = Graph
   , fusibleEdges   :: S.Set Edge  -- Can   be fused over, otherwise `a` before `b`.
   , infusibleEdges :: S.Set Edge  -- Can't be fused over, always    `a` before `b`.
   }
-
+instance Semigroup Graph where
+  Graph n f i <> Graph n' f' i' = Graph (n <> n') (f <> f') (i <> i')
+instance Monoid Graph where
+  mempty = Graph mempty mempty mempty
 
 -- The graph is the 'common part' of the ILP,
 -- each backend has to encode their own constraints
 -- describing the fusion rules.
-data Information op = Information Graph (Constraint op) (S.Set (Bounds (Variable op) () IntDouble))
+data Information op = Information Graph (Constraint op) [ Bounds (Variable op) () IntDouble ]
+instance Semigroup (Information op) where
+  Information g c b <> Information g' c' b' = Information (g <> g') (c <> c') (b <> b')
+instance Monoid (Information op) where
+  mempty = Information mempty mempty mempty
 
+-- | Keeps track of which argument belongs to which labels
+data LabelArgs args where
+  LabelArgsNil :: LabelArgs ()
+  (:>>:)       :: S.Set Label -> LabelArgs t -> LabelArgs (s -> t)
+
+-- | Keeps track of which array in the environment belongs to which label
+data LabelEnv env where
+  LabelEnvNil  :: LabelEnv ()
+  (:>>>:)      :: S.Set Label -> LabelEnv t -> LabelEnv (t, s)
+
+addLhsLabels :: LeftHandSide s v env env' -> S.Set Label -> LabelEnv env -> LabelEnv env'
+addLhsLabels LeftHandSideWildcard{} _ lenv = lenv
+addLhsLabels LeftHandSideSingle{}   l lenv = l :>>>: lenv 
+addLhsLabels (LeftHandSidePair x y) l lenv = addLhsLabels y l (addLhsLabels x l lenv)
+
+mkLabelArgs :: Args env args -> LabelEnv env -> LabelArgs args
+mkLabelArgs ArgsNil _ = LabelArgsNil
+mkLabelArgs (arg :>: args) e = getLabelsArg arg e :>>: mkLabelArgs args e
+  where
+    getLabelsArg :: Arg env t -> LabelEnv env -> S.Set Label
+    getLabelsArg (ArgVar tup)                  env = getLabelsTup tup env
+    getLabelsArg (ArgExp x)                    env = undefined -- call function that I still have to write
+    getLabelsArg (ArgFun fun)                  env = undefined -- call function that I still have to write
+    getLabelsArg (ArgArray _ _ shVars bufVars) env = getLabelsTup shVars env `S.union` getLabelsTup bufVars env
+
+getLabelsTup :: TupR (Var a env) b -> LabelEnv env -> S.Set Label
+getLabelsTup TupRunit                     _   = S.empty
+getLabelsTup (TupRsingle var) env = getLabelsVar var env
+getLabelsTup (TupRpair x y)               env = getLabelsTup x env `S.union` getLabelsTup y env
+
+getLabelsVar :: Var s env t -> LabelEnv env -> S.Set Label
+getLabelsVar (varIdx -> idx) lenv = getLabelsIdx idx lenv
+
+getLabelsIdx :: Idx env a -> LabelEnv env -> S.Set Label
+getLabelsIdx ZeroIdx (i :>>>: _) = i
+getLabelsIdx (SuccIdx idx) (_ :>>>: env) = getLabelsIdx idx env
 
 class MakesILP op where
   -- Variables needed to express backend-specific fusion rules.
@@ -78,11 +128,46 @@ class MakesILP op where
   -- to solve them separately. This avoids many 'infusible edges', and significantly reduces the search space. The extracted
   -- subtree gets encoded as a sort of 'foreign call', preventing all fusion.
   -- todo: maybe we can extract more commonality from this, making the class more complicated but instances smaller/easier
-  mkGraph :: PreOpenAcc (LabelledOp op) () a-> (Information op, M.IntMap (Information op))
+  mkGraph :: op args -> LabelArgs args -> Label -> Information op
 
   -- for efficient reconstruction
   mkMap :: PreOpenAcc (LabelledOp op) () a -> M.IntMap (UnsafeConstruction op)
 
+
+-- TODO doublecheck much of this, it's tricky:
+-- in the Operation-based AST, everything is powered by side effects.
+-- this makes a full-program analysis like this much more difficult,
+-- luckily the Args give us all the information we really require.
+-- For each node, we get the set of incoming edges and the set
+-- of outgoing edges. Let-bindings are easy, but the array-level
+-- control flow (acond and awhile) compensate: their bodies form separate
+-- graphs.
+mkFullGraph :: MakesILP op 
+            => PreOpenAcc (LabelledOp op) aenv a 
+            -> LabelEnv aenv 
+            -> ( S.Set Label -- ingoing edges
+               , S.Set Label -- outgoing edges
+               , Information op, M.IntMap (Information op) )
+mkFullGraph (Exec (LabelledOp l op) args) lenv = undefined
+
+mkFullGraph _ _ = undefined
+-- mkFullGraph (Return groundvars) _ = undefined -- what is this? does this do anything?
+-- mkFullGraph (Compute expr)      _ = undefined -- how is this even typecorrect? What does it mean?
+-- mkFullGraph (Exec (LabelledOp l op) args) lenv = ( S.singleton l, mkGraph op (mkLabelArgs args lenv) l, M.empty )
+-- mkFullGraph (Alet lhs u bnd scp) lenv = 
+--   let (label1, info1, infomap1) = mkFullGraph bnd lenv
+--       (label2, info2, infomap2) = mkFullGraph scp (addLhsLabels lhs label1 lenv) 
+--   in ( label2
+--      , info1 <> info2
+--        -- If we encounter any duplicate keys here, that's a bad sign
+--      , M.unionWith (error "oops") infomap1 infomap2 ) 
+-- mkFullGraph (Alloc shr sct expv) lenv = ( getLabelsTup expv lenv, mempty, mempty )
+-- mkFullGraph (Use sct buf) lenv = ( mempty, mempty, mempty )
+-- mkFullGraph (Unit evar) lenv = ( getLabelsVar evar lenv, mempty, mempty )
+
+-- -- now these are problematic: should we duplicate the informations and put them in the map with all the labels?
+-- mkFullGraph (Acond c t e) lenv = undefined -- ifthenelse
+-- mkFullGraph (Awhile us c b s) lenv = undefined -- while
 
 data Variable op
   = Pi    Label                     -- For acyclic ordering of clusters
@@ -105,24 +190,26 @@ data UnsafeConstruction (op :: Type -> Type) = forall a. UnsafeConstruction (S.S
 
 
 makeILP :: Information op -> ILP op
-makeILP  (Information
-            (Graph nodes fuseEdges nofuseEdges)
-            backendconstraints
-            backendbounds
-          ) = combine graphILP
+makeILP (Information
+          (Graph nodes fuseEdges nofuseEdges)
+          backendconstraints
+          backendbounds
+        ) = combine graphILP
   where
     combine (Program dir fun cons bnds) =
              Program dir fun (cons <> backendconstraints)
-                             (bnds <> S.toList backendbounds)
+                             (bnds <> backendbounds)
 
     n = S.size nodes
-    --                              __ | don't know why the objFun has to be
-    --                             /   | 'real', everything else is integral
-    --                            |    | hope this doesn't slow the solving
-    --                            v
+    --                                  _____________________________________
+    --                                 | Don't know why the objFun has to be |
+    --                             ___ | real, everything else is integral.  |
+    --                            |    | Hope this doesn't slow the solver.  |
+    --                            v     ‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
     graphILP = Program Minimise (toR objFun) constraints bounds
 
-    -- placeholder, currently maximising the number of vertical/diagonal fusions.
+    -- Placeholder, currently maximising the number of vertical/diagonal fusions.
+    -- In the future, maybe we want this to be backend-dependent.
     objFun = foldl' (\f (i, j) -> f .+. z1 (Fused i j)) c0 (S.toList fuseEdges)
 
     constraints = acyclic <> infusible
