@@ -1,3 +1,5 @@
+{-# LANGUAGE EmptyCase #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -21,31 +23,35 @@ import Data.Kind ( Type )
 
 -- In this file, order very often subly does matter.
 -- To keep this clear, we use S.Set whenever it does not,
--- and [] only when it does.
+-- and [] only when it does. It's also often efficient
+-- by removing duplicates.
 import qualified Data.Set as S
 
 -- Limp is a Linear Integer Mixed Programming library.
--- We only use the Integer part. It has a backend that
--- binds to CBC, which is apparently a good one?
+-- We only use the Integer part (not the Mixed part, 
+-- which allows you to add non-integer variables and
+-- constraints). It has a backend that binds to CBC, 
+-- which is apparently a good one? Does not seem to be
+-- actively maintained though.
 -- We can always switch to a different ILP library
--- later, the interfaces are all quite similar
+-- later, the interfaces are all quite similar.
 import qualified Numeric.Limp.Program as P
-import Numeric.Limp.Program hiding ( Constraint )
+import Numeric.Limp.Program hiding ( Constraint, r )
 import Numeric.Limp.Rep.Rep ( Assignment )
 import Numeric.Limp.Rep.IntDouble ( IntDouble )
 import Data.Array.Accelerate.Representation.Type
 
 
--- before we do the ILP pass, we label each 'Exec' node
-data LabelledOp op args = LabelledOp Label (op args)
--- with the Operation-base acc, that might not be enough..
--- kind of need to label each array, so each Use/Unit too?
--- Don't need to label Allocs, we only care about the dependencies.
--- so.. probably need to back the recursive knot into the Operation
--- ast too, so we can label everything?
+-- -- before we do the ILP pass, we label each 'Exec' node
+-- data LabelledOp op args = LabelledOp Label (op args)
+-- -- with the Operation-base acc, that might not be enough..
+-- -- kind of need to label each array, so each Use/Unit too?
+-- -- Don't need to label Allocs, we only care about the dependencies.
+-- -- so.. probably need to back the recursive knot into the Operation
+-- -- ast too, so we can label everything?
 
-labelAcc :: PreOpenAcc op env a -> PreOpenAcc (LabelledOp op) env a
-labelAcc = undefined
+-- labelAcc :: PreOpenAcc op env a -> PreOpenAcc (LabelledOp op) env a
+-- labelAcc = undefined
 
 
 -- the graph datatype, including fusible/infusible edges, ..,
@@ -68,12 +74,13 @@ instance Monoid Graph where
 
 -- The graph is the 'common part' of the ILP,
 -- each backend has to encode their own constraints
--- describing the fusion rules.
-data Information op = Information Graph (Constraint op) [ Bounds (Variable op) () IntDouble ]
+-- describing the fusion rules. The bounds is a [] instead of S.Set
+-- for practical reasons (no Ord instance, LIMP expects a list) only.
+data Information op = Info Graph (Constraint op) [ Bounds (Variable op) () IntDouble ]
 instance Semigroup (Information op) where
-  Information g c b <> Information g' c' b' = Information (g <> g') (c <> c') (b <> b')
+  Info g c b <> Info g' c' b' = Info (g <> g') (c <> c') (b <> b')
 instance Monoid (Information op) where
-  mempty = Information mempty mempty mempty
+  mempty = Info mempty mempty mempty
 
 -- | Keeps track of which argument belongs to which labels
 data LabelArgs args where
@@ -90,20 +97,33 @@ addLhsLabels LeftHandSideWildcard{} _ lenv = lenv
 addLhsLabels LeftHandSideSingle{}   l lenv = l :>>>: lenv 
 addLhsLabels (LeftHandSidePair x y) l lenv = addLhsLabels y l (addLhsLabels x l lenv)
 
-mkLabelArgs :: Args env args -> LabelEnv env -> LabelArgs args
-mkLabelArgs ArgsNil _ = LabelArgsNil
-mkLabelArgs (arg :>: args) e = getLabelsArg arg e :>>: mkLabelArgs args e
-  where
-    getLabelsArg :: Arg env t -> LabelEnv env -> S.Set Label
-    getLabelsArg (ArgVar tup)                  env = getLabelsTup tup env
-    getLabelsArg (ArgExp x)                    env = undefined -- call function that I still have to write
-    getLabelsArg (ArgFun fun)                  env = undefined -- call function that I still have to write
-    getLabelsArg (ArgArray _ _ shVars bufVars) env = getLabelsTup shVars env `S.union` getLabelsTup bufVars env
+weakLhsEnv :: LeftHandSide s v env env' -> LabelEnv env' -> LabelEnv env
+weakLhsEnv LeftHandSideSingle{} (_:>>>: env) = env
+weakLhsEnv LeftHandSideWildcard{} env = env
+weakLhsEnv (LeftHandSidePair l r) env = weakLhsEnv l (weakLhsEnv r env)
+
+emptyLabelEnv :: LabelEnv env -> LabelEnv env
+emptyLabelEnv LabelEnvNil = LabelEnvNil
+emptyLabelEnv (_:>>>:env) = mempty :>>>: emptyLabelEnv env
+
+getAllLabelsEnv :: LabelEnv env -> S.Set Label
+getAllLabelsEnv LabelEnvNil = mempty
+getAllLabelsEnv (set :>>>: lenv) = set <> getAllLabelsEnv lenv
+
+getLabelArgs :: Args env args -> LabelEnv env -> LabelArgs args
+getLabelArgs ArgsNil _ = LabelArgsNil
+getLabelArgs (arg :>: args) e = getLabelsArg arg e :>>: getLabelArgs args e
+
+getLabelsArg :: Arg env t -> LabelEnv env -> S.Set Label
+getLabelsArg (ArgVar tup)                  env = getLabelsTup tup    env
+getLabelsArg (ArgExp expr)                 env = getLabelsExp expr   env
+getLabelsArg (ArgFun fun)                  env = getLabelsFun fun    env
+getLabelsArg (ArgArray _ _ shVars bufVars) env = getLabelsTup shVars env <> getLabelsTup bufVars env
 
 getLabelsTup :: TupR (Var a env) b -> LabelEnv env -> S.Set Label
-getLabelsTup TupRunit                     _   = S.empty
+getLabelsTup TupRunit                     _   = mempty
 getLabelsTup (TupRsingle var) env = getLabelsVar var env
-getLabelsTup (TupRpair x y)               env = getLabelsTup x env `S.union` getLabelsTup y env
+getLabelsTup (TupRpair x y)               env = getLabelsTup x env <> getLabelsTup y env
 
 getLabelsVar :: Var s env t -> LabelEnv env -> S.Set Label
 getLabelsVar (varIdx -> idx) lenv = getLabelsIdx idx lenv
@@ -111,6 +131,36 @@ getLabelsVar (varIdx -> idx) lenv = getLabelsIdx idx lenv
 getLabelsIdx :: Idx env a -> LabelEnv env -> S.Set Label
 getLabelsIdx ZeroIdx (i :>>>: _) = i
 getLabelsIdx (SuccIdx idx) (_ :>>>: env) = getLabelsIdx idx env
+
+getLabelsExp :: OpenExp x env y -> LabelEnv env -> S.Set Label
+getLabelsExp = undefined -- TODO traverse everything, look for Idxs
+
+getLabelsFun :: OpenFun x env y -> LabelEnv env -> S.Set Label
+getLabelsFun (Body expr) lenv = getLabelsExp expr lenv
+getLabelsFun (Lam _ fun) lenv = getLabelsFun fun  lenv
+
+updateLabelEnv :: Args env args -> LabelEnv env -> Label -> LabelEnv env
+updateLabelEnv ArgsNil lenv _ = lenv
+updateLabelEnv (arg :>: args) lenv l = case arg of
+  -- CHECK we only look at the 'Buffer' vars here, not the 'shape' ones. Is that ok?
+  ArgArray Out _ _ vars -> updateLabelEnv args (insertAtVars vars lenv l) l
+  ArgArray Mut _ _ vars -> updateLabelEnv args (insertAtVars vars lenv l) l
+  _ -> updateLabelEnv args lenv l
+
+insertAtVars :: TupR (Var a env) b -> LabelEnv env -> Label -> LabelEnv env
+insertAtVars TupRunit lenv _ = lenv
+insertAtVars (TupRpair x y) lenv l = insertAtVars x (insertAtVars y lenv l) l
+insertAtVars (TupRsingle (varIdx -> idx)) (lset :>>>: lenv) l = case idx of
+  ZeroIdx -> (S.insert l lset) :>>>: lenv
+  SuccIdx idx' ->        lset  :>>>: insertAtVars (TupRsingle (Var undefined idx')) lenv l
+insertAtVars (TupRsingle (varIdx -> idx)) LabelEnvNil _ = case idx of {}
+
+-- | Like `getLabelArgs`, but ignores the `Out` arguments
+getInputArgLabels :: Args env args -> LabelEnv env -> S.Set Label
+getInputArgLabels ArgsNil _ = mempty
+getInputArgLabels (arg :>: args) lenv = getInputArgLabels args lenv <> case arg of
+  ArgArray Out _ _ _ -> mempty
+  _ -> getLabelsArg arg lenv
 
 class MakesILP op where
   -- Variables needed to express backend-specific fusion rules.
@@ -131,7 +181,7 @@ class MakesILP op where
   mkGraph :: op args -> LabelArgs args -> Label -> Information op
 
   -- for efficient reconstruction
-  mkMap :: PreOpenAcc (LabelledOp op) () a -> M.IntMap (UnsafeConstruction op)
+  -- mkMap :: PreOpenAcc (LabelledOp op) () a -> M.IntMap (UnsafeConstruction op)
 
 
 -- TODO doublecheck much of this, it's tricky:
@@ -142,18 +192,88 @@ class MakesILP op where
 -- of outgoing edges. Let-bindings are easy, but the array-level
 -- control flow (acond and awhile) compensate: their bodies form separate
 -- graphs.
-mkFullGraph :: MakesILP op 
-            => PreOpenAcc (LabelledOp op) aenv a 
-            -> LabelEnv aenv 
-            -> ( S.Set Label -- ingoing edges
-               , S.Set Label -- outgoing edges
-               , Information op, M.IntMap (Information op) )
-mkFullGraph (Exec (LabelledOp l op) args) lenv = undefined
+-- We can practically ignore 'Return' nodes.
+-- let bindings are more tricky, because of the side effects. Often,
+-- a let will not add to the environment but instead mutate it.
+-- I'm still not convinced 'Compute' nodes can even be used
+-- things with labels include:
+-- - Control flow (a label for each branch, treated as a separate ILP) (acond & awhile)
+-- - Exec
+-- - Use
+-- - Alloc? Difficult case: if you include it, are the edges fusible? Do we
+--    need to include a binary in the ILP describing whether the alloc is fused away?
+--    probably yes, and then the edges are infusible if they exist
+--    but maybe no need to label it, if we can infer them afterwards?
+-- - Unit
 
-mkFullGraph _ _ = undefined
+-- this function will also need to produce the 'reconstruction' lookup map,
+-- to ensure that the labels we generate are consistent between the lookup map
+-- and the graph. I'll do that Later (TM)
+mkFullGraph :: MakesILP op 
+            => PreOpenAcc op aenv a 
+            -> LabelEnv aenv -- for each array in the environment, 
+            -- the source labels of the currently open outgoing edges.
+            -> Label -- the next fresh label to use
+            -> ( 
+              --    S.Set Label -- incoming edges
+              --  , S.Set Label -- outgoing edges
+                ( Information op, M.IntMap (Information op))
+              , LabelEnv aenv -- like input, but adjusted for side-effects
+              , S.Set Label -- source labels of currently open outgoing edges of 'a'
+              , Label -- the next fresh label to use
+               -- , reconstruction thing
+              )
+
+-- Exec case: think about the exact type of mkGraph, and adjust accordingly.
+-- clear responsibility on who makes the graph!
+
+-- For all input arguments (that is, everything except `Out` buffers), we add fusible edges. If that's
+-- not strict enough, the backend can add infusible edges, but this is a sound (or complete? not both!)
+-- lowerbound on fusibility: these inputs have to exist to evaluate the op.
+mkFullGraph (Exec op args) lenv l = let fuseedges = S.map (, l) $ getInputArgLabels args lenv in
+  ( (mkGraph op (getLabelArgs args lenv) l <> Info (Graph (S.singleton l) fuseedges mempty) mempty mempty, mempty)
+  , updateLabelEnv args lenv l -- add labels for `Out` and `Mut` args.
+  , mempty
+  , l + 1)
+mkFullGraph (Alet lhs u bnd scp) lenv l = 
+  let (bndInfo, lenv',  lbnd, l')  = mkFullGraph bnd lenv                          l
+      (scpInfo, lenv'', lscp, l'') = mkFullGraph scp (addLhsLabels lhs lbnd lenv') l'
+  in  (bndInfo <> scpInfo
+      , weakLhsEnv lhs lenv''
+      , lscp
+      , l'')
+mkFullGraph (Return  vars) lenv l = ( (mempty, mempty), lenv, getLabelsTup vars lenv, l)
+mkFullGraph (Compute expr) lenv l = ( (mempty, mempty), lenv, getLabelsExp expr lenv, l)
+mkFullGraph (Alloc shr scty vars) lenv l = ( (mempty, mempty), lenv, mempty, l) -- unless we can't infer alloc...
+mkFullGraph Use{} lenv l = 
+  ( (Info (Graph (S.singleton l) mempty mempty) mempty mempty, mempty)
+  , lenv, S.singleton l, l+1)
+-- gets a variable from the env, puts it in a singleton buffer.
+-- Here I'm assuming this fuses nicely, and doesn't even need a new label 
+-- (reuse the one that belongs to the variable). If not, change!
+mkFullGraph (Unit var) lenv l = ( (mempty, mempty), lenv, getLabelsVar var lenv, l)
+-- NOTE: We explicitly add infusible edges from every label in `lenv` to this Acond.
+-- This makes the previous let-bindings strict: even if some result is only used in one
+-- branch, we now require it to be present before we evaluate the condition.
+-- I think this is safe: if a result is only used in one branch, it should be let-bound
+-- within that branch. Note that this also means we ignore the contents of 'cond' for the graph.
+-- We also add edges from the Acond to the true-branch, and from the true-branch to the false-branch?
+-- TODO check if this is right/needed/if passing even more fresh labels down is correct.
+mkFullGraph (Acond cond tbranch fbranch) lenv l = let tlabel = l+1
+                                                      flabel = l+2
+                                                      emptyEnv = emptyLabelEnv lenv
+                                                      ( (tinfo, tinfoM), _, _, l') = mkFullGraph tbranch emptyEnv (l+3)
+                                                      ( (finfo, finfoM), _, _, l'') = mkFullGraph fbranch emptyEnv (l')
+                                                      nonfuse = S.map (,l) (getAllLabelsEnv lenv) <> S.fromList [(l, tlabel), (tlabel, flabel)]
+                                                  in ( (Info (Graph (S.fromList [l, l+1, l+2]) mempty nonfuse) mempty mempty
+                                                       , M.fromList [(tlabel, tinfo), (flabel, finfo)] <> tinfoM <> finfoM)
+                                                     , emptyEnv, S.singleton l, l''+1)
+mkFullGraph _ _ _ = undefined
+
+
 -- mkFullGraph (Return groundvars) _ = undefined -- what is this? does this do anything?
 -- mkFullGraph (Compute expr)      _ = undefined -- how is this even typecorrect? What does it mean?
--- mkFullGraph (Exec (LabelledOp l op) args) lenv = ( S.singleton l, mkGraph op (mkLabelArgs args lenv) l, M.empty )
+-- mkFullGraph (Exec (LabelledOp l op) args) lenv = ( S.singleton l, mkGraph op (getLabelArgs args lenv) l, M.empty )
 -- mkFullGraph (Alet lhs u bnd scp) lenv = 
 --   let (label1, info1, infomap1) = mkFullGraph bnd lenv
 --       (label2, info2, infomap2) = mkFullGraph scp (addLhsLabels lhs label1 lenv) 
@@ -190,7 +310,7 @@ data UnsafeConstruction (op :: Type -> Type) = forall a. UnsafeConstruction (S.S
 
 
 makeILP :: Information op -> ILP op
-makeILP (Information
+makeILP (Info
           (Graph nodes fuseEdges nofuseEdges)
           backendconstraints
           backendbounds
@@ -206,7 +326,7 @@ makeILP (Information
     --                             ___ | real, everything else is integral.  |
     --                            |    | Hope this doesn't slow the solver.  |
     --                            v     ‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
-    graphILP = Program Minimise (toR objFun) constraints bounds
+    graphILP = Program Minimise (toR objFun) constraints bounds 
 
     -- Placeholder, currently maximising the number of vertical/diagonal fusions.
     -- In the future, maybe we want this to be backend-dependent.
