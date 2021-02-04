@@ -409,14 +409,6 @@ reindexArgs k (a :>: as) = (:>:) <$> reindexArg k a <*> reindexArgs k as
 weakenReindex :: benv :> benv' -> ReindexPartial Identity benv benv'
 weakenReindex k = Identity . (k >:>)
 
--- class IsExecutableAcc exe where
---   reindexExecPartial :: Applicative f => ReindexPartial f env env' -> exe env -> f (exe env')
---   execVars :: exe env -> [Exists (Var AccessGroundR env)]
-
--- instance IsExecutableAcc (Execute op) where
---   reindexExecPartial k (Execute op args) = Execute op <$> reindexArgs k args
---   execVars (Execute _ args) = argsVars args
-
 data AccessGroundR tp where
   AccessGroundRscalar :: ScalarType tp -> AccessGroundR tp
   AccessGroundRbuffer :: Modifier m -> ScalarType tp -> AccessGroundR (Buffer tp)

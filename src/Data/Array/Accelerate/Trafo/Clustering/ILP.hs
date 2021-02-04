@@ -1,3 +1,4 @@
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE EmptyCase #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ViewPatterns #-}
@@ -40,6 +41,7 @@ import Numeric.Limp.Program hiding ( Constraint, r )
 import Numeric.Limp.Rep.Rep ( Assignment )
 import Numeric.Limp.Rep.IntDouble ( IntDouble )
 import Data.Array.Accelerate.Representation.Type
+import Unsafe.Coerce (unsafeCoerce)
 
 
 -- -- before we do the ILP pass, we label each 'Exec' node
@@ -54,9 +56,13 @@ import Data.Array.Accelerate.Representation.Type
 -- labelAcc = undefined
 
 
--- the graph datatype, including fusible/infusible edges, ..,
--- identifies nodes with unique Ints
-type Label = Int
+-- identifies nodes with unique Ints. and tracks their dependencies
+type Label =  Int
+
+-- identifies elements of the environment with unique Ints.
+-- newtype'd to avoid confusing them with Label (above).
+newtype ELabel = ELabel Int
+  deriving (Show, Eq, Ord, Num)
 
 -- | Directed edge (a,b): `b` depends on `a`.
 type Edge = (Label, Label)
@@ -90,12 +96,13 @@ data LabelArgs args where
 -- | Keeps track of which array in the environment belongs to which label
 data LabelEnv env where
   LabelEnvNil  :: LabelEnv ()
-  (:>>>:)      :: S.Set Label -> LabelEnv t -> LabelEnv (t, s)
+  (:>>>:)      :: (ELabel, S.Set Label) -> LabelEnv t -> LabelEnv (t, s)
 
-addLhsLabels :: LeftHandSide s v env env' -> S.Set Label -> LabelEnv env -> LabelEnv env'
-addLhsLabels LeftHandSideWildcard{} _ lenv = lenv
-addLhsLabels LeftHandSideSingle{}   l lenv = l :>>>: lenv 
-addLhsLabels (LeftHandSidePair x y) l lenv = addLhsLabels y l (addLhsLabels x l lenv)
+addLhsLabels :: LeftHandSide s v env env' -> ELabel -> S.Set Label -> LabelEnv env -> (ELabel, LabelEnv env')
+addLhsLabels LeftHandSideWildcard{} e _ lenv = (e, lenv)
+addLhsLabels LeftHandSideSingle{}   e l lenv = (e + 1, (e, l) :>>>: lenv)
+addLhsLabels (LeftHandSidePair x y) e l lenv = let (e' , lenv' ) = addLhsLabels x e  l lenv
+                                               in addLhsLabels y e' l lenv'
 
 weakLhsEnv :: LeftHandSide s v env env' -> LabelEnv env' -> LabelEnv env
 weakLhsEnv LeftHandSideSingle{} (_:>>>: env) = env
@@ -104,11 +111,11 @@ weakLhsEnv (LeftHandSidePair l r) env = weakLhsEnv l (weakLhsEnv r env)
 
 emptyLabelEnv :: LabelEnv env -> LabelEnv env
 emptyLabelEnv LabelEnvNil = LabelEnvNil
-emptyLabelEnv (_:>>>:env) = mempty :>>>: emptyLabelEnv env
+emptyLabelEnv ((e,_):>>>:env) = (e, mempty) :>>>: emptyLabelEnv env
 
 getAllLabelsEnv :: LabelEnv env -> S.Set Label
 getAllLabelsEnv LabelEnvNil = mempty
-getAllLabelsEnv (set :>>>: lenv) = set <> getAllLabelsEnv lenv
+getAllLabelsEnv ((_,set) :>>>: lenv) = set <> getAllLabelsEnv lenv
 
 getLabelArgs :: Args env args -> LabelEnv env -> LabelArgs args
 getLabelArgs ArgsNil _ = LabelArgsNil
@@ -129,8 +136,12 @@ getLabelsVar :: Var s env t -> LabelEnv env -> S.Set Label
 getLabelsVar (varIdx -> idx) lenv = getLabelsIdx idx lenv
 
 getLabelsIdx :: Idx env a -> LabelEnv env -> S.Set Label
-getLabelsIdx ZeroIdx (i :>>>: _) = i
+getLabelsIdx ZeroIdx ((_,ls) :>>>: _) = ls
 getLabelsIdx (SuccIdx idx) (_ :>>>: env) = getLabelsIdx idx env
+
+getELabelIdx :: Idx env a -> LabelEnv env -> ELabel
+getELabelIdx ZeroIdx ((e,_) :>>>: _) = e
+getELabelIdx (SuccIdx idx) (_ :>>>: env) = getELabelIdx idx env
 
 getLabelsExp :: OpenExp x env y -> LabelEnv env -> S.Set Label
 getLabelsExp = undefined -- TODO traverse everything, look for Idxs
@@ -150,9 +161,9 @@ updateLabelEnv (arg :>: args) lenv l = case arg of
 insertAtVars :: TupR (Var a env) b -> LabelEnv env -> Label -> LabelEnv env
 insertAtVars TupRunit lenv _ = lenv
 insertAtVars (TupRpair x y) lenv l = insertAtVars x (insertAtVars y lenv l) l
-insertAtVars (TupRsingle (varIdx -> idx)) (lset :>>>: lenv) l = case idx of
-  ZeroIdx -> (S.insert l lset) :>>>: lenv
-  SuccIdx idx' ->        lset  :>>>: insertAtVars (TupRsingle (Var undefined idx')) lenv l
+insertAtVars (TupRsingle (varIdx -> idx)) ((e,lset) :>>>: lenv) l = case idx of
+  ZeroIdx -> (e, S.insert l lset) :>>>: lenv
+  SuccIdx idx' ->       (e, lset) :>>>: insertAtVars (TupRsingle (Var undefined idx')) lenv l
 insertAtVars (TupRsingle (varIdx -> idx)) LabelEnvNil _ = case idx of {}
 
 -- | Like `getLabelArgs`, but ignores the `Out` arguments
@@ -214,6 +225,7 @@ mkFullGraph :: MakesILP op
             -> LabelEnv aenv -- for each array in the environment, 
             -- the source labels of the currently open outgoing edges.
             -> Label -- the next fresh label to use
+            -> ELabel -- the next fresh ELabel to use
             -> ( 
               --    S.Set Label -- incoming edges
               --  , S.Set Label -- outgoing edges
@@ -221,6 +233,7 @@ mkFullGraph :: MakesILP op
               , LabelEnv aenv -- like input, but adjusted for side-effects
               , S.Set Label -- source labels of currently open outgoing edges of 'a'
               , Label -- the next fresh label to use
+              , ELabel -- the next fresh ELabel to use
                -- , reconstruction thing
               )
 
@@ -230,28 +243,31 @@ mkFullGraph :: MakesILP op
 -- For all input arguments (that is, everything except `Out` buffers), we add fusible edges. If that's
 -- not strict enough, the backend can add infusible edges, but this is a sound (or complete? not both!)
 -- lowerbound on fusibility: these inputs have to exist to evaluate the op.
-mkFullGraph (Exec op args) lenv l = let fuseedges = S.map (, l) $ getInputArgLabels args lenv in
+mkFullGraph (Exec op args) lenv l e = let fuseedges = S.map (, l) $ getInputArgLabels args lenv in
   ( (mkGraph op (getLabelArgs args lenv) l <> Info (Graph (S.singleton l) fuseedges mempty) mempty mempty, mempty)
   , updateLabelEnv args lenv l -- add labels for `Out` and `Mut` args.
   , mempty
-  , l + 1)
-mkFullGraph (Alet lhs u bnd scp) lenv l = 
-  let (bndInfo, lenv',  lbnd, l')  = mkFullGraph bnd lenv                          l
-      (scpInfo, lenv'', lscp, l'') = mkFullGraph scp (addLhsLabels lhs lbnd lenv') l'
+  , l + 1
+  , e)
+mkFullGraph (Alet lhs u bnd scp) lenv l e = -- replace ticks with numbers? think of actual names for variables???
+  let (bndInfo, lenv'  , lbnd, l' , e'  ) = mkFullGraph bnd lenv   l  e
+      (e'', lenv'') = addLhsLabels lhs e' lbnd lenv'
+      (scpInfo, lenv''', lscp, l'', e''') = mkFullGraph scp lenv'' l' e''
   in  (bndInfo <> scpInfo
-      , weakLhsEnv lhs lenv''
+      , weakLhsEnv lhs lenv'''
       , lscp
-      , l'')
-mkFullGraph (Return  vars) lenv l = ( (mempty, mempty), lenv, getLabelsTup vars lenv, l)
-mkFullGraph (Compute expr) lenv l = ( (mempty, mempty), lenv, getLabelsExp expr lenv, l)
-mkFullGraph (Alloc shr scty vars) lenv l = ( (mempty, mempty), lenv, mempty, l) -- unless we can't infer alloc...
-mkFullGraph Use{} lenv l = 
+      , l''
+      , e''')
+mkFullGraph (Return  vars) lenv l e = ( (mempty, mempty), lenv, getLabelsTup vars lenv, l, e)
+mkFullGraph (Compute expr) lenv l e = ( (mempty, mempty), lenv, getLabelsExp expr lenv, l, e)
+mkFullGraph (Alloc shr scty vars) lenv l e = ( (mempty, mempty), lenv, mempty, l, e) -- unless we can't infer alloc...
+mkFullGraph Use{} lenv l e = 
   ( (Info (Graph (S.singleton l) mempty mempty) mempty mempty, mempty)
-  , lenv, S.singleton l, l+1)
+  , undefined, S.singleton l, l+1, e)
 -- gets a variable from the env, puts it in a singleton buffer.
 -- Here I'm assuming this fuses nicely, and doesn't even need a new label 
 -- (reuse the one that belongs to the variable). If not, change!
-mkFullGraph (Unit var) lenv l = ( (mempty, mempty), lenv, getLabelsVar var lenv, l)
+mkFullGraph (Unit var) lenv l e = ( (mempty, mempty), undefined, getLabelsVar var lenv, l, e)
 -- NOTE: We explicitly add infusible edges from every label in `lenv` to this Acond.
 -- This makes the previous let-bindings strict: even if some result is only used in one
 -- branch, we now require it to be present before we evaluate the condition.
@@ -259,16 +275,16 @@ mkFullGraph (Unit var) lenv l = ( (mempty, mempty), lenv, getLabelsVar var lenv,
 -- within that branch. Note that this also means we ignore the contents of 'cond' for the graph.
 -- We also add edges from the Acond to the true-branch, and from the true-branch to the false-branch?
 -- TODO check if this is right/needed/if passing even more fresh labels down is correct.
-mkFullGraph (Acond cond tbranch fbranch) lenv l = let tlabel = l+1
-                                                      flabel = l+2
-                                                      emptyEnv = emptyLabelEnv lenv
-                                                      ( (tinfo, tinfoM), _, _, l') = mkFullGraph tbranch emptyEnv (l+3)
-                                                      ( (finfo, finfoM), _, _, l'') = mkFullGraph fbranch emptyEnv (l')
-                                                      nonfuse = S.map (,l) (getAllLabelsEnv lenv) <> S.fromList [(l, tlabel), (tlabel, flabel)]
-                                                  in ( (Info (Graph (S.fromList [l, l+1, l+2]) mempty nonfuse) mempty mempty
-                                                       , M.fromList [(tlabel, tinfo), (flabel, finfo)] <> tinfoM <> finfoM)
-                                                     , emptyEnv, S.singleton l, l''+1)
-mkFullGraph _ _ _ = undefined
+mkFullGraph (Acond cond tbranch fbranch) lenv l e = let tlabel = l+1
+                                                        flabel = l+2
+                                                        emptyEnv = emptyLabelEnv lenv
+                                                        ( (tinfo, tinfoM), _, _, l' , e' ) = mkFullGraph tbranch emptyEnv (l+3) e
+                                                        ( (finfo, finfoM), _, _, l'', e'') = mkFullGraph fbranch emptyEnv l'    e'
+                                                        nonfuse = S.map (,l) (getAllLabelsEnv lenv) <> S.fromList [(l, tlabel), (tlabel, flabel)]
+                                                    in ( (Info (Graph (S.fromList [l, l+1, l+2]) mempty nonfuse) mempty mempty
+                                                         , M.fromList [(tlabel, tinfo), (flabel, finfo)] <> tinfoM <> finfoM)
+                                                       , emptyEnv, S.singleton l, l''+1, e'')
+mkFullGraph _ _ _ _ = undefined
 
 
 -- mkFullGraph (Return groundvars) _ = undefined -- what is this? does this do anything?
@@ -306,8 +322,26 @@ type Constraint op = P.Constraint (Variable op) () IntDouble
 -- note that 'a list of indices' is akin to a weakening (that possibly reorders the env too)
 -- todo: not all Idxs need to have the same 'a', so `list` should be `hlist` or tuplist :)
 -- todo: figure out how this works with 'args'
-data UnsafeConstruction (op :: Type -> Type) = forall a. UnsafeConstruction (S.Set Int) (forall args. [Idx a args] -> op args)
 
+-- | Contains three things:
+-- - Operation - works on arguments (backend-specific, we don't touch it during this whole pass)
+-- - Args      - describes how to get the arguments from the old environment
+-- - LabelEnv  - stores ELabels, which allow us to re-index the Args into the new environment
+data UnsafeConstruction (op :: Type -> Type) = forall env args. UnsafeConstruction (LabelEnv env) (Args env args) (op args)
+
+
+-- | Uses unsafeCoerce to convince the typechecker that we have found what we were looking for.
+-- If we don't screw up with the ELabels, this is safe...
+mkReindexPartial :: LabelEnv env -> LabelEnv env' -> ReindexPartial Maybe env env'
+mkReindexPartial lenv lenv' = findIdx . flip getELabelIdx lenv
+  where findIdx = go lenv'
+        go :: LabelEnv e -> ELabel -> Maybe (Idx e a)
+        go ((e,_) :>>>: env) e'
+          -- here we have to convince GHC that the top element in the environment 
+          -- really does have the same type as the one we were searching for.
+          | e == e' = Just $ unsafeCoerce ZeroIdx
+          | otherwise = SuccIdx <$> go env e'
+        go LabelEnvNil _ = Nothing
 
 makeILP :: Information op -> ILP op
 makeILP (Info
