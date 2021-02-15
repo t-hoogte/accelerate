@@ -25,4 +25,6 @@ ilpfusion acc = fusedAcc
     -- unsafeCoerce here to tell GHC that the new AST has the same return type.
     -- Type applications allow us to restrict this function to the return type only.
     fusedAcc = case reconstructedAcc of
-      Exists res -> unsafeCoerce @(PartitionedAcc op () _) @(PartitionedAcc op () a) res
+      Exists res -> unsafeCoerce @(PartitionedAcc op () _) 
+                                 @(PartitionedAcc op () a) 
+                                 res

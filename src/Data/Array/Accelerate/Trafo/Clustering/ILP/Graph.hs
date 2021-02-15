@@ -1,3 +1,4 @@
+{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE LambdaCase #-}
@@ -20,9 +21,11 @@ import Data.Array.Accelerate.AST.Operation
 
 -- Data structures
 -- In this file, order very often subly does matter.
--- To keep this clear, we use S.Set whenever it does not,
+-- To keep this clear, we use Set whenever it does not,
 -- and [] only when it does. It's also often efficient
 -- by removing duplicates.
+import Data.Set (Set)
+import Data.IntMap (IntMap)
 import qualified Data.Set as S
 import qualified Data.IntMap as M
 
@@ -46,6 +49,7 @@ import Numeric.Limp.Program hiding ( Bounds, Constraint, Program, Linear, r )
 import Numeric.Limp.Rep ( IntDouble )
 import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Type
+import Control.Monad.State
 
 
 -- | We have Int variables represented by @Variable op@, and no real variables.
@@ -53,20 +57,20 @@ import Data.Array.Accelerate.Type
 type LIMP  datatyp op   = datatyp (Variable op) () IntDouble
 type LIMP' datatyp op a = datatyp (Variable op) () IntDouble a
 
-type Assignment op = LIMP  LIMP.Assignment op
-type Bounds     op = LIMP  LIMP.Bounds     op
-type Constraint op = LIMP  LIMP.Constraint op
-type ILP        op = LIMP  LIMP.Program    op
-type Linear op res = LIMP' LIMP.Linear op res
+type Assignment op =  LIMP  LIMP.Assignment op
+type Bounds     op = [LIMP  LIMP.Bounds     op]
+type Constraint op =  LIMP  LIMP.Constraint op
+type ILP        op =  LIMP  LIMP.Program    op
+type Linear op res =  LIMP' LIMP.Linear     op res
 
 -- | Directed edge (a,b): `b` depends on `a`.
 type Edge = (Label, Label)
 
 
 data Graph = Graph
-  { graphNodes     :: S.Set Label
-  , fusibleEdges   :: S.Set Edge  -- Can   be fused over, otherwise `a` before `b`.
-  , infusibleEdges :: S.Set Edge  -- Can't be fused over, always    `a` before `b`.
+  { graphNodes     :: Set Label
+  , fusibleEdges   :: Set Edge  -- Can   be fused over, otherwise `a` before `b`.
+  , infusibleEdges :: Set Edge  -- Can't be fused over, always    `a` before `b`.
   }
 instance Semigroup Graph where
   Graph n f i <> Graph n' f' i' = Graph (n <> n') (f <> f') (i <> i')
@@ -75,9 +79,9 @@ instance Monoid Graph where
 
 -- The graph is the 'common part' of the ILP,
 -- each backend has to encode their own constraints
--- describing the fusion rules. The bounds is a [] instead of S.Set
+-- describing the fusion rules. The bounds is a [] instead of Set
 -- for practical reasons (no Ord instance, LIMP expects a list) only.
-data Information op = Info Graph (Constraint op) [Bounds op]
+data Information op = Info Graph (Constraint op) (Bounds op)
 instance Semigroup (Information op) where
   Info g c b <> Info g' c' b' = Info (g <> g') (c <> c') (b <> b')
 instance Monoid (Information op) where
@@ -145,116 +149,204 @@ class MakesILP op where
 
 makeFullGraph :: MakesILP op
               => PreOpenAcc op () a
-              -> (Information op, M.IntMap (Information op), M.IntMap (Construction op))
-makeFullGraph acc = (info, infoM, constrM)
-  where ((info, infoM), _, _, _, _, constrM) = mkFullGraph acc LabelEnvNil 1 (ELabel 1)
+              -> (Information op, IntMap (Information op), IntMap (Construction op))
+makeFullGraph = undefined
+-- makeFullGraph acc = (info, infoM, constrM)
+--   where ((info, infoM), _, _, _, _, constrM) = mkFullGraph acc LabelEnvNil 1 (ELabel 1)
 
--- TODO: This function would be cleaner with a datatype and State monad
--- replacing the tuples and explicit passing of every argument
-mkFullGraph :: MakesILP op
-            => PreOpenAcc op aenv a
-            -> LabelEnv aenv -- for each array in the environment, 
-            -- the source labels of the currently open outgoing edges.
-            -> Label -- the next fresh label to use
-            -> ELabel -- the next fresh ELabel to use
-            -> (
-              --    S.Set Label -- incoming edges
-              --  , S.Set Label -- outgoing edges
-                ( Information op, M.IntMap (Information op))
-              , LabelEnv aenv -- like input, but adjusted for side-effects
-              , S.Set Label -- source labels of currently open outgoing edges of 'a'
-              , Label -- the next fresh label to use
-              , ELabel -- the next fresh ELabel to use
-              -- for reconstructing the AST later. We generate this and the graph in one pass, 
-              , M.IntMap (Construction op) -- to guarantee that the labels match.
-              )
+data FullGraphState env = FGState 
+  { lenv :: LabelEnv env -- source of open outgoing edges for env
+  , freshL :: Label  -- next fresh counter
+  , freshE :: ELabel -- next fresh counter
+  }
+getL :: State (FullGraphState env) Label
+getL = modify (\fgs -> fgs {freshL = 1 + freshL fgs}) >> gets freshL
+getE :: State (FullGraphState env) ELabel
+getE = modify (\fgs -> fgs {freshE = 1 + freshE fgs}) >> gets freshE
 
--- For all input arguments (that is, everything except `Out` buffers), we add fusible edges. If that's
--- not strict enough, the backend can add infusible edges, but this is a sound
--- lowerbound on fusibility: these inputs may never be computed _after_ the op.
--- Excessive fusible edges are filtered out before we feed them to the ILP solver.
-mkFullGraph (Exec op args) lenv l e =
-  let fuseedges = S.map (, l) $ getInputArgLabels args lenv
-  in ( (mkGraph op (getLabelArgs args lenv) l <> Info (Graph (S.singleton l) fuseedges mempty) mempty mempty, mempty)
-     , updateLabelEnv args lenv l -- add labels for `Out` and `Mut` args.
-     , mempty
-     , l + 1
-     , e
-     , M.singleton l $ CExe lenv args op)
-mkFullGraph (Alet lhs u bnd scp) lenv l e = -- we throw away the uniquenessess information here, that's Future Work
-  let (bndInfo, lenv'  , lbnd, l' , e'  , c ) = mkFullGraph bnd lenv   l  e
-      (e'', lenv'') = addLhsLabels lhs e' lbnd lenv'
-      (scpInfo, lenv''', lscp, l'', e''', c') = mkFullGraph scp lenv'' l' e''
-  in  (bndInfo <> scpInfo
-      , weakLhsEnv lhs lenv'''
-      , lscp
-      , l''
-      , e'''
-      , c <> c')
-mkFullGraph (Return vars)          lenv l e = ( (mempty, mempty), lenv, getLabelsTup vars lenv, l, e, mempty)
-mkFullGraph (Compute expr)         lenv l e = ( (mempty, mempty), lenv, getLabelsExp expr lenv, l, e, mempty)
-mkFullGraph (Alloc shr scty shvar) lenv l e = ( (mempty, mempty), lenv, mempty                , l, e, mempty) -- unless we can't infer alloc...
-mkFullGraph (Use sctype buff) lenv l e =
-  ( (Info (Graph (S.singleton l) mempty mempty) mempty mempty, mempty)
-  , lenv, S.singleton l, l+1, e
-  , M.singleton l $ CUse sctype buff)
--- gets a variable from the env, puts it in a singleton buffer.
--- Here I'm assuming this fuses nicely, and doesn't even need a new label 
--- (reuse the one that belongs to the variable). Might need to add a label
--- to avoid obfuscating the AST though. Change when needed.
-mkFullGraph (Unit var) lenv l e = ( (mempty, mempty), lenv, getLabelsVar var lenv, l, e, mempty)
+data FullGraphResult op = FGRes
+  { info :: Information op
+  , infoM :: IntMap (Information op)
+  , lset :: Set Label    -- source of open outgoing edges for result
+  , constr :: IntMap (Construction op)
+  }
 
--- NOTE: We explicitly add infusible edges from every label in `lenv` to this Acond.
--- This makes the previous let-bindings strict: even if some result is only used in one
--- branch, we now require it to be present before we evaluate the condition.
--- I think this is safe: if a result is only used in one branch, it should be let-bound
--- within that branch already. Note that this also means we ignore the contents of 'cond' for the graph.
--- We also add edges from the Acond to the true-branch, and from the true-branch to the false-branch?
--- TODO check if this is right/needed/if passing even more fresh labels down is correct.
-mkFullGraph (Acond cond tbranch fbranch) lenv l e = let tlabel = l+1
-                                                        flabel = l+2
-                                                        emptyEnv = emptyLabelEnv lenv
-                                                        ( (tinfo, tinfoM), _, _, l' , e' , c ) = mkFullGraph tbranch emptyEnv (l+3) e
-                                                        ( (finfo, finfoM), _, _, l'', e'', c') = mkFullGraph fbranch emptyEnv l'    e'
-                                                        nonfuse = S.map (,l) (getAllLabelsEnv lenv) <> S.fromList [(l, tlabel), (tlabel, flabel)]
-                                                    in ( (Info (Graph (S.fromList [l .. l+2]) mempty nonfuse) mempty mempty
-                                                         , M.fromList [(tlabel, tinfo), (flabel, finfo)] <> tinfoM <> finfoM)
-                                                       , emptyEnv, S.singleton l, l'', e''
-                                                       , M.insert l (CITE lenv cond tlabel flabel) c <> c')
--- like Acond. The biggest difference is that 'cond' is a function instead of an expression here.
--- In fact, for the graph, we use 'startvars' much like we used 'cond' in Acond, and we use
--- 'cond' and 'bdy' much like we used 'tbranch' and 'fbranch'.
-mkFullGraph (Awhile u cond bdy startvars) lenv l e = let clabel = l+1
-                                                         blabel = 1+2
-                                                         emptyEnv = emptyLabelEnv lenv
-                                                         ( (cinfo, cinfoM), _, _, l' , e' , c ) = mkFullGraphF cond emptyEnv (l+3) e
-                                                         ( (binfo, binfoM), _, _, l'', e'', c') = mkFullGraphF bdy  emptyEnv l'    e'
-                                                         nonfuse = S.map (,l) (getAllLabelsEnv lenv) <> S.fromList [(l, clabel), (clabel, blabel)]
-                                                     in ( (Info (Graph (S.fromList [l .. l+2]) mempty nonfuse) mempty mempty
-                                                          , M.fromList [(clabel, cinfo), (blabel, binfo)] <> cinfoM <> binfoM)
-                                                        , emptyEnv, S.singleton l, l'', e''
-                                                        , M.insert l (CWhl lenv u clabel blabel startvars) c <> c')
+mkFullGraph :: MakesILP op => PreOpenAcc op env a -> State (FullGraphState env) (FullGraphResult op)
+mkFullGraph (Exec op args) = do
+  l <- getL
+  env <- gets lenv
+  modify (\stt -> stt{lenv = updateLabelEnv args (lenv stt) l})
+  let fuseedges = S.map (, l) $ getInputArgLabels args env
+  return $ FGRes (mkGraph op (getLabelArgs args env) l <> Info (Graph (S.singleton l) fuseedges mempty) mempty mempty)
+                 mempty
+                 mempty
+                 (M.singleton l $ CExe env args op)
 
--- | Like mkFullGraph, but for @PreOpenAfun@.
-mkFullGraphF :: MakesILP op
-             => PreOpenAfun op aenv a
-             -- For each array in the environment, the source labels 
-             -> LabelEnv aenv -- of the currently open outgoing edges.
-             -> Label -- the next fresh label to use
-             -> ELabel -- the next fresh ELabel to use
-             -> (
-                  ( Information op, M.IntMap (Information op))
-                , LabelEnv aenv -- like input, but adjusted for side-effects
-                , S.Set Label -- source labels of currently open outgoing edges of 'a'
-                , Label -- the next fresh label to use
-                , ELabel -- the next fresh ELabel to use
-                , M.IntMap (Construction op)
-                )
-mkFullGraphF = \case
-  Abody acc  -> mkFullGraph acc
-  Alam lhs f -> \lenv l e -> let (e', lenv') = addLhsLabels lhs e mempty lenv -- it's a function, so we can fill the extra environment with mempties
-                                 ((info, infoM),                lenv'', lset, l', e'', c) = mkFullGraphF f lenv' l e'
-                             in  ((info, infoM), weakLhsEnv lhs lenv'', lset, l', e'', c)
+-- we throw away the uniquenessess information here, that's Future Work..
+-- probably need to re-infer it after fusion anyway, until we incorporate in-place into ILP
+mkFullGraph (Alet lhs u bnd scp) = do
+  e <- getE
+  env <- gets lenv
+  FGRes bndInfo bndInfoM bndL bndConstr <- mkFullGraph bnd
+  let (e', env') = addLhsLabels lhs e bndL env
+  modify (\stt -> stt{freshE = e'})
+  stt <- get -- because we change the type of the state here, this part is ugly
+  let (FGRes scpInfo scpInfoM scpL scpConstr, scpState) = runState (mkFullGraph scp) $ stt{lenv = env'}
+  put (scpState{lenv = weakLhsEnv lhs (lenv scpState)})
+  return $ FGRes (bndInfo <> scpInfo) (bndInfoM <> scpInfoM) scpL (bndConstr <> scpConstr)
+  
+
+-- mkFullGraph (Return vars)          lenv l e = ( (mempty, mempty), lenv, getLabelsTup vars lenv, l, e, mempty)
+-- mkFullGraph (Compute expr)         lenv l e = ( (mempty, mempty), lenv, getLabelsExp expr lenv, l, e, mempty)
+-- mkFullGraph (Alloc shr scty shvar) lenv l e = ( (mempty, mempty), lenv, mempty                , l, e, mempty) -- unless we can't infer alloc...
+-- mkFullGraph (Use sctype buff) lenv l e =
+--   ( (Info (Graph (S.singleton l) mempty mempty) mempty mempty, mempty)
+--   , lenv, S.singleton l, l+1, e
+--   , M.singleton l $ CUse sctype buff)
+-- -- gets a variable from the env, puts it in a singleton buffer.
+-- -- Here I'm assuming this fuses nicely, and doesn't even need a new label 
+-- -- (reuse the one that belongs to the variable). Might need to add a label
+-- -- to avoid obfuscating the AST though. Change when needed.
+-- mkFullGraph (Unit var) lenv l e = ( (mempty, mempty), lenv, getLabelsVar var lenv, l, e, mempty)
+
+-- -- NOTE: We explicitly add infusible edges from every label in `lenv` to this Acond.
+-- -- This makes the previous let-bindings strict: even if some result is only used in one
+-- -- branch, we now require it to be present before we evaluate the condition.
+-- -- I think this is safe: if a result is only used in one branch, it should be let-bound
+-- -- within that branch already. Note that this also means we ignore the contents of 'cond' for the graph.
+-- -- We also add edges from the Acond to the true-branch, and from the true-branch to the false-branch?
+-- -- TODO check if this is right/needed/if passing even more fresh labels down is correct.
+-- mkFullGraph (Acond cond tbranch fbranch) lenv l e = let tlabel = l+1
+--                                                         flabel = l+2
+--                                                         emptyEnv = emptyLabelEnv lenv
+--                                                         ( (tinfo, tinfoM), _, _, l' , e' , c ) = mkFullGraph tbranch emptyEnv (l+3) e
+--                                                         ( (finfo, finfoM), _, _, l'', e'', c') = mkFullGraph fbranch emptyEnv l'    e'
+--                                                         nonfuse = S.map (,l) (getAllLabelsEnv lenv) <> S.fromList [(l, tlabel), (tlabel, flabel)]
+--                                                     in ( (Info (Graph (S.fromList [l .. l+2]) mempty nonfuse) mempty mempty
+--                                                          , M.fromList [(tlabel, tinfo), (flabel, finfo)] <> tinfoM <> finfoM)
+--                                                        , emptyEnv, S.singleton l, l'', e''
+--                                                        , M.insert l (CITE lenv cond tlabel flabel) c <> c')
+-- -- like Acond. The biggest difference is that 'cond' is a function instead of an expression here.
+-- -- In fact, for the graph, we use 'startvars' much like we used 'cond' in Acond, and we use
+-- -- 'cond' and 'bdy' much like we used 'tbranch' and 'fbranch'.
+-- mkFullGraph (Awhile u cond bdy startvars) lenv l e = let clabel = l+1
+--                                                          blabel = 1+2
+--                                                          emptyEnv = emptyLabelEnv lenv
+--                                                          ( (cinfo, cinfoM), _, _, l' , e' , c ) = mkFullGraphF cond emptyEnv (l+3) e
+--                                                          ( (binfo, binfoM), _, _, l'', e'', c') = mkFullGraphF bdy  emptyEnv l'    e'
+--                                                          nonfuse = S.map (,l) (getAllLabelsEnv lenv) <> S.fromList [(l, clabel), (clabel, blabel)]
+--                                                      in ( (Info (Graph (S.fromList [l .. l+2]) mempty nonfuse) mempty mempty
+--                                                           , M.fromList [(clabel, cinfo), (blabel, binfo)] <> cinfoM <> binfoM)
+--                                                         , emptyEnv, S.singleton l, l'', e''
+--                                                         , M.insert l (CWhl lenv u clabel blabel startvars) c <> c')
+
+
+mkFullGraph _ = undefined
+
+-- -- TODO: This function would be cleaner with a datatype and State monad
+-- -- replacing the tuples and explicit passing of every argument
+-- mkFullGraph :: MakesILP op
+--             => PreOpenAcc op aenv a
+--             -> LabelEnv aenv -- for each array in the environment, 
+--             -- the source labels of the currently open outgoing edges.
+--             -> Label -- the next fresh label to use
+--             -> ELabel -- the next fresh ELabel to use
+--             -> (
+--                 ( Information op, IntMap (Information op))
+--               , LabelEnv aenv -- like input, but adjusted for side-effects
+--               , Set Label -- source labels of currently open outgoing edges of 'a'
+--               , Label -- the next fresh label to use
+--               , ELabel -- the next fresh ELabel to use
+--               -- for reconstructing the AST later. We generate this and the graph in one pass, 
+--               , IntMap (Construction op) -- to guarantee that the labels match.
+--               )
+
+-- -- For all input arguments (that is, everything except `Out` buffers), we add fusible edges. If that's
+-- -- not strict enough, the backend can add infusible edges, but this is a sound
+-- -- lowerbound on fusibility: these inputs may never be computed _after_ the op.
+-- -- Excessive fusible edges are filtered out before we feed them to the ILP solver.
+-- foo (Exec op args) lenv l e =
+--   let fuseedges = S.map (, l) $ getInputArgLabels args lenv
+--   in ( (mkGraph op (getLabelArgs args lenv) l <> Info (Graph (S.singleton l) fuseedges mempty) mempty mempty, mempty)
+--      , updateLabelEnv args lenv l -- add labels for `Out` and `Mut` args.
+--      , mempty
+--      , l + 1
+--      , e
+--      , M.singleton l $ CExe lenv args op)
+-- mkFullGraph (Alet lhs u bnd scp) lenv l e = -- we throw away the uniquenessess information here, that's Future Work
+--   let (bndInfo, lenv'  , lbnd, l' , e'  , c ) = mkFullGraph bnd lenv   l  e
+--       (e'', lenv'') = addLhsLabels lhs e' lbnd lenv'
+--       (scpInfo, lenv''', lscp, l'', e''', c') = mkFullGraph scp lenv'' l' e''
+--   in  (bndInfo <> scpInfo
+--       , weakLhsEnv lhs lenv'''
+--       , lscp
+--       , l''
+--       , e'''
+--       , c <> c')
+-- mkFullGraph (Return vars)          lenv l e = ( (mempty, mempty), lenv, getLabelsTup vars lenv, l, e, mempty)
+-- mkFullGraph (Compute expr)         lenv l e = ( (mempty, mempty), lenv, getLabelsExp expr lenv, l, e, mempty)
+-- mkFullGraph (Alloc shr scty shvar) lenv l e = ( (mempty, mempty), lenv, mempty                , l, e, mempty) -- unless we can't infer alloc...
+-- mkFullGraph (Use sctype buff) lenv l e =
+--   ( (Info (Graph (S.singleton l) mempty mempty) mempty mempty, mempty)
+--   , lenv, S.singleton l, l+1, e
+--   , M.singleton l $ CUse sctype buff)
+-- -- gets a variable from the env, puts it in a singleton buffer.
+-- -- Here I'm assuming this fuses nicely, and doesn't even need a new label 
+-- -- (reuse the one that belongs to the variable). Might need to add a label
+-- -- to avoid obfuscating the AST though. Change when needed.
+-- mkFullGraph (Unit var) lenv l e = ( (mempty, mempty), lenv, getLabelsVar var lenv, l, e, mempty)
+
+-- -- NOTE: We explicitly add infusible edges from every label in `lenv` to this Acond.
+-- -- This makes the previous let-bindings strict: even if some result is only used in one
+-- -- branch, we now require it to be present before we evaluate the condition.
+-- -- I think this is safe: if a result is only used in one branch, it should be let-bound
+-- -- within that branch already. Note that this also means we ignore the contents of 'cond' for the graph.
+-- -- We also add edges from the Acond to the true-branch, and from the true-branch to the false-branch?
+-- -- TODO check if this is right/needed/if passing even more fresh labels down is correct.
+-- mkFullGraph (Acond cond tbranch fbranch) lenv l e = let tlabel = l+1
+--                                                         flabel = l+2
+--                                                         emptyEnv = emptyLabelEnv lenv
+--                                                         ( (tinfo, tinfoM), _, _, l' , e' , c ) = mkFullGraph tbranch emptyEnv (l+3) e
+--                                                         ( (finfo, finfoM), _, _, l'', e'', c') = mkFullGraph fbranch emptyEnv l'    e'
+--                                                         nonfuse = S.map (,l) (getAllLabelsEnv lenv) <> S.fromList [(l, tlabel), (tlabel, flabel)]
+--                                                     in ( (Info (Graph (S.fromList [l .. l+2]) mempty nonfuse) mempty mempty
+--                                                          , M.fromList [(tlabel, tinfo), (flabel, finfo)] <> tinfoM <> finfoM)
+--                                                        , emptyEnv, S.singleton l, l'', e''
+--                                                        , M.insert l (CITE lenv cond tlabel flabel) c <> c')
+-- -- like Acond. The biggest difference is that 'cond' is a function instead of an expression here.
+-- -- In fact, for the graph, we use 'startvars' much like we used 'cond' in Acond, and we use
+-- -- 'cond' and 'bdy' much like we used 'tbranch' and 'fbranch'.
+-- mkFullGraph (Awhile u cond bdy startvars) lenv l e = let clabel = l+1
+--                                                          blabel = 1+2
+--                                                          emptyEnv = emptyLabelEnv lenv
+--                                                          ( (cinfo, cinfoM), _, _, l' , e' , c ) = mkFullGraphF cond emptyEnv (l+3) e
+--                                                          ( (binfo, binfoM), _, _, l'', e'', c') = mkFullGraphF bdy  emptyEnv l'    e'
+--                                                          nonfuse = S.map (,l) (getAllLabelsEnv lenv) <> S.fromList [(l, clabel), (clabel, blabel)]
+--                                                      in ( (Info (Graph (S.fromList [l .. l+2]) mempty nonfuse) mempty mempty
+--                                                           , M.fromList [(clabel, cinfo), (blabel, binfo)] <> cinfoM <> binfoM)
+--                                                         , emptyEnv, S.singleton l, l'', e''
+--                                                         , M.insert l (CWhl lenv u clabel blabel startvars) c <> c')
+
+-- -- | Like mkFullGraph, but for @PreOpenAfun@.
+-- mkFullGraphF :: MakesILP op
+--              => PreOpenAfun op aenv a
+--              -- For each array in the environment, the source labels 
+--              -> LabelEnv aenv -- of the currently open outgoing edges.
+--              -> Label -- the next fresh label to use
+--              -> ELabel -- the next fresh ELabel to use
+--              -> (
+--                   ( Information op, IntMap (Information op))
+--                 , LabelEnv aenv -- like input, but adjusted for side-effects
+--                 , Set Label -- source labels of currently open outgoing edges of 'a'
+--                 , Label -- the next fresh label to use
+--                 , ELabel -- the next fresh ELabel to use
+--                 , IntMap (Construction op)
+--                 )
+-- mkFullGraphF = \case
+--   Abody acc  -> mkFullGraph acc
+--   Alam lhs f -> \lenv l e -> let (e', lenv') = addLhsLabels lhs e mempty lenv -- it's a function, so we can fill the extra environment with mempties
+--                                  ((info, infoM),                lenv'', lset, l', e'', c) = mkFullGraphF f lenv' l e'
+--                              in  ((info, infoM), weakLhsEnv lhs lenv'', lset, l', e'', c)
 
 -- | Information to construct AST nodes. Generally, constructors contain
 -- both actual information, and a LabelEnv of the original environment
@@ -302,7 +394,9 @@ mkReindexPartial lenv lenv' idx = go lenv'
       -- Basically: standard procedure if you're using Ints as a unique identifier
       -- and want to re-introduce type information. :)
       -- Type applications allow us to restrict unsafeCoerce to the return type.
-      | e == e' = Just $ unsafeCoerce @(Idx e _) @(Idx e a) ZeroIdx
+      | e == e' = Just $ unsafeCoerce @(Idx e _) 
+                                      @(Idx e a) 
+                                      ZeroIdx
       -- Recurse if we did not find e' yet.
       | otherwise = SuccIdx <$> go env
     -- If we hit the end, the Elabel was not present in the environment.
