@@ -37,6 +37,15 @@ data LabelEnv env where
   LabelEnvNil  :: LabelEnv ()
   (:>>>:)      :: (ELabel, S.Set Label) -> LabelEnv t -> LabelEnv (t, s)
 
+
+
+
+-------------------------------
+-- Traversals over stuff to add/extract Labels and ELabels,
+-- or otherwise manipulate LabelArgs' or LabelEnvs
+-- vvvvvvvvvvvvvvvvvvvvvvvvv --
+
+
 addLhsLabels :: LeftHandSide s v env env' -> ELabel -> S.Set Label -> LabelEnv env -> (ELabel, LabelEnv env')
 addLhsLabels LeftHandSideWildcard{} e _ lenv =     (e    , lenv)
 addLhsLabels LeftHandSideSingle{}   e l lenv =     (e + 1, (e, l) :>>>: lenv)
@@ -103,7 +112,7 @@ insertAtVars (TupRpair x y) lenv l = insertAtVars x (insertAtVars y lenv l) l
 insertAtVars (TupRsingle (varIdx -> idx)) ((e,lset) :>>>: lenv) l = case idx of
   ZeroIdx -> (e, S.insert l lset) :>>>: lenv
   SuccIdx idx' ->       (e, lset) :>>>: insertAtVars (TupRsingle (Var undefined idx')) lenv l
-insertAtVars (TupRsingle (varIdx -> idx)) LabelEnvNil _ = case idx of {}
+insertAtVars (TupRsingle (varIdx -> idx)) LabelEnvNil _ = case idx of {} -- convincing the exhausiveness checker
 
 -- | Like `getLabelArgs`, but ignores the `Out` arguments
 getInputArgLabels :: Args env args -> LabelEnv env -> S.Set Label

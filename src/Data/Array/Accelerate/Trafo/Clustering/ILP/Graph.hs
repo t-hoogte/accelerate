@@ -1,8 +1,14 @@
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE PolyKinds #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+
 module Data.Array.Accelerate.Trafo.Clustering.ILP.Graph where
 
 import Data.Array.Accelerate.Trafo.Clustering.ILP.Labels
@@ -12,12 +18,12 @@ import Data.Array.Accelerate.AST.Idx ( Idx(..) )
 import Data.Array.Accelerate.AST.Operation
 
 -- Data structures
-import qualified Data.IntMap as M
 -- In this file, order very often subly does matter.
 -- To keep this clear, we use S.Set whenever it does not,
 -- and [] only when it does. It's also often efficient
 -- by removing duplicates.
 import qualified Data.Set as S
+import qualified Data.IntMap as M
 
 
 -- GHC imports
@@ -33,24 +39,31 @@ import Unsafe.Coerce (unsafeCoerce)
 -- actively maintained though.
 -- We can always switch to a different ILP library
 -- later, the interfaces are all quite similar.
-import qualified Numeric.Limp.Program as P
-import Numeric.Limp.Program ( Program, Bounds )
-import Numeric.Limp.Rep.IntDouble ( IntDouble )
-
+import qualified Numeric.Limp.Program as LIMP
+import qualified Numeric.Limp.Rep     as LIMP
+import Numeric.Limp.Program hiding ( Bounds, Constraint, Program, Linear, r )
+import Numeric.Limp.Rep ( IntDouble )
+import Data.Array.Accelerate.AST.LeftHandSide (Exists(Exists))
+import Data.Array.Accelerate.Array.Buffer
+import Data.Array.Accelerate.Type
+import Data.Type.Equality
 
 
 -- | We have Int variables represented by @Variable op@, and no real variables.
-type LIMP dttyp op = dttyp (Variable op) () IntDouble
+-- These type synonyms instantiate the @z@, @r@ and @c@ type variables in Limp.
+type LIMP  datatyp op   = datatyp (Variable op) () IntDouble
+type LIMP' datatyp op a = datatyp (Variable op) () IntDouble a
 
-type ILP        op = LIMP Program      op
-type Constraint op = LIMP P.Constraint op
-
-
+type Assignment op = LIMP  LIMP.Assignment op
+type Bounds     op = LIMP  LIMP.Bounds     op
+type Constraint op = LIMP  LIMP.Constraint op
+type ILP        op = LIMP  LIMP.Program    op
+type Linear op res = LIMP' LIMP.Linear op res
 
 -- | Directed edge (a,b): `b` depends on `a`.
 type Edge = (Label, Label)
 
--- TODO: at some point, set fusibleEdges := fusibleEdges \\ infusibleEdges. Makes ILP smaller.
+
 data Graph = Graph
   { graphNodes     :: S.Set Label
   , fusibleEdges   :: S.Set Edge  -- Can   be fused over, otherwise `a` before `b`.
@@ -65,7 +78,7 @@ instance Monoid Graph where
 -- each backend has to encode their own constraints
 -- describing the fusion rules. The bounds is a [] instead of S.Set
 -- for practical reasons (no Ord instance, LIMP expects a list) only.
-data Information op = Info Graph (Constraint op) [LIMP Bounds op]
+data Information op = Info Graph (Constraint op) [Bounds op]
 instance Semigroup (Information op) where
   Info g c b <> Info g' c' b' = Info (g <> g') (c <> c') (b <> b')
 instance Monoid (Information op) where
@@ -78,6 +91,11 @@ data Variable op
   | Fused Label Label               -- 0 is fused (same cluster), 1 is unfused. We do *not* have one of these for all pairs!
   | BackendSpecific (BackendVar op) -- Variables needed to express backend-specific fusion rules.
 
+-- convenience synonyms
+pi :: Label -> Linear op 'KZ
+pi l = z1 $ Pi l
+fused :: Label -> Label -> Linear op 'KZ
+fused x y = z1 $ Fused x y
 
 
 class MakesILP op where
@@ -127,13 +145,13 @@ class MakesILP op where
 -- this function will also need to produce the 'reconstruction' lookup map,
 -- to ensure that the labels we generate are consistent between the lookup map
 -- and the graph. I'll do that Later (TM)
-mkFullGraph :: MakesILP op 
-            => PreOpenAcc op aenv a 
+mkFullGraph :: MakesILP op
+            => PreOpenAcc op aenv a
             -> LabelEnv aenv -- for each array in the environment, 
             -- the source labels of the currently open outgoing edges.
             -> Label -- the next fresh label to use
             -> ELabel -- the next fresh ELabel to use
-            -> ( 
+            -> (
               --    S.Set Label -- incoming edges
               --  , S.Set Label -- outgoing edges
                 ( Information op, M.IntMap (Information op))
@@ -141,102 +159,157 @@ mkFullGraph :: MakesILP op
               , S.Set Label -- source labels of currently open outgoing edges of 'a'
               , Label -- the next fresh label to use
               , ELabel -- the next fresh ELabel to use
-               -- , reconstruction thing
+              , M.IntMap (Construction op)
               )
 
 -- Exec case: think about the exact type of mkGraph, and adjust accordingly.
 -- clear responsibility on who makes the graph!
 
 -- For all input arguments (that is, everything except `Out` buffers), we add fusible edges. If that's
--- not strict enough, the backend can add infusible edges, but this is a sound (or complete? not both!)
--- lowerbound on fusibility: these inputs have to exist to evaluate the op.
-mkFullGraph (Exec op args) lenv l e = let fuseedges = S.map (, l) $ getInputArgLabels args lenv in
-  ( (mkGraph op (getLabelArgs args lenv) l <> Info (Graph (S.singleton l) fuseedges mempty) mempty mempty, mempty)
-  , updateLabelEnv args lenv l -- add labels for `Out` and `Mut` args.
-  , mempty
-  , l + 1
-  , e)
+-- not strict enough, the backend can add infusible edges, but this is a sound
+-- lowerbound on fusibility: these inputs cannot be computed _after_ the op.
+-- Excessive fusible edges are filtered out before we feed them to the ILP solver.
+mkFullGraph (Exec op args) lenv l e =
+  let fuseedges = S.map (, l) $ getInputArgLabels args lenv
+  in ( (mkGraph op (getLabelArgs args lenv) l <> Info (Graph (S.singleton l) fuseedges mempty) mempty mempty, mempty)
+     , updateLabelEnv args lenv l -- add labels for `Out` and `Mut` args.
+     , mempty
+     , l + 1
+     , e
+     , M.singleton l $ CExe lenv args op)
 mkFullGraph (Alet lhs u bnd scp) lenv l e = -- replace ticks with numbers? think of actual names for variables???
-  let (bndInfo, lenv'  , lbnd, l' , e'  ) = mkFullGraph bnd lenv   l  e
+  let (bndInfo, lenv'  , lbnd, l' , e'  , c ) = mkFullGraph bnd lenv   l  e
       (e'', lenv'') = addLhsLabels lhs e' lbnd lenv'
-      (scpInfo, lenv''', lscp, l'', e''') = mkFullGraph scp lenv'' l' e''
+      (scpInfo, lenv''', lscp, l'', e''', c') = mkFullGraph scp lenv'' l' e''
   in  (bndInfo <> scpInfo
       , weakLhsEnv lhs lenv'''
       , lscp
       , l''
-      , e''')
-mkFullGraph (Return  vars) lenv l e = ( (mempty, mempty), lenv, getLabelsTup vars lenv, l, e)
-mkFullGraph (Compute expr) lenv l e = ( (mempty, mempty), lenv, getLabelsExp expr lenv, l, e)
-mkFullGraph (Alloc shr scty vars) lenv l e = ( (mempty, mempty), lenv, mempty, l, e) -- unless we can't infer alloc...
-mkFullGraph Use{} lenv l e = 
+      , e'''
+      , c <> c')
+mkFullGraph (Return vars)          lenv l e = ( (mempty, mempty), lenv, getLabelsTup vars lenv, l, e, mempty)
+mkFullGraph (Compute expr)         lenv l e = ( (mempty, mempty), lenv, getLabelsExp expr lenv, l, e, mempty)
+mkFullGraph (Alloc shr scty shvar) lenv l e = ( (mempty, mempty), lenv, mempty                , l, e, mempty) -- unless we can't infer alloc...
+mkFullGraph (Use sctype buff) lenv l e =
   ( (Info (Graph (S.singleton l) mempty mempty) mempty mempty, mempty)
-  , undefined, S.singleton l, l+1, e)
+  , lenv, S.singleton l, l+1, e
+  , M.singleton l $ CUse sctype buff)
 -- gets a variable from the env, puts it in a singleton buffer.
 -- Here I'm assuming this fuses nicely, and doesn't even need a new label 
--- (reuse the one that belongs to the variable). If not, change!
-mkFullGraph (Unit var) lenv l e = ( (mempty, mempty), undefined, getLabelsVar var lenv, l, e)
+-- (reuse the one that belongs to the variable). Might need to add a label
+-- to avoid obfuscating the AST though. Change when needed.
+mkFullGraph (Unit var) lenv l e = ( (mempty, mempty), lenv, getLabelsVar var lenv, l, e, mempty)
+
 -- NOTE: We explicitly add infusible edges from every label in `lenv` to this Acond.
 -- This makes the previous let-bindings strict: even if some result is only used in one
 -- branch, we now require it to be present before we evaluate the condition.
 -- I think this is safe: if a result is only used in one branch, it should be let-bound
--- within that branch. Note that this also means we ignore the contents of 'cond' for the graph.
+-- within that branch already. Note that this also means we ignore the contents of 'cond' for the graph.
 -- We also add edges from the Acond to the true-branch, and from the true-branch to the false-branch?
 -- TODO check if this is right/needed/if passing even more fresh labels down is correct.
 mkFullGraph (Acond cond tbranch fbranch) lenv l e = let tlabel = l+1
                                                         flabel = l+2
                                                         emptyEnv = emptyLabelEnv lenv
-                                                        ( (tinfo, tinfoM), _, _, l' , e' ) = mkFullGraph tbranch emptyEnv (l+3) e
-                                                        ( (finfo, finfoM), _, _, l'', e'') = mkFullGraph fbranch emptyEnv l'    e'
+                                                        ( (tinfo, tinfoM), _, _, l' , e' , c ) = mkFullGraph tbranch emptyEnv (l+3) e
+                                                        ( (finfo, finfoM), _, _, l'', e'', c') = mkFullGraph fbranch emptyEnv l'    e'
                                                         nonfuse = S.map (,l) (getAllLabelsEnv lenv) <> S.fromList [(l, tlabel), (tlabel, flabel)]
-                                                    in ( (Info (Graph (S.fromList [l, l+1, l+2]) mempty nonfuse) mempty mempty
+                                                    in ( (Info (Graph (S.fromList [l .. l+2]) mempty nonfuse) mempty mempty
                                                          , M.fromList [(tlabel, tinfo), (flabel, finfo)] <> tinfoM <> finfoM)
-                                                       , emptyEnv, S.singleton l, l''+1, e'')
-mkFullGraph _ _ _ _ = undefined
+                                                       , emptyEnv, S.singleton l, l'', e''
+                                                       , M.insert l (CITE lenv cond tlabel flabel) c <> c')
+-- like Acond. The biggest difference is that 'cond' is a function instead of an expression here.
+-- In fact, for the graph, we use 'startvars' much like we used 'cond' in Acond, and we use
+-- 'cond' and 'bdy' much like we used 'tbranch' and 'fbranch'.
+mkFullGraph (Awhile u cond bdy startvars) lenv l e = let clabel = l+1
+                                                         blabel = 1+2
+                                                         emptyEnv = emptyLabelEnv lenv
+                                                         ( (cinfo, cinfoM), _, _, l' , e' , c ) = mkFullGraphF cond emptyEnv (l+3) e
+                                                         ( (binfo, binfoM), _, _, l'', e'', c') = mkFullGraphF bdy  emptyEnv l'    e'
+                                                         nonfuse = S.map (,l) (getAllLabelsEnv lenv) <> S.fromList [(l, clabel), (clabel, blabel)]
+                                                     in ( (Info (Graph (S.fromList [l .. l+2]) mempty nonfuse) mempty mempty
+                                                          , M.fromList [(clabel, cinfo), (blabel, binfo)] <> cinfoM <> binfoM)
+                                                        , emptyEnv, S.singleton l, l'', e''
+                                                        , M.insert l (CWHL lenv u clabel blabel startvars) c <> c')
 
 
--- mkFullGraph (Return groundvars) _ = undefined -- what is this? does this do anything?
--- mkFullGraph (Compute expr)      _ = undefined -- how is this even typecorrect? What does it mean?
--- mkFullGraph (Exec (LabelledOp l op) args) lenv = ( S.singleton l, mkGraph op (getLabelArgs args lenv) l, M.empty )
--- mkFullGraph (Alet lhs u bnd scp) lenv = 
---   let (label1, info1, infomap1) = mkFullGraph bnd lenv
---       (label2, info2, infomap2) = mkFullGraph scp (addLhsLabels lhs label1 lenv) 
---   in ( label2
---      , info1 <> info2
---        -- If we encounter any duplicate keys here, that's a bad sign
---      , M.unionWith (error "oops") infomap1 infomap2 ) 
--- mkFullGraph (Alloc shr sct expv) lenv = ( getLabelsTup expv lenv, mempty, mempty )
--- mkFullGraph (Use sct buf) lenv = ( mempty, mempty, mempty )
--- mkFullGraph (Unit evar) lenv = ( getLabelsVar evar lenv, mempty, mempty )
+mkFullGraphF :: MakesILP op
+             => PreOpenAfun op aenv a
+             -> LabelEnv aenv -- for each array in the environment, 
+             -- the source labels of the currently open outgoing edges.
+             -> Label -- the next fresh label to use
+             -> ELabel -- the next fresh ELabel to use
+             -> (
+                --    S.Set Label -- incoming edges
+                --  , S.Set Label -- outgoing edges
+                  ( Information op, M.IntMap (Information op))
+                , LabelEnv aenv -- like input, but adjusted for side-effects
+                , S.Set Label -- source labels of currently open outgoing edges of 'a'
+                , Label -- the next fresh label to use
+                , ELabel -- the next fresh ELabel to use
+                , M.IntMap (Construction op)
+                )
+mkFullGraphF = \case
+  Abody acc  -> mkFullGraph acc
+  Alam lhs f -> \lenv l e -> let (e', lenv') = addLhsLabels lhs e mempty lenv -- it's a function, so we can fill the extra environment with mempties
+                                 ((info, infoM),                lenv'', lset, l', e'', c) = mkFullGraphF f lenv' l e'
+                             in  ((info, infoM), weakLhsEnv lhs lenv'', lset, l', e'', c)
 
--- -- now these are problematic: should we duplicate the informations and put them in the map with all the labels?
--- mkFullGraph (Acond c t e) lenv = undefined -- ifthenelse
--- mkFullGraph (Awhile us c b s) lenv = undefined -- while
+-- | Information to construct AST nodes. Generally, constructors contain
+-- both actual information, and a LabelEnv of the original environment
+-- which helps to re-index into the new environment later.
+data Construction (op :: Type -> Type) where
+  CExe :: LabelEnv env -> Args env args -> op args                                  -> Construction op
+  CUse ::                 ScalarType e -> Buffer e                                  -> Construction op
+  CITE :: LabelEnv env -> ExpVar env PrimBool -> Label -> Label                     -> Construction op
+  CWHL :: LabelEnv env -> Uniquenesses a      -> Label -> Label -> GroundVars env a -> Construction op
 
--- Describes how, given a list of indices into 'env', we can reconstruct an 'Execute op env'.
--- as the name suggests, this cannot be done 'safely': we're in the business of constructing
--- a strongly typed AST from untyped ILP output.
--- note that 'a list of indices' is akin to a weakening (that possibly reorders the env too)
--- todo: not all Idxs need to have the same 'a', so `list` should be `hlist` or tuplist :)
--- todo: figure out how this works with 'args'
+-- maybe rewrite this into partial functions for each option;
+-- the 'ITE' one really needs to get the branches as argument, can't just try to make one like this.
+construct :: forall op env'. Construction op -> LabelEnv env' -> M.IntMap (Construction op) -> Maybe (Exists (PreOpenAcc op env'))
+construct construction lenv' intmap = case construction of
+  CExe lenv args op          -> Exists  .  Exec op <$> reindexArgs (reindex lenv) args
+  CUse sctype buff           -> Just    .  Exists   $  Use sctype buff
+  CITE lenv cond thenL elseL -> do
+    thenConstruct <- M.lookup thenL intmap
+    Exists (thenAcc :: PreOpenAcc op env' a) <- construct thenConstruct lenv' intmap
+    elseConstruct <- M.lookup elseL intmap
+    Exists (elseAcc :: PreOpenAcc op env' b) <- construct elseConstruct lenv' intmap
+    newcond <- reindexVar (reindex lenv) cond
+    case unsafeCoerce Refl of -- convince the typechecker that the branches have the same type
+      (Refl :: a :~: b) -> return $ Exists $ Acond newcond thenAcc elseAcc
+  CWHL lenv u cndL bdyL start -> do
+    cndConstruct <- M.lookup cndL intmap
+    Exists (cndAcc :: PreOpenAfun op env' c) <- constructF cndConstruct lenv' intmap
+    bdyConstruct <- M.lookup bdyL intmap
+    Exists (bdyAcc :: PreOpenAfun op env' b) <- constructF bdyConstruct lenv' intmap
+    (newStart :: GroundVars env' a) <- reindexVars (reindex lenv) start
+    case unsafeCoerce Refl of -- convince the typechecker that the branches have the right type
+      (Refl :: c :~: (a -> PrimBool)) -> case unsafeCoerce Refl of
+        (Refl :: b :~: (a -> a)) -> return $ Exists $ Awhile u cndAcc bdyAcc newStart
+  where
+    reindex :: LabelEnv env -> ReindexPartial Maybe env env'
+    reindex env = mkReindexPartial env lenv'
 
--- | Contains three things:
--- - Operation - works on arguments (backend-specific, we don't touch it during this whole pass)
--- - Args      - describes how to get the arguments from the old environment
--- - LabelEnv  - stores ELabels, which allow us to re-index the Args into the new environment
-data UnsafeConstruction (op :: Type -> Type) = forall env args. UnsafeConstruction (LabelEnv env) (Args env args) (op args)
+-- constructF :: Construction op ->
 
 
--- | Uses unsafeCoerce to convince the typechecker that we have found what we were looking for.
--- If we don't screw up with the ELabels, this is safe...
+-- | Makes a ReindexPartial, which allows us to transform indices in @env@ into indices in @env'@.
+-- We cannot guarantee the index is present in env', so we use the partiality of ReindexPartial by
+-- returning a Maybe. Uses unsafeCoerce to re-introduce type information implied by the ELabels.
 mkReindexPartial :: LabelEnv env -> LabelEnv env' -> ReindexPartial Maybe env env'
-mkReindexPartial lenv lenv' = findIdx . flip getELabelIdx lenv
-  where findIdx = go lenv'
-        go :: LabelEnv e -> ELabel -> Maybe (Idx e a)
-        go ((e,_) :>>>: env) e'
-          -- here we have to convince GHC that the top element in the environment 
-          -- really does have the same type as the one we were searching for.
-          -- some literature does this stuff too: 'effect handlers in haskell, evidently'
-          -- and 'a monadic framework for delimited continuations' (SPJ) come to mind
-          | e == e' = Just $ unsafeCoerce ZeroIdx
-          | otherwise = SuccIdx <$> go env e'
-        go LabelEnvNil _ = Nothing
+mkReindexPartial lenv lenv' = \idx -> go lenv' $ getELabelIdx idx lenv
+  where
+    go :: LabelEnv e -> ELabel -> Maybe (Idx e a)
+    go ((e,_) :>>>: env) e'
+      -- Here we have to convince GHC that the top element in the environment 
+      -- really does have the same type as the one we were searching for.
+      -- Some literature does this stuff too: 'effect handlers in haskell, evidently'
+      -- and 'a monadic framework for delimited continuations' come to mind.
+      -- Basically: standard procedure if you're using Ints as a unique identifier
+      -- and want to re-introduce type information. :)
+      | e == e' = Just $ unsafeCoerce ZeroIdx
+      | otherwise = SuccIdx <$> go env e'
+    -- If we hit the end, the Elabel was not present in the environment.
+    -- That probably means we'll error out at a later point, but maybe there is
+    -- a case where we try multiple options? No need to worry about it here.
+    go LabelEnvNil _ = Nothing
