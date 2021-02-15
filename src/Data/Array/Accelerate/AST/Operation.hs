@@ -188,7 +188,7 @@ data Uniqueness t where
 type Uniquenesses = TupR Uniqueness
 
 shared :: TupR s t -> Uniquenesses t
-shared = mapTupR (\_ -> Shared)
+shared = mapTupR (const Shared)
 
 -- | The arguments to be passed to an operation of type `t`.
 -- This type is represented as a cons list, separated by (->) and ending

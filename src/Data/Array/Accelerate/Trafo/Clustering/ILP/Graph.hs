@@ -1,3 +1,4 @@
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE PolyKinds #-}
@@ -43,10 +44,8 @@ import qualified Numeric.Limp.Program as LIMP
 import qualified Numeric.Limp.Rep     as LIMP
 import Numeric.Limp.Program hiding ( Bounds, Constraint, Program, Linear, r )
 import Numeric.Limp.Rep ( IntDouble )
-import Data.Array.Accelerate.AST.LeftHandSide (Exists(Exists))
 import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Type
-import Data.Type.Equality
 
 
 -- | We have Int variables represented by @Variable op@, and no real variables.
@@ -102,23 +101,24 @@ class MakesILP op where
   -- Variables needed to express backend-specific fusion rules.
   type BackendVar op
 
-  -- Control flow cannot be fused, so we make separate ILPs for e.g.
-  -- then-branch and else-branch. In the future, a possible optimisation is to
-  -- generate code for the awhile-condition twice: once maybe fused after the body,
-  -- once maybe fused after input. For now, condition and body are both treated
-  -- as 'foreign calls', like if-then-else.
-  -- The IntMap maps from a label to the corresponding ILP (only for things treated
-  -- as 'foreign calls', like control flow).
-  -- A program can result in multiple ILPs, for example, the body of an 'awhile' cannot be fused with anything outside of it.
-  -- you `can` encode this in the ILP, but since the solutions are independant of each other it should be much more efficient
-  -- to solve them separately. This avoids many 'infusible edges', and significantly reduces the search space. The extracted
-  -- subtree gets encoded as a sort of 'foreign call', preventing all fusion.
-  -- todo: maybe we can extract more commonality from this, making the class more complicated but instances smaller/easier
+  -- | This function only needs to do the backend-specific things, that is, things which depend on the definition of @op@.
+  -- That includes "BackendVar op's" and all their constraints/bounds, but also some (in)fusible edges.
+  -- As a conveniece, fusible edges have already been made from all (incoming) labels in the LabelArgs to the current label. 
+  -- These can be 'strengthened' by adding a corresponding infusible edge, in which case the fusible edge will later be optimised away.
   mkGraph :: op args -> LabelArgs args -> Label -> Information op
 
-  -- for efficient reconstruction
-  -- mkMap :: PreOpenAcc (LabelledOp op) () a -> M.IntMap (UnsafeConstruction op)
-
+-- Control flow cannot be fused, so we make separate ILPs for e.g.
+-- then-branch and else-branch. In the future, a possible optimisation is to
+-- generate code for the awhile-condition twice: once maybe fused after the body,
+-- once maybe fused after input. For now, condition and body are both treated
+-- as 'foreign calls', like if-then-else.
+-- The IntMap maps from a label to the corresponding ILP (only for things treated
+-- as 'foreign calls', like control flow).
+-- A program can result in multiple ILPs, for example, the body of an 'awhile' cannot be fused with anything outside of it.
+-- you `can` encode this in the ILP, but since the solutions are independant of each other it should be much more efficient
+-- to solve them separately. This avoids many 'infusible edges', and significantly reduces the search space. The extracted
+-- subtree gets encoded as a sort of 'foreign call', preventing all fusion. TODO test with 'nested foreign functions':
+-- Does the algorithm work if a while contains other Awhile or Acond nodes in its condition or body?
 
 -- TODO doublecheck much of this, it's tricky:
 -- in the Operation-based AST, everything is powered by side effects.
@@ -142,9 +142,15 @@ class MakesILP op where
 --    but maybe no need to label it, if we can infer them afterwards?
 -- - Unit
 
--- this function will also need to produce the 'reconstruction' lookup map,
--- to ensure that the labels we generate are consistent between the lookup map
--- and the graph. I'll do that Later (TM)
+
+makeFullGraph :: MakesILP op
+              => PreOpenAcc op () a
+              -> (Information op, M.IntMap (Information op), M.IntMap (Construction op))
+makeFullGraph acc = (info, infoM, constrM)
+  where ((info, infoM), _, _, _, _, constrM) = mkFullGraph acc LabelEnvNil 1 (ELabel 1)
+
+-- TODO: This function would be cleaner with a datatype and State monad
+-- replacing the tuples and explicit passing of every argument
 mkFullGraph :: MakesILP op
             => PreOpenAcc op aenv a
             -> LabelEnv aenv -- for each array in the environment, 
@@ -159,15 +165,13 @@ mkFullGraph :: MakesILP op
               , S.Set Label -- source labels of currently open outgoing edges of 'a'
               , Label -- the next fresh label to use
               , ELabel -- the next fresh ELabel to use
-              , M.IntMap (Construction op)
+              -- for reconstructing the AST later. We generate this and the graph in one pass, 
+              , M.IntMap (Construction op) -- to guarantee that the labels match.
               )
-
--- Exec case: think about the exact type of mkGraph, and adjust accordingly.
--- clear responsibility on who makes the graph!
 
 -- For all input arguments (that is, everything except `Out` buffers), we add fusible edges. If that's
 -- not strict enough, the backend can add infusible edges, but this is a sound
--- lowerbound on fusibility: these inputs cannot be computed _after_ the op.
+-- lowerbound on fusibility: these inputs may never be computed _after_ the op.
 -- Excessive fusible edges are filtered out before we feed them to the ILP solver.
 mkFullGraph (Exec op args) lenv l e =
   let fuseedges = S.map (, l) $ getInputArgLabels args lenv
@@ -177,7 +181,7 @@ mkFullGraph (Exec op args) lenv l e =
      , l + 1
      , e
      , M.singleton l $ CExe lenv args op)
-mkFullGraph (Alet lhs u bnd scp) lenv l e = -- replace ticks with numbers? think of actual names for variables???
+mkFullGraph (Alet lhs u bnd scp) lenv l e = -- we throw away the uniquenessess information here, that's Future Work
   let (bndInfo, lenv'  , lbnd, l' , e'  , c ) = mkFullGraph bnd lenv   l  e
       (e'', lenv'') = addLhsLabels lhs e' lbnd lenv'
       (scpInfo, lenv''', lscp, l'', e''', c') = mkFullGraph scp lenv'' l' e''
@@ -229,18 +233,16 @@ mkFullGraph (Awhile u cond bdy startvars) lenv l e = let clabel = l+1
                                                      in ( (Info (Graph (S.fromList [l .. l+2]) mempty nonfuse) mempty mempty
                                                           , M.fromList [(clabel, cinfo), (blabel, binfo)] <> cinfoM <> binfoM)
                                                         , emptyEnv, S.singleton l, l'', e''
-                                                        , M.insert l (CWHL lenv u clabel blabel startvars) c <> c')
+                                                        , M.insert l (CWhl lenv u clabel blabel startvars) c <> c')
 
-
+-- | Like mkFullGraph, but for @PreOpenAfun@.
 mkFullGraphF :: MakesILP op
              => PreOpenAfun op aenv a
-             -> LabelEnv aenv -- for each array in the environment, 
-             -- the source labels of the currently open outgoing edges.
+             -- For each array in the environment, the source labels 
+             -> LabelEnv aenv -- of the currently open outgoing edges.
              -> Label -- the next fresh label to use
              -> ELabel -- the next fresh ELabel to use
              -> (
-                --    S.Set Label -- incoming edges
-                --  , S.Set Label -- outgoing edges
                   ( Information op, M.IntMap (Information op))
                 , LabelEnv aenv -- like input, but adjusted for side-effects
                 , S.Set Label -- source labels of currently open outgoing edges of 'a'
@@ -261,55 +263,49 @@ data Construction (op :: Type -> Type) where
   CExe :: LabelEnv env -> Args env args -> op args                                  -> Construction op
   CUse ::                 ScalarType e -> Buffer e                                  -> Construction op
   CITE :: LabelEnv env -> ExpVar env PrimBool -> Label -> Label                     -> Construction op
-  CWHL :: LabelEnv env -> Uniquenesses a      -> Label -> Label -> GroundVars env a -> Construction op
+  CWhl :: LabelEnv env -> Uniquenesses a      -> Label -> Label -> GroundVars env a -> Construction op
 
--- maybe rewrite this into partial functions for each option;
--- the 'ITE' one really needs to get the branches as argument, can't just try to make one like this.
-construct :: forall op env'. Construction op -> LabelEnv env' -> M.IntMap (Construction op) -> Maybe (Exists (PreOpenAcc op env'))
-construct construction lenv' intmap = case construction of
-  CExe lenv args op          -> Exists  .  Exec op <$> reindexArgs (reindex lenv) args
-  CUse sctype buff           -> Just    .  Exists   $  Use sctype buff
-  CITE lenv cond thenL elseL -> do
-    thenConstruct <- M.lookup thenL intmap
-    Exists (thenAcc :: PreOpenAcc op env' a) <- construct thenConstruct lenv' intmap
-    elseConstruct <- M.lookup elseL intmap
-    Exists (elseAcc :: PreOpenAcc op env' b) <- construct elseConstruct lenv' intmap
-    newcond <- reindexVar (reindex lenv) cond
-    case unsafeCoerce Refl of -- convince the typechecker that the branches have the same type
-      (Refl :: a :~: b) -> return $ Exists $ Acond newcond thenAcc elseAcc
-  CWHL lenv u cndL bdyL start -> do
-    cndConstruct <- M.lookup cndL intmap
-    Exists (cndAcc :: PreOpenAfun op env' c) <- constructF cndConstruct lenv' intmap
-    bdyConstruct <- M.lookup bdyL intmap
-    Exists (bdyAcc :: PreOpenAfun op env' b) <- constructF bdyConstruct lenv' intmap
-    (newStart :: GroundVars env' a) <- reindexVars (reindex lenv) start
-    case unsafeCoerce Refl of -- convince the typechecker that the branches have the right type
-      (Refl :: c :~: (a -> PrimBool)) -> case unsafeCoerce Refl of
-        (Refl :: b :~: (a -> a)) -> return $ Exists $ Awhile u cndAcc bdyAcc newStart
-  where
-    reindex :: LabelEnv env -> ReindexPartial Maybe env env'
-    reindex env = mkReindexPartial env lenv'
+constructExe :: LabelEnv env' -> LabelEnv env 
+             -> Args env args -> op args 
+             -> Maybe (PreOpenAcc op env' ())
+constructExe lenv' lenv args op = Exec op <$> reindexArgs (mkReindexPartial lenv lenv') args
+constructUse :: ScalarType e -> Buffer e 
+             -> PreOpenAcc op env (Buffer e)
+constructUse = Use
+constructITE :: LabelEnv env' -> LabelEnv env 
+             -> ExpVar env PrimBool -> PreOpenAcc op env' a -> PreOpenAcc op env' a 
+             -> Maybe (PreOpenAcc op env' a)
+constructITE lenv' lenv cond tbranch fbranch = Acond <$> reindexVar (mkReindexPartial lenv lenv') cond 
+                                                     <*> pure tbranch 
+                                                     <*> pure fbranch
+constructWhl :: LabelEnv env' -> LabelEnv env 
+             -> Uniquenesses a -> PreOpenAfun op env' (a -> PrimBool) -> PreOpenAfun op env' (a -> a) -> GroundVars env a 
+             -> Maybe (PreOpenAcc op env' a)
+constructWhl lenv' lenv u cond body start = Awhile u cond body <$> reindexVars (mkReindexPartial lenv lenv') start
 
--- constructF :: Construction op ->
 
 
 -- | Makes a ReindexPartial, which allows us to transform indices in @env@ into indices in @env'@.
 -- We cannot guarantee the index is present in env', so we use the partiality of ReindexPartial by
 -- returning a Maybe. Uses unsafeCoerce to re-introduce type information implied by the ELabels.
 mkReindexPartial :: LabelEnv env -> LabelEnv env' -> ReindexPartial Maybe env env'
-mkReindexPartial lenv lenv' = \idx -> go lenv' $ getELabelIdx idx lenv
+mkReindexPartial lenv lenv' idx = go lenv'  
   where
-    go :: LabelEnv e -> ELabel -> Maybe (Idx e a)
-    go ((e,_) :>>>: env) e'
+    -- The ELabel in the original environment
+    e = getELabelIdx idx lenv
+    go :: forall e a. LabelEnv e -> Maybe (Idx e a)
+    go ((e',_) :>>>: env) -- e' is the ELabel in the new environment
       -- Here we have to convince GHC that the top element in the environment 
       -- really does have the same type as the one we were searching for.
       -- Some literature does this stuff too: 'effect handlers in haskell, evidently'
       -- and 'a monadic framework for delimited continuations' come to mind.
       -- Basically: standard procedure if you're using Ints as a unique identifier
       -- and want to re-introduce type information. :)
-      | e == e' = Just $ unsafeCoerce ZeroIdx
-      | otherwise = SuccIdx <$> go env e'
+      -- Type applications allow us to restrict unsafeCoerce to the return type.
+      | e == e' = Just $ unsafeCoerce @(Idx e _) @(Idx e a) ZeroIdx
+      -- Recurse if we did not find e' yet.
+      | otherwise = SuccIdx <$> go env
     -- If we hit the end, the Elabel was not present in the environment.
     -- That probably means we'll error out at a later point, but maybe there is
     -- a case where we try multiple options? No need to worry about it here.
-    go LabelEnvNil _ = Nothing
+    go LabelEnvNil = Nothing
