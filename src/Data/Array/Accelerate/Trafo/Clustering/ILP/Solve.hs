@@ -60,13 +60,13 @@ makeILP (Info
     --                             ___ | real, everything else is integral.  |
     --                            |    | Hope this doesn't slow the solver.  |
     --                            v     ‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
-    graphILP = Program Minimise (toR objFun) constraints bounds 
+    graphILP = Program Minimise (toR objFun) myConstraints myBounds 
 
     -- Placeholder, currently maximising the number of vertical/diagonal fusions.
     -- In the future, maybe we want this to be backend-dependent.
     objFun = foldl' (\f (i, j) -> f .+. fused i j) c0 (S.toList fuseEdges)
 
-    constraints = acyclic <> infusible
+    myConstraints = acyclic <> infusible
 
     -- x_ij <= pi_j - pi_i <= n*x_ij for all fusible edges
     acyclic = foldMap
@@ -81,7 +81,7 @@ makeILP (Info
                         nofuseEdges
 
     --            0 <= pi_i <= n
-    bounds = map (\i -> lowerUpperZ 0 (Pi i) n)
+    myBounds = map (\i -> lowerUpperZ 0 (Pi i) n)
                  (S.toList nodes)
              <>  -- x_ij \in {0, 1}
              map (\(i, j) -> binary $ Fused i j)
