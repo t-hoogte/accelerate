@@ -38,6 +38,8 @@ import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.Trafo.Config
 import Data.Array.Accelerate.Error
 
+import Control.Category
+
 import Data.Array.Accelerate.Debug.Flags                ( array_fusion )
 import qualified Data.Array.Accelerate.Debug.Stats      as Stats
 import Data.Kind
@@ -45,6 +47,7 @@ import Data.Kind
 import System.IO.Unsafe -- for debugging
 #endif
 
+import Prelude hiding (id, (.))
 
 -- Array Fusion
 -- ============
@@ -79,4 +82,4 @@ withSimplStats x = x
 #endif
 
 dontFuse :: op args -> Cluster op args
-dontFuse = Leaf 
+dontFuse op = Leaf op id

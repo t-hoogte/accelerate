@@ -2,7 +2,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE EmptyCase #-}
 {-# LANGUAGE ViewPatterns #-}
-module Data.Array.Accelerate.Trafo.Clustering.ILP.Labels where
+module Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels where
 
 
 -- accelerate imports

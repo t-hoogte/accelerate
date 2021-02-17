@@ -1,8 +1,10 @@
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
-module Data.Array.Accelerate.Trafo.Clustering.ILP.Solve where
+{-# LANGUAGE ScopedTypeVariables #-}
+module Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve where
 
-import Data.Array.Accelerate.Trafo.Clustering.ILP.Graph
-import Data.Array.Accelerate.Trafo.Clustering.ILP.Labels
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
 
 import Prelude hiding ( pi )
 
@@ -17,11 +19,8 @@ import Data.Array.Accelerate.AST.Partitioned ( Cluster )
 -- and [] only when it does. It's also often efficient
 -- by removing duplicates.
 import qualified Data.Set as S
-import qualified Data.IntMap as M
-import Data.List (foldl')
-
-
--- GHC imports
+import qualified Data.Map as M
+import Data.List (group, sortOn, foldl')
 
 
 -- Limp is a Linear Integer Mixed Programming library.
@@ -34,6 +33,8 @@ import Data.List (foldl')
 -- later, the interfaces are all quite similar.
 import Numeric.Limp.Program hiding ( Constraint, r )
 import Numeric.Limp.Rep.IntDouble
+import qualified Numeric.Limp.Rep.Rep as LIMP
+import Data.Bifunctor (Bifunctor(bimap), second)
 
 
 
@@ -64,7 +65,9 @@ makeILP (Info
 
     -- Placeholder, currently maximising the number of vertical/diagonal fusions.
     -- In the future, maybe we want this to be backend-dependent.
-    objFun = foldl' (\f (i, j) -> f .+. fused i j) c0 (S.toList fuseEdges)
+    objFun = foldl' (\f (i, j) -> f .+. fused i j) 
+                    c0 
+                    (S.toList fuseEdges)
 
     myConstraints = acyclic <> infusible
 
@@ -82,26 +85,20 @@ makeILP (Info
 
     --            0 <= pi_i <= n
     myBounds = map (\i -> lowerUpperZ 0 (Pi i) n)
-                 (S.toList nodes)
-             <>  -- x_ij \in {0, 1}
-             map (\(i, j) -> binary $ Fused i j)
-                 (S.toList fuseEdges)
+                   (S.toList nodes)
+               <>  -- x_ij \in {0, 1}
+               map (\(i, j) -> binary $ Fused i j)
+                  (S.toList fuseEdges)
 
 -- call the solver. Gets called for each ILP
 solveILP :: ILP op -> Assignment op
 solveILP = undefined
 
--- Extract the fusion information (ordered list of clustered Labels)
-interpretSolution :: (Assignment op, M.IntMap (Assignment op)) -> ([S.Set Label], M.IntMap [S.Set Label])
-interpretSolution = undefined
-
--- "open research question"
--- -- Each set of ints corresponds to a set of Constructions, which themselves contain a set of ints (the things they depend on).
--- -- Some of those ints will refer to nodes in previous clusters, others to nodes in this cluster.
--- One pass over these datatypes (back-to-front) should identify the 'output type' of each cluster: which nodes are needed in later clusters?
--- Then, we can construct the clusters front-to-back:
---    identify the nodes that only depend on nodes outside of the cluster, they are the initials
---    the `output type` indicates which nodes we will need to keep: they are all either a final node in the cluster, or get diagonally fused
--- How exactly we can use this information (and a dep. graph) to construct a cluster of ver,hor,diag is not clear.. Will also depend on the exact cluster definition.
-reconstruct :: Graph -> [S.Set Label] -> M.IntMap [S.Set Label] -> M.IntMap (Construction op) -> Exists (PreOpenAcc (Cluster op) ())
-reconstruct = undefined
+-- Extract the fusion information (ordered list of clusters of Labels) (head is the first cluster)
+interpretSolution :: forall op. [Assignment op] -> [S.Set Label]
+interpretSolution assignments = map (S.fromList . map fst) $ group $ sortOn snd $ map (bimap (\(Pi l)->l) (fromIntegral @_ @Int)) pis
+  where
+    pis :: [(Variable op, Z IntDouble)]
+    pis = concatMap (\(LIMP.Assignment x _) -> M.toList $ M.filterWithKey (const . isPi) x) assignments
+    isPi (Pi _) = True
+    isPi _      = False

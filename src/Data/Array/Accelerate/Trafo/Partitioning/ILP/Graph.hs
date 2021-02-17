@@ -11,9 +11,9 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Data.Array.Accelerate.Trafo.Clustering.ILP.Graph where
+module Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph where
 
-import Data.Array.Accelerate.Trafo.Clustering.ILP.Labels
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
 
 -- accelerate imports
 import Data.Array.Accelerate.AST.Idx ( Idx(..) )

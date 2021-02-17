@@ -9,8 +9,6 @@
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE TypeOperators         #-}
 
-{-# OPTIONS_GHC -Wno-unused-binds #-} -- remove later, I don't like seeing the warnings now
-
 -- |
 -- Module      : Data.Array.Accelerate.AST.Partitioned
 -- Copyright   : [2008..2020] The Accelerate Team
@@ -22,32 +20,33 @@
 --
 module Data.Array.Accelerate.AST.Partitioned
   ( module Data.Array.Accelerate.AST.Operation
-  , Cluster(..), Combine(..), SwapArgs(..)
+  , Cluster(..), Combine(..)
   , PartitionedAcc, PartitionedAfun
+  , SwapArgs(..), Take(..)
   ) where
 
 import Data.Array.Accelerate.AST.Operation
-import Data.Array.Accelerate.AST.Environment
 
+import Control.Category ( Category(..) )
+
+
+type PartitionedAcc  op = PreOpenAcc  (Cluster op)
+type PartitionedAfun op = PreOpenAfun (Cluster op)
 
 data Cluster op args where
-  Leaf :: op args -> Cluster op args
+  -- Currently, we only swap the order of the arguments at the leaves. 
+  -- This is needed to be able to horizontally fuse (x -> y -> a) with (y -> x -> a).
+  -- I think it is also sufficient to do it only at leaves, and not in every node.
+  -- Maybe putting it in the nodes will turn out to be easier though!
+  Leaf :: op args 
+       -> SwapArgs args args'
+       -> Cluster op args
 
-  Node :: Cluster op a
-       -> Cluster op   b
-       -> Combine    a b c
-       -> Cluster op     c
-
-  Reorder :: SwapArgs args args'
-          -> Cluster op args
-          -> Cluster op args'
-
-  -- | Not a true weakening: that would imply adding inputs and/or removing outputs.
-  -- This 'weakening' only adds arguments, in and/or out, to the phantom types.
-  -- Maybe think of a different name for it :)
-  Weaken :: args :> args' -- TODO replace with an Arg-level weakening
-         -> Cluster op args'
-         -> Cluster op args
+  -- Fuse two clusters.
+  Branch :: Cluster op a
+         -> Cluster op   b
+         -> Combine    a b c
+         -> Cluster op     c
 
 -- Note that, in general, these combination descriptors can definitely represent
 -- undesirable states: It's probably not doable to encode all fusability rules
@@ -56,32 +55,72 @@ data Cluster op args where
 
 -- | All these options will, in general, require the underlying Clusters to be weakened
 -- by adding superfluous Args. The constructors below are the only way to "remove Args".
-data Combine a b c where
+data Combine left right result where
   -- An array is produced and consumed, fusing it away.
   -- NOTE: this means that the array does not appear in the environment, and
   -- it does not have an accompanying `Arg` constructor: Its scope is now
-  -- bound by this `Vertical` constructor.
-  Vertical   :: Combine (Out sh e -> a) (In sh e -> a)               a
+  -- bound by this `Node` constructor in `Cluster`.
+  Vertical  :: Combine              a              b               c
+            -> Combine (Out sh e -> a) (In sh e -> b)              c
 
-  -- Like vertical, but the `Array sh e` is stored for later use
-  Diagonal   :: Combine (Out sh e -> a) (In  sh e -> a) (Out sh e -> a)
+  -- Like vertical, but the arg is stored for later use
+  Diagonal  :: Combine              a              b               c
+            -> Combine (Out sh e -> a) (In sh e -> b) (Out sh e -> c)
 
-  -- Both outputs are stored. Because of the weakening, this combination is trivial.
-  Horizontal :: Combine a a a
+  -- Both computations use the argument in the same fashion.
+  -- Note that you can't recreate this type using WeakLeft and WeakRight,
+  -- as that would duplicate the argument in the resulting type
+  Horizontal :: Combine       a        b        c
+             -> Combine (x -> a) (x -> b) (x -> c)
 
+  -- Only the right computation uses x, so this 'weakens' the left computation
+  WeakLeft  :: Combine       a       b        c
+            -> Combine       a (x -> b) (x -> c)
+  WeakRight :: Combine       a       b        c
+            -> Combine (x -> a)      b  (x -> c)
 
-type PartitionedAcc  op = PreOpenAcc  (Cluster op)
-type PartitionedAfun op = PreOpenAfun (Cluster op)
 
 -- Re-order the type level arguments, to align them for the fusion constructors.
--- pray we won't need it, fear we might, hope it doesn't complicate things
 data SwapArgs a b where
-  -- Switch the first two arguments. This might be all we need, but probably not..
-  Swap :: SwapArgs (a -> b -> x) (b -> a -> x)
+  -- no swapping, base case
+  Start :: SwapArgs a a
+  -- put x on top
+  Swap  :: SwapArgs a xb
+        -> Take x xb b
+        -> SwapArgs a (x -> b)
 
-  -- Alternatively, we could need constructors traversing the whole type, something like these:
-  Start :: SwapArgs () ()
-  Dig :: SwapArgs a b -> SwapArgs (x -> a) (x -> b)
-  Swap' :: SwapArgs a (x -> y -> z)
-        -> SwapArgs a (y -> x -> z)
-  SSwap :: SwapArgs a b -> SwapArgs b c -> SwapArgs a c
+instance Category SwapArgs where -- neat
+  id  = Start
+  (.) = flip composeSwap
+
+data Take x xa a where
+  Here  :: Take x (x -> a) a
+  There :: Take x       xa        a
+        -> Take x (y -> xa) (y -> a)
+
+composeSwap :: forall a b c. SwapArgs a b -> SwapArgs b c -> SwapArgs a c
+composeSwap x = go
+  where go :: SwapArgs b x -> SwapArgs a x
+        -- If the second SwapArgs is identity, return x
+        go Start = x
+        -- Otherwise, the second SwapArgs puts something in front.
+        -- Recurse, then wrap that in a Swap which puts the same thing in front!
+        go (Swap a b) = Swap (go a) b
+
+-- Alternative SwapArgs constructors:
+
+  -- Start' :: SwapArgs () ()
+  
+  -- Dig   :: SwapArgs       a        b 
+  --       -> SwapArgs (x -> a) (x -> b)
+  
+  -- SSwap :: SwapArgs a b 
+  --       -> SwapArgs   b c 
+  --       -> SwapArgs a   c
+  
+  -- Swap  :: SwapArgs a (x -> y -> z)
+  --       -> SwapArgs a (y -> x -> z)
+  
+  -- Swap' :: Take x xa a
+  --       -> SwapArgs xa (x -> a)
+

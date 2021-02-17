@@ -321,6 +321,7 @@ Library
         Data.Array.Accelerate.AST.Idx
         Data.Array.Accelerate.AST.LeftHandSide
         Data.Array.Accelerate.AST.Operation
+        Data.Array.Accelerate.AST.Partitioned
         Data.Array.Accelerate.AST.Var
         Data.Array.Accelerate.Analysis.Hash
         Data.Array.Accelerate.Analysis.Hash.Exp
@@ -357,6 +358,11 @@ Library
         Data.Array.Accelerate.Trafo.Exp.Shrink
         Data.Array.Accelerate.Trafo.Exp.Substitution
         Data.Array.Accelerate.Trafo.Fusion
+        Data.Array.Accelerate.Trafo.Partitioning.ILP
+        Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
+        Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
+        Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve
+        Data.Array.Accelerate.Trafo.Partitioning.Stream
         Data.Array.Accelerate.Trafo.Sharing
         Data.Array.Accelerate.Trafo.Substitution
         Data.Array.Accelerate.Type
