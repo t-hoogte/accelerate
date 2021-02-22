@@ -44,6 +44,8 @@ import Data.Array.Accelerate.Type
 import Data.Maybe
 import Data.List
 import qualified Data.Set                               as S
+import Prelude hiding (id, (.))
+import Control.Category
 
 -- * Compilation from PartitionedAcc to UniformSchedule
 data FutureValue senv t

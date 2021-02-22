@@ -159,7 +159,7 @@ data PreOpenAcc (op :: Type -> Type) env a where
 -- | Function abstraction over parametrised array computations
 --
 data PreOpenAfun op env t where
-  Abody ::                             PreOpenAcc  op  env t -> PreOpenAfun op env t
+  Abody ::                             PreOpenAcc  op env  t -> PreOpenAfun op env t
   Alam  :: GLeftHandSide a env env' -> PreOpenAfun op env' t -> PreOpenAfun op env (a -> t)
 
 

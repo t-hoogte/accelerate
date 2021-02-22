@@ -82,7 +82,7 @@ instance Monoid Graph where
 -- describing the fusion rules. The bounds is a [] instead of Set
 -- for practical reasons (no Ord instance, LIMP expects a list) only.
 data Information op = Info 
-  { graph  :: Graph
+  { graphI :: Graph
   , constr :: Constraint op
   , bounds :: Bounds op
   }
@@ -182,7 +182,7 @@ mkFullGraph (Exec op args) = do
   env <- gets lenv
   putEnv $ updateLabelEnv args env l
   let fuseedges = S.map (, l) $ getInputArgLabels args env
-  return $ FGRes (mkGraph op (getLabelArgs args env) l <> mempty{graph = Graph (S.singleton l) fuseedges mempty})
+  return $ FGRes (mkGraph op (getLabelArgs args env) l <> mempty{graphI = Graph (S.singleton l) fuseedges mempty})
                  mempty
                  mempty
                  (M.singleton l $ CExe env args op)
@@ -208,12 +208,18 @@ mkFullGraph (Compute expr) = do
   env <- gets lenv
   return $ mempty{lset = getLabelsExp expr env}
 mkFullGraph Alloc{} = return mempty
-mkFullGraph (Use sctype buff) = do
-  l <- getL
-  return $ FGRes mempty{graph = mempty{graphNodes = S.singleton l}}
-                 mempty 
-                 (S.singleton l)
-                 (M.singleton l $ CUse sctype buff)
+
+-- We put this as a 'foreign' thing, forcing it to be unfused with anything.
+-- This is because it doesn't go into a 'cluster': it's not a computation.
+-- We simply let-bind it at some point before the computation!
+-- note that we let the ILP decide where to let-bind it, so (within the control 
+-- flow region) it might be bound way higher than needed, causing slower compile times.
+mkFullGraph (Use sctype buff) = _ -- TODO do as the comment says ^^^^^^^^
+  -- l <- getL
+  -- return $ FGRes mempty{graph = mempty{graphNodes = S.singleton l}}
+  --                mempty 
+  --                (S.singleton l)
+  --                (M.singleton l $ CUse sctype buff)
 
 -- gets a variable from the env, puts it in a singleton buffer.
 -- Here I'm assuming this fuses nicely, and doesn't even need a new label 
@@ -242,7 +248,7 @@ mkFullGraph (Acond cond tacc facc) = do
   FGRes finfo finfoM _ fConstr <- mkFullGraph facc
   putEnv emptyEnv
   let nonfuse = S.map (,l) (getAllLabelsEnv env) <> S.fromList [(l,tl), (tl,fl)]
-  return $ FGRes mempty{graph = Graph (S.fromList [l, tl, fl]) mempty nonfuse}
+  return $ FGRes mempty{graphI = Graph (S.fromList [l, tl, fl]) mempty nonfuse}
                  (M.insert tl tinfo $ M.insert fl finfo $ tinfoM <> finfoM)
                  (S.singleton l)
                  (M.insert l (CITE env cond tl fl) $ tConstr <> fConstr)
@@ -262,7 +268,7 @@ mkFullGraph (Awhile u cond bdy startvars) = do
   FGRes binfo binfoM _ bConstr <- mkFullGraphF bdy
   putEnv emptyEnv
   let nonfuse = S.map (,l) (getAllLabelsEnv env) <> S.fromList [(l,cl), (cl,bl)]
-  return $ FGRes mempty{graph = Graph (S.fromList [l, cl, bl]) mempty nonfuse}
+  return $ FGRes mempty{graphI = Graph (S.fromList [l, cl, bl]) mempty nonfuse}
                  (M.insert cl cinfo $ M.insert bl binfo $ cinfoM <> binfoM)
                  (S.singleton l)
                  (M.insert l (CWhl env u cl bl startvars) $ cConstr <> bConstr)

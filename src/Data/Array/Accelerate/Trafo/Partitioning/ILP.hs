@@ -20,5 +20,5 @@ ilpfusion acc = fusedAcc
     (ilp, ilps)                             = (makeILP info, M.map makeILP infos)
     (solution, solutions)                   = (solveILP ilp, M.map solveILP ilps)
     labelClusters                           = interpretSolution $ solution : M.elems solutions
-    fusedAcc                                = reconstruct graph labelClusters constrM
+    fusedAcc                                = _ reconstruct graph labelClusters constrM
 

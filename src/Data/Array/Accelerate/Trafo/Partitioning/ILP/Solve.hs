@@ -95,7 +95,7 @@ solveILP :: ILP op -> Assignment op
 solveILP = undefined
 
 -- Extract the fusion information (ordered list of clusters of Labels) (head is the first cluster)
-interpretSolution :: forall op. [Assignment op] -> [S.Set Label]
+interpretSolution :: forall op. [Assignment op] -> [Labels]
 interpretSolution assignments = map (S.fromList . map fst) $ group $ sortOn snd $ map (bimap (\(Pi l)->l) (fromIntegral @_ @Int)) pis
   where
     pis :: [(Variable op, Z IntDouble)]

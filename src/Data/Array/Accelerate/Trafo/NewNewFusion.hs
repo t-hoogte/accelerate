@@ -38,7 +38,6 @@ import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.Trafo.Config
 import Data.Array.Accelerate.Error
 
-import Control.Category
 
 import Data.Array.Accelerate.Debug.Flags                ( array_fusion )
 import qualified Data.Array.Accelerate.Debug.Stats      as Stats
@@ -48,6 +47,7 @@ import System.IO.Unsafe -- for debugging
 #endif
 
 import Prelude hiding (id, (.))
+import Control.Category
 
 -- Array Fusion
 -- ============

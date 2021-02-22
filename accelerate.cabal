@@ -270,6 +270,7 @@ Library
   Build-depends:
           base                          >= 4.12 && < 4.15
         , ansi-terminal                 >= 0.6.2
+        , array                         >= 0.4
         , base-orphans                  >= 0.3
         , bytestring                    >= 0.10.2
         , containers                    >= 0.3

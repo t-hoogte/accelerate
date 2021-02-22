@@ -28,17 +28,32 @@ module Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.AST.Operation
 
 import Control.Category ( Category(..) )
-
+import Prelude hiding (id, (.))
 
 type PartitionedAcc  op = PreOpenAcc  (Cluster op)
 type PartitionedAfun op = PreOpenAfun (Cluster op)
 
+-- data Cluster op args where
+--   Leaf :: op args -> Cluster op args
+--   ConsCluster :: op a'
+--               -> SwapArgs a' a
+--               -> Combine     a b c
+--               -> Cluster op    b
+--               -> Cluster op      c
+
+-- | These definitions are far from guaranteeing a unique representation;
+-- there are many equivalent ways to represent a clustering, even ignoring
+-- the ambiguity in SwapArgs (where you can make many convoluted versions
+-- of `id`). I don't think this is a big deal, but since it seems to always
+-- be possible to construct a Cluster by appending a single element at a time,
+-- it might be better to refactor this into a pseudo list (instead of binary tree).
+-- Even then, every topologically sorted order will be a valid sequence.
 data Cluster op args where
   -- Currently, we only swap the order of the arguments at the leaves. 
   -- This is needed to be able to horizontally fuse (x -> y -> a) with (y -> x -> a).
   -- I think it is also sufficient to do it only at leaves, and not in every node.
   -- Maybe putting it in the nodes will turn out to be easier though!
-  Leaf :: op args 
+  Leaf :: op args'
        -> SwapArgs args args'
        -> Cluster op args
 
@@ -84,17 +99,19 @@ data Combine left right result where
 data SwapArgs a b where
   -- no swapping, base case
   Start :: SwapArgs a a
-  -- put x on top
+  -- put x on top of a recursive swap
   Swap  :: SwapArgs a xb
         -> Take x xb b
         -> SwapArgs a (x -> b)
 
-instance Category SwapArgs where -- neat
+instance Category SwapArgs where -- neat, but is it actually useful?
   id  = Start
   (.) = flip composeSwap
 
 data Take x xa a where
+  -- base case
   Here  :: Take x (x -> a) a
+  -- recursive case
   There :: Take x       xa        a
         -> Take x (y -> xa) (y -> a)
 

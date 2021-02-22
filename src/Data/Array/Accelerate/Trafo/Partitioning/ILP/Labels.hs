@@ -20,6 +20,7 @@ import qualified Data.Set as S
 
 -- identifies nodes with unique Ints. and tracks their dependencies
 type Label =  Int
+type Labels = S.Set Label
 
 -- identifies elements of the environment with unique Ints.
 -- newtype'd to avoid confusing them with Label (above).
@@ -30,12 +31,12 @@ newtype ELabel = ELabel Int
 -- | Keeps track of which argument belongs to which labels
 data LabelArgs args where
   LabelArgsNil :: LabelArgs ()
-  (:>>:)       :: S.Set Label -> LabelArgs t -> LabelArgs (s -> t)
+  (:>>:)       :: Labels -> LabelArgs t -> LabelArgs (s -> t)
 
 -- | Keeps track of which array in the environment belongs to which label
 data LabelEnv env where
   LabelEnvNil  :: LabelEnv ()
-  (:>>>:)      :: (ELabel, S.Set Label) -> LabelEnv t -> LabelEnv (t, s)
+  (:>>>:)      :: (ELabel, Labels) -> LabelEnv t -> LabelEnv (t, s)
 
 
 
@@ -46,7 +47,7 @@ data LabelEnv env where
 -- vvvvvvvvvvvvvvvvvvvvvvvvv --
 
 
-addLhsLabels :: LeftHandSide s v env env' -> ELabel -> S.Set Label -> LabelEnv env -> (ELabel, LabelEnv env')
+addLhsLabels :: LeftHandSide s v env env' -> ELabel -> Labels -> LabelEnv env -> (ELabel, LabelEnv env')
 addLhsLabels LeftHandSideWildcard{} e _ lenv =     (e    , lenv)
 addLhsLabels LeftHandSideSingle{}   e l lenv =     (e + 1, (e, l) :>>>: lenv)
 addLhsLabels (LeftHandSidePair x y) e l lenv = let (e'   , lenv') = addLhsLabels x e l lenv
@@ -61,7 +62,7 @@ emptyLabelEnv :: LabelEnv env -> LabelEnv env
 emptyLabelEnv LabelEnvNil = LabelEnvNil
 emptyLabelEnv ((e,_):>>>:env) = (e, mempty) :>>>: emptyLabelEnv env
 
-getAllLabelsEnv :: LabelEnv env -> S.Set Label
+getAllLabelsEnv :: LabelEnv env -> Labels
 getAllLabelsEnv LabelEnvNil = mempty
 getAllLabelsEnv ((_,set) :>>>: lenv) = set <> getAllLabelsEnv lenv
 
@@ -69,21 +70,21 @@ getLabelArgs :: Args env args -> LabelEnv env -> LabelArgs args
 getLabelArgs ArgsNil _ = LabelArgsNil
 getLabelArgs (arg :>: args) e = getLabelsArg arg e :>>: getLabelArgs args e
 
-getLabelsArg :: Arg env t -> LabelEnv env -> S.Set Label
+getLabelsArg :: Arg env t -> LabelEnv env -> Labels
 getLabelsArg (ArgVar tup)                  env = getLabelsTup tup    env
 getLabelsArg (ArgExp expr)                 env = getLabelsExp expr   env
 getLabelsArg (ArgFun fun)                  env = getLabelsFun fun    env
 getLabelsArg (ArgArray _ _ shVars bufVars) env = getLabelsTup shVars env <> getLabelsTup bufVars env
 
-getLabelsTup :: TupR (Var a env) b -> LabelEnv env -> S.Set Label
+getLabelsTup :: TupR (Var a env) b -> LabelEnv env -> Labels
 getLabelsTup TupRunit                     _   = mempty
 getLabelsTup (TupRsingle var) env = getLabelsVar var env
 getLabelsTup (TupRpair x y)               env = getLabelsTup x env <> getLabelsTup y env
 
-getLabelsVar :: Var s env t -> LabelEnv env -> S.Set Label
+getLabelsVar :: Var s env t -> LabelEnv env -> Labels
 getLabelsVar (varIdx -> idx) = getLabelsIdx idx
 
-getLabelsIdx :: Idx env a -> LabelEnv env -> S.Set Label
+getLabelsIdx :: Idx env a -> LabelEnv env -> Labels
 getLabelsIdx ZeroIdx ((_,ls) :>>>: _) = ls
 getLabelsIdx (SuccIdx idx) (_ :>>>: env) = getLabelsIdx idx env
 
@@ -91,10 +92,10 @@ getELabelIdx :: Idx env a -> LabelEnv env -> ELabel
 getELabelIdx ZeroIdx ((e,_) :>>>: _) = e
 getELabelIdx (SuccIdx idx) (_ :>>>: env) = getELabelIdx idx env
 
-getLabelsExp :: OpenExp x env y -> LabelEnv env -> S.Set Label
+getLabelsExp :: OpenExp x env y -> LabelEnv env -> Labels
 getLabelsExp = undefined -- TODO traverse everything, look for Idxs
 
-getLabelsFun :: OpenFun x env y -> LabelEnv env -> S.Set Label
+getLabelsFun :: OpenFun x env y -> LabelEnv env -> Labels
 getLabelsFun (Body expr) lenv = getLabelsExp expr lenv
 getLabelsFun (Lam _ fun) lenv = getLabelsFun fun  lenv
 
@@ -115,7 +116,7 @@ insertAtVars (TupRsingle (varIdx -> idx)) ((e,lset) :>>>: lenv) l = case idx of
 insertAtVars (TupRsingle (varIdx -> idx)) LabelEnvNil _ = case idx of {} -- convincing the exhausiveness checker
 
 -- | Like `getLabelArgs`, but ignores the `Out` arguments
-getInputArgLabels :: Args env args -> LabelEnv env -> S.Set Label
+getInputArgLabels :: Args env args -> LabelEnv env -> Labels
 getInputArgLabels ArgsNil _ = mempty
 getInputArgLabels (arg :>: args) lenv = getInputArgLabels args lenv <> case arg of
   ArgArray Out _ _ _ -> mempty

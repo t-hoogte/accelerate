@@ -1,4 +1,4 @@
-module Data.Array.Accelerate.Trafo.Clustering.Stream where
+module Data.Array.Accelerate.Trafo.Partitioning.Stream where
 
 import Data.Array.Accelerate.AST.Partitioned
 
