@@ -8,11 +8,6 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
 
 import Prelude hiding ( pi )
 
--- accelerate imports
-import Data.Array.Accelerate.AST.LeftHandSide
-import Data.Array.Accelerate.AST.Operation
-import Data.Array.Accelerate.AST.Partitioned ( Cluster )
-
 -- Data structures
 -- In this file, order very often subly does matter.
 -- To keep this clear, we use S.Set whenever it does not,
@@ -34,7 +29,7 @@ import Data.List (group, sortOn, foldl')
 import Numeric.Limp.Program hiding ( Constraint, r )
 import Numeric.Limp.Rep.IntDouble
 import qualified Numeric.Limp.Rep.Rep as LIMP
-import Data.Bifunctor (Bifunctor(bimap), second)
+import Data.Bifunctor (Bifunctor(bimap))
 
 
 

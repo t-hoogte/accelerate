@@ -7,7 +7,7 @@
 {-# OPTIONS_GHC -fno-warn-unused-top-binds   #-}
 {-# OPTIONS_GHC -fobject-code                #-} -- SEE: [linking to .c files]
 -- |
--- Module      : Data.Array.Accelerate.Debug.Flags
+-- Module      : Data.Array.Accelerate.Debug.Internal.Flags
 -- Copyright   : [2008..2020] The Accelerate Team
 -- License     : BSD3
 --
@@ -18,7 +18,7 @@
 -- Option parsing for debug flags
 --
 
-module Data.Array.Accelerate.Debug.Flags (
+module Data.Array.Accelerate.Debug.Internal.Flags (
 
   Value,
   unfolding_use_threshold,
@@ -86,13 +86,13 @@ instance Show Flag where
       12 -> "dump-phases"
       13 -> "dump-sharing"
       14 -> "dump-fusion"
-      15 -> "dump-simpl_stats"
-      16 -> "dump-simpl_iterations"
+      15 -> "dump-simpl-stats"
+      16 -> "dump-simpl-iterations"
       17 -> "dump-vectorisation"
       18 -> "dump-dot"
-      19 -> "dump-simpl_dot"
+      19 -> "dump-simpl-dot"
       20 -> "dump-gc"
-      21 -> "dump-gc_stats"
+      21 -> "dump-gc-stats"
       22 -> "dump-cc"
       23 -> "dump-ld"
       24 -> "dump-asm"
@@ -161,6 +161,12 @@ clearFlags = mapM_ clearFlag
 -- notEnabled = error $ unlines [ "Data.Array.Accelerate: Debugging options are disabled."
 --                              , "Reinstall package 'accelerate' with '-fdebug' to enable them." ]
 
+-- FIXME: HLS requires stubs because it does not process the
+--        'addForeignFilePath' calls when evaluating Template Haskell
+--
+--        https://github.com/haskell/haskell-language-server/issues/365
+#ifndef __GHCIDE__
+
 -- Import the underlying flag variables. These are defined in the file
 -- cbits/flags.h as a bitfield and initialised at program initialisation.
 --
@@ -173,6 +179,19 @@ foreign import ccall "&__cmd_line_flags" __cmd_line_flags :: Ptr Word32
 --
 foreign import ccall "&__unfolding_use_threshold"   unfolding_use_threshold   :: Value  -- the magic cut-off figure for inlining
 foreign import ccall "&__max_simplifier_iterations" max_simplifier_iterations :: Value  -- maximum number of scalar simplification passes
+
+#else
+
+__cmd_line_flags :: Ptr Word32
+__cmd_line_flags = undefined
+
+unfolding_use_threshold :: Value
+unfolding_use_threshold = undefined
+
+max_simplifier_iterations :: Value
+max_simplifier_iterations = undefined
+
+#endif
 
 -- These @-f<blah>@ flags can be reversed with @-fno-<blah>@
 --
