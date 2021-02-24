@@ -189,6 +189,17 @@ mkFullGraph (Exec op args) = do
 
 -- We throw away the uniquenessess information here, that's Future Work..
 -- Probably need to re-infer it after fusion anyway, until we incorporate in-place into ILP
+
+-- this does not retain enough information: we cannot distinguish
+--   let (x, _) = ..
+-- from
+--   let (_, x) = ..
+-- TODO IMPORTANT fix: we need to encode enough info in the result to rebuild a valid and equivalent AST!
+-- maybe have to dig deep and replace all the sets of labels with a single label? 
+-- Or with a TupR of _single_ labels (introducing more typesafety too!)
+-- this last one sounds interesting - but does it solve this particular issue?
+-- how about getting a fresh 'l', adding fusible edges from all of bndL to l, and making a 'Construction'
+-- constructor that stores the LHS and bndL?
 mkFullGraph (Alet lhs _ bnd scp) = do
   e <- getE
   env <- gets lenv
@@ -298,6 +309,7 @@ data Construction (op :: Type -> Type) where
   CUse ::                 ScalarType e -> Buffer e                                  -> Construction op
   CITE :: LabelEnv env -> ExpVar env PrimBool -> Label -> Label                     -> Construction op
   CWhl :: LabelEnv env -> Uniquenesses a      -> Label -> Label -> GroundVars env a -> Construction op
+  CLHS ::                 GLeftHandSide a b c -> [Label]                             -> Construction op
 
 constructExe :: LabelEnv env' -> LabelEnv env 
              -> Args env args -> op args 

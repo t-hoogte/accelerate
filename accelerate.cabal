@@ -323,6 +323,7 @@ Library
         Data.Array.Accelerate.AST.LeftHandSide
         Data.Array.Accelerate.AST.Operation
         Data.Array.Accelerate.AST.Partitioned
+        Data.Array.Accelerate.AST.Schedule.Uniform
         Data.Array.Accelerate.AST.Var
         Data.Array.Accelerate.Analysis.Hash
         Data.Array.Accelerate.Analysis.Hash.Exp
@@ -346,6 +347,7 @@ Library
         Data.Array.Accelerate.Representation.Tag
         Data.Array.Accelerate.Representation.Type
         Data.Array.Accelerate.Representation.Vec
+        Data.Array.Accelerate.Schedule
         Data.Array.Accelerate.Smart
         Data.Array.Accelerate.Sugar.Array
         Data.Array.Accelerate.Sugar.Elt
@@ -359,11 +361,13 @@ Library
         Data.Array.Accelerate.Trafo.Exp.Shrink
         Data.Array.Accelerate.Trafo.Exp.Substitution
         Data.Array.Accelerate.Trafo.Fusion
+        Data.Array.Accelerate.Trafo.NewNewFusion
         Data.Array.Accelerate.Trafo.Partitioning.ILP
         Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
         Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
         Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve
         Data.Array.Accelerate.Trafo.Partitioning.Stream
+        Data.Array.Accelerate.Trafo.Schedule.Uniform
         Data.Array.Accelerate.Trafo.Sharing
         Data.Array.Accelerate.Trafo.Substitution
         Data.Array.Accelerate.Type
@@ -418,6 +422,7 @@ Library
         Data.Array.Accelerate.Trafo.Environment
         Data.Array.Accelerate.Trafo.Exp.Simplify
         Data.Array.Accelerate.Trafo.LetSplit
+        Data.Array.Accelerate.Trafo.Operation.Substitution
         Data.Array.Accelerate.Trafo.Shrink
         Data.Array.Accelerate.Trafo.Var
         Data.Atomic

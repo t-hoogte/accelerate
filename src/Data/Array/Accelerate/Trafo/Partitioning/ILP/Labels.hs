@@ -46,7 +46,7 @@ data LabelEnv env where
 -- or otherwise manipulate LabelArgs' or LabelEnvs
 -- vvvvvvvvvvvvvvvvvvvvvvvvv --
 
-
+-- | Note that this throws some info away: Pair (Wildcard, Single) and Pair (Single, Wildcard) give identical results.
 addLhsLabels :: LeftHandSide s v env env' -> ELabel -> Labels -> LabelEnv env -> (ELabel, LabelEnv env')
 addLhsLabels LeftHandSideWildcard{} e _ lenv =     (e    , lenv)
 addLhsLabels LeftHandSideSingle{}   e l lenv =     (e + 1, (e, l) :>>>: lenv)

@@ -90,7 +90,7 @@ openReconstruct labelenv graph clustersets ilpsets construction = recurseHere la
     -- do the topological sorting and computing of dieMap for each set
     (dieMapC, clusters) =               first mconcat . unzip . map (topSortDieMap graph)  $ clustersets
     (dieMapI, ilps) = sequence . M.map (first mconcat . unzip . map (topSortDieMap graph)) $ ilpsets
-    --                   ^ uses monoid of IntMap to union the dieMaps
+    --                   ^ uses monoid instance of IntMap to union the dieMaps
     dieMap = dieMapC <> dieMapI
 
     -- calls makeCluster on each cluster, and let-binds them together.
@@ -160,6 +160,8 @@ openReconstruct labelenv graph clustersets ilpsets construction = recurseHere la
                                                 @(PreOpenAfun (Cluster op) env (a -> a))
                                                 body)
                                   (fromJust $ reindexVars (mkReindexPartial env' env) start)
+          Just (CLHS (lhs :: GLeftHandSide a b c) (l:ls)) -> foldl cons (makeLeaf l) ls
+          Just (CLHS _ []) -> error "emply CLHS"
 
         makeAcc (FT cluster args) = Exists $ Exec cluster args
         makeAcc (NotFold acc) = Exists acc
