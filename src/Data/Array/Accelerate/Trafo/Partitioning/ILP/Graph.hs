@@ -50,6 +50,7 @@ import Numeric.Limp.Rep ( IntDouble )
 import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Type
 import Control.Monad.State
+import Data.Array.Accelerate.AST.LeftHandSide
 
 
 -- | We have Int variables represented by @Variable op@, and no real variables.
@@ -63,9 +64,18 @@ type Constraint op =  LIMP  LIMP.Constraint op
 type ILP        op =  LIMP  LIMP.Program    op
 type Linear op res =  LIMP' LIMP.Linear     op res
 
+
 -- | Directed edge (a,b): `b` depends on `a`.
 type Edge = (Label, Label)
 
+-- This module (especially mkFullGraph) could be a lot more elegant with e.g. lenses.
+-- To keep it simple and avoid depending on them, we instead play around with records
+-- and Monoid instances:
+--  `i <> mempty{graphI = mempty{graphNodes = x}}`
+-- is a way to write
+--  `i.graphI.graphNodes <>= x`
+-- (add x to the nodes of the graph in i), without having to write tons of getters and setters.
+-- next iteration: use lenses, I just realised we already depend on them...
 
 data Graph = Graph
   { graphNodes     :: Set Label
@@ -201,16 +211,32 @@ mkFullGraph (Exec op args) = do
 -- how about getting a fresh 'l', adding fusible edges from all of bndL to l, and making a 'Construction'
 -- constructor that stores the LHS and bndL?
 mkFullGraph (Alet lhs _ bnd scp) = do
-  e <- getE
-  env <- gets lenv
   bndRes@(FGRes _ _ bndL _) <- mkFullGraph bnd
-  let (e', env') = addLhsLabels lhs e bndL env
-  putE e'
-  -- Because the type of the state is different in the 'scope', we explicitly wrap/unwrap the State monad
-  stt <- get 
-  let (scpRes@(FGRes _ _ scpL _), scpState) = runState (mkFullGraph scp) stt{lenv = env'}
-  put (scpState{lenv = weakLhsEnv lhs (lenv scpState)})
-  return $ (bndRes <> scpRes){lset = scpL} 
+  case lhs of
+    -- I guess, probably, letting this fall through would result in the same ILP. But this is a lot more explicit:
+    -- environments do not change, we don't make any edges or labels, just pass the state through and combine
+    -- the results of both bnd and scp.
+    LeftHandSideUnit -> (bndRes <>) <$> mkFullGraph scp
+
+    -- not a LHSUnit, which means we're binding something other than an Exec, which means we can safely add infusible edges.
+    -- As long as we're careful on which labels we connect, this should not prohibit any clustering of Execs!
+    -- A key observation here is that the only thing we want to have clustered is execs. Future iterations of mk(Full)Graph
+    -- might consider making this explicit in the types somehow.
+    _ -> do
+      e <- getE
+      l <- getL
+      let nonfuse = S.map (,l) bndL
+      env <- gets lenv
+      let (e', env') = addLhsLabels lhs e (S.singleton l) env
+      putE e'
+      -- Because the type of the state is different in the 'scope', we explicitly wrap/unwrap the State monad
+      stt <- get 
+      let (scpRes@(FGRes _ _ scpL _), scpState) = runState (mkFullGraph scp) stt{lenv = env'}
+      put (scpState{lenv = weakLhsEnv lhs (lenv scpState)})
+      let res = bndRes <> scpRes
+      return $ res{ lset = scpL
+                  , info = info res <> mempty{graphI = mempty{infusibleEdges = nonfuse}}
+                  , construc = M.insert l (CLHS lhs bndL) $ construc res}
 
 mkFullGraph (Return vars) = do
   env <- gets lenv
@@ -304,12 +330,13 @@ mkFullGraphF (Alam lhs f) = do
 -- | Information to construct AST nodes. Generally, constructors contain
 -- both actual information, and a LabelEnv of the original environment
 -- which helps to re-index into the new environment later.
+-- next iteration might want to use 'dependant-map', to store some type information at type level. 
 data Construction (op :: Type -> Type) where
   CExe :: LabelEnv env -> Args env args -> op args                                  -> Construction op
   CUse ::                 ScalarType e -> Buffer e                                  -> Construction op
   CITE :: LabelEnv env -> ExpVar env PrimBool -> Label -> Label                     -> Construction op
   CWhl :: LabelEnv env -> Uniquenesses a      -> Label -> Label -> GroundVars env a -> Construction op
-  CLHS ::                 GLeftHandSide a b c -> [Label]                             -> Construction op
+  CLHS ::                 GLeftHandSide a b c -> Labels                             -> Construction op
 
 constructExe :: LabelEnv env' -> LabelEnv env 
              -> Args env args -> op args 

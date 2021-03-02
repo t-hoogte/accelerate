@@ -97,12 +97,17 @@ openReconstruct labelenv graph clustersets ilpsets construction = recurseHere la
     -- both of these functions still lack something.. need to construct
     -- LHS's, but no type information is available. Back to the construction definition?
     recurseHere  :: LabelEnv env -> [ClusterL] -> Exists (PreOpenAcc  (Cluster op) env)
-    recurseHere env []  = error "empty program?"
-    recurseHere env [c] = makeCluster c env
-    recurseHere env (c:cs)                              = case makeCluster c env of
-      Exists   (bnd :: PreOpenAcc (Cluster op) env  a) -> case recurseHere _ cs  of
-        Exists (scp :: PreOpenAcc (Cluster op) env' b) ->
-          Exists (Alet _ _ bnd scp)
+    recurseHere env = assembleLets . map (`makeCluster` env)
+    -- recurseHere env []  = error "empty program?"
+    -- recurseHere env [c] = makeCluster c env
+    -- recurseHere env (c:cs)                              = recurseHere' env _ cs
+    
+    -- recurseHere' :: LabelEnv env -> PreOpenAcc (Cluster op) env a -> [ClusterL] -> Exists (PreOpenAcc (Cluster op) env)
+    -- recurseHere' _ acc [] = acc
+    -- recurseHere' env acc (c:cs) = case makeCluster c env of
+    --   Exists   (bnd :: PreOpenAcc (Cluster op) env  a) -> case recurseHere _ cs  of
+    --     Exists (scp :: PreOpenAcc (Cluster op) env' b) ->
+    --       Exists (Alet _ _ bnd scp)
 
     -- equivalent to the above for PreOpenAfun
     -- currently only called by while-loops, both cond and body, both have only 1 argument.
@@ -112,24 +117,33 @@ openReconstruct labelenv graph clustersets ilpsets construction = recurseHere la
     recurseHereF env cs = case recurseHere _ cs of
       Exists acc -> Exists $ Alam _ $ Abody acc
 
+    assembleLets :: [FoldType op env] -> Exists (PreOpenAcc (Cluster op) env)
+    assembleLets [] = error "impossible"
+    assembleLets [FT cluster args] = Exists $ Exec cluster args
+    assembleLets [NotFold acc] = Exists acc
+    assembleLets [Weaken _] = error "impossible"
+    assembleLets
+
+        -- makeAcc (FT cluster args) = Exists $ Exec cluster args
+        -- makeAcc (NotFold acc) = Exists acc
     makeCluster :: forall env. 
                    ClusterL
                 -> LabelEnv env
-                -> Exists (PreOpenAcc (Cluster op) env) -- We don't know the result type of this AST right now
+                -> FoldType op env -- We don't know the result type of this AST right now
     makeCluster [] _ = error "empty cluster"
-    makeCluster (label:labels) env = makeAcc $ foldl cons (makeLeaf label) labels
+    makeCluster (label:labels) env = foldl cons (makeLeaf label) labels
       where
         cons :: FoldType op env -> Label -> FoldType op env
-        cons (NotFold _) _ = error "cluster with size (>1) contains non-clusterable acc at head"
         cons (FT cluster args) l =
           let verticalLabels = dieMap M.! l
           in case makeLeaf l of
-            NotFold _ -> error "cluster contains non-clusterable acc after head"
             -- do some swapping and combining. verticalLabels stores the ones that get vertically fused away.
             FT (Leaf op Start) args' -> FT (Branch cluster (Leaf op _) _) _
               where
                 _ = _ args args' verticalLabels
             FT _ _ -> error "impossible"
+            _ -> error "cluster contains non-clusterable acc after head"
+        cons _ _ = error "cluster with size (>1) contains non-clusterable acc at head"
 
         makeLeaf :: Label -> FoldType op env
         makeLeaf l = case M.lookup l construction of
@@ -160,20 +174,18 @@ openReconstruct labelenv graph clustersets ilpsets construction = recurseHere la
                                                 @(PreOpenAfun (Cluster op) env (a -> a))
                                                 body)
                                   (fromJust $ reindexVars (mkReindexPartial env' env) start)
-          Just (CLHS (lhs :: GLeftHandSide a b c) (l:ls)) -> foldl cons (makeLeaf l) ls
-          Just (CLHS _ []) -> error "emply CLHS"
+          Just (CLHS lhs _) -> Weaken lhs
 
-        makeAcc (FT cluster args) = Exists $ Exec cluster args
-        makeAcc (NotFold acc) = Exists acc
 
 
 -- | Internal datatype for `makeCluster`.
+
 data FoldType op env
   = forall args. FT (Cluster op args) (Args env args) -- add LabelArgs
   -- We say that all Constructions other than Exe are 'not foldable', meaning they cannot be in a cluster:
   -- they are either control-flow, or a 'Use' statement (which we can also safely consider not fusible)
   | forall a. NotFold (PreOpenAcc (Cluster op) env a)
-
+  | forall a env' env''. Weaken (GLeftHandSide a env' env'')
 
 {- [NOTE unsafeCoerce result type]
 
