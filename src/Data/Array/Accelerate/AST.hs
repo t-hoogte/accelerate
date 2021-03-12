@@ -1,3 +1,4 @@
+{-# LANGUAGE AllowAmbiguousTypes   #-}
 {-# LANGUAGE BangPatterns          #-}
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE FlexibleInstances     #-}
@@ -6,6 +7,7 @@
 {-# LANGUAGE RankNTypes            #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
 {-# LANGUAGE TemplateHaskell       #-}
+{-# LANGUAGE TypeApplications      #-}
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE TypeOperators         #-}
 {-# OPTIONS_HADDOCK hide #-}
@@ -144,6 +146,8 @@ import Data.Array.Accelerate.Representation.Stencil
 import Data.Array.Accelerate.Representation.Tag
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Representation.Vec
+import qualified Data.Array.Accelerate.Sugar.Array                  as Sugar
+import qualified Data.Array.Accelerate.Sugar.Elt                    as Sugar
 import Data.Array.Accelerate.Sugar.Foreign
 import Data.Array.Accelerate.Type
 import Data.Primitive.Vec
@@ -151,6 +155,7 @@ import Data.Primitive.Vec
 import Control.DeepSeq
 import Data.Kind
 import Data.Maybe
+import Data.Proxy
 import Language.Haskell.TH                                          ( Q, TExp )
 import qualified Language.Haskell.TH.Syntax as TH
 import Prelude
@@ -199,10 +204,24 @@ type PrimMaybe a = (TAG, ((), a))
 
 -- Trace messages
 data Message a where
-  Message :: (a -> String)                    -- embedded show
-          -> Maybe (Q (TExp (a -> String)))   -- lifted version of show, for TH
-          -> String
-          -> Message a
+  MessageString
+    :: String
+    -> Message ()
+
+  MessageArrays
+    :: (Sugar.Arrays arrs, Show arrs)
+    => Proxy arrs
+    -> Message (Sugar.ArraysR arrs)
+
+  MessageScalar
+    :: (Sugar.Elt e, Show e)
+    => Proxy e
+    -> Message (Array () (Sugar.EltR e))
+
+  MessageAppend
+    :: Message as
+    -> Message bs
+    -> Message (as, bs)
 
 -- | Collective array computations parametrised over array variables
 -- represented with de Bruijn indices.
@@ -982,16 +1001,13 @@ rnfPreOpenAcc rnfA pacc =
 
       rnfB :: ArrayR (Array sh e) -> Boundary aenv' (Array sh e) -> ()
       rnfB = rnfBoundary
-
-      rnfM :: Message a -> ()
-      rnfM (Message f g msg) = f `seq` rnfMaybe (\x -> x `seq` ()) g `seq` rnf msg
   in
   case pacc of
     Alet lhs bnd body         -> rnfALeftHandSide lhs `seq` rnfA bnd `seq` rnfA body
     Avar var                  -> rnfArrayVar var
     Apair as bs               -> rnfA as `seq` rnfA bs
     Anil                      -> ()
-    Atrace msg as bs          -> rnfM msg `seq` rnfA as `seq` rnfA bs
+    Atrace msg as bs          -> rnfMessage msg `seq` rnfA as `seq` rnfA bs
     Apply repr afun acc       -> rnfTupR rnfArrayR repr `seq` rnfAF afun `seq` rnfA acc
     Aforeign repr asm afun a  -> rnfTupR rnfArrayR repr `seq` rnf (strForeign asm) `seq` rnfAF afun `seq` rnfA a
     Acond p a1 a2             -> rnfE p `seq` rnfA a1 `seq` rnfA a2
@@ -1164,6 +1180,11 @@ rnfPrimFun PrimLNot                   = ()
 rnfPrimFun (PrimFromIntegral i n)     = rnfIntegralType i `seq` rnfNumType n
 rnfPrimFun (PrimToFloating n f)       = rnfNumType n `seq` rnfFloatingType f
 
+rnfMessage :: Message a -> ()
+rnfMessage (MessageString str) = rnf str
+rnfMessage (MessageArrays Proxy) = ()
+rnfMessage (MessageScalar Proxy) = ()
+rnfMessage (MessageAppend x y) = rnfMessage x `seq` rnfMessage y
 
 -- Template Haskell
 -- ================
@@ -1199,7 +1220,7 @@ liftPreOpenAcc liftA pacc =
     Avar var                  -> [|| Avar $$(liftArrayVar var) ||]
     Apair as bs               -> [|| Apair $$(liftA as) $$(liftA bs) ||]
     Anil                      -> [|| Anil ||]
-    Atrace msg as bs          -> [|| Atrace $$(liftMessage (arraysR as) msg) $$(liftA as) $$(liftA bs) ||]
+    Atrace msg as bs          -> [|| Atrace $$(liftMessage msg) $$(liftA as) $$(liftA bs) ||]
     Apply repr f a            -> [|| Apply $$(liftArraysR repr) $$(liftAF f) $$(liftA a) ||]
     Aforeign repr asm f a     -> [|| Aforeign $$(liftArraysR repr) $$(liftForeign asm) $$(liftPreOpenAfun liftA f) $$(liftA a) ||]
     Acond p t e               -> [|| Acond $$(liftE p) $$(liftA t) $$(liftA e) ||]
@@ -1240,18 +1261,11 @@ liftDirection :: Direction -> Q (TExp Direction)
 liftDirection LeftToRight = [|| LeftToRight ||]
 liftDirection RightToLeft = [|| RightToLeft ||]
 
-liftMessage :: ArraysR a -> Message a -> Q (TExp (Message a))
-liftMessage aR (Message _ fmt msg) =
-  let
-      -- We (ironically?) can't lift TExp, so nested occurrences must fall
-      -- back to displaying in representation format
-      fmtR :: ArraysR arrs' -> Q (TExp (arrs' -> String))
-      fmtR TupRunit                         = [|| \() -> "()" ||]
-      fmtR (TupRsingle (ArrayR ShapeRz eR)) = [|| \as -> showElt $$(liftTypeR eR) $ linearIndexArray $$(liftTypeR eR) as 0 ||]
-      fmtR (TupRsingle (ArrayR shR eR))     = [|| \as -> showArray (showsElt $$(liftTypeR eR)) (ArrayR $$(liftShapeR shR) $$(liftTypeR eR)) as ||]
-      fmtR aR'                              = [|| \as -> showArrays $$(liftArraysR aR') as ||]
-  in
-  [|| Message $$(fromMaybe (fmtR aR) fmt) Nothing $$(TH.unsafeTExpCoerce $ return $ TH.LitE $ TH.StringL msg) ||]
+liftMessage :: Message arrs -> Q (TExp (Message arrs))
+liftMessage (MessageString str) = [|| MessageString $$(TH.unsafeTExpCoerce $ return $ TH.LitE $ TH.StringL str) ||]
+liftMessage (MessageArrays (_ :: Proxy a)) = [|| MessageArrays @a Proxy ||]
+liftMessage (MessageScalar (_ :: Proxy e)) = [|| MessageScalar @e Proxy ||]
+liftMessage (MessageAppend x y) = [|| MessageAppend $$(liftMessage x) $$(liftMessage y) ||]
 
 liftMaybe :: (a -> Q (TExp a)) -> Maybe a -> Q (TExp (Maybe a))
 liftMaybe _ Nothing  = [|| Nothing ||]

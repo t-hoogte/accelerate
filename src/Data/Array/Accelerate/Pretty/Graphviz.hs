@@ -229,7 +229,7 @@ prettyDelayedOpenAcc detail ctx aenv atop@(Manifest pacc) =
     a@(Apair a1 a2)          -> mkNodeId a >>= prettyDelayedApair detail aenv a1 a2
 
     Anil                            -> "()"             .$ []
-    Atrace (Message _ _ msg) as bs  -> "atrace"         .$ [ return $ PDoc (fromString msg) [], ppA as, ppA bs ]
+    Atrace msg as bs                -> "atrace"         .$ [ return $ PDoc (fromString $ ppM msg) [], ppA as, ppA bs ]
     Use repr arr                    -> "use"            .$ [ return $ PDoc (prettyArray repr arr) [] ]
     Unit _ e                        -> "unit"           .$ [ ppE e ]
     Generate _ sh f                 -> "generate"       .$ [ ppE sh, ppF f ]
@@ -329,6 +329,12 @@ prettyDelayedOpenAcc detail ctx aenv atop@(Manifest pacc) =
     ppD :: String -> Direction -> String -> Operator
     ppD f LeftToRight k = fromString (f <> "l" <> k)
     ppD f RightToLeft k = fromString (f <> "r" <> k)
+
+    ppM :: Message a -> String
+    ppM (MessageString str) = str
+    ppM (MessageArrays _) = "_"
+    ppM (MessageScalar _) = "_"
+    ppM (MessageAppend x y) = ppM x ++ ppM y
 
     lift :: HasCallStack => DelayedOpenAcc aenv a -> Dot Vertex
     lift Delayed{}                    = internalError "expected manifest array"

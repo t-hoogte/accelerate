@@ -75,6 +75,7 @@ import Control.Monad.ST
 import Data.Bits
 import Data.Primitive.ByteArray
 import Data.Primitive.Types
+import Data.Proxy
 import Debug.Trace
 import System.IO.Unsafe                                             ( unsafePerformIO )
 import Text.Printf                                                  ( printf )
@@ -868,12 +869,16 @@ evalBoundary bnd aenv =
     AST.Function f -> Function (evalFun f aenv)
 
 atraceOp :: Message as -> as -> IO ()
-atraceOp (Message show _ msg) as =
-  let str = show as
-   in if null str
-         then traceIO msg
-         else traceIO $ printf "%s: %s" msg str
+atraceOp msg as = traceIO $ formatMessage msg as
 
+formatMessage :: Message arrs -> arrs -> String
+formatMessage msg as = formatMessageS msg as ""
+
+formatMessageS :: Message arrs -> arrs -> ShowS
+formatMessageS (MessageString str)                ()     = (str ++)
+formatMessageS (MessageArrays (Proxy :: Proxy a)) arrs   = shows $ Sugar.toArr @a arrs
+formatMessageS (MessageScalar (Proxy :: Proxy e)) arr    = shows $ Sugar.toElt @e $ linearIndexArray (Sugar.eltR @e) arr 0
+formatMessageS (MessageAppend a b)                (x, y) = formatMessageS a x . formatMessageS b y
 
 -- Scalar expression evaluation
 -- ----------------------------

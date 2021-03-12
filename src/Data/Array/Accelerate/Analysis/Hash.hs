@@ -155,6 +155,12 @@ encodePreOpenAcc options encodeAcc pacc =
       travD LeftToRight = intHost $(hashQ "L")
       travD RightToLeft = intHost $(hashQ "R")
 
+      travM :: Message a -> Builder
+      travM (MessageString str) = intHost $(hashQ "String") <> intHost (Hashable.hash str)
+      travM (MessageArrays _)   = intHost $(hashQ "Arrays")
+      travM (MessageScalar _)   = intHost $(hashQ "Scalar")
+      travM (MessageAppend x y) = intHost $(hashQ "Pair") <> travM x <> travM y
+
       deep :: Builder -> Builder
       deep | perfect options = id
            | otherwise       = const mempty
@@ -169,7 +175,7 @@ encodePreOpenAcc options encodeAcc pacc =
     Avar (Var repr v)               -> intHost $(hashQ "Avar")        <> encodeArrayType repr <> deep (encodeIdx v)
     Apair a1 a2                     -> intHost $(hashQ "Apair")       <> travA a1 <> travA a2
     Anil                            -> intHost $(hashQ "Anil")
-    Atrace (Message _ _ msg) as bs  -> intHost $(hashQ "Atrace")      <> intHost (Hashable.hash msg) <> travA as <> travA bs
+    Atrace msg as bs                -> intHost $(hashQ "Atrace")      <> travM msg <> travA as <> travA bs
     Apply _ f a                     -> intHost $(hashQ "Apply")       <> travAF f <> travA a
     Aforeign _ _ f a                -> intHost $(hashQ "Aforeign")    <> travAF f <> travA a
     Use repr a                      -> intHost $(hashQ "Use")         <> encodeArrayType repr <> deep (encodeArray a)

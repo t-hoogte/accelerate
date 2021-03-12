@@ -193,7 +193,7 @@ prettyPreOpenAcc config ctx prettyAcc extractAcc aenv pacc =
                       , hang shiftwidth (sep [ else_, e' ]) ]
 
 
-    Atrace (Message _ _ msg) as bs  -> ppN "atrace"      .$ [ fromString (show msg), ppA as, ppA bs ]
+    Atrace msg as bs                -> ppN "atrace"      .$ [ ppM msg, ppA as, ppA bs ]
     Aforeign _ ff _ a               -> ppN "aforeign"    .$ [ pretty (strForeign ff), ppA a ]
     Awhile p f a                    -> ppN "awhile"      .$ [ ppAF p, ppAF f, ppA a ]
     Use repr arr                    -> ppN "use"         .$ [ prettyArray repr arr ]
@@ -250,6 +250,12 @@ prettyPreOpenAcc config ctx prettyAcc extractAcc aenv pacc =
     ppD :: String -> AST.Direction -> String -> Operator
     ppD f AST.LeftToRight k = ppN (f <> "l" <> k)
     ppD f AST.RightToLeft k = ppN (f <> "r" <> k)
+
+    ppM :: Message a -> Adoc
+    ppM (MessageString str) = fromString str
+    ppM (MessageArrays _) = "_"
+    ppM (MessageScalar _) = "_"
+    ppM (MessageAppend x y) = ppM x <> ppM y
 
 
 prettyAlet
