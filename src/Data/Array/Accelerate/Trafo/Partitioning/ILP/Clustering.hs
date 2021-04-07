@@ -122,7 +122,7 @@ openReconstruct labelenv graph clustersets ilpsets construction = recurseHere la
     assembleLets [FT cluster args] = Exists $ Exec cluster args
     assembleLets [NotFold acc] = Exists acc
     assembleLets [Weaken _] = error "impossible"
-    assembleLets
+    assembleLets _ = _
 
         -- makeAcc (FT cluster args) = Exists $ Exec cluster args
         -- makeAcc (NotFold acc) = Exists acc

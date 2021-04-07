@@ -71,6 +71,7 @@ data Cluster op args where
 -- | All these options will, in general, require the underlying Clusters to be weakened
 -- by adding superfluous Args. The constructors below are the only way to "remove Args".
 data Combine left right result where
+  Combine :: Combine () () ()
   -- An array is produced and consumed, fusing it away.
   -- NOTE: this means that the array does not appear in the environment, and
   -- it does not have an accompanying `Arg` constructor: Its scope is now
@@ -84,16 +85,23 @@ data Combine left right result where
 
   -- Both computations use the argument in the same fashion.
   -- Note that you can't recreate this type using WeakLeft and WeakRight,
-  -- as that would duplicate the argument in the resulting type
+  -- as that would duplicate the argument in the resulting type.
+  -- Note also that it doesn't make too much sense to horizontally fuse output arguments.
   Horizontal :: Combine       a        b        c
-             -> Combine (x -> a) (x -> b) (x -> c)
+             -> Combine (In sh e -> a) (In sh e -> b) (In sh e -> c)
 
   -- Only the right computation uses x, so this 'weakens' the left computation
-  WeakLeft  :: Combine       a       b        c
-            -> Combine       a (x -> b) (x -> c)
-  WeakRight :: Combine       a       b        c
-            -> Combine (x -> a)      b  (x -> c)
+  WeakLeftI  :: Combine              a              b               c
+             -> Combine              a (In sh e  -> b) (In sh e  -> c)
+  -- Mirror of WeakLeft
+  WeakRightI :: Combine              a              b               c
+             -> Combine (In sh e  -> a)             b  (In sh e  -> c)
 
+  WeakLeftO  :: Combine              a              b               c
+             -> Combine              a (Out sh e -> b) (Out sh e -> c)
+
+  WeakRightO :: Combine              a              b               c
+             -> Combine (Out sh e -> a)             b  (Out sh e -> c)
 
 -- Re-order the type level arguments, to align them for the fusion constructors.
 data SwapArgs a b where
@@ -104,7 +112,8 @@ data SwapArgs a b where
         -> Take x xb b
         -> SwapArgs a (x -> b)
 
-instance Category SwapArgs where -- neat, but is it actually useful?
+-- neat, but is it actually useful?
+instance Category SwapArgs where 
   id  = Start
   (.) = flip composeSwap
 

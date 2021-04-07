@@ -1,3 +1,4 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
@@ -7,6 +8,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -17,7 +19,7 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
 
 -- accelerate imports
 import Data.Array.Accelerate.AST.Idx ( Idx(..) )
-import Data.Array.Accelerate.AST.Operation
+import Data.Array.Accelerate.AST.Operation hiding ( Var )
 
 -- Data structures
 -- In this file, order very often subly does matter.
@@ -35,34 +37,11 @@ import Data.Kind ( Type )
 import Unsafe.Coerce (unsafeCoerce)
 
 
--- Limp is a Linear Integer Mixed Programming library.
--- We only use the Integer part (not the Mixed part, 
--- which allows you to add non-integer variables and
--- constraints). It has a backend that binds to CBC, 
--- which is apparently a good one? Does not seem to be
--- actively maintained though.
--- We can always switch to a different ILP library
--- later, the interfaces are all quite similar.
-import qualified Numeric.Limp.Program as LIMP
-import qualified Numeric.Limp.Rep     as LIMP
-import Numeric.Limp.Program hiding ( Bounds, Constraint, Program, Linear, r )
-import Numeric.Limp.Rep ( IntDouble )
 import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Type
 import Control.Monad.State
 import Data.Array.Accelerate.AST.LeftHandSide
-
-
--- | We have Int variables represented by @Variable op@, and no real variables.
--- These type synonyms instantiate the @z@, @r@ and @c@ type variables in Limp.
-type LIMP  datatyp op   = datatyp (Variable op) () IntDouble
-type LIMP' datatyp op a = datatyp (Variable op) () IntDouble a
-
-type Assignment op =  LIMP  LIMP.Assignment op
-type Bounds     op = [LIMP  LIMP.Bounds     op]
-type Constraint op =  LIMP  LIMP.Constraint op
-type ILP        op =  LIMP  LIMP.Program    op
-type Linear op res =  LIMP' LIMP.Linear     op res
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
 
 
 -- | Directed edge (a,b): `b` depends on `a`.
@@ -91,39 +70,43 @@ instance Monoid Graph where
 -- each backend has to encode their own constraints
 -- describing the fusion rules. The bounds is a [] instead of Set
 -- for practical reasons (no Ord instance, LIMP expects a list) only.
-data Information op = Info 
+data Information ilp op = Info 
   { graphI :: Graph
-  , constr :: Constraint op
-  , bounds :: Bounds op
+  , constr :: Constraint ilp op
+  , bounds :: Bounds ilp op
   }
-instance Semigroup (Information op) where
+instance ILPSolver ilp op => Semigroup (Information ilp op) where
   Info g c b <> Info g' c' b' = Info (g <> g') (c <> c') (b <> b')
-instance Monoid (Information op) where
+instance ILPSolver ilp op => Monoid (Information ilp op) where
   mempty = Info mempty mempty mempty
 
 
 
-data Variable op
+data Var (op :: Type -> Type)
   = Pi    Label                     -- For acyclic ordering of clusters
   | Fused Label Label               -- 0 is fused (same cluster), 1 is unfused. We do *not* have one of these for all pairs!
-  | BackendSpecific (BackendVar op) -- Variables needed to express backend-specific fusion rules.
+  | BackendSpecific (BackendVar op) -- Vars needed to express backend-specific fusion rules.
 
 -- convenience synonyms
-pi :: Label -> Linear op 'KZ
-pi l = z1 $ Pi l
-fused :: Label -> Label -> Linear op 'KZ
-fused x y = z1 $ Fused x y
+pi :: ILPSolver ilp op => Label -> Expression ilp op
+pi l = 1 .*. Pi l
+fused :: ILPSolver ilp op => Label -> Label -> Expression ilp op
+fused x y = 1 .*. Fused x y
 
 
 class MakesILP op where
-  -- Variables needed to express backend-specific fusion rules.
+  -- Vars needed to express backend-specific fusion rules.
   type BackendVar op
 
   -- | This function only needs to do the backend-specific things, that is, things which depend on the definition of @op@.
   -- That includes "BackendVar op's" and all their constraints/bounds, but also some (in)fusible edges.
   -- As a conveniece, fusible edges have already been made from all (incoming) labels in the LabelArgs to the current label. 
   -- These can be 'strengthened' by adding a corresponding infusible edge, in which case the fusible edge will later be optimised away.
-  mkGraph :: op args -> LabelArgs args -> Label -> Information op
+  mkGraph :: op args -> LabelArgs args -> Label -> Information ilp op
+
+
+
+
 
 -- Control flow cannot be fused, so we make separate ILPs for e.g.
 -- then-branch and else-branch. In the future, a possible optimisation is to
@@ -151,9 +134,10 @@ class MakesILP op where
 -- a let will not add to the environment but instead mutate it.
 
 
-makeFullGraph :: MakesILP op
+
+makeFullGraph :: (MakesILP op, ILPSolver ilp op)
               => PreOpenAcc op () a
-              -> (Information op, IntMap (Information op), IntMap (Construction op))
+              -> (Information ilp op, IntMap (Information ilp op), IntMap (Construction op))
 makeFullGraph acc = (i, iM, constrM)
   where (FGRes i iM _ constrM, _) = runState (mkFullGraph acc) $ FGState LabelEnvNil 1 1
 
@@ -176,17 +160,20 @@ putE :: ELabel -> State (FullGraphState env) ()
 putE e = modify $ \stt -> stt{freshE = e}
 putEnv :: LabelEnv env -> State (FullGraphState env) ()
 putEnv env = modify $ \stt -> stt{lenv = env}
-data FullGraphResult op = FGRes
-  { info   :: Information op
-  , infoM  :: IntMap (Information op)
+data FullGraphResult ilp op = FGRes
+  { info   :: Information ilp op
+  , infoM  :: IntMap (Information ilp op)
   , lset   :: Set Label    -- sources of open outgoing edges for result
   , construc :: IntMap (Construction op)
   }
-instance Semigroup (FullGraphResult op) where
+instance ILPSolver ilp op => Semigroup (FullGraphResult ilp op) where
   FGRes a b c d <> FGRes e f g h = FGRes (a <> e) (b <> f) (c <> g) (d <> h)
-instance Monoid (FullGraphResult op) where mempty = FGRes mempty mempty mempty mempty
+instance ILPSolver ilp op => Monoid (FullGraphResult ilp op) where 
+  mempty = FGRes mempty mempty mempty mempty
 
-mkFullGraph :: MakesILP op => PreOpenAcc op env a -> State (FullGraphState env) (FullGraphResult op)
+mkFullGraph :: (MakesILP op, ILPSolver ilp op) 
+            => PreOpenAcc op env a 
+            -> State (FullGraphState env) (FullGraphResult ilp op)
 mkFullGraph (Exec op args) = do
   l <- getL
   env <- gets lenv
@@ -312,9 +299,9 @@ mkFullGraph (Awhile u cond bdy startvars) = do
 
 
 -- | Like mkFullGraph, but for @PreOpenAfun@.
-mkFullGraphF :: MakesILP op
+mkFullGraphF :: (MakesILP op, ILPSolver ilp op)
              => PreOpenAfun op env a
-             -> State (FullGraphState env) (FullGraphResult op)
+             -> State (FullGraphState env) (FullGraphResult ilp op)
 mkFullGraphF (Abody acc) = mkFullGraph acc
 mkFullGraphF (Alam lhs f) = do
   e <- gets freshE
@@ -325,6 +312,11 @@ mkFullGraphF (Alam lhs f) = do
   let (res, stt') = runState (mkFullGraphF f) stt{lenv=env'}
   put stt'{lenv = weakLhsEnv lhs $ lenv stt'}
   return res
+
+
+
+
+
 
 
 -- | Information to construct AST nodes. Generally, constructors contain
