@@ -6,6 +6,7 @@
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeApplications #-}
@@ -42,6 +43,7 @@ import Data.Array.Accelerate.Type
 import Control.Monad.State
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
+import Data.Array.Accelerate.Trafo.Desugar (DesugarAcc)
 
 
 -- | Directed edge (a,b): `b` depends on `a`.
@@ -61,6 +63,7 @@ data Graph = Graph
   , fusibleEdges   :: Set Edge  -- Can   be fused over, otherwise `a` before `b`.
   , infusibleEdges :: Set Edge  -- Can't be fused over, always    `a` before `b`.
   }
+makeLens ''Graph
 instance Semigroup Graph where
   Graph n f i <> Graph n' f' i' = Graph (n <> n') (f <> f') (i <> i')
 instance Monoid Graph where
@@ -93,14 +96,15 @@ pi l = 1 .*. Pi l
 fused :: ILPSolver ilp op => Label -> Label -> Expression ilp op
 fused x y = 1 .*. Fused x y
 
-
-class MakesILP op where
+-- There is no strict reason for DesugarAcc to be a superclass of MakesILP, other than
+-- that the input of MakesILP is the output of DesugarAcc.
+class DesugarAcc op => MakesILP op where
   -- Vars needed to express backend-specific fusion rules.
   type BackendVar op
 
   -- | This function only needs to do the backend-specific things, that is, things which depend on the definition of @op@.
   -- That includes "BackendVar op's" and all their constraints/bounds, but also some (in)fusible edges.
-  -- As a conveniece, fusible edges have already been made from all (incoming) labels in the LabelArgs to the current label. 
+  -- As a conveniece, fusible edges have already been made from all (non-Out) labels in the LabelArgs to the current label. 
   -- These can be 'strengthened' by adding a corresponding infusible edge, in which case the fusible edge will later be optimised away.
   mkGraph :: op args -> LabelArgs args -> Label -> Information ilp op
 
