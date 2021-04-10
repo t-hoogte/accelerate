@@ -303,6 +303,8 @@ library
         , hedgehog                      >= 0.5
         , limp                          >= 0.3.2.3
         , microlens                     >= 0.4
+        , microlens-th                  >= 0.4
+        , microlens-mtl                 >= 0.2
         , mtl                           >= 2.0
         , prettyprinter                 >= 1.2
         , prettyprinter-ansi-terminal   >= 1.0
@@ -386,7 +388,9 @@ library
         Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering
         Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
         Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
+        Data.Array.Accelerate.Trafo.Partitioning.ILP.Limp
         Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve
+        Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
         Data.Array.Accelerate.Trafo.Partitioning.Stream
         Data.Array.Accelerate.Trafo.Schedule.Uniform
         Data.Array.Accelerate.Trafo.Sharing

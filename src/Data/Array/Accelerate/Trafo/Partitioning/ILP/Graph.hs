@@ -32,6 +32,9 @@ import Data.IntMap (IntMap)
 import qualified Data.Set as S
 import qualified Data.IntMap as M
 
+import Lens.Micro
+import Lens.Micro.Mtl
+import Lens.Micro.TH
 
 -- GHC imports
 import Data.Kind ( Type )
@@ -59,11 +62,10 @@ type Edge = (Label, Label)
 -- next iteration: use lenses, I just realised we already depend on them...
 
 data Graph = Graph
-  { graphNodes     :: Set Label
-  , fusibleEdges   :: Set Edge  -- Can   be fused over, otherwise `a` before `b`.
-  , infusibleEdges :: Set Edge  -- Can't be fused over, always    `a` before `b`.
+  { _graphNodes     :: Set Label
+  , _fusibleEdges   :: Set Edge  -- Can   be fused over, otherwise `a` before `b`.
+  , _infusibleEdges :: Set Edge  -- Can't be fused over, always    `a` before `b`.
   }
-makeLens ''Graph
 instance Semigroup Graph where
   Graph n f i <> Graph n' f' i' = Graph (n <> n') (f <> f') (i <> i')
 instance Monoid Graph where
@@ -74,9 +76,9 @@ instance Monoid Graph where
 -- describing the fusion rules. The bounds is a [] instead of Set
 -- for practical reasons (no Ord instance, LIMP expects a list) only.
 data Information ilp op = Info 
-  { graphI :: Graph
-  , constr :: Constraint ilp op
-  , bounds :: Bounds ilp op
+  { _graphI :: Graph
+  , _constr :: Constraint ilp op
+  , _bounds :: Bounds ilp op
   }
 instance ILPSolver ilp op => Semigroup (Information ilp op) where
   Info g c b <> Info g' c' b' = Info (g <> g') (c <> c') (b <> b')
@@ -139,51 +141,66 @@ class DesugarAcc op => MakesILP op where
 
 
 
-makeFullGraph :: (MakesILP op, ILPSolver ilp op)
-              => PreOpenAcc op () a
-              -> (Information ilp op, IntMap (Information ilp op), IntMap (Construction op))
-makeFullGraph acc = (i, iM, constrM)
-  where (FGRes i iM _ constrM, _) = runState (mkFullGraph acc) $ FGState LabelEnvNil 1 1
 
 data FullGraphState env = FGState 
-  { lenv   :: LabelEnv env -- sources of open outgoing edges for env
-  , freshL :: Label  -- next fresh counter
-  , freshE :: ELabel -- next fresh counter
+  { _lenv   :: LabelEnv env -- sources of open outgoing edges for env
+  , _freshL :: Label  -- next fresh counter
+  , _freshE :: ELabel -- next fresh counter
   }
-getL :: State (FullGraphState env) Label
-getL = do
-  l <- gets freshL
-  modify (\fgs -> fgs {freshL = 1 + freshL fgs})
-  return l
-getE :: State (FullGraphState env) ELabel
-getE = do
-  e <- gets freshE
-  modify (\fgs -> fgs {freshE = 1 + freshE fgs})
-  return e
-putE :: ELabel -> State (FullGraphState env) ()
-putE e = modify $ \stt -> stt{freshE = e}
-putEnv :: LabelEnv env -> State (FullGraphState env) ()
-putEnv env = modify $ \stt -> stt{lenv = env}
 data FullGraphResult ilp op = FGRes
-  { info   :: Information ilp op
-  , infoM  :: IntMap (Information ilp op)
-  , lset   :: Set Label    -- sources of open outgoing edges for result
-  , construc :: IntMap (Construction op)
+  { _info   :: Information ilp op
+  , _infoM  :: IntMap (Information ilp op)
+  , _lset   :: Set Label    -- sources of open outgoing edges for result
+  , _construc :: IntMap (Construction op)
   }
 instance ILPSolver ilp op => Semigroup (FullGraphResult ilp op) where
   FGRes a b c d <> FGRes e f g h = FGRes (a <> e) (b <> f) (c <> g) (d <> h)
 instance ILPSolver ilp op => Monoid (FullGraphResult ilp op) where 
   mempty = FGRes mempty mempty mempty mempty
 
+-- | Information to construct AST nodes. Generally, constructors contain
+-- both actual information, and a LabelEnv of the original environment
+-- which helps to re-index into the new environment later.
+-- next iteration might want to use 'dependant-map', to store some type information at type level. 
+data Construction (op :: Type -> Type) where
+  CExe :: LabelEnv env -> Args env args -> op args                                  -> Construction op
+  CUse ::                 ScalarType e -> Buffer e                                  -> Construction op
+  CITE :: LabelEnv env -> ExpVar env PrimBool -> Label -> Label                     -> Construction op
+  CWhl :: LabelEnv env -> Uniquenesses a      -> Label -> Label -> GroundVars env a -> Construction op
+  CLHS ::                 GLeftHandSide a b c -> Labels                             -> Construction op
+
+
+
+
+makeLenses ''FullGraphState
+makeLenses ''FullGraphResult
+makeLenses ''Graph
+makeLenses ''Information
+
+
+getL :: State (FullGraphState env) Label
+getL = freshL <%= (+1)
+getE :: State (FullGraphState env) ELabel
+getE = freshE <%= (+1)
+
+
+
+makeFullGraph :: (MakesILP op, ILPSolver ilp op)
+              => PreOpenAcc op () a
+              -> (Information ilp op, IntMap (Information ilp op), IntMap (Construction op))
+makeFullGraph acc = (i, iM, constrM)
+  where (FGRes i iM _ constrM, _) = runState (mkFullGraph acc) $ FGState LabelEnvNil 1 1
+
 mkFullGraph :: (MakesILP op, ILPSolver ilp op) 
             => PreOpenAcc op env a 
             -> State (FullGraphState env) (FullGraphResult ilp op)
 mkFullGraph (Exec op args) = do
   l <- getL
-  env <- gets lenv
-  putEnv $ updateLabelEnv args env l
+  env <- use lenv
+  -- TODO: we use the pre-change env here for the results, is that ok?
+  lenv %= flip (updateLabelEnv args) l
   let fuseedges = S.map (, l) $ getInputArgLabels args env
-  return $ FGRes (mkGraph op (getLabelArgs args env) l <> mempty{graphI = Graph (S.singleton l) fuseedges mempty})
+  return $ FGRes (mkGraph op (getLabelArgs args env) l & graphI <>~ Graph (S.singleton l) fuseedges mempty)
                  mempty
                  mempty
                  (M.singleton l $ CExe env args op)
@@ -217,24 +234,24 @@ mkFullGraph (Alet lhs _ bnd scp) = do
       e <- getE
       l <- getL
       let nonfuse = S.map (,l) bndL
-      env <- gets lenv
+      env <- use lenv
       let (e', env') = addLhsLabels lhs e (S.singleton l) env
-      putE e'
+      freshE .= e'
       -- Because the type of the state is different in the 'scope', we explicitly wrap/unwrap the State monad
       stt <- get 
-      let (scpRes@(FGRes _ _ scpL _), scpState) = runState (mkFullGraph scp) stt{lenv = env'}
-      put (scpState{lenv = weakLhsEnv lhs (lenv scpState)})
+      let (scpRes@(FGRes _ _ scpL _), scpState) = runState (mkFullGraph scp) $ stt & lenv .~ env'
+      put $ scpState & lenv .~ weakLhsEnv lhs (_lenv scpState)
       let res = bndRes <> scpRes
-      return $ res{ lset = scpL
-                  , info = info res <> mempty{graphI = mempty{infusibleEdges = nonfuse}}
-                  , construc = M.insert l (CLHS lhs bndL) $ construc res}
+      return $ res{ _lset = scpL
+                  , _info = _info res & graphI . infusibleEdges <>~ nonfuse
+                  , _construc = M.insert l (CLHS lhs bndL) $ _construc res}
 
 mkFullGraph (Return vars) = do
-  env <- gets lenv
-  return $ mempty{lset = getLabelsTup vars env}
+  env <- use lenv
+  return $ mempty & lset .~ getLabelsTup vars env
 mkFullGraph (Compute expr) = do
-  env <- gets lenv
-  return $ mempty{lset = getLabelsExp expr env}
+  env <- use lenv
+  return $ mempty & lset .~ getLabelsExp expr env
 mkFullGraph Alloc{} = return mempty
 
 -- We put this as a 'foreign' thing, forcing it to be unfused with anything.
@@ -254,8 +271,8 @@ mkFullGraph (Use sctype buff) = _ -- TODO do as the comment says ^^^^^^^^
 -- (reuse the one that belongs to the variable). Might need to add a label
 -- to avoid obfuscating the AST though. Change when needed.
 mkFullGraph (Unit var) = do
-  env <- gets lenv
-  return mempty{lset = getLabelsVar var env}
+  env <- use lenv
+  return $ mempty & lset .~ getLabelsVar var env
 
 -- NOTE: We explicitly add infusible edges from every label in `lenv` to this Acond.
 -- This makes the previous let-bindings strict: even if some result is only used in one
@@ -268,15 +285,15 @@ mkFullGraph (Acond cond tacc facc) = do
   l  <- getL
   tl <- getL
   fl <- getL
-  env <- gets lenv
+  env <- use lenv
   let emptyEnv = emptyLabelEnv env
-  putEnv emptyEnv
+  lenv .= emptyEnv
   FGRes tinfo tinfoM _ tConstr <- mkFullGraph tacc
-  putEnv emptyEnv
+  lenv .= emptyEnv
   FGRes finfo finfoM _ fConstr <- mkFullGraph facc
-  putEnv emptyEnv
+  lenv .= emptyEnv
   let nonfuse = S.map (,l) (getAllLabelsEnv env) <> S.fromList [(l,tl), (tl,fl)]
-  return $ FGRes mempty{graphI = Graph (S.fromList [l, tl, fl]) mempty nonfuse}
+  return $ FGRes (mempty & graphI .~ Graph (S.fromList [l, tl, fl]) mempty nonfuse)
                  (M.insert tl tinfo $ M.insert fl finfo $ tinfoM <> finfoM)
                  (S.singleton l)
                  (M.insert l (CITE env cond tl fl) $ tConstr <> fConstr)
@@ -288,15 +305,15 @@ mkFullGraph (Awhile u cond bdy startvars) = do
   l  <- getL
   cl <- getL
   bl <- getL
-  env <- gets lenv
+  env <- use lenv
   let emptyEnv = emptyLabelEnv env
-  putEnv emptyEnv
+  lenv .= emptyEnv
   FGRes cinfo cinfoM _ cConstr <- mkFullGraphF cond
-  putEnv emptyEnv
+  lenv .= emptyEnv
   FGRes binfo binfoM _ bConstr <- mkFullGraphF bdy
-  putEnv emptyEnv
+  lenv .= emptyEnv
   let nonfuse = S.map (,l) (getAllLabelsEnv env) <> S.fromList [(l,cl), (cl,bl)]
-  return $ FGRes mempty{graphI = Graph (S.fromList [l, cl, bl]) mempty nonfuse}
+  return $ FGRes (mempty & graphI .~ Graph (S.fromList [l, cl, bl]) mempty nonfuse)
                  (M.insert cl cinfo $ M.insert bl binfo $ cinfoM <> binfoM)
                  (S.singleton l)
                  (M.insert l (CWhl env u cl bl startvars) $ cConstr <> bConstr)
@@ -308,31 +325,17 @@ mkFullGraphF :: (MakesILP op, ILPSolver ilp op)
              -> State (FullGraphState env) (FullGraphResult ilp op)
 mkFullGraphF (Abody acc) = mkFullGraph acc
 mkFullGraphF (Alam lhs f) = do
-  e <- gets freshE
-  env <- gets lenv
+  e <- use freshE
+  env <- use lenv
   let (e', env') = addLhsLabels lhs e mempty env
-  putE e'
+  freshE .= e'
   stt <- get
-  let (res, stt') = runState (mkFullGraphF f) stt{lenv=env'}
-  put stt'{lenv = weakLhsEnv lhs $ lenv stt'}
+  let (res, stt') = runState (mkFullGraphF f) $ stt & lenv .~ env'
+  put $ stt' & lenv .~ weakLhsEnv lhs (_lenv stt')
   return res
 
 
 
-
-
-
-
--- | Information to construct AST nodes. Generally, constructors contain
--- both actual information, and a LabelEnv of the original environment
--- which helps to re-index into the new environment later.
--- next iteration might want to use 'dependant-map', to store some type information at type level. 
-data Construction (op :: Type -> Type) where
-  CExe :: LabelEnv env -> Args env args -> op args                                  -> Construction op
-  CUse ::                 ScalarType e -> Buffer e                                  -> Construction op
-  CITE :: LabelEnv env -> ExpVar env PrimBool -> Label -> Label                     -> Construction op
-  CWhl :: LabelEnv env -> Uniquenesses a      -> Label -> Label -> GroundVars env a -> Construction op
-  CLHS ::                 GLeftHandSide a b c -> Labels                             -> Construction op
 
 constructExe :: LabelEnv env' -> LabelEnv env 
              -> Args env args -> op args 
@@ -351,6 +354,10 @@ constructWhl :: LabelEnv env' -> LabelEnv env
              -> Uniquenesses a -> PreOpenAfun op env' (a -> PrimBool) -> PreOpenAfun op env' (a -> a) -> GroundVars env a 
              -> Maybe (PreOpenAcc op env' a)
 constructWhl env' env u cond body start = Awhile u cond body <$> reindexVars (mkReindexPartial env env') start
+
+
+
+
 
 
 
