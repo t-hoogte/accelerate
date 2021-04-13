@@ -1,35 +1,44 @@
-{-# LANGUAGE TypeFamilyDependencies #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
-{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeFamilyDependencies #-}
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver where
+
+import qualified Data.Map as M
 -- Uses an hs-boot file to break an unfortunate cyclic import situation with D.A.A.T.P.ILP.Graph:
 -- `ILPSolver` references `Var` in type signatures, `Var` contains `BackendVar`,
 -- `BackendVar` is in the class `MakesILP`, which references `Information`,
 -- `Information` contains `Constraint` and `Bounds` from `ILPSolver`.
 -- I did not want to put them in the same module, so here we are.
-import {-# SOURCE #-} Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph ( Var )
+import {-# SOURCE #-} Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph ( Var, MakesILP )
 
 
-import Data.Kind (Type)
-import qualified Data.Map as M
-
+-- (data)types that are needed for/used in the class, but need to be defined outside of it.
 data OptDir = Maximise | Minimise
+data ILP ilp op = ILP OptDir (Expression ilp op) (Constraint ilp op) (Bounds ilp op)
+type Solution op = M.Map (Var op) Int
 
-data ILP      ilp op = ILP OptDir (Expression ilp op) (Constraint ilp op) (Bounds ilp op)
-type Solution ilp op = M.Map (Var op) Int
 
 -- Has an instance for LIMP, could add more. The MIP library binds to many solvers,
--- and I enjoyed using that for a different project.
+-- and I enjoyed using that with Gurobi for a different project. Sadly, Gurobi is
+-- proprietary (though they provide free licenses to academics).
+-- TODO once stuff works, benchmark some large accelerate programs to find a fast
+-- solver that we can integrate with Accelerate easily.
 -- -David
-class ( Monoid (Bounds     ilp op)
-      , Monoid (Constraint ilp op)) 
-    => ILPSolver ilp (op :: Type -> Type) where
+
+-- Conceptually, this should be "class ILPSolver ilp where _". It's just more difficult
+-- to add a "forall op. MakesILP op => (Monoid (Bounds ilp op), Monoid (Constraint ilp op))"
+-- clause, and this way seems to "just work" with very little effort and good type inference/errors.
+-- "Law": All instances should be polymorphic over `op` (instance (MakesILP op) => ILPSolver x op where _)
+class ( MakesILP op
+      , Monoid (Bounds     ilp op)
+      , Monoid (Constraint ilp op)
+   ) => ILPSolver ilp op where
 
   -- The functional dependencies aid type inference
   type Bounds     ilp op = a | a -> ilp op
@@ -55,6 +64,6 @@ class ( Monoid (Bounds     ilp op)
   binary :: Var op -> Bounds ilp op
   lowerUpper :: Int -> Var op -> Int -> Bounds ilp op
 
-  solve :: ILP ilp op -> IO (Maybe (Solution ilp op))
+  solve :: ILP ilp op -> IO (Maybe (Solution op))
 
 

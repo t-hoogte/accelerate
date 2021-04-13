@@ -1,8 +1,9 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
-{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 module Data.Array.Accelerate.Trafo.Partitioning.ILP where
 
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Limp
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
     ( MakesILP, Information(Info), makeFullGraph ) 
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve
@@ -14,10 +15,9 @@ import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
     ( ILPSolver(solve) )
 
-import qualified Data.IntMap as M
+import qualified Data.Map as M
 import System.IO.Unsafe (unsafePerformIO)
 import Data.Maybe (fromJust)
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Limp
 
 limpFusion :: MakesILP op => OperationAcc op () a -> PartitionedAcc op () a
 limpFusion = ilpfusion @LIMP

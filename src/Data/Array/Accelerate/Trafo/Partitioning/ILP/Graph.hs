@@ -1,70 +1,60 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE PolyKinds #-}
-{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE KindSignatures #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
 
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph where
 
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
 
 -- accelerate imports
+import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.AST.Idx ( Idx(..) )
+import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.AST.Operation hiding ( Var )
+import Data.Array.Accelerate.Trafo.Desugar (DesugarAcc)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
+import Data.Array.Accelerate.Type
 
 -- Data structures
 -- In this file, order very often subly does matter.
 -- To keep this clear, we use Set whenever it does not,
 -- and [] only when it does. It's also often efficient
 -- by removing duplicates.
-import Data.Set (Set)
-import Data.IntMap (IntMap)
+import Data.Set ( Set )
+import Data.Map ( Map )
 import qualified Data.Set as S
-import qualified Data.IntMap as M
+import qualified Data.Map as M
 
 import Lens.Micro
 import Lens.Micro.Mtl
 import Lens.Micro.TH
 
 -- GHC imports
+import Control.Monad.State
 import Data.Kind ( Type )
 import Unsafe.Coerce (unsafeCoerce)
 
 
-import Data.Array.Accelerate.Array.Buffer
-import Data.Array.Accelerate.Type
-import Control.Monad.State
-import Data.Array.Accelerate.AST.LeftHandSide
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
-import Data.Array.Accelerate.Trafo.Desugar (DesugarAcc)
+-- | Directed edge (a :-> b): `b` depends on `a`.
+data Edge = Label :-> Label
+  deriving (Eq, Ord)
 
-
--- | Directed edge (a,b): `b` depends on `a`.
-type Edge = (Label, Label)
-
--- This module (especially mkFullGraph) could be a lot more elegant with e.g. lenses.
--- To keep it simple and avoid depending on them, we instead play around with records
--- and Monoid instances:
---  `i <> mempty{graphI = mempty{graphNodes = x}}`
--- is a way to write
---  `i.graphI.graphNodes <>= x`
--- (add x to the nodes of the graph in i), without having to write tons of getters and setters.
--- next iteration: use lenses, I just realised we already depend on them...
 
 data Graph = Graph
   { _graphNodes     :: Set Label
   , _fusibleEdges   :: Set Edge  -- Can   be fused over, otherwise `a` before `b`.
-  , _infusibleEdges :: Set Edge  -- Can't be fused over, always    `a` before `b`.
+  , _infusibleEdges :: Set Edge  -- Can't be fused over: always    `a` before `b`.
   }
 instance Semigroup Graph where
   Graph n f i <> Graph n' f' i' = Graph (n <> n') (f <> f') (i <> i')
@@ -75,7 +65,7 @@ instance Monoid Graph where
 -- each backend has to encode their own constraints
 -- describing the fusion rules. The bounds is a [] instead of Set
 -- for practical reasons (no Ord instance, LIMP expects a list) only.
-data Information ilp op = Info 
+data Information ilp op = Info
   { _graphI :: Graph
   , _constr :: Constraint ilp op
   , _bounds :: Bounds ilp op
@@ -88,9 +78,15 @@ instance ILPSolver ilp op => Monoid (Information ilp op) where
 
 
 data Var (op :: Type -> Type)
-  = Pi    Label                     -- For acyclic ordering of clusters
-  | Fused Label Label               -- 0 is fused (same cluster), 1 is unfused. We do *not* have one of these for all pairs!
-  | BackendSpecific (BackendVar op) -- Vars needed to express backend-specific fusion rules.
+  = Pi Label
+    -- ^ Used for acyclic ordering of clusters. 
+    -- Pi (Label x y) = z means that computation number x (possibly a subcomputation of y, see Label) is fused into cluster z (ifJust y -> z is a subcluster of the cluster of y)
+  | Fused Label Label
+    -- ^ 0 is fused (same cluster), 1 is unfused. We do *not* have one of these for all pairs, only the ones we need for constraints and/or costs!
+    -- Invariant: both labels have to have the same parent: Either on top (Label _ Nothing) or as sub-computation of the same label (Label _ (Just x)).
+  | BackendSpecific (BackendVar op)
+    -- ^ Vars needed to express backend-specific fusion rules.
+    -- This is what allows backends to specify how each of the operations can fuse.
 
 -- convenience synonyms
 pi :: ILPSolver ilp op => Label -> Expression ilp op
@@ -111,15 +107,12 @@ class DesugarAcc op => MakesILP op where
   mkGraph :: op args -> LabelArgs args -> Label -> Information ilp op
 
 
-
-
-
 -- Control flow cannot be fused, so we make separate ILPs for e.g.
 -- then-branch and else-branch. In the future, a possible optimisation is to
 -- generate code for the awhile-condition twice: once maybe fused after the body,
 -- once maybe fused after input. For now, condition and body are both treated
 -- as 'foreign calls', like if-then-else.
--- The IntMap maps from a label to the corresponding ILP (only for things treated
+-- The Map maps from a label to the corresponding ILP (only for things treated
 -- as 'foreign calls', like control flow).
 -- A program can result in multiple ILPs, for example, the body of an 'awhile' cannot be fused with anything outside of it.
 -- you `can` encode this in the ILP, but since the solutions are independant of each other it should be much more efficient
@@ -141,21 +134,22 @@ class DesugarAcc op => MakesILP op where
 
 
 
-
-data FullGraphState env = FGState 
+-- not a monoid/semigroup!
+data FullGraphState env = FGState
   { _lenv   :: LabelEnv env -- sources of open outgoing edges for env
-  , _freshL :: Label  -- next fresh counter
-  , _freshE :: ELabel -- next fresh counter
+  , _currL :: Label  -- current counter. Note that this also includes the current parent
+  , _currE :: ELabel -- current counter. Use getL or getE to get an unused one.
   }
+-- | A monoid, so could just put it in the state too. Tradeoff between simplifying code and encoding that this is really 'output info'
 data FullGraphResult ilp op = FGRes
   { _info   :: Information ilp op
-  , _infoM  :: IntMap (Information ilp op)
+  , _infoM  :: Map Label (Information ilp op)
   , _lset   :: Set Label    -- sources of open outgoing edges for result
-  , _construc :: IntMap (Construction op)
+  , _construc :: Map Label (Construction op)
   }
 instance ILPSolver ilp op => Semigroup (FullGraphResult ilp op) where
   FGRes a b c d <> FGRes e f g h = FGRes (a <> e) (b <> f) (c <> g) (d <> h)
-instance ILPSolver ilp op => Monoid (FullGraphResult ilp op) where 
+instance ILPSolver ilp op => Monoid (FullGraphResult ilp op) where
   mempty = FGRes mempty mempty mempty mempty
 
 -- | Information to construct AST nodes. Generally, constructors contain
@@ -171,7 +165,7 @@ data Construction (op :: Type -> Type) where
 
 
 
-
+-- strips underscores
 makeLenses ''FullGraphState
 makeLenses ''FullGraphResult
 makeLenses ''Graph
@@ -179,27 +173,27 @@ makeLenses ''Information
 
 
 getL :: State (FullGraphState env) Label
-getL = freshL <%= (+1)
+getL = currL <%= \(Label x y) -> Label (x+1) y
 getE :: State (FullGraphState env) ELabel
-getE = freshE <%= (+1)
+getE = currE <%= (+1)
 
 
 
 makeFullGraph :: (MakesILP op, ILPSolver ilp op)
               => PreOpenAcc op () a
-              -> (Information ilp op, IntMap (Information ilp op), IntMap (Construction op))
+              -> (Information ilp op, Map Label (Information ilp op), Map Label (Construction op))
 makeFullGraph acc = (i, iM, constrM)
-  where (FGRes i iM _ constrM, _) = runState (mkFullGraph acc) $ FGState LabelEnvNil 1 1
+  where (FGRes i iM _ constrM, _) = runState (mkFullGraph acc) $ FGState LabelEnvNil (Label 0 Nothing) 0
 
-mkFullGraph :: (MakesILP op, ILPSolver ilp op) 
-            => PreOpenAcc op env a 
+mkFullGraph :: forall ilp op env a. (MakesILP op, ILPSolver ilp op)
+            => PreOpenAcc op env a
             -> State (FullGraphState env) (FullGraphResult ilp op)
 mkFullGraph (Exec op args) = do
   l <- getL
   env <- use lenv
   -- TODO: we use the pre-change env here for the results, is that ok?
   lenv %= flip (updateLabelEnv args) l
-  let fuseedges = S.map (, l) $ getInputArgLabels args env
+  let fuseedges = S.map (:-> l) $ getInputArgLabels args env
   return $ FGRes (mkGraph op (getLabelArgs args env) l & graphI <>~ Graph (S.singleton l) fuseedges mempty)
                  mempty
                  mempty
@@ -209,9 +203,9 @@ mkFullGraph (Exec op args) = do
 -- Probably need to re-infer it after fusion anyway, until we incorporate in-place into ILP
 
 -- this does not retain enough information: we cannot distinguish
---   let (x, _) = ..
+--   let (x, _) = .. in ..
 -- from
---   let (_, x) = ..
+--   let (_, x) = .. in ..
 -- TODO IMPORTANT fix: we need to encode enough info in the result to rebuild a valid and equivalent AST!
 -- maybe have to dig deep and replace all the sets of labels with a single label? 
 -- Or with a TupR of _single_ labels (introducing more typesafety too!)
@@ -233,12 +227,12 @@ mkFullGraph (Alet lhs _ bnd scp) = do
     _ -> do
       e <- getE
       l <- getL
-      let nonfuse = S.map (,l) bndL
+      let nonfuse = S.map (:-> l) bndL
       env <- use lenv
       let (e', env') = addLhsLabels lhs e (S.singleton l) env
-      freshE .= e'
+      currE .= e'
       -- Because the type of the state is different in the 'scope', we explicitly wrap/unwrap the State monad
-      stt <- get 
+      stt <- get
       let (scpRes@(FGRes _ _ scpL _), scpState) = runState (mkFullGraph scp) $ stt & lenv .~ env'
       put $ scpState & lenv .~ weakLhsEnv lhs (_lenv scpState)
       let res = bndRes <> scpRes
@@ -259,6 +253,8 @@ mkFullGraph Alloc{} = return mempty
 -- We simply let-bind it at some point before the computation!
 -- note that we let the ILP decide where to let-bind it, so (within the control 
 -- flow region) it might be bound way higher than needed, causing slower compile times.
+
+-- David from the future doesn't understand: why is this special? Why is this different from any other non-Exec thing?
 mkFullGraph (Use sctype buff) = _ -- TODO do as the comment says ^^^^^^^^
   -- l <- getL
   -- return $ FGRes mempty{graph = mempty{graphNodes = S.singleton l}}
@@ -281,42 +277,42 @@ mkFullGraph (Unit var) = do
 -- within that branch already. Note that this also means we ignore the contents of 'cond' for the graph.
 -- We also add edges from the Acond to the true-branch, and from the true-branch to the false-branch?
 -- TODO check if this is right/needed/if passing even more fresh labels down is correct.
-mkFullGraph (Acond cond tacc facc) = do
-  l  <- getL
-  tl <- getL
-  fl <- getL
-  env <- use lenv
-  let emptyEnv = emptyLabelEnv env
-  lenv .= emptyEnv
-  FGRes tinfo tinfoM _ tConstr <- mkFullGraph tacc
-  lenv .= emptyEnv
-  FGRes finfo finfoM _ fConstr <- mkFullGraph facc
-  lenv .= emptyEnv
-  let nonfuse = S.map (,l) (getAllLabelsEnv env) <> S.fromList [(l,tl), (tl,fl)]
-  return $ FGRes (mempty & graphI .~ Graph (S.fromList [l, tl, fl]) mempty nonfuse)
-                 (M.insert tl tinfo $ M.insert fl finfo $ tinfoM <> finfoM)
-                 (S.singleton l)
-                 (M.insert l (CITE env cond tl fl) $ tConstr <> fConstr)
+mkFullGraph (Acond cond tacc facc) = _
+  -- l  <- getL
+  -- tl <- getL
+  -- fl <- getL
+  -- env <- use lenv
+  -- let emptyEnv = emptyLabelEnv env
+  -- lenv .= emptyEnv
+  -- FGRes tinfo tinfoM _ tConstr <- mkFullGraph tacc
+  -- lenv .= emptyEnv
+  -- FGRes finfo finfoM _ fConstr <- mkFullGraph facc
+  -- lenv .= emptyEnv
+  -- let nonfuse = S.map (:-> l) (getAllLabelsEnv env) <> S.fromList [ l:->tl , tl:->fl ]
+  -- return $ FGRes (mempty & graphI .~ Graph (S.fromList [l, tl, fl]) mempty nonfuse)
+  --                (M.insert tl tinfo $ M.insert fl finfo $ tinfoM <> finfoM)
+  --                (S.singleton l)
+  --                (M.insert l (CITE env cond tl fl) $ tConstr <> fConstr)
 
 -- like Acond. The biggest difference is that 'cond' is a function instead of an expression here.
 -- In fact, for the graph, we use 'startvars' much like we used 'cond' in Acond, and we use
 -- 'cond' and 'bdy' much like we used 'tbranch' and 'fbranch'.
-mkFullGraph (Awhile u cond bdy startvars) = do
-  l  <- getL
-  cl <- getL
-  bl <- getL
-  env <- use lenv
-  let emptyEnv = emptyLabelEnv env
-  lenv .= emptyEnv
-  FGRes cinfo cinfoM _ cConstr <- mkFullGraphF cond
-  lenv .= emptyEnv
-  FGRes binfo binfoM _ bConstr <- mkFullGraphF bdy
-  lenv .= emptyEnv
-  let nonfuse = S.map (,l) (getAllLabelsEnv env) <> S.fromList [(l,cl), (cl,bl)]
-  return $ FGRes (mempty & graphI .~ Graph (S.fromList [l, cl, bl]) mempty nonfuse)
-                 (M.insert cl cinfo $ M.insert bl binfo $ cinfoM <> binfoM)
-                 (S.singleton l)
-                 (M.insert l (CWhl env u cl bl startvars) $ cConstr <> bConstr)
+mkFullGraph (Awhile u cond bdy startvars) = _
+  -- l  <- getL
+  -- cl <- getL
+  -- bl <- getL
+  -- env <- use lenv
+  -- let emptyEnv = emptyLabelEnv env
+  -- lenv .= emptyEnv
+  -- FGRes cinfo cinfoM _ cConstr <- mkFullGraphF cond
+  -- lenv .= emptyEnv
+  -- FGRes binfo binfoM _ bConstr <- mkFullGraphF bdy
+  -- lenv .= emptyEnv
+  -- let nonfuse = S.map (:-> l) (getAllLabelsEnv env) <> S.fromList [l:->cl, cl:->bl]
+  -- return $ FGRes (mempty & graphI .~ Graph (S.fromList [l, cl, bl]) mempty nonfuse)
+  --                (M.insert cl cinfo $ M.insert bl binfo $ cinfoM <> binfoM)
+  --                (S.singleton l)
+  --                (M.insert l (CWhl env u cl bl startvars) $ cConstr <> bConstr)
 
 
 -- | Like mkFullGraph, but for @PreOpenAfun@.
@@ -325,10 +321,10 @@ mkFullGraphF :: (MakesILP op, ILPSolver ilp op)
              -> State (FullGraphState env) (FullGraphResult ilp op)
 mkFullGraphF (Abody acc) = mkFullGraph acc
 mkFullGraphF (Alam lhs f) = do
-  e <- use freshE
+  e <- use currE
   env <- use lenv
   let (e', env') = addLhsLabels lhs e mempty env
-  freshE .= e'
+  currE .= e'
   stt <- get
   let (res, stt') = runState (mkFullGraphF f) $ stt & lenv .~ env'
   put $ stt' & lenv .~ weakLhsEnv lhs (_lenv stt')
@@ -337,21 +333,21 @@ mkFullGraphF (Alam lhs f) = do
 
 
 
-constructExe :: LabelEnv env' -> LabelEnv env 
-             -> Args env args -> op args 
+constructExe :: LabelEnv env' -> LabelEnv env
+             -> Args env args -> op args
              -> Maybe (PreOpenAcc op env' ())
 constructExe env' env args op = Exec op <$> reindexArgs (mkReindexPartial env env') args
-constructUse :: ScalarType e -> Buffer e 
+constructUse :: ScalarType e -> Buffer e
              -> PreOpenAcc op env (Buffer e)
 constructUse = Use
-constructITE :: LabelEnv env' -> LabelEnv env 
-             -> ExpVar env PrimBool -> PreOpenAcc op env' a -> PreOpenAcc op env' a 
+constructITE :: LabelEnv env' -> LabelEnv env
+             -> ExpVar env PrimBool -> PreOpenAcc op env' a -> PreOpenAcc op env' a
              -> Maybe (PreOpenAcc op env' a)
-constructITE env' env cond tbranch fbranch = Acond <$> reindexVar (mkReindexPartial env env') cond 
-                                                     <*> pure tbranch 
-                                                     <*> pure fbranch
-constructWhl :: LabelEnv env' -> LabelEnv env 
-             -> Uniquenesses a -> PreOpenAfun op env' (a -> PrimBool) -> PreOpenAfun op env' (a -> a) -> GroundVars env a 
+constructITE env' env cond tbranch fbranch = Acond <$> reindexVar (mkReindexPartial env env') cond
+                                                   <*> pure tbranch
+                                                   <*> pure fbranch
+constructWhl :: LabelEnv env' -> LabelEnv env
+             -> Uniquenesses a -> PreOpenAfun op env' (a -> PrimBool) -> PreOpenAfun op env' (a -> a) -> GroundVars env a
              -> Maybe (PreOpenAcc op env' a)
 constructWhl env' env u cond body start = Awhile u cond body <$> reindexVars (mkReindexPartial env env') start
 
@@ -365,7 +361,7 @@ constructWhl env' env u cond body start = Awhile u cond body <$> reindexVars (mk
 -- We cannot guarantee the index is present in env', so we use the partiality of ReindexPartial by
 -- returning a Maybe. Uses unsafeCoerce to re-introduce type information implied by the ELabels.
 mkReindexPartial :: LabelEnv env -> LabelEnv env' -> ReindexPartial Maybe env env'
-mkReindexPartial env env' idx = go env'  
+mkReindexPartial env env' idx = go env'
   where
     -- The ELabel in the original environment
     e = getELabelIdx idx env
@@ -378,8 +374,8 @@ mkReindexPartial env env' idx = go env'
       -- Basically: standard procedure if you're using Ints as a unique identifier
       -- and want to re-introduce type information. :)
       -- Type applications allow us to restrict unsafeCoerce to the return type.
-      | e == e' = Just $ unsafeCoerce @(Idx e _) 
-                                      @(Idx e a) 
+      | e == e' = Just $ unsafeCoerce @(Idx e _)
+                                      @(Idx e a)
                                       ZeroIdx
       -- Recurse if we did not find e' yet.
       | otherwise = SuccIdx <$> go rest

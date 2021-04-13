@@ -1,12 +1,13 @@
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TypeFamilies #-}
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Limp where
 
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (Var)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP, Var)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver ( ILPSolver(..) )
+import qualified Data.Map as M
 
 -- Limp is a Linear Integer Mixed Programming library.
 -- We only use the Integer part (not the Mixed part, 
@@ -16,7 +17,6 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (Var)
 -- actively maintained though.
 import qualified Numeric.Limp.Program as LIMP
 import qualified Numeric.Limp.Rep     as LIMP
-import qualified Data.Map as M
 
 data LIMP
 
@@ -27,15 +27,16 @@ type Limp' datatyp op (a :: LIMP.K) = datatyp (Var op) () LIMP.IntDouble a
 
 
 -- Because we only use the integer part of this library, there's some integer<->real conversions
--- happening in this instance.
-instance ILPSolver LIMP op where
+-- happening in this instance. Note also that we convert Int into Z IntDouble often.
+instance MakesILP op => ILPSolver LIMP op where
   type Bounds     LIMP op = [Limp  LIMP.Bounds     op]
   type Constraint LIMP op =  Limp  LIMP.Constraint op
   type Expression LIMP op =  Limp' LIMP.Linear     op 'LIMP.KZ
 
-  (.+.) = (LIMP..+.)
-  (.-.) = (LIMP..-.)
+
   (.*.) = flip LIMP.z . LIMP.Z
+  (.+.)  = (LIMP..+.)
+  (.-.)  = (LIMP..-.)
   (.>=.) = (LIMP.:>=)
   (.<=.) = (LIMP.:<=)
   (.==.) = (LIMP.:==)

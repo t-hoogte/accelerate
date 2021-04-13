@@ -1,6 +1,7 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE GADTs #-}
 {-# LANGUAGE EmptyCase #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ViewPatterns #-}
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels where
 
@@ -17,13 +18,22 @@ import Data.Array.Accelerate.Representation.Type ( TupR(..) )
 -- by removing duplicates.
 import qualified Data.Set as S
 
+import Lens.Micro.TH ( makeLenses )
+
 
 -- identifies nodes with unique Ints. and tracks their dependencies
-type Label =  Int
+-- `Label x Nothing` means that label x is top-level.
+-- `Label x (Just y)` means that label x is (at ilp-construction time determined to be) a subcomputation of label y
+-- Invariant: for all x, there is at most one `Label x _`: the second field is not to discriminate vars but to log extra information.
+data Label = Label
+  { _labelId :: Int
+  , _parent :: Maybe Int
+  } deriving (Eq, Ord, Show)
+makeLenses ''Label
+
 type Labels = S.Set Label
 
 -- identifies elements of the environment with unique Ints.
--- newtype'd to avoid confusing them with Label (above).
 newtype ELabel = ELabel Int
   deriving (Show, Eq, Ord, Num)
 
@@ -105,6 +115,7 @@ updateLabelEnv (arg :>: args) lenv l = case arg of
   -- CHECK we only look at the 'Buffer' vars here, not the 'shape' ones. Is that ok?
   ArgArray Out _ _ vars -> updateLabelEnv args (insertAtVars vars lenv l) l
   ArgArray Mut _ _ vars -> updateLabelEnv args (insertAtVars vars lenv l) l
+  -- CHECK maybe we should also traverse the other args? Does LabelEnv need two sets of Labels (potentially fusible & infusible)?
   _ -> updateLabelEnv args lenv l
 
 insertAtVars :: TupR (Var a env) b -> LabelEnv env -> Label -> LabelEnv env

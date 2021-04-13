@@ -1,23 +1,19 @@
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering where
 
+import Control.Category
+import Data.Array.Accelerate.AST.LeftHandSide
+import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
-import qualified Data.IntMap as M
-import Data.Array.Accelerate.AST.Partitioned
-import Data.Array.Accelerate.AST.LeftHandSide
-import Data.Maybe
-import Unsafe.Coerce (unsafeCoerce)
-import Prelude hiding (id, (.))
-import Control.Category
 import Data.Bifunctor
+import Data.Maybe
+import Prelude hiding (id, (.))
+import qualified Data.Map as M
+import Unsafe.Coerce (unsafeCoerce)
 
-import qualified Data.Graph as G
-import qualified Data.Array as A
-import qualified Data.Set as S
-import Data.Function ( on )
 
 -- "open research question"
 -- -- Each set of ints corresponds to a set of Constructions, which themselves contain a set of ints (the things they depend on).
@@ -47,7 +43,7 @@ of each arg.
 -- Note that the return type `a` is not existentially qualified: The caller of this function tells
 -- us what the result type should be (namely, what it was before fusion). We use unsafe tricks to
 -- fulfill this contract: if something goes wrong during fusion or at the caller, bad things happen.
-reconstruct :: forall op a. Graph -> [Labels] -> M.IntMap [Labels] -> M.IntMap (Construction op) -> PreOpenAcc (Cluster op) () a
+reconstruct :: forall op a. Graph -> [Labels] -> M.Map Label [Labels] -> M.Map Label (Construction op) -> PreOpenAcc (Cluster op) () a
 reconstruct a b c d = case openReconstruct LabelEnvNil a b c d of
           -- see [NOTE unsafeCoerce result type]
           Exists res -> unsafeCoerce @(PartitionedAcc op () _)
@@ -59,38 +55,25 @@ type ClusterL = [Label]
 
 -- Internally uses Data.Graph.Graph for utilities. This is nice, maybe refactor to use it all the way?
 -- type G.Graph = A.Array Label [Label]
-topSortDieMap :: Graph -> Labels -> (M.IntMap Labels, ClusterL)
-topSortDieMap (Graph _ fedges _) cluster = (dieMap, topsorted)
-  where
-    graph, transposed :: G.Graph 
-    graph = G.buildG (minimum cluster, maximum cluster) 
-          . S.toList 
-          . S.filter (uncurry ((&&) `on` (`elem` cluster))) -- filter edges on 'both vertices are in the cluster'
-          $ fedges
-    transposed = G.transposeG graph
-    topsorted = G.topSort graph
-    -- traverses the nodes in reverse topsort order
-    dieMap = fst $ foldl f mempty topsorted
-    f :: (M.IntMap Labels, Labels) -> Label -> (M.IntMap Labels, Labels)
-    f (dieMap', keepAlive) x = let incomingEdges = S.fromList $ transposed A.! x in
-      (M.insert x incomingEdges dieMap', S.insert x incomingEdges <> keepAlive)
+topSortDieMap :: Graph -> Labels -> (M.Map Label Labels, ClusterL)
+topSortDieMap = undefined
 
 -- | This function can - and, until it's stable, will - throw errors. 
 -- It is very partial, even ignoring the unsafeCoerce:
 -- - fromJust calls are used when a re-indexing is expected to succeed
 -- - errors are thrown when certain invariants are not met
--- - partial indexing is used in the M.IntMaps
+-- - partial indexing is used in the M.Map Labels
 -- none of these situations can be recovered from, so we crash and hope to diagnose the stack trace.
 -- Some errors, in particular the second category, which explicitly calls 'error', could reasonably
 -- be statically avoided. The rest is a result of the inherently partial practice of constructing
 -- a strongly typed AST using the ILP output.
-openReconstruct :: forall op aenv. LabelEnv aenv -> Graph -> [Labels] -> M.IntMap [Labels] -> M.IntMap (Construction op) -> Exists (PreOpenAcc (Cluster op) aenv)
+openReconstruct :: forall op aenv. LabelEnv aenv -> Graph -> [Labels] -> M.Map Label [Labels] -> M.Map Label (Construction op) -> Exists (PreOpenAcc (Cluster op) aenv)
 openReconstruct labelenv graph clustersets ilpsets construction = recurseHere labelenv clusters
   where
     -- do the topological sorting and computing of dieMap for each set
     (dieMapC, clusters) =               first mconcat . unzip . map (topSortDieMap graph)  $ clustersets
     (dieMapI, ilps) = sequence . M.map (first mconcat . unzip . map (topSortDieMap graph)) $ ilpsets
-    --                   ^ uses monoid instance of IntMap to union the dieMaps
+    --                   ^ uses monoid instance of Map Label to union the dieMaps
     dieMap = dieMapC <> dieMapI
 
     -- calls makeCluster on each cluster, and let-binds them together.
