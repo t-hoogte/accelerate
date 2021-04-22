@@ -76,10 +76,10 @@ makeILP (Info
 
 
 -- Extract the fusion information (ordered list of clusters of Labels) (head is the first cluster)
-interpretSolution :: forall ilp op. ILPSolver ilp op => [Solution op] -> [Labels]
-interpretSolution assignments = map (S.fromList . map fst) . group . sortOn snd . map (bimap (\(Pi l)->l) (fromIntegral @_ @Int)) $ pis
+interpretSolution :: forall ilp op. ILPSolver ilp op => Solution op -> [Labels]
+interpretSolution assignment = map (S.fromList . map fst) . group . sortOn snd . map (bimap (\(Pi l)->l) (fromIntegral @_ @Int)) $ pis
   where
     pis :: [(Var op, Int)]
-    pis = concatMap (M.toList . M.filterWithKey (const . isPi)) assignments
+    pis = M.toList $ M.filterWithKey (const . isPi) assignment
     isPi (Pi _) = True
     isPi _      = False

@@ -50,8 +50,6 @@ import Control.Category
 -- Array Fusion
 -- ============
 
-class FusibleAcc (op :: Type -> Type) where
-
 -- | Apply the fusion transformation to a de Bruijn AST
 --
 convertAcc

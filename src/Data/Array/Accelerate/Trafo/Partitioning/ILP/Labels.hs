@@ -19,6 +19,8 @@ import Data.Array.Accelerate.Representation.Type ( TupR(..) )
 import qualified Data.Set as S
 
 import Lens.Micro.TH ( makeLenses )
+import Control.Monad.State
+import Lens.Micro.Mtl ((<%=))
 
 
 -- identifies nodes with unique Ints. and tracks their dependencies
@@ -27,9 +29,13 @@ import Lens.Micro.TH ( makeLenses )
 -- Invariant: for all x, there is at most one `Label x _`: the second field is not to discriminate vars but to log extra information.
 data Label = Label
   { _labelId :: Int
-  , _parent :: Maybe Int
+  , _parent :: Maybe Label
   } deriving (Eq, Ord, Show)
 makeLenses ''Label
+
+level :: Label -> Int
+level (Label _ Nothing)  = 0
+level (Label _ (Just l)) = 1 + level l
 
 type Labels = S.Set Label
 
@@ -47,21 +53,28 @@ data LabelArgs args where
 data LabelEnv env where
   LabelEnvNil  :: LabelEnv ()
   (:>>>:)      :: (ELabel, Labels) -> LabelEnv t -> LabelEnv (t, s)
+instance Semigroup (LabelEnv env) where
+  LabelEnvNil <> LabelEnvNil = LabelEnvNil
+  ((e1,l1):>>>:lenv1) <> ((e2,l2):>>>:lenv2)
+    | e1 == e2 = (e1, l1<>l2) :>>>: (lenv1 <> lenv2)
+    | otherwise = error "mappend for LabelEnv found two different labels"
 
-
+freshE' :: State ELabel ELabel
+freshE' = id <%= (+1)
 
 
 -------------------------------
 -- Traversals over stuff to add/extract Labels and ELabels,
 -- or otherwise manipulate LabelArgs' or LabelEnvs
--- vvvvvvvvvvvvvvvvvvvvvvvvv --
+
 
 -- | Note that this throws some info away: Pair (Wildcard, Single) and Pair (Single, Wildcard) give identical results.
-addLhsLabels :: LeftHandSide s v env env' -> ELabel -> Labels -> LabelEnv env -> (ELabel, LabelEnv env')
-addLhsLabels LeftHandSideWildcard{} e _ lenv =     (e    , lenv)
-addLhsLabels LeftHandSideSingle{}   e l lenv =     (e + 1, (e, l) :>>>: lenv)
-addLhsLabels (LeftHandSidePair x y) e l lenv = let (e'   , lenv') = addLhsLabels x e l lenv
-                                               in addLhsLabels y e' l lenv'
+-- Use sites need to store the LHS itself too.
+addLhs :: LeftHandSide s v env env' -> Labels -> LabelEnv env -> State ELabel (LabelEnv env')
+addLhs LeftHandSideWildcard{} _ = pure
+addLhs LeftHandSideSingle{}   l = \lenv -> freshE' >>= \e -> pure ((e, l) :>>>: lenv)
+addLhs (LeftHandSidePair x y) l = addLhs x l >=> addLhs y l
+
 
 weakLhsEnv :: LeftHandSide s v env env' -> LabelEnv env' -> LabelEnv env
 weakLhsEnv LeftHandSideSingle{} (_:>>>: env) = env
