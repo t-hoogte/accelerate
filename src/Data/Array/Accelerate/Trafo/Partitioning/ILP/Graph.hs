@@ -1,3 +1,6 @@
+{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
@@ -74,14 +77,14 @@ instance Monoid Graph where
 
 -- The graph is the 'common part' of the ILP, each backend has to encode its own constraints
 -- describing the fusion rules. From the graph, more constraints and bounds will be generated.
-data Information ilp op = Info
+data Information op = Info
   { _graphI :: Graph
-  , _constr :: Constraint ilp op
-  , _bounds :: Bounds ilp op
+  , _constr :: Constraint op
+  , _bounds :: Bounds op
   }
-instance ILPSolver ilp op => Semigroup (Information ilp op) where
+instance Semigroup (Information op) where
   Info g c b <> Info g' c' b' = Info (g <> g') (c <> c') (b <> b')
-instance ILPSolver ilp op => Monoid (Information ilp op) where
+instance Monoid (Information op) where
   mempty = Info mempty mempty mempty
 
 
@@ -98,15 +101,20 @@ data Var (op :: Type -> Type)
     -- ^ Vars needed to express backend-specific fusion rules.
     -- This is what allows backends to specify how each of the operations can fuse.
 
+deriving instance Eq   (BackendVar op) => Eq   (Var op)
+deriving instance Ord  (BackendVar op) => Ord  (Var op)
+deriving instance Show (BackendVar op) => Show (Var op)
+deriving instance Read (BackendVar op) => Read (Var op)
+
 -- convenience synonyms
-pi :: ILPSolver ilp op => Label -> Expression ilp op
+pi :: Label -> Expression op
 pi l      = 1 .*. Pi l
-fused :: ILPSolver ilp op => Label -> Label -> Expression ilp op
+fused :: Label -> Label -> Expression op
 fused x y = 1 .*. Fused x y
 
 -- There is no strict reason for DesugarAcc to be a superclass of MakesILP, other than
 -- that the input of MakesILP is the output of DesugarAcc.
-class DesugarAcc op => MakesILP op where
+class (Eq (BackendVar op), Ord (BackendVar op), Show (BackendVar op), Read (BackendVar op), DesugarAcc op) => MakesILP op where
   -- Vars needed to express backend-specific fusion rules.
   type BackendVar op
 
@@ -114,7 +122,7 @@ class DesugarAcc op => MakesILP op where
   -- That includes "BackendVar op's" and all their constraints/bounds, but also some (in)fusible edges.
   -- As a conveniece, fusible edges have already been made from all (non-Out) labels in the LabelArgs to the current label.
   -- These can be 'strengthened' by adding a corresponding infusible edge, in which case the fusible edge will later be optimised away.
-  mkGraph :: op args -> LabelArgs args -> Label -> Information ilp op
+  mkGraph :: op args -> LabelArgs args -> Label -> Information op
 
 
 -- Control flow cannot be fused, so we make separate ILPs for e.g.
@@ -144,7 +152,7 @@ class DesugarAcc op => MakesILP op where
 
 
 -- We put all variables in either FGState or FGResult, so our full traversal is of type
--- @State (FGState env) (FGResult ilp op)@. The state has temporary variables like counters,
+-- @State (FGState env) (FGResult op)@. The state has temporary variables like counters,
 -- whereas the result is a monoid of produced information.
 
 -- Not a monoid/semigroup!
@@ -154,14 +162,14 @@ data FullGraphState env = FGState
   , _currE :: ELabel -- current counter. Use freshL or freshE to get an unused one.
   }
 -- | A monoid, so could just put it in the state too. Tradeoff between simplifying code and encoding that this is really 'output info'
-data FullGraphResult ilp op = FGRes
-  { _info   :: Information ilp op
+data FullGraphResult op = FGRes
+  { _info   :: Information op
   , _lset   :: Set Label    -- sources of open outgoing edges for result
   , _construc :: Map Label (Construction op)
   }
-instance ILPSolver ilp op => Semigroup (FullGraphResult ilp op) where
+instance Semigroup (FullGraphResult op) where
   FGRes a b c <> FGRes x y z = FGRes (a <> x) (b <> y) (c <> z)
-instance ILPSolver ilp op => Monoid (FullGraphResult ilp op) where
+instance Monoid (FullGraphResult op) where
   mempty = FGRes mempty mempty mempty
 
 -- | Information to construct AST nodes. Generally, constructors contain
@@ -184,15 +192,15 @@ makeLenses ''Graph
 makeLenses ''Information
 
 
-makeFullGraph :: (MakesILP op, ILPSolver ilp op)
+makeFullGraph :: (MakesILP op)
               => PreOpenAcc op () a
-              -> (Information ilp op, Map Label (Construction op))
+              -> (Information op, Map Label (Construction op))
 makeFullGraph acc = (i, constrM)
   where (FGRes i _ constrM, _) = runState (mkFullGraph acc) (FGState LabelEnvNil (Label 0 Nothing) 0)
 
-mkFullGraph :: forall ilp op env a. (MakesILP op, ILPSolver ilp op)
+mkFullGraph :: forall op env a. (MakesILP op)
             => PreOpenAcc op env a
-            -> State (FullGraphState env) (FullGraphResult ilp op)
+            -> State (FullGraphState env) (FullGraphResult op)
 mkFullGraph (Exec op args) = do
   l <- freshL
   env <- use lenv
@@ -262,30 +270,29 @@ mkFullGraph (Awhile _ cond bdy startvars) = do
   l_while <- freshL
   l_cond  <- freshL
   l_body  <- freshL
-  env     <- use lenv
-  currL.parent .= Just l_while
-  cRes    <- mkFullGraphF cond
-  cEnv    <- use lenv
-  lenv    .= env
-  currL.parent .= Just l_while
-  bRes    <- mkFullGraphF bdy
-  lenv    <>= cEnv
+  env  <- use lenv
+  currL.parent .= Just l_cond
+  cRes <- mkFullGraphF cond
+  cEnv <- use lenv
+  lenv .= env
+  currL.parent .= Just l_body
+  bRes <- mkFullGraphF bdy
+  lenv <>= cEnv
   return $ (cRes <> bRes)
          & lset     .~ S.singleton l_while
          & construc %~ M.insert l_while (CWhl env l_cond l_body startvars)
 
 
 -- | Like mkFullGraph, but for @PreOpenAfun@.
--- TODO add a 'Lam' constructor to 'Construction' to store lhs information
-mkFullGraphF :: (MakesILP op, ILPSolver ilp op)
+mkFullGraphF :: (MakesILP op)
              => PreOpenAfun op env a
-             -> State (FullGraphState env) (FullGraphResult ilp op)
+             -> State (FullGraphState env) (FullGraphResult op)
 mkFullGraphF (Abody acc) = mkFullGraph acc
 mkFullGraphF (Alam lhs f) = do
   l <- freshL
   res <- zoomState lhs l (mkFullGraphF f)
   return $ res
-         & lset     .~ S.singleton l
+         & lset     %~ S.insert l
          & construc %~ M.insert l (CFun lhs l)
 
 -- Create a fresh L/E and update the state. freshL does not change the parent, which is the most common use case
@@ -300,12 +307,13 @@ zoomState lhs l f = do
     env' <- zoom currE (addLhs lhs (S.singleton l) env)
     zoom (zoomStateLens env') f
   where
-    -- | This lens allows us to `zoom` into a state computation with the adjusted environment,
+    -- | This lens allows us to `zoom` into a state computation with a bigger environment,
     -- by first setting `lenv` to `env'`, and afterwards weakening it with `weakLhsEnv`.
-    -- It's not a lawful lens (violates `view l (set l v s)  ≡ v`), but the only information that is lost
+    -- It's not a lawful lens (violates `view l (set l v s) ≡ v`), but the only information that is lost
     -- is the part of `LabelEnv env'` that falls outside of `LabelEnv env`. This information is only locally
     -- relevant for the state computations, so the top-level function 'zoomState' is safe.
-    -- In other words: this lens is an implementation detail, and I think it's less error prone than wrapping/unwrapping the State.
+    -- In other words: this lens is an implementation detail, and I think it's less error prone than manually 
+    -- wrapping/unwrapping the State (where you can e.g. accidentally use the old environment).
     zoomStateLens :: LabelEnv env' -> Lens' (FullGraphState env) (FullGraphState env')
     zoomStateLens env' changeToScpState bndState = (lenv %~ weakLhsEnv lhs) <$> changeToScpState (bndState & lenv .~ env')
 

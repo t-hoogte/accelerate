@@ -3,7 +3,6 @@
 {-# LANGUAGE TypeApplications #-}
 module Data.Array.Accelerate.Trafo.Partitioning.ILP where
 
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Limp
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
     ( MakesILP, Information(Info), makeFullGraph ) 
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve
@@ -18,16 +17,13 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
 import System.IO.Unsafe (unsafePerformIO)
 import Data.Maybe (fromJust)
 
-limpFusion :: MakesILP op => OperationAcc op () a -> PartitionedAcc op () a
-limpFusion = ilpfusion @LIMP
-
-ilpfusion :: forall ilp op a. (MakesILP op, ILPSolver ilp op) => OperationAcc op () a -> PartitionedAcc op () a
-ilpfusion acc = fusedAcc
+ilpfusion :: forall s op a. (MakesILP op, ILPSolver s op) => OperationAcc op () a -> s -> PartitionedAcc op () a
+ilpfusion acc s = fusedAcc
   where
     (info@(Info graph _ _), constrM) = makeFullGraph acc
-    ilp                              = makeILP info
+    ilp                              = makeILP @s info
     solution                         = solve' ilp
-    labelClusters                    = interpretSolution @ilp solution
+    labelClusters                    = interpretSolution @s solution
     fusedAcc                         = reconstruct graph labelClusters constrM
-    solve' = fromJust . unsafePerformIO . solve @ilp
+    solve' = fromJust . unsafePerformIO . solve s
 

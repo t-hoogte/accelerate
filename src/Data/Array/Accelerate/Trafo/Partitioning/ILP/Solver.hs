@@ -1,3 +1,4 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -20,7 +21,7 @@ import {-# SOURCE #-} Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph ( Var, 
 
 -- (data)types that are needed for/used in the class, but need to be defined outside of it.
 data OptDir = Maximise | Minimise
-data ILP ilp op = ILP OptDir (Expression ilp op) (Constraint ilp op) (Bounds ilp op)
+data ILP op = ILP OptDir (Expression op) (Constraint op) (Bounds op)
 type Solution op = M.Map (Var op) Int
 
 
@@ -31,39 +32,73 @@ type Solution op = M.Map (Var op) Int
 -- solver that we can integrate with Accelerate easily.
 -- -David
 
--- Conceptually, this should be "class ILPSolver ilp where _". It's just more difficult
--- to add a "forall op. MakesILP op => (Monoid (Bounds ilp op), Monoid (Constraint ilp op))"
--- clause, and this way seems to "just work" with very little effort and good type inference/errors.
--- "Law": All instances should be polymorphic over `op` (instance (MakesILP op) => ILPSolver x op where _)
-class ( MakesILP op
-      , Monoid (Bounds     ilp op)
-      , Monoid (Constraint ilp op)
-   ) => ILPSolver ilp op where
 
-  -- The functional dependencies aid type inference
-  type Bounds     ilp op = a | a -> ilp op
-  type Constraint ilp op = a | a -> ilp op
-  type Expression ilp op = a | a -> ilp op
+data Expression op where
+  Constant :: Int -> Expression op
+  (:+)  :: Expression op -> Expression op -> Expression op
+  (:-)  :: Expression op -> Expression op -> Expression op
+  (:*)  :: Int               -> Var            op -> Expression op 
 
-  (.+.)  :: Expression ilp op -> Expression ilp op -> Expression ilp op
-  (.-.)  :: Expression ilp op -> Expression ilp op -> Expression ilp op
-  (.*.)  :: Int               -> Var            op -> Expression ilp op 
-  -- ^ Note: Asymmetric!
+data Constraint op where
+  (:>=) :: Expression op -> Expression op -> Constraint op
+  (:<=) :: Expression op -> Expression op -> Constraint op
+  (:==) :: Expression op -> Expression op -> Constraint op
   
-  (.>=.) :: Expression ilp op -> Expression ilp op -> Constraint ilp op
-  (.<=.) :: Expression ilp op -> Expression ilp op -> Constraint ilp op
-  (.==.) :: Expression ilp op -> Expression ilp op -> Constraint ilp op
-  (.>.)  :: Expression ilp op -> Expression ilp op -> Constraint ilp op
-  (.<.)  :: Expression ilp op -> Expression ilp op -> Constraint ilp op
-  -- Has a default implementation, but Limp has a (perhaps faster?) specialisation (or it's just convenience...)
-  between :: Expression ilp op -> Expression ilp op -> Expression ilp op -> Constraint ilp op
-  between x y z = x .<=. y <> y .<=. z
+  (:>)  :: Expression op -> Expression op -> Constraint op
+  (:<)  :: Expression op -> Expression op -> Constraint op
+  Between :: Expression op -> Expression op -> Expression op -> Constraint op
 
-  int :: Int -> Expression ilp op
-  
-  binary :: Var op -> Bounds ilp op
-  lowerUpper :: Int -> Var op -> Int -> Bounds ilp op
+  (:&&) :: Constraint op -> Constraint op -> Constraint op
+  TrueConstraint :: Constraint op
 
-  solve :: ILP ilp op -> IO (Maybe (Solution op))
+instance Semigroup (Constraint op) where (<>) = (:&&)
+instance Monoid    (Constraint op) where mempty = TrueConstraint
 
+data Bounds op where
+  Binary :: Var op -> Bounds op
+  LowerUpper :: Int -> Var op -> Int -> Bounds op
+  (:<>) :: Bounds op -> Bounds op -> Bounds op
+  NoBounds :: Bounds op
+
+instance Semigroup (Bounds op) where (<>) = (:<>)
+instance Monoid    (Bounds op) where mempty = NoBounds
+
+
+(.+.)  :: Expression op -> Expression op -> Expression op
+(.+.) = (:+)
+(.-.)  :: Expression op -> Expression op -> Expression op
+(.-.) = (:-)
+(.*.)  :: Int               -> Var            op -> Expression op 
+(.*.) = (:*)
+int :: Int -> Expression op
+int = Constant
+
+(.>=.) :: Expression op -> Expression op -> Constraint op
+(.>=.) = (:>=)
+(.<=.) :: Expression op -> Expression op -> Constraint op
+(.<=.) = (:<=)
+(.==.) :: Expression op -> Expression op -> Constraint op
+(.==.) = (:==)
+
+(.>.)  :: Expression op -> Expression op -> Constraint op
+(.>.) = (:>)
+(.<.)  :: Expression op -> Expression op -> Constraint op
+(.<.) = (:<)
+between :: Expression op -> Expression op -> Expression op -> Constraint op
+between = Between
+
+defaultBigger :: Expression op -> Expression op -> Constraint op
+x `defaultBigger`  y = x .>=. (y .+. int 1)
+defaultSmaller :: Expression op -> Expression op -> Constraint op
+x `defaultSmaller` y = (x .+. int 1) .<=. y
+defaultBetween :: Expression op -> Expression op -> Expression op -> Constraint op
+defaultBetween x y z = x .<=. y <> y .<=. z
+
+binary :: Var op -> Bounds op
+binary = Binary
+lowerUpper :: Int -> Var op -> Int -> Bounds op
+lowerUpper = LowerUpper
+
+class (MakesILP op) => ILPSolver ilp op where
+  solve :: ilp -> ILP op -> IO (Maybe (Solution op))
 

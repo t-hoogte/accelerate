@@ -24,7 +24,7 @@ import qualified Data.Set as S
 
 
 
-makeILP :: forall ilp op. ILPSolver ilp op => Information ilp op -> ILP ilp op
+makeILP :: forall s op. ILPSolver s op => Information op -> ILP op
 makeILP (Info
           (Graph nodes fuseEdges' nofuseEdges)
           backendconstraints
@@ -34,7 +34,7 @@ makeILP (Info
     -- Remove any redundant 'fusible' edges
     fuseEdges = fuseEdges' S.\\ nofuseEdges
 
-    combine :: ILP ilp op -> ILP ilp op
+    combine :: ILP op -> ILP op
     combine (ILP dir fun cons bnds) =
              ILP dir fun (cons <> backendconstraints)
                          (bnds <> backendbounds)
@@ -47,7 +47,7 @@ makeILP (Info
 
     -- Placeholder, currently maximising the number of vertical/diagonal fusions.
     -- In the future, maybe we want this to be backend-dependent (add to the typeclass).
-    objFun :: Expression ilp op
+    objFun :: Expression op
     objFun = foldl' (\f (i :-> j) -> f .+. fused i j)
                     (int 0)
                     (S.toList fuseEdges)
@@ -66,7 +66,7 @@ makeILP (Info
     infusible = foldMap (\(i :-> j) -> pi j .-. pi i .>=. int 1)
                         nofuseEdges
 
-    myBounds :: Bounds ilp op
+    myBounds :: Bounds op
     --            0 <= pi_i <= n
     myBounds = foldMap (\i -> lowerUpper 0 (Pi i) n)
                   (S.toList nodes)
@@ -76,7 +76,7 @@ makeILP (Info
 
 
 -- Extract the fusion information (ordered list of clusters of Labels) (head is the first cluster)
-interpretSolution :: forall ilp op. ILPSolver ilp op => Solution op -> [Labels]
+interpretSolution :: forall s op. ILPSolver s op => Solution op -> [Labels]
 interpretSolution assignment = map (S.fromList . map fst) . group . sortOn snd . map (bimap (\(Pi l)->l) (fromIntegral @_ @Int)) $ pis
   where
     pis :: [(Var op, Int)]

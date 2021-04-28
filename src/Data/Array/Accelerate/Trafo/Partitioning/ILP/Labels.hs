@@ -30,7 +30,7 @@ import Lens.Micro.Mtl ((<%=))
 data Label = Label
   { _labelId :: Int
   , _parent :: Maybe Label
-  } deriving (Eq, Ord, Show)
+  } deriving (Eq, Ord, Show, Read)
 makeLenses ''Label
 
 level :: Label -> Int
