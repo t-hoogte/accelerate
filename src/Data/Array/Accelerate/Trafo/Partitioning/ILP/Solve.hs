@@ -24,7 +24,7 @@ import qualified Data.Set as S
 
 
 
-makeILP :: forall s op. ILPSolver s op => Information op -> ILP op
+makeILP :: forall op. MakesILP op => Information op -> ILP op
 makeILP (Info
           (Graph nodes fuseEdges' nofuseEdges)
           backendconstraints
@@ -76,10 +76,9 @@ makeILP (Info
 
 
 -- Extract the fusion information (ordered list of clusters of Labels) (head is the first cluster)
-interpretSolution :: forall s op. ILPSolver s op => Solution op -> [Labels]
+interpretSolution :: Solution op -> [Labels]
 interpretSolution assignment = map (S.fromList . map fst) . group . sortOn snd . map (bimap (\(Pi l)->l) (fromIntegral @_ @Int)) $ pis
   where
-    pis :: [(Var op, Int)]
     pis = M.toList $ M.filterWithKey (const . isPi) assignment
     isPi (Pi _) = True
     isPi _      = False

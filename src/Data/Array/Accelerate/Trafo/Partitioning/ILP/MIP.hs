@@ -8,7 +8,11 @@
 {-# LANGUAGE UndecidableInstances #-}
 
 {-# OPTIONS_GHC -fno-warn-orphans #-} -- Shame on me!
-module Data.Array.Accelerate.Trafo.Partitioning.ILP.MIP where
+
+module Data.Array.Accelerate.Trafo.Partitioning.ILP.MIP (
+  -- Exports default paths to 6 solvers, as well as an instance to ILPSolver for all of them
+  cbc, cplex, glpsol, gurobiCl, lpSolve, scip
+  ) where
 
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP)
 import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Graph (Var)
@@ -19,51 +23,28 @@ import qualified Data.Map as M
 import Numeric.Optimization.MIP hiding (Bounds, Constraint, Var, Solution)
 import qualified Numeric.Optimization.MIP as MIP
 import qualified Numeric.Optimization.MIP.Solver.Base as MIP
-import Data.Scientific
+import Data.Scientific ( Scientific )
 import Data.Bifunctor (bimap)
-
--- -- | We have Int variables represented by @Variable op@, and no real variables.
--- -- These type synonyms instantiate the @z@, @r@ and @c@ type variables in Limp.
--- type Limp  datatyp op               = datatyp (Var op) () LIMP.IntDouble
--- type Limp' datatyp op (a :: LIMP.K) = datatyp (Var op) () LIMP.IntDouble a
+import Numeric.Optimization.MIP.Solver
+    ( cbc, cplex, glpsol, gurobiCl, lpSolve, scip )
 
 instance (MakesILP op, MIP.IsSolver s IO) => ILPSolver s op where
-  -- type Bounds     MIP op = M.Map Var (MIP.Bounds Scientific)
-  -- type Constraint MIP op = MIP.Constraint Scientific
-  -- type Expression MIP op = MIP.Expr Scientific
-
-  -- -- MIP has a Num instance for expressions, but it's scary (because 
-  -- -- you can't guarantee linearity with arbitrary multiplications).
-  -- -- We refer to that instance in this safer wrapping.
-  -- (.*.)  = (*)
-  -- (.+.)  = (+)
-  -- (.-.)  = (-)
-
-  -- -- Yes, I stole the naming of these from MIP :)
-  -- (.>=.) = (MIP..>=.)
-  -- (.<=.) = (MIP..<=.)
-  -- (.==.) = (MIP..==.)
-  
-  -- int = _
-
-  -- binary x = M.singleton _ (Finite 0, Finite 1)
-  -- lowerUpper l v u = M.singleton _ (Finite (_ l), Finite (_ u))
-
   solve s (ILP dir obj constr bnds) = makeSolution <$> MIP.solve s options problem
     where
       options = MIP.SolveOptions{ MIP.solveTimeLimit   = Nothing
-                                , MIP.solveLogger      = putStrLn . ("AccILPSolver: "      ++)
+                                , MIP.solveLogger      = putStrLn . ("AccILPSolver says: " ++)
                                 , MIP.solveErrorLogger = putStrLn . ("AccILPSolverError: " ++) }
 
       problem = Problem (Just "AccelerateILP") (mkFun dir $ expr obj) (cons constr) [] [] vartypes (bounds bnds)
       
       mkFun Maximise = ObjectiveFunction (Just "AccelerateObjective") OptMax
       mkFun Minimise = ObjectiveFunction (Just "AccelerateObjective") OptMin
+
       vartypes = allIntegers bnds -- assuming that all variables have bounds
 
 -- MIP has a Num instance for expressions, but it's scary (because 
 -- you can't guarantee linearity with arbitrary multiplications).
--- We refer to that instance here, knowing that our own Expression can only be linear.
+-- We use that instance here, knowing that our own Expression can only be linear.
 expr :: MakesILP op => Expression op -> MIP.Expr Scientific
 expr (Constant i) = fromIntegral i
 expr (x :+ y) = expr x + expr y
@@ -74,10 +55,6 @@ cons :: MakesILP op => Constraint op -> [MIP.Constraint Scientific]
 cons (x :>= y) = [expr x MIP..>=. expr y]
 cons (x :<= y) = [expr x MIP..<=. expr y]
 cons (x :== y) = [expr x MIP..==. expr y]
-
-cons (x :> y)        = cons $ defaultBigger  x y
-cons (x :< y)        = cons $ defaultSmaller x y
-cons (Between x y z) = cons $ defaultBetween x y z
 
 cons (x :&& y) = cons x <> cons y
 cons TrueConstraint = mempty
@@ -97,7 +74,7 @@ allIntegers NoBounds = mempty
 
 -- For MIP, variables are Text-based. This is why Var and BackendVar have Show and Read instances.
 var   :: MakesILP op => Graph.Var op -> MIP.Var
-var = toVar . show
+var   = toVar . show
 unvar :: MakesILP op => MIP.Var -> Graph.Var op
 unvar = read . fromVar
 
