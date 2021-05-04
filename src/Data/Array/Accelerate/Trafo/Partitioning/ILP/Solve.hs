@@ -7,10 +7,10 @@ module Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve where
 
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
+    (Label, parent, Labels )
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
 
-import Data.Bifunctor (Bifunctor(bimap))
-import Data.List (group, sortOn, foldl')
+import Data.List (groupBy, sortOn, foldl')
 import Prelude hiding ( pi )
 
 import qualified Data.Map as M
@@ -20,10 +20,16 @@ import qualified Data.Map as M
 -- and [] only when it does. It's also often efficient
 -- by removing duplicates.
 import qualified Data.Set as S
+import Data.Function ( on )
+import Lens.Micro ( _1 )
+import Lens.Micro.Extras ( view )
+import Data.Maybe (fromJust,  mapMaybe )
 
 
 
-
+-- Makes the ILP. Note that this function 'appears' to ignore the Label levels completely!
+-- We could add some assertions, but if all the input is well-formed (no labels, constraints, etc
+-- that reward putting non-siblings in the same cluster) this is fine.
 makeILP :: forall op. MakesILP op => Information op -> ILP op
 makeILP (Info
           (Graph nodes fuseEdges' nofuseEdges)
@@ -46,7 +52,8 @@ makeILP (Info
     graphILP = ILP Minimise objFun myConstraints myBounds
 
     -- Placeholder, currently maximising the number of vertical/diagonal fusions.
-    -- In the future, maybe we want this to be backend-dependent (add to the typeclass).
+    -- In the future, maybe we want this to be backend-dependent (add to MakesILP).
+    -- Also future: add IPU reward here.
     objFun :: Expression op
     objFun = foldl' (\f (i :-> j) -> f .+. fused i j)
                     (int 0)
@@ -75,10 +82,23 @@ makeILP (Info
                   (S.toList fuseEdges)
 
 
--- Extract the fusion information (ordered list of clusters of Labels) (head is the first cluster)
-interpretSolution :: Solution op -> [Labels]
-interpretSolution assignment = map (S.fromList . map fst) . group . sortOn snd . map (bimap (\(Pi l)->l) (fromIntegral @_ @Int)) $ pis
+-- Extract the fusion information (ordered list of clusters of Labels) (head is the first cluster).
+-- Output has the top-level clusters in fst, and the rest in snd.
+interpretSolution :: Solution op -> ([Labels], M.Map Label [Labels])
+interpretSolution = (\(x:xs) -> (x, M.fromList $ map (\l -> ( fromJust 
+                                                            . view parent 
+                                                            . S.findMin 
+                                                            . head 
+                                                            $ l
+                                                            , l)) xs))
+                  . map ( map S.fromList
+                        . partition (view parent)
+                        . map fst )
+                  . partition snd 
+                  . mapMaybe (_1 fromPi)
+                  . M.toList
   where
-    pis = M.toList $ M.filterWithKey (const . isPi) assignment
-    isPi (Pi _) = True
-    isPi _      = False
+    fromPi (Pi l) = Just l
+    fromPi _      = Nothing
+
+    partition f = groupBy ((==) `on` f) . sortOn f

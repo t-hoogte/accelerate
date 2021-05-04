@@ -36,13 +36,13 @@ import Data.Array.Accelerate.AST.Environment
 import qualified Data.Array.Accelerate.AST.Partitioned  as C
 import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Trafo.Substitution
-import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Data.Array.Accelerate.Trafo.Operation.Substitution (strengthenArrayInstr)
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Type
 import Data.Maybe
 import Data.List
+    ( groupBy, nub, nubBy )
 import qualified Data.Set                               as S
 import Prelude hiding (id, (.))
 import Control.Category

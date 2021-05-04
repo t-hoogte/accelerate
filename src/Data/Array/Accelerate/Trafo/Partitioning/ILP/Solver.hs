@@ -29,7 +29,7 @@ data Expression op where
   Constant :: Int -> Expression op
   (:+)  :: Expression op -> Expression op -> Expression op
   (:-)  :: Expression op -> Expression op -> Expression op
-  (:*)  :: Int               -> Var            op -> Expression op 
+  (:*)  :: Int -> Var op -> Expression op 
 
 data Constraint op where
   (:>=) :: Expression op -> Expression op -> Constraint op
@@ -62,14 +62,18 @@ instance Monoid    (Bounds op) where mempty = NoBounds
 (.*.) = (:*)
 int :: Int -> Expression op
 int = Constant
-
 (.>=.) :: Expression op -> Expression op -> Constraint op
 (.>=.) = (:>=)
 (.<=.) :: Expression op -> Expression op -> Constraint op
 (.<=.) = (:<=)
 (.==.) :: Expression op -> Expression op -> Constraint op
 (.==.) = (:==)
+binary :: Var op -> Bounds op
+binary = Binary
+lowerUpper :: Int -> Var op -> Int -> Bounds op
+lowerUpper = LowerUpper
 
+-- Convenience
 (.>.)  :: Expression op -> Expression op -> Constraint op
 x .>. y = x .>=. (y .+. int 1)
 (.<.)  :: Expression op -> Expression op -> Constraint op
@@ -77,11 +81,11 @@ x .<. y = (x .+. int 1) .<=. y
 between :: Expression op -> Expression op -> Expression op -> Constraint op
 between x y z = x .<=. y <> y .<=. z
 
-binary :: Var op -> Bounds op
-binary = Binary
-lowerUpper :: Int -> Var op -> Int -> Bounds op
-lowerUpper = LowerUpper
 
+
+-- Currently the only instance is for MIP, which gives bindings to a couple of solvers.
+-- Still, this way we minimise the surface that has to interact with MIP, can more easily
+-- adapt if it changes, and we could easily add more bindings.
 class (MakesILP op) => ILPSolver ilp op where
   solve :: ilp -> ILP op -> IO (Maybe (Solution op))
 

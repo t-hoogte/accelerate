@@ -40,11 +40,6 @@ import qualified Data.Array.Accelerate.Trafo.Fusion       as Fusion
 import qualified Data.Array.Accelerate.Trafo.LetSplit     as LetSplit
 import qualified Data.Array.Accelerate.Trafo.Exp.Simplify as Rewrite
 import qualified Data.Array.Accelerate.Trafo.Sharing      as Sharing
-import qualified Data.Array.Accelerate.Trafo.Desugar      as Desugar
-import qualified Data.Array.Accelerate.Trafo.NewNewFusion as NewNewFusion
-import qualified Data.Array.Accelerate.Schedule   as Schedule
-import qualified Data.Array.Accelerate.AST.Schedule.Uniform   as Schedule
-import qualified Data.Array.Accelerate.Trafo.Schedule.Uniform   as Schedule
 -- import qualified Data.Array.Accelerate.Trafo.Vectorise    as Vectorise
 
 import Control.DeepSeq

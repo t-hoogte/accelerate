@@ -35,7 +35,7 @@ ilpFusion s acc = fusedAcc
     (info@(Info graph _ _), constrM) = makeFullGraph acc
     ilp                              = makeILP info
     solution                         = solve' ilp
-    labelClusters                    = interpretSolution solution
-    fusedAcc                         = reconstruct graph labelClusters constrM
+    (labelClusters, labelClustersM)  = interpretSolution solution
+    fusedAcc                         = reconstruct graph labelClusters labelClustersM constrM
     solve' = fromJust . unsafePerformIO . solve s
 

@@ -19,8 +19,10 @@ import Data.Array.Accelerate.Representation.Type ( TupR(..) )
 import qualified Data.Set as S
 
 import Lens.Micro.TH ( makeLenses )
-import Control.Monad.State
+import Control.Monad.State ( (>=>), State )
 import Lens.Micro.Mtl ((<%=))
+import qualified Data.Map as M
+import Lens.Micro ((^.))
 
 
 -- identifies nodes with unique Ints. and tracks their dependencies
@@ -39,15 +41,21 @@ level (Label _ (Just l)) = 1 + level l
 
 type Labels = S.Set Label
 
+-- Map identifiers to labels
+labelMap :: S.Set Label -> M.Map Int Label
+labelMap = M.fromDistinctAscList . map (\l -> (l^.labelId, l)) . S.toAscList
+
 -- identifies elements of the environment with unique Ints.
 newtype ELabel = ELabel Int
   deriving (Show, Eq, Ord, Num)
 
 
 -- | Keeps track of which argument belongs to which labels
-data LabelArgs args where
-  LabelArgsNil :: LabelArgs ()
-  (:>>:)       :: Labels -> LabelArgs t -> LabelArgs (s -> t)
+type LabelArgs = TaggedArgs Labels
+type ELabelArgs = TaggedArgs ELabel
+data TaggedArgs a args where
+  LabelArgsNil :: TaggedArgs a ()
+  (:>>:)       :: a -> TaggedArgs a t -> TaggedArgs a (s -> t)
 
 -- | Keeps track of which array in the environment belongs to which label
 data LabelEnv env where

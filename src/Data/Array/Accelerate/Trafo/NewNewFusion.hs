@@ -39,7 +39,6 @@ import Data.Array.Accelerate.Trafo.Config
 import Data.Array.Accelerate.Error
 
 
-import Data.Kind
 #ifdef ACCELERATE_DEBUG
 import System.IO.Unsafe -- for debugging
 #endif

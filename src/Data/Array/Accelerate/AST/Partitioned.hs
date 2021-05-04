@@ -23,12 +23,14 @@ module Data.Array.Accelerate.AST.Partitioned
   , Cluster(..), Combine(..)
   , PartitionedAcc, PartitionedAfun
   , SwapArgs(..), Take(..)
-  ) where
+  , swapArgs, swapArgs'
+  ,combineArgs) where
 
 import Data.Array.Accelerate.AST.Operation
 
 import Control.Category ( Category(..) )
 import Prelude hiding (id, (.))
+import Data.Bifunctor (second)
 
 type PartitionedAcc  op = PreOpenAcc  (Cluster op)
 type PartitionedAfun op = PreOpenAfun (Cluster op)
@@ -49,7 +51,7 @@ type PartitionedAfun op = PreOpenAfun (Cluster op)
 -- it might be better to refactor this into a pseudo list (instead of binary tree).
 -- Even then, every topologically sorted order will be a valid sequence.
 data Cluster op args where
-  -- Currently, we only swap the order of the arguments at the leaves. 
+  -- Currently, we only swapArgs the order of the arguments at the leaves. 
   -- This is needed to be able to horizontally fuse (x -> y -> a) with (y -> x -> a).
   -- I think it is also sufficient to do it only at leaves, and not in every node.
   -- Maybe putting it in the nodes will turn out to be easier though!
@@ -107,13 +109,13 @@ data Combine left right result where
 data SwapArgs a b where
   -- no swapping, base case
   Start :: SwapArgs a a
-  -- put x on top of a recursive swap
+  -- put x on top of a recursive swapArgs
   Swap  :: SwapArgs a xb
         -> Take x xb b
         -> SwapArgs a (x -> b)
 
 -- neat, but is it actually useful?
-instance Category SwapArgs where 
+instance Category SwapArgs where
   id  = Start
   (.) = flip composeSwap
 
@@ -133,20 +135,51 @@ composeSwap x = go
         -- Recurse, then wrap that in a Swap which puts the same thing in front!
         go (Swap a b) = Swap (go a) b
 
+
+-- | Given two Args, make the one corresponding to the fused cluster.
+combineArgs :: Combine a b c -> Args env a -> Args env b -> Args env c
+combineArgs Combine        ArgsNil  ArgsNil  = ArgsNil
+  -- The only option which throws away an Arg! It is fused away.
+combineArgs (Vertical   c) (_:>:as) (_:>:bs) =       combineArgs c as bs
+  -- For Diagonal and Horizontal, we assume that `a` and `b` are the same Arg.
+combineArgs (Diagonal   c) (a:>:as) (_:>:bs) = a :>: combineArgs c as bs
+combineArgs (Horizontal c) (a:>:as) (_:>:bs) = a :>: combineArgs c as bs
+combineArgs (WeakLeftI  c)      as  (b:>:bs) = b :>: combineArgs c as bs
+combineArgs (WeakRightI c) (a:>:as)      bs  = a :>: combineArgs c as bs
+combineArgs (WeakLeftO  c)      as  (b:>:bs) = b :>: combineArgs c as bs
+combineArgs (WeakRightO c) (a:>:as)      bs  = a :>: combineArgs c as bs
+
+-- | Do the swap thing
+swapArgs :: forall env a b. SwapArgs a b -> Args env a -> Args env b
+swapArgs Start = id
+swapArgs (Swap s t) = uncurry (:>:) . take' t . swapArgs s
+  where take' :: forall x xc c. Take x xc c -> Args env xc -> (Arg env x, Args env c)
+        take' Here       (x :>: xs) = (x, xs)
+        take' (There t') (x :>: xs) = second (x :>:) $ take' t' xs
+
+-- | Inverse of `swapArgs`
+swapArgs' :: forall env a b. SwapArgs b a -> Args env a -> Args env b
+swapArgs' Start = id
+swapArgs' (Swap s t) = swapArgs' s . put t . \(x :>: xs) -> (x, xs)
+  where put :: forall x xc c. Take x xc c -> (Arg env x, Args env c) -> Args env xc
+        put Here       (x, xs) = x :>: xs
+        put (There t') (x, y :>: xs) = y :>: put t' (x, xs)
+
+
 -- Alternative SwapArgs constructors:
 
   -- Start' :: SwapArgs () ()
-  
+
   -- Dig   :: SwapArgs       a        b 
   --       -> SwapArgs (x -> a) (x -> b)
-  
+
   -- SSwap :: SwapArgs a b 
   --       -> SwapArgs   b c 
   --       -> SwapArgs a   c
-  
+
   -- Swap  :: SwapArgs a (x -> y -> z)
   --       -> SwapArgs a (y -> x -> z)
-  
+
   -- Swap' :: Take x xa a
   --       -> SwapArgs xa (x -> a)
 

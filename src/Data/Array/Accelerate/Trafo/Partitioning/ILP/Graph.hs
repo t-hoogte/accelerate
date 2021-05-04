@@ -182,7 +182,7 @@ data Construction (op :: Type -> Type) where
   CITE :: LabelEnv env -> ExpVar env PrimBool -> Label -> Label                     -> Construction op
   CWhl :: LabelEnv env -> Label -> Label -> GroundVars env a -> Construction op
   CLHS ::                 GLeftHandSide a b c -> Label                              -> Construction op
-  CFun ::                 GLeftHandSide a b c -> Label                              -> Construction op
+  CFun :: LabelEnv env -> GLeftHandSide a b c -> Label                              -> Construction op
 
 
 -- strips underscores
@@ -259,6 +259,8 @@ mkFullGraph (Acond cond tacc facc) = do
   fRes <- mkFullGraph facc
   -- To handle either of the conditional branches writing to a mutable array, we want the union of the resulting states:
   lenv <>= tEnv
+  -- Restore the old parent
+  currL.parent .= l_acond ^. parent
   return $ (tRes <> fRes)
          & lset     .~ S.singleton l_acond
          & construc %~ M.insert l_acond (CITE env cond l_true l_false)
@@ -278,6 +280,7 @@ mkFullGraph (Awhile _ cond bdy startvars) = do
   currL.parent .= Just l_body
   bRes <- mkFullGraphF bdy
   lenv <>= cEnv
+  currL.parent .= l_while ^. parent
   return $ (cRes <> bRes)
          & lset     .~ S.singleton l_while
          & construc %~ M.insert l_while (CWhl env l_cond l_body startvars)
@@ -291,13 +294,14 @@ mkFullGraphF (Abody acc) = mkFullGraph acc
 mkFullGraphF (Alam lhs f) = do
   l <- freshL
   res <- zoomState lhs l (mkFullGraphF f)
+  env <- use lenv
   return $ res
          & lset     %~ S.insert l
-         & construc %~ M.insert l (CFun lhs l)
+         & construc %~ M.insert l (CFun env lhs l)
 
--- Create a fresh L/E and update the state. freshL does not change the parent, which is the most common use case
+-- Create a fresh L or E and update the state. freshL does not change the parent, which is the most common use case
 freshL :: State (FullGraphState env) Label
-freshL = currL <%= \(Label x y) -> Label (x+1) y
+freshL = currL <%= (labelId +~ 1)
 freshE :: State (FullGraphState env) ELabel
 freshE = zoom currE freshE'
 
