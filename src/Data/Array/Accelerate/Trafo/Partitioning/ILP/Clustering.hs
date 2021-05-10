@@ -87,8 +87,8 @@ openReconstruct labelenv graph clusterslist subclustersmap construc = undefined
     makeAST :: LabelEnv env -> [ClusterL] -> Exists (PreOpenAcc (Cluster op) env)
     makeAST env [] = undefined
     makeAST env [cluster] = case makeCluster cluster of
-      FT c args env' -> Exists $ Exec c args
-      InitFold o args env' -> undefined
+      Fold c args env' -> Exists $ Exec c args
+      InitFold o args env' -> Exists $ Exec (Leaf o id) args
       NotFold _ -> undefined
     makeAST env (cluster:tail) = undefined
 
@@ -104,34 +104,32 @@ openReconstruct labelenv graph clusterslist subclustersmap construc = undefined
 
     -- The label is used to choose between vertical and diagonal fusion, using the DieMap.
     fuseCluster :: Label -> FoldType op env -> FoldType op env -> FoldType op env
-    fuseCluster l (FT cluster1 args1 largs1) (InitFold op2 args2 largs2) =
-      let (swap, combine, largs) = fuseSwap l largs1 largs2
+    fuseCluster l (Fold cluster1 args1 largs1) (InitFold op2 args2 largs2) =
+      let (swap, combine, largs) = fuseSwap (dieMap M.! l) largs1 largs2
           args = combineArgs combine args1 (swapArgs' swap args2)
-      in FT (Branch cluster1 (Leaf op2 swap) combine) args largs
+      in Fold (Branch cluster1 (Leaf op2 swap) combine) args largs
+    fuseCluster l (InitFold op args largs) x = fuseCluster l (Fold (Leaf op id) args largs) x
+    fuseCluster _ Fold{} Fold{} = error "fuseCluster got non-leaf as second argument" -- Could support this, but should never happen
+    fuseCluster _ _      _      = error "fuseCluster encountered NotFold" -- We can't fuse non-Exec nodes
 
-    fuseCluster _ FT{} _ = error "fuseCluster got non-leaf as second argument"
-    fuseCluster _ _ _ = error "fuseCluster encountered NotFold"
-
-    fuseSwap :: Label -> LabelArgs a -> LabelArgs b' -> (SwapArgs b b', Combine a b c, LabelArgs c)
-    fuseSwap = undefined
+    fuseSwap :: Labels -> LabelArgs a -> LabelArgs b' -> (SwapArgs b b', Combine a b c, LabelArgs c)
+    fuseSwap vertical a b' = undefined
 
 
 -- | Internal datatype for `makeCluster`.
 data FoldType op env
-  = forall args. FT (Cluster op args) (Args env args) (LabelArgs args)
-  | forall args. InitFold (op args) (Args env args) (LabelArgs args) -- like FT, but without a Swap
+  = forall args. Fold (Cluster op args) (Args env args) (LabelArgs args)
+  | forall args. InitFold (op args) (Args env args) (LabelArgs args) -- like Fold, but without a Swap
   | NotFold (Construction op)
-  -- -- We say that all Constructions other than Exe are 'not foldable', meaning they cannot be in a cluster:
-  -- -- they are either control-flow, or a 'Use' statement (which we can also safely consider not fusible)
-  -- | forall a. NotFold (PreOpenAcc (Cluster op) env a)
-  -- | forall a env' env''. Weaken (GLeftHandSide a env' env'')
-  -- | forall a env'. Funct (PreOpenAfun (Cluster op) env' a)
 
 {- [NOTE unsafeCoerce result type]
 
   Because we lose some type information by rebuilding the AST from scratch, we use
   unsafeCoerce to tell GHC what the result type of the computation is.
   TypeApplications allows us to specify the exact types unsafeCoerce works on,
-  which in turn helps retain as much typesafety as possible.
+  which in turn helps retain as much typesafety as possible. Whereever this note
+  is found, unsafeCoerce's type is restricted to only work on the result type.
+  In particular, we take care to not allow unsafeCoerce to mess with environment types,
+  as they are tricky to get right and we really like GHC agreeing with us there.
 
 -}
