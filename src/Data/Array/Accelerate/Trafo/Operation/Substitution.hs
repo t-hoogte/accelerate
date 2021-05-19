@@ -26,7 +26,7 @@
 --
 
 module Data.Array.Accelerate.Trafo.Operation.Substitution (
-  Sink(..),
+  Sink(..), Sink'(..),
   reindexPartial,
   reindexPartialAfun,
   pair, alet,
@@ -41,7 +41,7 @@ import Data.Array.Accelerate.AST.Operation
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Trafo.Var
-import Data.Array.Accelerate.Trafo.Substitution       (Sink(..))
+import Data.Array.Accelerate.Trafo.Substitution       (Sink(..), Sink'(..))
 import Data.Array.Accelerate.Trafo.Exp.Substitution
 
 data SunkReindexPartial f env env' where

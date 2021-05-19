@@ -455,14 +455,6 @@ arrayInstrGroundVars :: Exists (ArrayInstr benv) -> Exists (GroundVar benv)
 arrayInstrGroundVars (Exists (Parameter (Var tp ix))) = Exists $ Var (GroundRscalar tp) ix
 arrayInstrGroundVars (Exists (Index var))             = Exists var
 
-flattenTupR :: TupR s t -> [Exists s]
-flattenTupR = (`go` [])
-  where
-    go :: TupR s t -> [Exists s] -> [Exists s]
-    go (TupRsingle s)   accum = Exists s : accum
-    go (TupRpair t1 t2) accum = go t1 $ go t2 accum
-    go TupRunit         accum = accum
-
 mapAccExecutable :: (forall benv'. exe benv' -> exe' benv') -> PreOpenAcc exe benv t -> PreOpenAcc exe' benv t
 mapAccExecutable f = \case
   Exec exe                      -> Exec $ f exe

@@ -17,9 +17,12 @@
 --
 
 module Data.Array.Accelerate.AST.Environment (
-  Env(..), PartialEnv(..), Val,
+  Env(..), PartialEnv(..), Val, IdentityF(..),
   push, push', prj, prj', prjPartial,
-  mergePartialEnv, EnvBinding(..), partialEnvFromList,
+  unionPartialEnv, EnvBinding(..), partialEnvFromList, mapPartialEnv,
+  mapMaybePartialEnv, partialEnvValues, diffPartialEnv, diffPartialEnvWith,
+  intersectPartialEnv, partialEnvTail, partialEnvLast, partialEnvSkip,
+  partialUpdate, partialEnvToList,
 
   prjUpdate', prjReplace', update', updates', mapEnv,
   Identity(..), (:>)(..), weakenId, weakenSucc, weakenSucc', weakenEmpty,
@@ -75,13 +78,55 @@ prjPartial ZeroIdx       (PPush _   v) = Just v
 prjPartial (SuccIdx idx) (PPush env _) = prjPartial idx env
 prjPartial _             _             = Nothing
 
-mergePartialEnv :: (forall t. f t -> f t -> f t) -> PartialEnv f env -> PartialEnv f env -> PartialEnv f env
-mergePartialEnv _ PEnd         env          = env
-mergePartialEnv _ env          PEnd         = env
-mergePartialEnv g (PNone e1  ) (PNone e2  ) = PNone (mergePartialEnv g e1 e2)
-mergePartialEnv g (PPush e1 a) (PNone e2  ) = PPush (mergePartialEnv g e1 e2) a
-mergePartialEnv g (PNone e1  ) (PPush e2 b) = PPush (mergePartialEnv g e1 e2) b
-mergePartialEnv g (PPush e1 a) (PPush e2 b) = PPush (mergePartialEnv g e1 e2) (g a b)
+unionPartialEnv :: (forall t. f t -> f t -> f t) -> PartialEnv f env -> PartialEnv f env -> PartialEnv f env
+unionPartialEnv _ PEnd         env          = env
+unionPartialEnv _ env          PEnd         = env
+unionPartialEnv g (PNone e1  ) (PNone e2  ) = PNone (unionPartialEnv g e1 e2)
+unionPartialEnv g (PPush e1 a) (PNone e2  ) = PPush (unionPartialEnv g e1 e2) a
+unionPartialEnv g (PNone e1  ) (PPush e2 b) = PPush (unionPartialEnv g e1 e2) b
+unionPartialEnv g (PPush e1 a) (PPush e2 b) = PPush (unionPartialEnv g e1 e2) (g a b)
+
+intersectPartialEnv :: (forall t. f t -> g t -> h t) -> PartialEnv f env -> PartialEnv g env -> PartialEnv h env
+intersectPartialEnv _ PEnd _ = PEnd
+intersectPartialEnv _ _ PEnd = PEnd
+intersectPartialEnv g (PNone e1  ) (PNone e2  ) = PNone (intersectPartialEnv g e1 e2)
+intersectPartialEnv g (PPush e1 _) (PNone e2  ) = PNone (intersectPartialEnv g e1 e2)
+intersectPartialEnv g (PNone e1  ) (PPush e2 _) = PNone (intersectPartialEnv g e1 e2)
+intersectPartialEnv g (PPush e1 a) (PPush e2 b) = PPush (intersectPartialEnv g e1 e2) (g a b)
+
+-- Creates a partial environment containing only the identifiers which where
+-- present in the first env but not in the second env.
+diffPartialEnv :: PartialEnv f env -> PartialEnv f env -> PartialEnv f env
+diffPartialEnv = diffPartialEnvWith (const $ const Nothing)
+
+diffPartialEnvWith :: (forall t. f t -> g t -> Maybe (f t)) -> PartialEnv f env -> PartialEnv g env -> PartialEnv f env
+diffPartialEnvWith _ PEnd         _            = PEnd
+diffPartialEnvWith _ env          PEnd         = env
+diffPartialEnvWith g (PNone e1  ) (PNone e2  ) = PNone (diffPartialEnvWith g e1 e2)
+diffPartialEnvWith g (PNone e1  ) (PPush e2 _) = PNone (diffPartialEnvWith g e1 e2)
+diffPartialEnvWith g (PPush e1 a) (PNone e2  ) = PPush (diffPartialEnvWith g e1 e2) a
+diffPartialEnvWith g (PPush e1 a) (PPush e2 b) = case g a b of
+  Nothing -> PNone (diffPartialEnvWith g e1 e2)
+  Just x  -> PPush (diffPartialEnvWith g e1 e2) x
+
+partialEnvTail :: PartialEnv f (env, t) -> PartialEnv f env
+partialEnvTail (PPush e _) = e
+partialEnvTail (PNone e  ) = e
+partialEnvTail PEnd        = PEnd
+
+partialEnvLast :: PartialEnv f (env, t) -> Maybe (f t)
+partialEnvLast (PPush _ a) = Just a
+partialEnvLast _           = Nothing
+
+partialEnvSkip :: PartialEnv f env -> PartialEnv f (env, t)
+partialEnvSkip PEnd = PEnd
+partialEnvSkip e = PNone e
+
+partialUpdate :: f t -> Idx env t -> PartialEnv f env -> PartialEnv f env
+partialUpdate v ZeroIdx       env         = PPush (partialEnvTail env) v
+partialUpdate v (SuccIdx idx) (PPush e a) = PPush (partialUpdate v idx e) a
+partialUpdate v (SuccIdx idx) (PNone e  ) = PNone (partialUpdate v idx e)
+partialUpdate v (SuccIdx idx) PEnd        = PNone (partialUpdate v idx PEnd)
 
 data EnvBinding f env where
   EnvBinding :: Idx env t -> f t -> EnvBinding f env
@@ -108,6 +153,34 @@ partialEnvFromList g = go SkipNone . map snd . sortOn fst . map (\b@(EnvBinding 
       Nothing -> error "List wasn't sorted properly"
       Just ZeroIdx        -> go'' skip (g v v') bs
       Just (SuccIdx idx') -> PPush (go' (SkipSucc skip) (EnvBinding idx' v') bs) v
+
+partialEnvToList :: forall f env. PartialEnv f env -> [EnvBinding f env]
+partialEnvToList = go weakenId
+  where
+    go :: env' :> env -> PartialEnv f env' -> [EnvBinding f env]
+    go _ PEnd = []
+    go k (PNone env)   = go (weakenSucc k) env
+    go k (PPush env a) = EnvBinding (k >:> ZeroIdx) a : go (weakenSucc k) env
+
+mapPartialEnv :: (forall t. a t -> b t) -> PartialEnv a env -> PartialEnv b env
+mapPartialEnv _ PEnd          = PEnd
+mapPartialEnv f (PPush env a) = PPush (mapPartialEnv f env) (f a)
+mapPartialEnv f (PNone env)   = PNone (mapPartialEnv f env)
+
+mapMaybePartialEnv :: (forall t. a t -> Maybe (b t)) -> PartialEnv a env -> PartialEnv b env
+mapMaybePartialEnv _ PEnd          = PEnd
+mapMaybePartialEnv f (PPush env a) = case f a of
+  Nothing -> PNone (mapMaybePartialEnv f env)
+  Just b  -> PPush (mapMaybePartialEnv f env) b
+mapMaybePartialEnv f (PNone env)   = PNone (mapMaybePartialEnv f env)
+
+partialEnvValues :: PartialEnv (IdentityF a) env -> [a]
+partialEnvValues PEnd                      = []
+partialEnvValues (PNone env)               =     partialEnvValues env
+partialEnvValues (PPush env (IdentityF a)) = a : partialEnvValues env
+
+-- Wrapper to put homogenous types in an Env or PartialEnv
+newtype IdentityF t f = IdentityF t
 
 data Skip env env' where
   SkipSucc :: Skip env (env', t) -> Skip env env'

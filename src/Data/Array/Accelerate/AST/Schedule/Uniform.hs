@@ -21,6 +21,7 @@ module Data.Array.Accelerate.AST.Schedule.Uniform (
   BaseR(..), BasesR, BaseVar, BaseVars, BLeftHandSide,
   Signal(..), SignalResolver(..), Ref(..), OutputRef(..),
   module Partitioned,
+  await, resolve,
 ) where
 
 import Data.Array.Accelerate.AST.Exp
@@ -32,6 +33,7 @@ import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.AST.Partitioned as Partitioned         hiding (PartitionedAcc, PartitionedAfun, PreOpenAcc(..), PreOpenAfun(..))
+import Data.Array.Accelerate.Trafo.Operation.Substitution
 import Control.Concurrent.MVar
 import Data.IORef
 
@@ -77,7 +79,7 @@ data UniformScheduleFun exe env t where
         -> UniformScheduleFun exe env' t
         -> UniformScheduleFun exe env  (s -> t)
 
-  Sbody :: UniformSchedule    exe env'
+  Sbody :: UniformSchedule    exe env
         -> UniformScheduleFun exe env ()
 
 type family Input t where
@@ -161,3 +163,11 @@ newtype SignalResolver = SignalResolver (MVar ())
 -- Note: Refs should only be assigned once. They start undefined, and are at some point resolved to a value
 newtype Ref t  = Ref (IORef t)
 newtype OutputRef t = OutputRef (IORef t)
+
+await :: [Idx env Signal] -> UniformSchedule exe env -> UniformSchedule exe env
+await [] = id
+await signals = Effect (SignalAwait signals)
+
+resolve :: [Idx env SignalResolver] -> UniformSchedule exe env -> UniformSchedule exe env
+resolve [] = id
+resolve signals = Effect (SignalResolve signals)

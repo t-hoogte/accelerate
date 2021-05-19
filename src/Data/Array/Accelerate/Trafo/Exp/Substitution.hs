@@ -42,7 +42,7 @@ module Data.Array.Accelerate.Trafo.Exp.Substitution (
   lhsFullVars,
 
   RebuildArrayInstr, rebuildArrayInstrMap,
-  rebuildNoArrayInstr,
+  rebuildNoArrayInstr, mapArrayInstr,
 
   -- ** Checks
   isIdentity, extractExpVars,
@@ -466,6 +466,12 @@ rebuildArrayInstrMap
     => (forall s t. arr (s -> t) -> f (arr' (s -> t)))
     -> RebuildArrayInstr f arr arr'
 rebuildArrayInstrMap f arr = ArrayInstr <$> f arr
+
+mapArrayInstr
+    :: (forall s t. arr (s -> t) -> arr' (s -> t))
+    -> PreOpenExp arr  env e
+    -> PreOpenExp arr' env e
+mapArrayInstr f = runIdentity . rebuildArrayInstrOpenExp (rebuildArrayInstrMap (Identity . f))
 
 rebuildArrayInstrOpenExp
     :: forall f arr arr' env t.
