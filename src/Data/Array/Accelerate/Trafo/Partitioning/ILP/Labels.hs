@@ -8,7 +8,7 @@ module Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels where
 
 
 -- accelerate imports
-import Data.Array.Accelerate.AST.Idx ( Idx(..) )
+import Data.Array.Accelerate.AST.Idx ( Idx, pattern ZeroIdx, pattern SuccIdx )
 import Data.Array.Accelerate.AST.LeftHandSide ( LeftHandSide(..) )
 import Data.Array.Accelerate.AST.Operation
 import Data.Array.Accelerate.Representation.Type ( TupR(..) )
