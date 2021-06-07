@@ -52,6 +52,10 @@ makeILP (Info
     graphILP = ILP Minimise objFun myConstraints myBounds
 
     -- Placeholder, currently maximising the number of vertical/diagonal fusions.
+    -- Since we want all clusters to have one 'iteration size', the final objFun should
+    -- take care to never reward 'fusing' disjoint clusters, and then slightly penalise it.
+    -- The alternative is O(n^2) edges, so this is worth the trouble!
+    --
     -- In the future, maybe we want this to be backend-dependent (add to MakesILP).
     -- Also future: add IPU reward here.
     objFun :: Expression op

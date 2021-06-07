@@ -24,13 +24,15 @@ module Data.Array.Accelerate.AST.Partitioned
   , PartitionedAcc, PartitionedAfun
   , SwapArgs(..), Take(..)
   , swapArgs, swapArgs'
-  ,combineArgs) where
+  , put, take'
+  , combineArgs,labelledTake,liftSwap) where
 
 import Data.Array.Accelerate.AST.Operation
 
 import Control.Category ( Category(..) )
 import Prelude hiding (id, (.))
-import Data.Bifunctor (second)
+import Data.Bifunctor (Bifunctor(bimap), second)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
 
 type PartitionedAcc  op = PreOpenAcc  (Cluster op)
 type PartitionedAfun op = PreOpenAfun (Cluster op)
@@ -93,17 +95,11 @@ data Combine left right result where
              -> Combine (In sh e -> a) (In sh e -> b) (In sh e -> c)
 
   -- Only the right computation uses x, so this 'weakens' the left computation
-  WeakLeftI  :: Combine              a              b               c
-             -> Combine              a (In sh e  -> b) (In sh e  -> c)
+  WeakLeft  :: Combine       a        b         c
+            -> Combine       a (x  -> b) (x  -> c)
   -- Mirror of WeakLeft
-  WeakRightI :: Combine              a              b               c
-             -> Combine (In sh e  -> a)             b  (In sh e  -> c)
-
-  WeakLeftO  :: Combine              a              b               c
-             -> Combine              a (Out sh e -> b) (Out sh e -> c)
-
-  WeakRightO :: Combine              a              b               c
-             -> Combine (Out sh e -> a)             b  (Out sh e -> c)
+  WeakRight :: Combine       a        b         c
+            -> Combine (x -> a)       b  (x  -> c)
 
 -- Re-order the type level arguments, to align them for the fusion constructors.
 data SwapArgs a b where
@@ -135,6 +131,7 @@ composeSwap x = go
         -- Recurse, then wrap that in a Swap which puts the same thing in front!
         go (Swap a b) = Swap (go a) b
 
+----------------
 
 -- | Given two Args, make the one corresponding to the fused cluster.
 combineArgs :: Combine a b c -> Args env a -> Args env b -> Args env c
@@ -144,42 +141,61 @@ combineArgs (Vertical   c) (_:>:as) (_:>:bs) =       combineArgs c as bs
   -- For Diagonal and Horizontal, we assume that `a` and `b` are the same Arg.
 combineArgs (Diagonal   c) (a:>:as) (_:>:bs) = a :>: combineArgs c as bs
 combineArgs (Horizontal c) (a:>:as) (_:>:bs) = a :>: combineArgs c as bs
-combineArgs (WeakLeftI  c)      as  (b:>:bs) = b :>: combineArgs c as bs
-combineArgs (WeakRightI c) (a:>:as)      bs  = a :>: combineArgs c as bs
-combineArgs (WeakLeftO  c)      as  (b:>:bs) = b :>: combineArgs c as bs
-combineArgs (WeakRightO c) (a:>:as)      bs  = a :>: combineArgs c as bs
+combineArgs (WeakLeft   c)      as  (b:>:bs) = b :>: combineArgs c as bs
+combineArgs (WeakRight  c) (a:>:as)      bs  = a :>: combineArgs c as bs
 
 -- | Do the swap thing
 swapArgs :: forall env a b. SwapArgs a b -> Args env a -> Args env b
 swapArgs Start = id
 swapArgs (Swap s t) = uncurry (:>:) . take' t . swapArgs s
-  where take' :: forall x xc c. Take x xc c -> Args env xc -> (Arg env x, Args env c)
-        take' Here       (x :>: xs) = (x, xs)
-        take' (There t') (x :>: xs) = second (x :>:) $ take' t' xs
+
+take' :: Take x xc c -> Args env xc -> (Arg env x, Args env c)
+take' Here      (x :>: xs) = (x, xs)
+take' (There t) (x :>: xs) = second (x :>:) $ take' t xs
+
+labelledTake :: Take x xc c -> LabelArgs xc -> (ELabels, LabelArgs c)
+labelledTake Here      (x :>>: xs) = (x, xs)
+labelledTake (There t) (x :>>: xs) = second (x :>>:) $ labelledTake t xs
 
 -- | Inverse of `swapArgs`
 swapArgs' :: forall env a b. SwapArgs b a -> Args env a -> Args env b
 swapArgs' Start = id
 swapArgs' (Swap s t) = swapArgs' s . put t . \(x :>: xs) -> (x, xs)
-  where put :: forall x xc c. Take x xc c -> (Arg env x, Args env c) -> Args env xc
-        put Here       (x, xs) = x :>: xs
-        put (There t') (x, y :>: xs) = y :>: put t' (x, xs)
+
+put :: Take x xc c -> (Arg env x, Args env c) -> Args env xc
+put Here       (x, xs) = x :>: xs
+put (There t') (x, y :>: xs) = y :>: put t' (x, xs)
 
 
--- Alternative SwapArgs constructors:
+-- Simpler definition which is 'semantically equivalent' 
+-- (when plugged into swapArgs or swapArgs') but explodes 
+-- in the size of the SwapArgs:
+--  > liftSwap Start = Start
+--  > liftSwap (Swap s t) = Swap (Swap (liftSwap s) (There t)) (There Here)
+-- That version lifts each Take, and brings `x` forward every time.
+-- This version instead keeps track of where `x` ends up after only lifting
+-- each Take, and puts it at the top all the way at the end.
+-- The difference becomes clear when you repeatedly apply this function to
+-- lift through some layers (:: SwapArgs a b -> SwapArgs (x->y->z->a) (x->y->z->b))
+-- (as happens in `Clustering`): The simple version multiplies the size by 2^n, 
+-- while the below version adds n There's to each Take and adds n Swaps in front.
+-- Note that this algorithm is linear in the size of SwapArgs (which can be quadratic in its depth)
+liftSwap :: SwapArgs a b -> SwapArgs (x -> a) (x -> b)
+liftSwap s = case go s of LSA s' acc -> Swap s' acc
+  where
+    go :: SwapArgs a b -> LiftSwapAcc a b x
+    go Start = LSA Start Here
+    go (Swap s' t) = case go s' of
+      LSA s'' acc -> case goPast t acc of
+        GP t' acc' -> LSA (Swap s'' t') (There acc')
 
-  -- Start' :: SwapArgs () ()
+    goPast :: Take x bx b -> Take y bxy bx -> GoPast x y b bx bxy
+    goPast x Here = GP (There x) Here
+    goPast Here (There y) = GP Here y
+    goPast (There x) (There y) = case goPast x y of
+      GP a b -> GP (There a) (There b)
 
-  -- Dig   :: SwapArgs       a        b 
-  --       -> SwapArgs (x -> a) (x -> b)
-
-  -- SSwap :: SwapArgs a b 
-  --       -> SwapArgs   b c 
-  --       -> SwapArgs a   c
-
-  -- Swap  :: SwapArgs a (x -> y -> z)
-  --       -> SwapArgs a (y -> x -> z)
-
-  -- Swap' :: Take x xa a
-  --       -> SwapArgs xa (x -> a)
+-- Internal datatypes for existential reasons
+data LiftSwapAcc a b x = forall bx. LSA (SwapArgs (x -> a) bx) (Take x bx b)
+data GoPast x y b bx bxy = forall by. GP (Take x bxy by) (Take y by b)
 

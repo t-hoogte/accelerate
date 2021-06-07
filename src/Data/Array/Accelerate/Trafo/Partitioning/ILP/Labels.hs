@@ -1,3 +1,4 @@
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE EmptyCase #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -23,6 +24,21 @@ import Control.Monad.State ( (>=>), State )
 import Lens.Micro.Mtl ((<%=))
 import qualified Data.Map as M
 import Lens.Micro ((^.))
+import Data.Bifunctor (first)
+
+{-
+Label is for each AST node: every exec, every let, every branch of control flow, etc has a unique label.
+Edge is a dependency between Labels
+
+ELabel is for Environments: the environment consists of array-level and expression-level values (right?),
+we give each value a unique ELabel. This helps to re-index AST nodes and expressions and args into the new environment,
+provided that we have a LabelEnv with matching ELabels...
+LabelEnv also has a S.Set Label for each value, denoting the current outgoing edges from that value: This is volatile information, while all the rest is static.
+
+LabelArgs is the same as LabelEnv, except it is bound to Args. The ELabels in here point to the ELabels in Env
+-}
+
+
 
 
 -- identifies nodes with unique Ints. and tracks their dependencies
@@ -40,6 +56,13 @@ level (Label _ Nothing)  = 0
 level (Label _ (Just l)) = 1 + level l
 
 type Labels = S.Set Label
+type ELabels = (ELabel, Labels)
+data ALabel t where
+  Arr :: ELabel -- shape
+      -> ELabel -- buffer
+      -> ALabel (m sh e) -- only matches on arrays, but supports In, Out and Mut
+  NotArr :: ALabel (t e) -- matches on `Var' e`, `Exp' e` and `Fun' e` 
+type ALabels = (Maybe ELabel, Labels) -- An ELabel if it corresponds to an array, otherwise Nothing
 
 -- Map identifiers to labels
 labelMap :: S.Set Label -> M.Map Int Label
@@ -49,18 +72,15 @@ labelMap = M.fromDistinctAscList . map (\l -> (l^.labelId, l)) . S.toAscList
 newtype ELabel = ELabel Int
   deriving (Show, Eq, Ord, Num)
 
-
 -- | Keeps track of which argument belongs to which labels
-type LabelArgs = TaggedArgs Labels
-type ELabelArgs = TaggedArgs ELabel
-data TaggedArgs a args where
-  LabelArgsNil :: TaggedArgs a ()
-  (:>>:)       :: a -> TaggedArgs a t -> TaggedArgs a (s -> t)
+data LabelArgs args where
+  LabelArgsNil :: LabelArgs ()
+  (:>>:)       :: ALabels -> LabelArgs t -> LabelArgs (s -> t)
 
 -- | Keeps track of which array in the environment belongs to which label
 data LabelEnv env where
   LabelEnvNil  :: LabelEnv ()
-  (:>>>:)      :: (ELabel, Labels) -> LabelEnv t -> LabelEnv (t, s)
+  (:>>>:)      :: ELabels -> LabelEnv t -> LabelEnv (t, s)
 instance Semigroup (LabelEnv env) where
   LabelEnvNil <> LabelEnvNil = LabelEnvNil
   ((e1,l1):>>>:lenv1) <> ((e2,l2):>>>:lenv2)
@@ -101,32 +121,35 @@ getLabelArgs :: Args env args -> LabelEnv env -> LabelArgs args
 getLabelArgs ArgsNil _ = LabelArgsNil
 getLabelArgs (arg :>: args) e = getLabelsArg arg e :>>: getLabelArgs args e
 
-getLabelsArg :: Arg env t -> LabelEnv env -> Labels
+getLabelsArg :: Arg env t -> LabelEnv env -> ALabels
 getLabelsArg (ArgVar tup)                  env = getLabelsTup tup    env
 getLabelsArg (ArgExp expr)                 env = getLabelsExp expr   env
 getLabelsArg (ArgFun fun)                  env = getLabelsFun fun    env
-getLabelsArg (ArgArray _ _ shVars bufVars) env = getLabelsTup shVars env <> getLabelsTup bufVars env
+-- TODO this gets us the singleton label assigned to the buffer, check whether this doesn't make us use/write an array before we know its size
+-- honestly, this just doesn't cut it. Need a better way to both label arguments (for reconstruction later) and track dependencies (for ILP solving),
+-- using this one S.Set for both conflicts (as seen in 'const' vs 'insert')
+getLabelsArg (ArgArray _ _ shVars bufVars) env = {-getLabelsTup shVars env <>-} getLabelsTup bufVars env 
 
-getLabelsTup :: TupR (Var a env) b -> LabelEnv env -> Labels
+getLabelsTup :: TupR (Var a env) b -> LabelEnv env -> ALabels
 getLabelsTup TupRunit                     _   = mempty
 getLabelsTup (TupRsingle var) env = getLabelsVar var env
 getLabelsTup (TupRpair x y)               env = getLabelsTup x env <> getLabelsTup y env
 
-getLabelsVar :: Var s env t -> LabelEnv env -> Labels
+getLabelsVar :: Var s env t -> LabelEnv env -> ALabels
 getLabelsVar (varIdx -> idx) = getLabelsIdx idx
 
-getLabelsIdx :: Idx env a -> LabelEnv env -> Labels
-getLabelsIdx ZeroIdx ((_,ls) :>>>: _) = ls
+getLabelsIdx :: Idx env a -> LabelEnv env -> ALabels
+getLabelsIdx ZeroIdx (el :>>>: _) = first Just el
 getLabelsIdx (SuccIdx idx) (_ :>>>: env) = getLabelsIdx idx env
 
 getELabelIdx :: Idx env a -> LabelEnv env -> ELabel
 getELabelIdx ZeroIdx ((e,_) :>>>: _) = e
 getELabelIdx (SuccIdx idx) (_ :>>>: env) = getELabelIdx idx env
 
-getLabelsExp :: OpenExp x env y -> LabelEnv env -> Labels
+getLabelsExp :: OpenExp x env y -> LabelEnv env -> ALabels
 getLabelsExp = undefined -- TODO traverse everything, look for Idxs
 
-getLabelsFun :: OpenFun x env y -> LabelEnv env -> Labels
+getLabelsFun :: OpenFun x env y -> LabelEnv env -> ALabels
 getLabelsFun (Body expr) lenv = getLabelsExp expr lenv
 getLabelsFun (Lam _ fun) lenv = getLabelsFun fun  lenv
 
@@ -134,22 +157,23 @@ updateLabelEnv :: Args env args -> LabelEnv env -> Label -> LabelEnv env
 updateLabelEnv ArgsNil lenv _ = lenv
 updateLabelEnv (arg :>: args) lenv l = case arg of
   -- CHECK we only look at the 'Buffer' vars here, not the 'shape' ones. Is that ok?
-  ArgArray Out _ _ vars -> updateLabelEnv args (insertAtVars vars lenv l) l
-  ArgArray Mut _ _ vars -> updateLabelEnv args (insertAtVars vars lenv l) l
-  -- CHECK maybe we should also traverse the other args? Does LabelEnv need two sets of Labels (potentially fusible & infusible)?
+  ArgArray Out _ _ vars -> updateLabelEnv args (insertAtVars vars lenv $ S.insert l) l
+  ArgArray Mut _ _ vars -> updateLabelEnv args (insertAtVars vars lenv $ S.insert l) l
+  -- TODO maybe we should also traverse the other args? Does LabelEnv need two sets of Labels (potentially fusible & infusible)?
   _ -> updateLabelEnv args lenv l
 
-insertAtVars :: TupR (Var a env) b -> LabelEnv env -> Label -> LabelEnv env
+-- Updates the labels with a function. In practice, this is either `S.insert l` or `const (S.singleton l)`
+insertAtVars :: TupR (Var a env) b -> LabelEnv env -> (Labels -> Labels) -> LabelEnv env
 insertAtVars TupRunit lenv _ = lenv
-insertAtVars (TupRpair x y) lenv l = insertAtVars x (insertAtVars y lenv l) l
-insertAtVars (TupRsingle (varIdx -> idx)) ((e,lset) :>>>: lenv) l = case idx of
-  ZeroIdx -> (e, S.insert l lset) :>>>: lenv
-  SuccIdx idx' ->       (e, lset) :>>>: insertAtVars (TupRsingle (Var undefined idx')) lenv l
-insertAtVars (TupRsingle (varIdx -> idx)) LabelEnvNil _ = case idx of {} -- convincing the exhausiveness checker
+insertAtVars (TupRpair x y) lenv f = insertAtVars x (insertAtVars y lenv f) f
+insertAtVars (TupRsingle (varIdx -> idx)) ((e,lset) :>>>: lenv) f = case idx of
+  ZeroIdx -> (e, f lset) :>>>: lenv
+  SuccIdx idx' ->       (e, lset) :>>>: insertAtVars (TupRsingle (Var undefined idx')) lenv f
+insertAtVars (TupRsingle (varIdx -> idx)) LabelEnvNil _ = case idx of {} -- convincing the pattern coverage checker of the impossible case
 
 -- | Like `getLabelArgs`, but ignores the `Out` arguments
 getInputArgLabels :: Args env args -> LabelEnv env -> Labels
 getInputArgLabels ArgsNil _ = mempty
 getInputArgLabels (arg :>: args) lenv = getInputArgLabels args lenv <> case arg of
   ArgArray Out _ _ _ -> mempty
-  _ -> getLabelsArg arg lenv
+  _ -> snd $ getLabelsArg arg lenv

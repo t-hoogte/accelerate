@@ -104,23 +104,53 @@ openReconstruct labelenv graph clusterslist subclustersmap construc = undefined
 
     -- The label is used to choose between vertical and diagonal fusion, using the DieMap.
     fuseCluster :: Label -> FoldType op env -> FoldType op env -> FoldType op env
-    fuseCluster l (Fold cluster1 args1 largs1) (InitFold op2 args2 largs2) =
-      let (swap, combine, largs) = fuseSwap (dieMap M.! l) largs1 largs2
-          args = combineArgs combine args1 (swapArgs' swap args2)
-      in Fold (Branch cluster1 (Leaf op2 swap) combine) args largs
+    fuseCluster l (Fold cluster1 args1 largs1) (InitFold op2 args2 largs2) = 
+      case fuseSwap (dieMap M.! l) largs1 largs2 of
+        Result swap combine largs ->
+          let args = combineArgs combine args1 (swapArgs' swap args2)
+          in Fold (Branch cluster1 (Leaf op2 swap) combine) args largs
     fuseCluster l (InitFold op args largs) x = fuseCluster l (Fold (Leaf op id) args largs) x
     fuseCluster _ Fold{} Fold{} = error "fuseCluster got non-leaf as second argument" -- Could support this, but should never happen
     fuseCluster _ _      _      = error "fuseCluster encountered NotFold" -- We can't fuse non-Exec nodes
 
-    fuseSwap :: Labels -> LabelArgs a -> LabelArgs b' -> (SwapArgs b b', Combine a b c, LabelArgs c)
-    fuseSwap vertical a b' = undefined
+    fuseSwap :: Labels -> LabelArgs a -> LabelArgs b' -> FuseSwapResult a b'
+    fuseSwap vertical = go
+      where
+        go :: LabelArgs a -> LabelArgs b' -> FuseSwapResult a b'
+        go LabelArgsNil LabelArgsNil = Result id Combine LabelArgsNil
+        go (a :>>: as) b' = case findArg a b' of
+          -- `a` is not in `b'`, no reordering needed and it should also not be in the dieMap
+          Nothing -> if S.size a == 1 && S.findMin a `S.member` vertical 
+                     then error "cannot be" 
+                     else case go as b' of
+            Result f c la -> Result f (WeakRight c) (a :>>: la)
+          -- `a` is in `b'`, and this 'Take' tells us where! Take it out, recurse on the tail, then put it in front.
+          Just (ExisTake t) -> let (a', bs) = labelledTake t b'
+                               in if a /= a' then error "what did findArg even do" 
+                                  else case go as bs of
+            Result f c la -> _
+
+        go LabelArgsNil (b :>>: bs) = case go LabelArgsNil bs of
+          Result f c lb -> Result (liftSwap f) (WeakLeft c) (b :>>: lb)
 
 
--- | Internal datatype for `makeCluster`.
+-- | Internal datatypes for `makeCluster`.
 data FoldType op env
   = forall args. Fold (Cluster op args) (Args env args) (LabelArgs args)
   | forall args. InitFold (op args) (Args env args) (LabelArgs args) -- like Fold, but without a Swap
   | NotFold (Construction op)
+
+data FuseSwapResult a b' = forall b c. Result (SwapArgs b b') (Combine a b c) (LabelArgs c) -- don't need this last one? 'combineArgs' can generate it
+
+data ExisTake xa = forall x a. ExisTake (Take x xa a)
+
+findArg :: Labels -> LabelArgs xs -> Maybe (ExisTake xs)
+findArg _ LabelArgsNil = Nothing
+findArg ls (ms :>>: xss)
+  | ls == ms = Just $ ExisTake Here
+  | otherwise = (\(ExisTake t) -> ExisTake $ There t) <$> findArg ls xss
+
+
 
 {- [NOTE unsafeCoerce result type]
 
