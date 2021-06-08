@@ -21,7 +21,7 @@ module Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph where
 
 -- accelerate imports
 import Data.Array.Accelerate.Array.Buffer
-import Data.Array.Accelerate.AST.Idx ( Idx(..) )
+import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Operation hiding ( Var )
 import Data.Array.Accelerate.Trafo.Desugar (DesugarAcc)
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
@@ -207,7 +207,7 @@ mkFullGraph (Exec op args) = do
   lenv %= flip (updateLabelEnv args) l -- adds the label l to the outgoing args in the environment
   let fuseedges = S.map (-?> l) $ getInputArgLabels args env -- add fusible edges to all inputs
   let backInfo = mkGraph op (getLabelArgs args env) l -- query the backend for its fusion information - we add l and fuseedges next line
-  return $ FGRes (backInfo 
+  return $ FGRes (backInfo
                     & graphI.graphNodes   <>~ S.singleton l
                     & graphI.fusibleEdges <>~ fuseedges)
                  mempty
@@ -228,14 +228,14 @@ mkFullGraph (Alet (lhs :: GLeftHandSide bnd env env') _ bnd scp) = do
 -- TODO figure out whether we need more information for these. If so, add constructors to 'Construction' for them!
 mkFullGraph (Return vars) = do
   env <- use lenv
-  return $ mempty & lset .~ getLabelsTup vars env
+  return $ mempty & lset .~ getLabelsTup vars env ^. eitherLens _2 _2
 mkFullGraph (Compute expr) = do
   env <- use lenv
-  return $ mempty & lset .~ getLabelsExp expr env
+  return $ mempty & lset .~ getLabelsExp expr env ^. _2
 mkFullGraph Alloc{} = return mempty
 mkFullGraph (Unit var) = do
   env <- use lenv
-  return $ mempty & lset .~ getLabelsVar var env
+  return $ mempty & lset .~ getLabelsVar var env ^. _2
 
 mkFullGraph (Use sctype buff) = do
   l <- freshL
@@ -339,7 +339,7 @@ constructITE env' env cond tbranch fbranch = Acond <$> reindexVar (mkReindexPart
 constructWhl :: LabelEnv env' -> LabelEnv env
              -> Uniquenesses a -> PreOpenAfun op env' (a -> PrimBool) -> PreOpenAfun op env' (a -> a) -> GroundVars env a
              -> Maybe (PreOpenAcc op env' a)
-constructWhl env' env u cond body start = Awhile u cond body <$> reindexVars (mkReindexPartial env env') start
+constructWhl env' env u cond bdy start = Awhile u cond bdy <$> reindexVars (mkReindexPartial env env') start
 
 
 
@@ -383,3 +383,9 @@ setMapMaybe f = S.mapMonotonic fromJust . S.filter isJust . S.map f
 -- This exists in Control.Lens, not in Lens.Micro.Mtl
 (<>=) :: (MonadState s m, Semigroup a) => ASetter' s a -> a -> m ()
 l <>= m = l %= (<> m)
+
+-- Probably exists under some name somewhere, but not in Microlens I think
+eitherLens :: Lens' a x -> Lens' b x -> Lens' (Either a b) x
+eitherLens ax bx f ab = case ab of
+  Left  a -> Left  <$> ax f a
+  Right b -> Right <$> bx f b

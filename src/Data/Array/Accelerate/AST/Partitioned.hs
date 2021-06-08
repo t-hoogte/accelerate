@@ -31,7 +31,7 @@ import Data.Array.Accelerate.AST.Operation
 
 import Control.Category ( Category(..) )
 import Prelude hiding (id, (.))
-import Data.Bifunctor (Bifunctor(bimap), second)
+import Data.Bifunctor (second)
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
 
 type PartitionedAcc  op = PreOpenAcc  (Cluster op)
@@ -153,7 +153,7 @@ take' :: Take x xc c -> Args env xc -> (Arg env x, Args env c)
 take' Here      (x :>: xs) = (x, xs)
 take' (There t) (x :>: xs) = second (x :>:) $ take' t xs
 
-labelledTake :: Take x xc c -> LabelArgs xc -> (ELabels, LabelArgs c)
+labelledTake :: Take x xc c -> LabelArgs xc -> (ALabels x, LabelArgs c)
 labelledTake Here      (x :>>: xs) = (x, xs)
 labelledTake (There t) (x :>>: xs) = second (x :>>:) $ labelledTake t xs
 

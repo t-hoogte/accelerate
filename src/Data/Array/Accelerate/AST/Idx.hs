@@ -134,6 +134,8 @@ matchIdx (UnsafeIdxConstructor i) (UnsafeIdxConstructor j)
 -- pattern possible if the environment is empty. This can be used instead.
 pattern VoidIdx :: forall env t a. (env ~ ()) => () => a -> Idx env t
 pattern VoidIdx a <- (\case{} -> a)
+{-# COMPLETE VoidIdx #-}
+
 
 data PairIdx p a where
   PairIdxLeft  :: PairIdx (a, b) a

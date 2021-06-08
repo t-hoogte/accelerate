@@ -116,22 +116,24 @@ openReconstruct labelenv graph clusterslist subclustersmap construc = undefined
     fuseSwap :: Labels -> LabelArgs a -> LabelArgs b' -> FuseSwapResult a b'
     fuseSwap vertical = go
       where
-        go :: LabelArgs a -> LabelArgs b' -> FuseSwapResult a b'
-        go LabelArgsNil LabelArgsNil = Result id Combine LabelArgsNil
-        go (a :>>: as) b' = case findArg a b' of
-          -- `a` is not in `b'`, no reordering needed and it should also not be in the dieMap
-          Nothing -> if S.size a == 1 && S.findMin a `S.member` vertical 
-                     then error "cannot be" 
-                     else case go as b' of
-            Result f c la -> Result f (WeakRight c) (a :>>: la)
-          -- `a` is in `b'`, and this 'Take' tells us where! Take it out, recurse on the tail, then put it in front.
-          Just (ExisTake t) -> let (a', bs) = labelledTake t b'
-                               in if a /= a' then error "what did findArg even do" 
-                                  else case go as bs of
-            Result f c la -> _
+        go = undefined -- rewrite to new LabelArgs
 
-        go LabelArgsNil (b :>>: bs) = case go LabelArgsNil bs of
-          Result f c lb -> Result (liftSwap f) (WeakLeft c) (b :>>: lb)
+        -- go :: LabelArgs a -> LabelArgs b' -> FuseSwapResult a b'
+        -- go LabelArgsNil LabelArgsNil = Result id Combine LabelArgsNil
+        -- go (a :>>: as) b' = case findArg a b' of
+        --   -- `a` is not in `b'`, no reordering needed and it should also not be in the dieMap
+        --   Nothing -> if S.size a == 1 && S.findMin a `S.member` vertical 
+        --              then error "cannot be" 
+        --              else case go as b' of
+        --     Result f c la -> Result f (WeakRight c) (a :>>: la)
+        --   -- `a` is in `b'`, and this 'Take' tells us where! Take it out, recurse on the tail, then put it in front.
+        --   Just (ExisTake t) -> let (a', bs) = labelledTake t b'
+        --                        in if a /= a' then error "what did findArg even do" 
+        --                           else case go as bs of
+        --     Result f c la -> _
+
+        -- go LabelArgsNil (b :>>: bs) = case go LabelArgsNil bs of
+        --   Result f c lb -> Result (liftSwap f) (WeakLeft c) (b :>>: lb)
 
 
 -- | Internal datatypes for `makeCluster`.
@@ -144,11 +146,11 @@ data FuseSwapResult a b' = forall b c. Result (SwapArgs b b') (Combine a b c) (L
 
 data ExisTake xa = forall x a. ExisTake (Take x xa a)
 
-findArg :: Labels -> LabelArgs xs -> Maybe (ExisTake xs)
-findArg _ LabelArgsNil = Nothing
-findArg ls (ms :>>: xss)
-  | ls == ms = Just $ ExisTake Here
-  | otherwise = (\(ExisTake t) -> ExisTake $ There t) <$> findArg ls xss
+-- findArg :: Labels -> LabelArgs xs -> Maybe (ExisTake xs)
+-- findArg _ LabelArgsNil = Nothing
+-- findArg ls (ms :>>: xss)
+--   | ls == ms = Just $ ExisTake Here
+--   | otherwise = (\(ExisTake t) -> ExisTake $ There t) <$> findArg ls xss
 
 
 
