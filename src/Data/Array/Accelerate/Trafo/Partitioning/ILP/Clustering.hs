@@ -60,6 +60,7 @@ type ClusterL = [Label]
 
 -- Data.Graph has an awkward definition of graphs, but also already has an implementation of 'topsort'.
 -- type G.Graph = A.Array Label [Label]
+-- While writing the proposal, I realised we won't need a DieMap if we construct bottom-up after the sort.
 topSortDieMap :: Graph -> Labels -> (M.Map Label Labels, ClusterL)
 topSortDieMap (Graph _ fedges _) cluster = (dieMap, topsorted)
   where
