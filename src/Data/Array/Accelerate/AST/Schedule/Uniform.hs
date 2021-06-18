@@ -20,7 +20,7 @@ module Data.Array.Accelerate.AST.Schedule.Uniform (
   Binding(..), Effect(..),
   BaseR(..), BasesR, BaseVar, BaseVars, BLeftHandSide,
   Signal(..), SignalResolver(..), Ref(..), OutputRef(..),
-  module Partitioned,
+  module Operation
 ) where
 
 import Data.Array.Accelerate.AST.Exp
@@ -31,7 +31,7 @@ import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
-import Data.Array.Accelerate.AST.Partitioned as Partitioned         hiding (PartitionedAcc, PartitionedAfun, PreOpenAcc(..), PreOpenAfun(..))
+import Data.Array.Accelerate.AST.Operation   as Operation           hiding (PreOpenAcc(..), PreOpenAfun(..))
 import Control.Concurrent.MVar
 import Data.IORef
 

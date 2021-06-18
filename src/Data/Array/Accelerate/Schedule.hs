@@ -39,6 +39,7 @@ import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Representation.Type
 import Data.Typeable                                                ( (:~:)(..) )
+import Data.Array.Accelerate.AST.Operation
 
 
 class IsSchedule sched where

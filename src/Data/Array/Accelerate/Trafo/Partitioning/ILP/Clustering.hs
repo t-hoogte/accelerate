@@ -4,20 +4,18 @@
 {-# LANGUAGE TypeApplications #-}
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering where
 
-import Control.Category
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
-import Data.Bifunctor
-import Prelude hiding (id, (.))
+
 import qualified Data.Map as M
 import Unsafe.Coerce (unsafeCoerce)
 import qualified Data.Graph as G
 import qualified Data.Set as S
-import qualified Data.Array as A
 import Data.Function (on)
-import Lens.Micro ((^.))
+import Data.Array.Accelerate.AST.Operation
+import Data.Array.Accelerate.AST.CoDeBruijn
 
 
 -- "open research question"
@@ -101,7 +99,7 @@ openReconstruct labelenv graph clusterslist subclustersmap construc = undefined
     makeAST env [] = undefined
     makeAST env [cluster] = case makeCluster cluster of
       Fold c args env' -> Exists $ Exec c args
-      InitFold o args env' -> Exists $ Exec (Leaf o id) args
+      InitFold o args env' -> Exists $ Exec (CNil o) args
       NotFold _ -> undefined
     makeAST env (cluster:tail) = undefined
 
@@ -123,10 +121,10 @@ openReconstruct labelenv graph clusterslist subclustersmap construc = undefined
     -- fuseCluster _ Fold{} Fold{} = error "fuseCluster got non-leaf as second argument" -- Could support this, but should never happen
     -- fuseCluster _ _      _      = error "fuseCluster encountered NotFold" -- We can't fuse non-Exec nodes
 
-    fuseSwap :: Labels -> LabelArgs a -> LabelArgs b' -> FuseSwapResult a b'
-    fuseSwap vertical = go
-      where
-        go = undefined -- rewrite to new LabelArgs
+    -- fuseSwap :: Labels -> LabelArgs a -> LabelArgs b' -> FuseSwapResult a b'
+    -- fuseSwap vertical = go
+    --   where
+    --     go = undefined -- rewrite to new LabelArgs
 
         -- go :: LabelArgs a -> LabelArgs b' -> FuseSwapResult a b'
         -- go LabelArgsNil LabelArgsNil = Result id Combine LabelArgsNil
@@ -151,8 +149,6 @@ data FoldType op env
   = forall args. Fold (Cluster op args) (Args env args) (LabelArgs args)
   | forall args. InitFold (op args) (Args env args) (LabelArgs args) -- like Fold, but without a Swap
   | NotFold (Construction op)
-
-data FuseSwapResult a b' = forall b c. Result (SwapArgs b b') (Combine a b c) (LabelArgs c) -- don't need this last one? 'combineArgs' can generate it
 
 data ExisTake xa = forall x a. ExisTake (Take x xa a)
 

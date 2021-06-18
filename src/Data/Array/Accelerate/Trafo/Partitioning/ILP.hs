@@ -9,7 +9,9 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering 
     ( reconstruct )
 import Data.Array.Accelerate.AST.Partitioned
-    ( OperationAcc, PartitionedAcc )
+    ( PartitionedAcc )
+import Data.Array.Accelerate.AST.Operation 
+    ( OperationAcc )
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
     ( ILPSolver(solve) )
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.MIP

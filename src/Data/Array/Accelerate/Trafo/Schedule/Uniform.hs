@@ -34,6 +34,7 @@ import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.AST.Schedule.Uniform
 import Data.Array.Accelerate.AST.Environment
 import qualified Data.Array.Accelerate.AST.Partitioned  as C
+import qualified Data.Array.Accelerate.AST.Operation    as C
 import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Trafo.Substitution
 import Data.Array.Accelerate.Trafo.Operation.Substitution (strengthenArrayInstr)
@@ -331,10 +332,10 @@ declareOutput (TupRpair t1 t2) us
     (u1, u2) = pairUniqueness us
 declareOutput TupRunit         _                     = DeclareOutput OutputEnvUnit weakenId (const TupRunit)
 
-writeOutput :: OutputEnv fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule (Cluster op) fenv''
+writeOutput :: OutputEnv fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule (C.Cluster op) fenv''
 writeOutput outputEnv outputVars valueVars = go outputEnv outputVars valueVars Return
   where
-    go :: OutputEnv fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule (Cluster op) fenv'' -> UniformSchedule (Cluster op) fenv''
+    go :: OutputEnv fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule (C.Cluster op) fenv'' -> UniformSchedule (C.Cluster op) fenv''
     go OutputEnvUnit _ _ = id
     go (OutputEnvPair o1 o2) (TupRpair r1 r2) (TupRpair v1 v2) = go o1 r1 v1 . go o2 r2 v2
     go (OutputEnvShared _ _) (TupRpair (TupRsingle signal) (TupRsingle ref)) (TupRsingle v)
@@ -481,7 +482,7 @@ data TupleIdx s t where
 data PartialSchedule op genv t where
   PartialDo     :: OutputEnv () fenv t r
                 -> ConvertEnv genv fenv fenv'
-                -> UniformSchedule (Cluster op) fenv'
+                -> UniformSchedule (C.Cluster op) fenv'
                 -> PartialSchedule op genv t
 
   -- Returns a tuple of variables. Note that (some of) these

@@ -1,6 +1,7 @@
 module Data.Array.Accelerate.Trafo.Partitioning.Stream where
 
 import Data.Array.Accelerate.AST.Partitioned
+import Data.Array.Accelerate.AST.Operation
 
 
 

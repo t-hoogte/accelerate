@@ -43,9 +43,6 @@ import Data.Array.Accelerate.Error
 import System.IO.Unsafe -- for debugging
 #endif
 
-import Prelude hiding (id, (.))
-import Control.Category
-
 -- Array Fusion
 -- ============
 
@@ -77,4 +74,4 @@ withSimplStats x = x
 #endif
 
 dontFuse :: op args -> Cluster op args
-dontFuse op = Leaf op id
+dontFuse = CNil
