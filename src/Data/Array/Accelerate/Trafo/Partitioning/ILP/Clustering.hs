@@ -61,24 +61,36 @@ type ClusterL = [Label]
 -- Data.Graph has an awkward definition of graphs, but also already has an implementation of 'topsort'.
 -- type G.Graph = A.Array Label [Label]
 -- While writing the proposal, I realised we won't need a DieMap if we construct bottom-up after the sort.
-topSortDieMap :: Graph -> Labels -> (M.Map Label Labels, ClusterL)
-topSortDieMap (Graph _ fedges _) cluster = (dieMap, topsorted)
+-- topSortDieMap :: Graph -> Labels -> (M.Map Label Labels, ClusterL)
+-- topSortDieMap (Graph _ fedges _) cluster = (dieMap, topsorted)
+--   where
+--     cluster' = S.map _labelId cluster
+--     getLabels = labelMap cluster
+--     graph, transposed :: G.Graph 
+--     graph = G.buildG (minimum cluster', maximum cluster') 
+--           . S.toList 
+--           . S.filter (uncurry ((&&) `on` (`elem` cluster'))) -- filter edges on 'both vertices are in the cluster'
+--           . S.map (\(Label x _ :-> Label y _) -> (x, y))
+--           $ fedges
+--     transposed = G.transposeG graph
+--     topsorted = map (getLabels M.!) $ G.topSort graph
+--     -- traverses the nodes in reverse topsort order
+--     dieMap = fst $ foldl f mempty topsorted
+--     f :: (M.Map Label Labels, Labels) -> Label -> (M.Map Label Labels, Labels)
+--     f (dieMap', keepAlive) x = let incomingEdges = S.fromList . map (getLabels M.!) $ transposed A.! (x^.labelId) in
+--       (M.insert x incomingEdges dieMap', S.insert x incomingEdges <> keepAlive)
+topSort :: Graph -> Labels -> ClusterL
+topSort (Graph _ fedges _) cluster = topsorted
   where
     cluster' = S.map _labelId cluster
     getLabels = labelMap cluster
-    graph, transposed :: G.Graph 
+    graph :: G.Graph 
     graph = G.buildG (minimum cluster', maximum cluster') 
           . S.toList 
           . S.filter (uncurry ((&&) `on` (`elem` cluster'))) -- filter edges on 'both vertices are in the cluster'
           . S.map (\(Label x _ :-> Label y _) -> (x, y))
           $ fedges
-    transposed = G.transposeG graph
     topsorted = map (getLabels M.!) $ G.topSort graph
-    -- traverses the nodes in reverse topsort order
-    dieMap = fst $ foldl f mempty topsorted
-    f :: (M.Map Label Labels, Labels) -> Label -> (M.Map Label Labels, Labels)
-    f (dieMap', keepAlive) x = let incomingEdges = S.fromList . map (getLabels M.!) $ transposed A.! (x^.labelId) in
-      (M.insert x incomingEdges dieMap', S.insert x incomingEdges <> keepAlive)
 
 
 openReconstruct :: forall op aenv. LabelEnv aenv -> Graph -> [Labels] -> M.Map Label [Labels] -> M.Map Label (Construction op) -> Exists (PreOpenAcc (Cluster op) aenv)
@@ -93,26 +105,23 @@ openReconstruct labelenv graph clusterslist subclustersmap construc = undefined
       NotFold _ -> undefined
     makeAST env (cluster:tail) = undefined
 
-    -- do the topological sorting and computing of dieMap for each set
-    (dieMap',    clusters) =                   first mconcat . unzip . map (topSortDieMap graph)  $    clusterslist
-    (dieMapM, subclusters) = sequence . M.map (first mconcat . unzip . map (topSortDieMap graph)) $ subclustersmap
-    -- dieMap informs us when variables become 'dead variables': 
-    -- when they do, we can fuse vertically, until then it's diagonal instead.
-    dieMap = dieMap' <> dieMapM
+    -- do the topological sorting for each set
+    clusters = map (topSort graph) clusterslist
+    subclusters = M.map (map (topSort graph)) subclustersmap
 
     makeCluster :: ClusterL -> FoldType op env
     makeCluster = undefined
 
-    -- The label is used to choose between vertical and diagonal fusion, using the DieMap.
-    fuseCluster :: Label -> FoldType op env -> FoldType op env -> FoldType op env
-    fuseCluster l (Fold cluster1 args1 largs1) (InitFold op2 args2 largs2) = 
-      case fuseSwap (dieMap M.! l) largs1 largs2 of
-        Result swap combine largs ->
-          let args = combineArgs combine args1 (swapArgs' swap args2)
-          in Fold (Branch cluster1 (Leaf op2 swap) combine) args largs
-    fuseCluster l (InitFold op args largs) x = fuseCluster l (Fold (Leaf op id) args largs) x
-    fuseCluster _ Fold{} Fold{} = error "fuseCluster got non-leaf as second argument" -- Could support this, but should never happen
-    fuseCluster _ _      _      = error "fuseCluster encountered NotFold" -- We can't fuse non-Exec nodes
+    -- -- The label is used to choose between vertical and diagonal fusion, using the DieMap.
+    -- fuseCluster :: Label -> FoldType op env -> FoldType op env -> FoldType op env
+    -- fuseCluster l (Fold cluster1 args1 largs1) (InitFold op2 args2 largs2) = 
+    --   case fuseSwap (dieMap M.! l) largs1 largs2 of
+    --     Result swap combine largs ->
+    --       let args = combineArgs combine args1 (swapArgs' swap args2)
+    --       in Fold (Branch cluster1 (Leaf op2 swap) combine) args largs
+    -- fuseCluster l (InitFold op args largs) x = fuseCluster l (Fold (Leaf op id) args largs) x
+    -- fuseCluster _ Fold{} Fold{} = error "fuseCluster got non-leaf as second argument" -- Could support this, but should never happen
+    -- fuseCluster _ _      _      = error "fuseCluster encountered NotFold" -- We can't fuse non-Exec nodes
 
     fuseSwap :: Labels -> LabelArgs a -> LabelArgs b' -> FuseSwapResult a b'
     fuseSwap vertical = go

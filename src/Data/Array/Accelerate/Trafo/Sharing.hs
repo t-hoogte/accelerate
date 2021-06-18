@@ -806,9 +806,9 @@ convertSharingExp config lyt alyt env aenv exp@(ScopedExp lams _) = cvt exp
     cvtNoArrayInstr = rebuildArrayInstr k
       where
         k :: AST.ArrayInstr () (s -> u) -> AST.PreOpenExp NoArrayInstr env' s -> AST.PreOpenExp NoArrayInstr env' u
-        k (AST.Shape       (Var _ ix)) = case ix of {}
-        k (AST.Index       (Var _ ix)) = case ix of {}
-        k (AST.LinearIndex (Var _ ix)) = case ix of {}
+        k (AST.Shape       (Var _ (VoidIdx void))) = void
+        k (AST.Index       (Var _ (VoidIdx void))) = void
+        k (AST.LinearIndex (Var _ (VoidIdx void))) = void
 
     -- Push primitive function applications down through let bindings so that
     -- they are adjacent to their arguments. It looks a bit nicer this way.
