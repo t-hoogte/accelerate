@@ -10,6 +10,7 @@ data Take x xargs args where
   There :: Take x       xargs        args
         -> Take x (y -> xargs) (y -> args)
 
+
 -- Every arg occurs in at least one of the two subargs.
 data SplitCoEnv args largs rargs where
   Base  :: SplitCoEnv args args ()
