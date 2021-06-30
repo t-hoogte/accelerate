@@ -36,6 +36,7 @@ data Cluster op args where
           -> Cluster op args
 
 -- | Internal AST of `Cluster`, simply a list of let-bindings.
+-- Note that all environments hold scalar values, not arrays!
 data ClusterAST op env result where
   None :: ClusterAST op env env
   -- `Bind _ x y` reads as `do x; in the resulting environment, do y`
@@ -48,22 +49,32 @@ data ClusterAST op env result where
 -- Given environment `env`, we can execute `body`, yielding environment `scope`.
 data LeftHandSideArgs body env scope where
   Base :: LeftHandSideArgs () args args
-  
+  -- The body has an input array
+  Reqr :: LeftHandSideArgs              body   env      scope
+       -> LeftHandSideArgs (In  sh e -> body) (env, e) (scope, e)
   -- The body creates an array
-  Make :: LeftHandSideArgs              body  env  scope
-       -> LeftHandSideArgs (Out sh e -> body) env (scope, e)
-  
-  -- The body has an input
-  Reqr :: LeftHandSideArgs             body   env      scope
-       -> LeftHandSideArgs (In sh e -> body) (env, e) (scope, e)
+  Make :: LeftHandSideArgs              body   env      scope
+       -> LeftHandSideArgs (Out sh e -> body)  env     (scope, e)
+  -- One array that is both input and output
+  Adju :: LeftHandSideArgs              body   env      scope
+       -> LeftHandSideArgs (Mut sh e -> body) (env, e) (scope, e)
+  -- Holds `Var' e`, `Exp' e`, `Fun' e`: The non-array Arg options.
+  -- Behaves like `In` arguments.
+  EArg :: LeftHandSideArgs              body   env      scope
+       -> LeftHandSideArgs (       e -> body) (env, e) (scope, e)
 
 data ClusterIO args input output where
   Empty  :: ClusterIO () () output
-  Input  :: ClusterIO             args   input      output
-         -> ClusterIO (In sh e -> args) (input, e) (output, e)
+  Input  :: ClusterIO              args   input      output
+         -> ClusterIO (In  sh e -> args) (input, e) (output, e)
   Output :: Take e eoutput output
-         -> ClusterIO              args  input  output
-         -> ClusterIO (Out sh e -> args) input eoutput
+         -> ClusterIO              args   input      output
+         -> ClusterIO (Out sh e -> args)  input     eoutput
+  MutPut :: Take e eoutput output
+         -> ClusterIO              args   input      output
+         -> ClusterIO (Mut sh e -> args) (input, e) eoutput
+  ExpPut :: ClusterIO              args   input      output
+         -> ClusterIO (       e -> args) (input, e) (output, e)
 
 -- A cluster from a single node
 unfused :: op args -> Args env args -> Cluster op args
@@ -73,8 +84,8 @@ unfused op args = iolhs args $ \(io, lhs) -> Cluster io (Bind lhs op None)
     iolhs ArgsNil                     f =                          f (Empty         , Base)
     iolhs (ArgArray In  _ _ _ :>: as) f = iolhs as $ \(io, lhs) -> f (Input       io, Reqr lhs)
     iolhs (ArgArray Out _ _ _ :>: as) f = iolhs as $ \(io, lhs) -> f (Output Here io, Make lhs)
-    iolhs (ArgArray Mut _ _ _ :>:  _) _ = error "Mut -- treat as both input and output"
-    iolhs _ _ = error "todo: treat non-array `Arg`s as if they are `In` (type family?)"
+    iolhs (ArgArray Mut _ _ _ :>: as) f = iolhs as $ \(io, lhs) -> f (MutPut Here io, Adju lhs)
+    iolhs (_                  :>: as) f = iolhs as $ \(io, lhs) -> f (ExpPut      io, EArg lhs)
 
 
 
