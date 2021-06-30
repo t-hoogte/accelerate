@@ -15,7 +15,6 @@ import qualified Data.Graph as G
 import qualified Data.Set as S
 import Data.Function (on)
 import Data.Array.Accelerate.AST.Operation
-import Data.Array.Accelerate.AST.CoDeBruijn
 
 
 -- "open research question"
@@ -99,7 +98,7 @@ openReconstruct labelenv graph clusterslist subclustersmap construc = undefined
     makeAST env [] = undefined
     makeAST env [cluster] = case makeCluster cluster of
       Fold c args env' -> Exists $ Exec c args
-      InitFold o args env' -> Exists $ Exec (CNil o) args
+      InitFold o args env' -> Exists $ Exec (unfused o args) args
       NotFold _ -> undefined
     makeAST env (cluster:tail) = undefined
 
