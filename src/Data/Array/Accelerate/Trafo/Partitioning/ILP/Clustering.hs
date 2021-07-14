@@ -1,3 +1,5 @@
+{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -15,6 +17,7 @@ import qualified Data.Graph as G
 import qualified Data.Set as S
 import Data.Function (on)
 import Data.Array.Accelerate.AST.Operation
+import Data.Maybe (fromJust)
 
 
 -- "open research question"
@@ -28,17 +31,8 @@ import Data.Array.Accelerate.AST.Operation
 
 {-
 Within each cluster (Labels), we do a topological sort using the edges in Graph
-((a,b) means a before b in ordering). Then, we can simply insert them front-to-back:
-existing `In` arguments are never touched, existing `Out` arguments are matched with
-new `In` arguments vertically or diagonally (depending on if they'll be needed still),
-new `Out` arguments are never touched. We can even do the re-ordering of Args as we go
-on the fresh leaves, never need to touch the existing tree.
-  Note that we basically build a list instead of a binary tree. 
-  Could refactor Cluster to reflect this.
-
-Data.Graph (containers) has a nice topological sort. Then we just need to know, given
-such an ordering, what the live args should be at each point, or even just the death points
-of each arg.
+((a,b) means a before b in ordering). Then, we can simply cons them on top of each other.
+Data.Graph (containers) has a nice topological sort.
 -}
 
 
@@ -55,35 +49,15 @@ reconstruct a b c d = case openReconstruct LabelEnvNil a b c d of
 -- ordered list of labels
 type ClusterL = [Label]
 
--- Data.Graph has an awkward definition of graphs, but also already has an implementation of 'topsort'.
--- type G.Graph = A.Array Label [Label]
--- While writing the proposal, I realised we won't need a DieMap if we construct bottom-up after the sort.
--- topSortDieMap :: Graph -> Labels -> (M.Map Label Labels, ClusterL)
--- topSortDieMap (Graph _ fedges _) cluster = (dieMap, topsorted)
---   where
---     cluster' = S.map _labelId cluster
---     getLabels = labelMap cluster
---     graph, transposed :: G.Graph 
---     graph = G.buildG (minimum cluster', maximum cluster') 
---           . S.toList 
---           . S.filter (uncurry ((&&) `on` (`elem` cluster'))) -- filter edges on 'both vertices are in the cluster'
---           . S.map (\(Label x _ :-> Label y _) -> (x, y))
---           $ fedges
---     transposed = G.transposeG graph
---     topsorted = map (getLabels M.!) $ G.topSort graph
---     -- traverses the nodes in reverse topsort order
---     dieMap = fst $ foldl f mempty topsorted
---     f :: (M.Map Label Labels, Labels) -> Label -> (M.Map Label Labels, Labels)
---     f (dieMap', keepAlive) x = let incomingEdges = S.fromList . map (getLabels M.!) $ transposed A.! (x^.labelId) in
---       (M.insert x incomingEdges dieMap', S.insert x incomingEdges <> keepAlive)
+
 topSort :: Graph -> Labels -> ClusterL
 topSort (Graph _ fedges _) cluster = topsorted
   where
     cluster' = S.map _labelId cluster
     getLabels = labelMap cluster
-    graph :: G.Graph 
-    graph = G.buildG (minimum cluster', maximum cluster') 
-          . S.toList 
+    graph :: G.Graph
+    graph = G.buildG (minimum cluster', maximum cluster')
+          . S.toList
           . S.filter (uncurry ((&&) `on` (`elem` cluster'))) -- filter edges on 'both vertices are in the cluster'
           . S.map (\(Label x _ :-> Label y _) -> (x, y))
           $ fedges
@@ -91,72 +65,97 @@ topSort (Graph _ fedges _) cluster = topsorted
 
 
 openReconstruct :: forall op aenv. LabelEnv aenv -> Graph -> [Labels] -> M.Map Label [Labels] -> M.Map Label (Construction op) -> Exists (PreOpenAcc (Cluster op) aenv)
-openReconstruct labelenv graph clusterslist subclustersmap construc = undefined
+openReconstruct labelenv graph clusterslist subclustersmap construct = undefined
   where
-
-    makeAST :: LabelEnv env -> [ClusterL] -> Exists (PreOpenAcc (Cluster op) env)
-    makeAST env [] = undefined
-    makeAST env [cluster] = case makeCluster cluster of
-      Fold c args env' -> Exists $ Exec c args
-      InitFold o args env' -> Exists $ Exec (unfused o args) args
-      NotFold _ -> undefined
+    -- Make a tree of let bindings
+    makeAST :: forall env. LabelEnv env -> [ClusterL] -> Exists (PreOpenAcc (Cluster op) env)
+    makeAST _ [] = error "empty AST"
+    makeAST env [cluster] = case makeCluster env cluster of
+      Fold     c (unLabel -> args) -> Exists $ Exec c args
+      InitFold o (unLabel -> args) -> Exists $ Exec (unfused o args) args
+      NotFold con -> case con of
+         CExe {}    -> error "should be Fold/InitFold!"
+         CUse se be               -> Exists $ Use se be
+         CITE env' c t f   -> case (makeAST env [[t]], makeAST env [[f]]) of
+            (Exists tacc, Exists facc) -> Exists $ Acond 
+              (fromJust $ reindexVar (mkReindexPartial env' env) c) 
+              -- [See NOTE unsafeCoerce result type]
+              (unsafeCoerce @(PreOpenAcc (Cluster op) env _)
+                            @(PreOpenAcc (Cluster op) env _) 
+                            tacc) 
+              (unsafeCoerce @(PreOpenAcc (Cluster op) env _) 
+                            @(PreOpenAcc (Cluster op) env _) 
+                            facc)
+         CWhl env' c b i  -> case (makeASTF env c, makeASTF env b) of
+            (Exists cfun, Exists bfun) -> Exists $ Awhile 
+              (error "call Ivo")
+              -- [See NOTE unsafeCoerce result type]
+              (unsafeCoerce @(PreOpenAfun (Cluster op) env _)
+                            @(PreOpenAfun (Cluster op) env (_ -> PrimBool))
+                            cfun)
+              (unsafeCoerce @(PreOpenAfun (Cluster op) env _)
+                            @(PreOpenAfun (Cluster op) env (_ -> _))
+                            bfun) 
+              (fromJust $ reindexVars (mkReindexPartial env' env) i) 
+         CLHS {} -> error "This doesn't make sense, rethink `mkFullGraph @Alet`"
+         CFun {} -> error "wrong type: function"
+         CBod {} -> error "wrong type: function"
     makeAST env (cluster:tail) = undefined
+
+    makeASTF :: forall env. LabelEnv env -> Label -> Exists (PreOpenAfun (Cluster op) env)
+    makeASTF env l = case makeCluster env [l] of
+      NotFold (CBod l') -> case makeAST env [[l']] of
+        Exists acc -> Exists $ Abody acc
+      NotFold (CFun env' lhs l') -> case makeASTF _ l' of
+        Exists fun -> Exists $ Alam _ fun
+      NotFold {} -> error "wrong type: acc"
+      _ -> error "not a notfold"
 
     -- do the topological sorting for each set
     clusters = map (topSort graph) clusterslist
     subclusters = M.map (map (topSort graph)) subclustersmap
 
-    makeCluster :: ClusterL -> FoldType op env
-    makeCluster = undefined
+    makeCluster :: LabelEnv env -> ClusterL -> FoldType op env
+    makeCluster env = foldr1 fuseCluster
+                    . map ( \l -> case construct M.! l of
+                              CExe env' args op -> InitFold op $ labelled env env' args
+                              c                 -> NotFold c
+                          )
 
-    -- -- The label is used to choose between vertical and diagonal fusion, using the DieMap.
-    -- fuseCluster :: Label -> FoldType op env -> FoldType op env -> FoldType op env
-    -- fuseCluster l (Fold cluster1 args1 largs1) (InitFold op2 args2 largs2) = 
-    --   case fuseSwap (dieMap M.! l) largs1 largs2 of
-    --     Result swap combine largs ->
-    --       let args = combineArgs combine args1 (swapArgs' swap args2)
-    --       in Fold (Branch cluster1 (Leaf op2 swap) combine) args largs
-    -- fuseCluster l (InitFold op args largs) x = fuseCluster l (Fold (Leaf op id) args largs) x
-    -- fuseCluster _ Fold{} Fold{} = error "fuseCluster got non-leaf as second argument" -- Could support this, but should never happen
-    -- fuseCluster _ _      _      = error "fuseCluster encountered NotFold" -- We can't fuse non-Exec nodes
+    fuseCluster :: FoldType op env -> FoldType op env -> FoldType op env
+    fuseCluster (Fold cluster1 largs1) (InitFold op2 largs2) =
+      consCluster largs1 largs2 cluster1 op2 $ \c largs -> Fold c largs
+    fuseCluster (InitFold op largs) x = fuseCluster (Fold (unfused op (unLabel largs)) largs) x
+    fuseCluster Fold{} Fold{} = error "fuseCluster got non-leaf as second argument" -- Should never happen
+    fuseCluster NotFold{}   _ = error "fuseCluster encountered NotFold" -- Should only occur in singleton clusters
+    fuseCluster _   NotFold{} = error "fuseCluster encountered NotFold" -- Should only occur in singleton clusters
 
-    -- fuseSwap :: Labels -> LabelArgs a -> LabelArgs b' -> FuseSwapResult a b'
-    -- fuseSwap vertical = go
-    --   where
-    --     go = undefined -- rewrite to new LabelArgs
 
-        -- go :: LabelArgs a -> LabelArgs b' -> FuseSwapResult a b'
-        -- go LabelArgsNil LabelArgsNil = Result id Combine LabelArgsNil
-        -- go (a :>>: as) b' = case findArg a b' of
-        --   -- `a` is not in `b'`, no reordering needed and it should also not be in the dieMap
-        --   Nothing -> if S.size a == 1 && S.findMin a `S.member` vertical 
-        --              then error "cannot be" 
-        --              else case go as b' of
-        --     Result f c la -> Result f (WeakRight c) (a :>>: la)
-        --   -- `a` is in `b'`, and this 'Take' tells us where! Take it out, recurse on the tail, then put it in front.
-        --   Just (ExisTake t) -> let (a', bs) = labelledTake t b'
-        --                        in if a /= a' then error "what did findArg even do" 
-        --                           else case go as bs of
-        --     Result f c la -> _
+labelled :: LabelEnv env -> LabelEnv env1 -> Args env1 args -> LabelledArgs env args
+labelled env env' args = getLabelArgs (fromJust $ reindexArgs (mkReindexPartial env' env) args) env
 
-        -- go LabelArgsNil (b :>>: bs) = case go LabelArgsNil bs of
-        --   Result f c lb -> Result (liftSwap f) (WeakLeft c) (b :>>: lb)
 
 
 -- | Internal datatypes for `makeCluster`.
+
 data FoldType op env
-  = forall args. Fold (Cluster op args) (Args env args) (LabelArgs args)
-  | forall args. InitFold (op args) (Args env args) (LabelArgs args) -- like Fold, but without a Swap
+  = forall args. Fold (Cluster op args) (LabelledArgs env args)
+  | forall args. InitFold (op args) (LabelledArgs env args) -- like Fold, but without a Swap
   | NotFold (Construction op)
 
-data ExisTake xa = forall x a. ExisTake (Take x xa a)
 
--- findArg :: Labels -> LabelArgs xs -> Maybe (ExisTake xs)
--- findArg _ LabelArgsNil = Nothing
--- findArg ls (ms :>>: xss)
---   | ls == ms = Just $ ExisTake Here
---   | otherwise = (\(ExisTake t) -> ExisTake $ There t) <$> findArg ls xss
 
+-- TODO write. Induction on the cluster or the extra?
+consCluster :: LabelledArgs env args
+            -> LabelledArgs env extra
+            -> Cluster op args
+            -> op extra
+            -> (forall args'. Cluster op args' -> LabelledArgs env args' -> r)
+            -> r
+consCluster _ lextra (Cluster Empty None) extra k = k (unfused extra (unLabel lextra)) lextra
+
+
+consCluster _ _ _ _ _ = _
 
 
 {- [NOTE unsafeCoerce result type]

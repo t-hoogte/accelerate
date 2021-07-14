@@ -73,20 +73,21 @@ data ClusterIO args input output where
   MutPut :: Take e eoutput output
          -> ClusterIO              args   input      output
          -> ClusterIO (Mut sh e -> args) (input, e) eoutput
+  -- Contract: Only use this for `Var`, `Exp`, `Fun` args;
+  -- don't abuse as backdoor with in/out/mut
   ExpPut :: ClusterIO              args   input      output
          -> ClusterIO (       e -> args) (input, e) (output, e)
 
 -- A cluster from a single node
 unfused :: op args -> Args env args -> Cluster op args
-unfused op args = iolhs args $ \(io, lhs) -> Cluster io (Bind lhs op None)
-  where
-    iolhs :: Args env args -> (forall x y. (ClusterIO args x y, LeftHandSideArgs args x y) -> r) -> r
-    iolhs ArgsNil                     f =                          f (Empty         , Base)
-    iolhs (ArgArray In  _ _ _ :>: as) f = iolhs as $ \(io, lhs) -> f (Input       io, Reqr lhs)
-    iolhs (ArgArray Out _ _ _ :>: as) f = iolhs as $ \(io, lhs) -> f (Output Here io, Make lhs)
-    iolhs (ArgArray Mut _ _ _ :>: as) f = iolhs as $ \(io, lhs) -> f (MutPut Here io, Adju lhs)
-    iolhs (_                  :>: as) f = iolhs as $ \(io, lhs) -> f (ExpPut      io, EArg lhs)
+unfused op args = iolhs args $ \io lhs -> Cluster io (Bind lhs op None)
 
+iolhs :: Args env args -> (forall x y. ClusterIO args x y -> LeftHandSideArgs args x y -> r) -> r
+iolhs ArgsNil                     f =                       f  Empty            Base
+iolhs (ArgArray In  _ _ _ :>: as) f = iolhs as $ \io lhs -> f (Input       io) (Reqr lhs)
+iolhs (ArgArray Out _ _ _ :>: as) f = iolhs as $ \io lhs -> f (Output Here io) (Make lhs)
+iolhs (ArgArray Mut _ _ _ :>: as) f = iolhs as $ \io lhs -> f (MutPut Here io) (Adju lhs)
+iolhs (_                  :>: as) f = iolhs as $ \io lhs -> f (ExpPut      io) (EArg lhs)
 
 
 

@@ -1,3 +1,5 @@
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE PatternSynonyms #-}
@@ -76,14 +78,19 @@ newtype ELabel = ELabel { runELabel :: Int }
   deriving (Show, Eq, Ord, Num)
 
 -- | Keeps track of which argument belongs to which labels
-data LabelArgs args where
-  LabelArgsNil :: LabelArgs ()
-  (:>>:)       :: ALabels s -> LabelArgs t -> LabelArgs (s -> t)
-instance Semigroup (LabelArgs args) where
-  LabelArgsNil <> LabelArgsNil = LabelArgsNil
-  (NotArr,l1):>>:largs1 <> (larg,   l2):>>:largs2 = (larg, l1<>l2) :>>: (largs1 <> largs2)
-  (larg,  l1):>>:largs1 <> (NotArr, l2):>>:largs2 = (larg, l1<>l2) :>>: (largs1 <> largs2)
+data LabelledArg  env a = L (Arg env a) (ALabels a)
+type LabelledArgs env = PreArgs (LabelledArg env)
+
+instance Semigroup (LabelledArgs env args) where
+  ArgsNil <> ArgsNil = ArgsNil
+  (arg `L` (NotArr,l1)):>:largs1 <> (_ `L` (larg,   l2)):>:largs2 = arg `L` (larg, l1<>l2) :>: (largs1 <> largs2)
+  (arg `L` (larg,  l1)):>:largs1 <> (_ `L` (NotArr, l2)):>:largs2 = arg `L` (larg, l1<>l2) :>: (largs1 <> largs2)
   _ <> _ = error "mappend for LabelArgs found two Arr labels"
+
+unLabel :: LabelledArgs env args -> Args env args
+unLabel ArgsNil              = ArgsNil
+unLabel (arg `L` _ :>: args) = arg :>: unLabel args
+
 
 -- | Keeps track of which array in the environment belongs to which label
 data LabelEnv env where
@@ -125,9 +132,9 @@ getAllLabelsEnv :: LabelEnv env -> Labels
 getAllLabelsEnv LabelEnvNil = mempty
 getAllLabelsEnv ((_,set) :>>>: lenv) = set <> getAllLabelsEnv lenv
 
-getLabelArgs :: Args env args -> LabelEnv env -> LabelArgs args
-getLabelArgs ArgsNil _ = LabelArgsNil
-getLabelArgs (arg :>: args) e = getLabelsArg arg e :>>: getLabelArgs args e
+getLabelArgs :: Args env args -> LabelEnv env -> LabelledArgs env args
+getLabelArgs ArgsNil _ = ArgsNil
+getLabelArgs (arg :>: args) e = arg `L` getLabelsArg arg e :>: getLabelArgs args e
 
 getLabelsArg :: Arg env t -> LabelEnv env -> ALabels t
 getLabelsArg (ArgVar tup)                  env = (\(Left x) -> x) $ getLabelsTup tup    env

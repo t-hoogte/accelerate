@@ -122,7 +122,7 @@ class (Eq (BackendVar op), Ord (BackendVar op), Show (BackendVar op), Read (Back
   -- That includes "BackendVar op's" and all their constraints/bounds, but also some (in)fusible edges.
   -- As a conveniece, fusible edges have already been made from all (non-Out) labels in the LabelArgs to the current label.
   -- These can be 'strengthened' by adding a corresponding infusible edge, in which case the fusible edge will later be optimised away.
-  mkGraph :: op args -> LabelArgs args -> Label -> Information op
+  mkGraph :: op args -> LabelledArgs env args -> Label -> Information op
 
 
 -- Control flow cannot be fused, so we make separate ILPs for e.g.
@@ -164,7 +164,7 @@ data FullGraphState env = FGState
 -- | A monoid, so could just put it in the state too. Tradeoff between simplifying code and encoding that this is really 'output info'
 data FullGraphResult op = FGRes
   { _info   :: Information op
-  , _lset   :: Set Label    -- sources of open outgoing edges for result
+  , _lset   :: Labels    -- sources of open outgoing edges for result
   , _construc :: Map Label (Construction op)
   }
 instance Semigroup (FullGraphResult op) where
@@ -183,7 +183,7 @@ data Construction (op :: Type -> Type) where
   CWhl :: LabelEnv env -> Label -> Label -> GroundVars env a -> Construction op
   CLHS ::                 GLeftHandSide a b c -> Label                              -> Construction op
   CFun :: LabelEnv env -> GLeftHandSide a b c -> Label                              -> Construction op
-
+  CBod :: Label -> Construction op
 
 -- strips underscores
 makeLenses ''FullGraphState
@@ -215,8 +215,8 @@ mkFullGraph (Exec op args) = do
 
 -- We throw away the uniquenessess information here, in the future we will add uniqueness variables to the ILP
 mkFullGraph (Alet (lhs :: GLeftHandSide bnd env env') _ bnd scp) = do
-  bndRes <- mkFullGraph bnd
   l <- freshL
+  bndRes <- mkFullGraph bnd
   -- key observation: if `bnd` is an `Exec`, `bndL == mempty`, so we don't generate infusible edges.
   let nonfuse = S.map (-?> l) (bndRes ^. lset)
   scpRes <- zoomState lhs l (mkFullGraph scp)
@@ -266,7 +266,7 @@ mkFullGraph (Acond cond tacc facc) = do
          & construc %~ M.insert l_acond (CITE env cond l_true l_false)
 
 -- like Acond. The biggest difference is that 'cond' is a function instead of an expression here.
--- In fact, for the graph, we use 'startvars' much like we used 'cond' in Acond, and we use
+-- For the graph, we use 'startvars' much like we used 'cond' in Acond, and we use
 -- 'cond' and 'bdy' much like we used 'tbranch' and 'fbranch'.
 mkFullGraph (Awhile _ cond bdy startvars) = do
   l_while <- freshL
@@ -290,20 +290,31 @@ mkFullGraph (Awhile _ cond bdy startvars) = do
 mkFullGraphF :: (MakesILP op)
              => PreOpenAfun op env a
              -> State (FullGraphState env) (FullGraphResult op)
-mkFullGraphF (Abody acc) = mkFullGraph acc
+mkFullGraphF (Abody acc) = do
+  l <- peekFreshL
+  res <- mkFullGraph acc
+  return $ res
+         & construc %~ M.insert (fromJust $ l^.parent) (CBod l)
+
 mkFullGraphF (Alam lhs f) = do
   l <- freshL
+  currL.parent .= Just l
   res <- zoomState lhs l (mkFullGraphF f)
+  currL.parent .= l ^. parent
   env <- use lenv
   return $ res
          & lset     %~ S.insert l
-         & construc %~ M.insert l (CFun env lhs l)
+         & construc %~ M.insert (fromJust $ l^.parent) (CFun env lhs l)
 
 -- Create a fresh L or E and update the state. freshL does not change the parent, which is the most common use case
 freshL :: State (FullGraphState env) Label
 freshL = currL <%= (labelId +~ 1)
 freshE :: State (FullGraphState env) ELabel
 freshE = zoom currE freshE'
+-- peek what the next label will look like, without modifying the state
+peekFreshL :: State (FullGraphState env) Label
+peekFreshL = (labelId +~ 1) <$> use currL
+
 
 zoomState :: forall env env' a x. GLeftHandSide x env env' -> Label -> State (FullGraphState env') a -> State (FullGraphState env) a
 zoomState lhs l f = do

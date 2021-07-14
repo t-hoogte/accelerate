@@ -199,7 +199,7 @@ shared = mapTupR (const Shared)
 data PreArgs a t where
   ArgsNil :: PreArgs a ()
   (:>:)   :: a s -> PreArgs a t -> PreArgs a (s -> t)
-infixr :>:
+infixr 7 :>:
 
 -- | A single argument to an operation.
 --
