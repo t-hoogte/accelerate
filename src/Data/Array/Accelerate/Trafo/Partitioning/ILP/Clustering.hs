@@ -1,3 +1,4 @@
+{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE KindSignatures #-}
@@ -77,17 +78,17 @@ openReconstruct labelenv graph clusterslist subclustersmap construct = undefined
          CExe {}    -> error "should be Fold/InitFold!"
          CUse se be               -> Exists $ Use se be
          CITE env' c t f   -> case (makeAST env [[t]], makeAST env [[f]]) of
-            (Exists tacc, Exists facc) -> Exists $ Acond 
-              (fromJust $ reindexVar (mkReindexPartial env' env) c) 
+            (Exists tacc, Exists facc) -> Exists $ Acond
+              (fromJust $ reindexVar (mkReindexPartial env' env) c)
               -- [See NOTE unsafeCoerce result type]
               (unsafeCoerce @(PreOpenAcc (Cluster op) env _)
-                            @(PreOpenAcc (Cluster op) env _) 
-                            tacc) 
-              (unsafeCoerce @(PreOpenAcc (Cluster op) env _) 
-                            @(PreOpenAcc (Cluster op) env _) 
+                            @(PreOpenAcc (Cluster op) env _)
+                            tacc)
+              (unsafeCoerce @(PreOpenAcc (Cluster op) env _)
+                            @(PreOpenAcc (Cluster op) env _)
                             facc)
          CWhl env' c b i  -> case (makeASTF env c, makeASTF env b) of
-            (Exists cfun, Exists bfun) -> Exists $ Awhile 
+            (Exists cfun, Exists bfun) -> Exists $ Awhile
               (error "call Ivo")
               -- [See NOTE unsafeCoerce result type]
               (unsafeCoerce @(PreOpenAfun (Cluster op) env _)
@@ -95,8 +96,8 @@ openReconstruct labelenv graph clusterslist subclustersmap construct = undefined
                             cfun)
               (unsafeCoerce @(PreOpenAfun (Cluster op) env _)
                             @(PreOpenAfun (Cluster op) env (_ -> _))
-                            bfun) 
-              (fromJust $ reindexVars (mkReindexPartial env' env) i) 
+                            bfun)
+              (fromJust $ reindexVars (mkReindexPartial env' env) i)
          CLHS {} -> error "This doesn't make sense, rethink `mkFullGraph @Alet`"
          CFun {} -> error "wrong type: function"
          CBod {} -> error "wrong type: function"
@@ -152,11 +153,61 @@ consCluster :: LabelledArgs env args
             -> op extra
             -> (forall args'. Cluster op args' -> LabelledArgs env args' -> r)
             -> r
-consCluster _ lextra (Cluster Empty None) extra k = k (unfused extra (unLabel lextra)) lextra
+consCluster largs lextra (Cluster io ast) = 
+  consCluster' largs lextra ArgsNil (io, ast) id Base (mkConsists $ unLabel lextra) Done
+-- consCluster _ lextra (Cluster Empty None) extra k = k (unfused extra (unLabel lextra)) lextra
+-- consCluster largs ArgsNil (Cluster io ast) extra k = k (Cluster io (Bind Base extra ast)) largs
+-- consCluster largs (x :>: lextra) (Cluster io ast) extra k =
+--   consCluster largs      lextra  (Cluster io ast) extra $ \cluster ltot -> 
+--     k _ _
 
 
-consCluster _ _ _ _ _ = _
+consCluster' :: LabelledArgs env args
+             -> LabelledArgs env toAdd
+             -> LabelledArgs env added
+             -> (ClusterIO args i o, ClusterAST op i o) -- ~ Cluster op args, but with i and o in scope
+             -> (ClusterIO args i o -> ClusterIO newio newi o)
+             -> LeftHandSideArgs added newi i
+             -> ConsistsOfArgs extra toAdd added
+             -> ConsistsOfArgs newio added args
+             -> op extra
+             -> (forall args'. Cluster op args' -> LabelledArgs env args' -> r)
+             -> r
+consCluster' largs _ltodo@ArgsNil ldone (io, ast) iof lhsAdded _cextra@Done cio extra k = 
+  k (Cluster (iof io) (Bind lhsAdded extra ast)) (fuselargs cio ldone largs)
 
+consCluster' largs ltodo@(_:>:_) ldone (io, ast) iof lhsAdded cextra@(Todo y) cio extra k =
+  step cextra ltodo ldone $ \cextra' ltodo' ldone' -> 
+    consCluster' largs ltodo' ldone' _ _ _ cextra' _ extra _
+
+
+
+data ConsistsOfArgs tot todo done where
+  Done :: ConsistsOfArgs       tot  ()          tot
+  Todo :: ConsistsOfArgs       tot        todo  done
+       -> ConsistsOfArgs (a -> tot) (a -> todo) done
+
+mkConsists :: Args env args -> ConsistsOfArgs args args ()
+mkConsists ArgsNil    = Done
+mkConsists (_ :>: xs) = Todo $ mkConsists xs
+
+fuselargs :: ConsistsOfArgs tot left right 
+          -> LabelledArgs env left 
+          -> LabelledArgs env right 
+          -> LabelledArgs env tot
+fuselargs = undefined 
+
+-- remove the innermost Todo
+step :: ConsistsOfArgs tot (a -> todo) done
+     -> LabelledArgs env (a -> todo)
+     -> LabelledArgs env done
+     -> (forall todo' done'. ConsistsOfArgs tot todo' done' 
+                          -> LabelledArgs env todo'
+                          -> LabelledArgs env done'
+                          -> r) 
+     -> r
+step (Todo Done) k = k Done
+step (Todo x@(Todo _)) k = step x $ k . _
 
 {- [NOTE unsafeCoerce result type]
 

@@ -203,5 +203,5 @@ getInputArgLabels (arg :>: args) lenv = getInputArgLabels args lenv <> case arg 
 
 body :: ALabel (Exp' e) -> ALabel (Fun' e)
 body NotArr = NotArr
-lam :: ALabel (Fun' f) -> ALabel (Fun' (e->f))
-lam NotArr = NotArr
+lam  :: ALabel (Fun' f) -> ALabel (Fun' (e->f))
+lam  NotArr = NotArr
