@@ -66,9 +66,11 @@ topSort (Graph _ fedges _) cluster = topsorted
 
 
 openReconstruct :: forall op aenv. LabelEnv aenv -> Graph -> [Labels] -> M.Map Label [Labels] -> M.Map Label (Construction op) -> Exists (PreOpenAcc (Cluster op) aenv)
-openReconstruct labelenv graph clusterslist subclustersmap construct = undefined
+openReconstruct labelenv graph clusterslist subclustersmap construct = makeAST labelenv clusters
   where
     -- Make a tree of let bindings
+    -- TODO every time I use a label here (that comes from a Construction) (and I wrap in [[]]),
+    -- should I be using `subclusters`? Go over this again in mkFullGraph too!
     makeAST :: forall env. LabelEnv env -> [ClusterL] -> Exists (PreOpenAcc (Cluster op) env)
     makeAST _ [] = error "empty AST"
     makeAST env [cluster] = case makeCluster env cluster of
@@ -89,7 +91,7 @@ openReconstruct labelenv graph clusterslist subclustersmap construct = undefined
                             facc)
          CWhl env' c b i  -> case (makeASTF env c, makeASTF env b) of
             (Exists cfun, Exists bfun) -> Exists $ Awhile
-              (error "call Ivo")
+              (error "ask Ivo")
               -- [See NOTE unsafeCoerce result type]
               (unsafeCoerce @(PreOpenAfun (Cluster op) env _)
                             @(PreOpenAfun (Cluster op) env (_ -> PrimBool))
@@ -98,10 +100,19 @@ openReconstruct labelenv graph clusterslist subclustersmap construct = undefined
                             @(PreOpenAfun (Cluster op) env (_ -> _))
                             bfun)
               (fromJust $ reindexVars (mkReindexPartial env' env) i)
-         CLHS {} -> error "This doesn't make sense, rethink `mkFullGraph @Alet`"
+         CLHS {} -> error "let without scope"
          CFun {} -> error "wrong type: function"
          CBod {} -> error "wrong type: function"
-    makeAST env (cluster:tail) = undefined
+    makeAST env (cluster:tail) = case makeCluster env cluster of
+      NotFold con -> case con of
+        CLHS glhs b -> case makeAST env [[b]] of -- Is this right???
+          Exists bnd -> case makeAST _ tail of
+            Exists scp -> Exists $ Alet (_ glhs)
+                                         (error "ask Ivo")
+                                         bnd
+                                         scp
+        _ -> _
+      _ -> _
 
     makeASTF :: forall env. LabelEnv env -> Label -> Exists (PreOpenAfun (Cluster op) env)
     makeASTF env l = case makeCluster env [l] of
@@ -146,38 +157,46 @@ data FoldType op env
 
 
 
--- TODO write. Induction on extra?
-consCluster :: LabelledArgs env args
+
+consCluster :: forall env args extra op r
+             . LabelledArgs env args
             -> LabelledArgs env extra
             -> Cluster op args
             -> op extra
             -> (forall args'. Cluster op args' -> LabelledArgs env args' -> r)
             -> r
-consCluster largs lextra (Cluster io ast) op k =
+consCluster largs lextra (Cluster cIO cAST) op k =
   mkReverse lextra $ \rev lartxe->
-    consCluster' largs rev lartxe ast Base io op k
+    consCluster' largs rev lartxe cAST Base cIO
+  where
+    -- The new, extra operation has args `extra`.
+    -- We have already added the args in `added`,
+    -- but still need to add the args in `toAdd`.
+    -- In total, we now have a (decomposed) cluster of args `total`:
+    -- The CIO divides it into `i` and `result`,
+    -- The CAST contains the existing computation from `scope` to `result`,
+    -- whereas the `LHSArgs` cons' the `added` args in front using `i`.
 
-
-
-consCluster' :: LabelledArgs env total
-             -> Reverse' extra added toAdd
-             -> LabelledArgs env toAdd
-             -> ClusterAST op scope result
-             -> LeftHandSideArgs added i scope
-             -> ClusterIO total i result
-             -> op extra
-             -> (forall args'. Cluster op args' -> LabelledArgs env args' -> r)
-             -> r
-consCluster' ltot Ordered ArgsNil ast lhs io op k = k (Cluster io (Bind lhs op ast)) ltot
-
-consCluster' ltot (Revert r) (a :>: toAdd) ast lhs io op k = case a of
-  L (ArgArray In _ _ _) _ ->
-    addInput ast io $ \ast' io' ->
-      consCluster' (a :>: ltot) r toAdd ast' (Reqr lhs) io' op k
-  L (ArgArray Out _ _ _) _ ->
-    addOutput ast io $ \ast' io' ->
-      consCluster' (a :>: ltot) r toAdd ast' (Make lhs) io' op k
-  _ -> _
+    -- We simply recurse down the `toAdd` args until `toAdd ~ ()` and
+    -- `added ~ extra`, when we can use the extra operation to construct
+    -- the total cluster.
+    consCluster' :: LabelledArgs env total
+                 -> Reverse' extra added toAdd
+                 -> LabelledArgs env toAdd
+                 -> ClusterAST op scope result
+                 -> LeftHandSideArgs added i scope
+                 -> ClusterIO total i result
+                 -> r
+    consCluster' ltot Ordered ArgsNil ast lhs io = k (Cluster io (Bind lhs op ast)) ltot
+    consCluster' ltot (Revert r) (a :>: toAdd) ast lhs io = case a of
+      L (ArgArray In _ _ _) _ ->
+        addInput ast io $ \ast' io' ->
+          consCluster' (a :>: ltot) r toAdd ast' (Reqr lhs) io'
+      L (ArgArray Out _ _ _) _ ->
+        addOutput ast io $ \ast' io' ->
+          consCluster' (a :>: ltot) r toAdd ast' (Make lhs) io'
+      -- TODO mutable arrays, and non-array arguments (which behave like input arrays)
+      _ -> _ 
 
 
 
@@ -185,21 +204,30 @@ consCluster' ltot (Revert r) (a :>: toAdd) ast lhs io op k = case a of
 -- As a solution, we first reverse the arguments to be added, so that we end up
 -- with the original order! This datatype keeps track of the proof that peeling off args
 -- one-by-one from the reversed type yields the original type, which matches the operation.
+-- 
+-- Building a `Reverse` (and the initial reversing) is awkward, which is why we have `mkReverse`.
+-- Using them (peeling off Revert until we're done) is much easier, and happens in the recursion
+-- of `consCluster'`.
 type Reverse xs sx = Reverse' xs () sx
 data Reverse' tot acc rev where
   Ordered :: Reverse' tot     tot       ()
   Revert  :: Reverse' tot (a -> x)      y
           -> Reverse' tot       x (a -> y)
 
-mkReverse :: LabelledArgs env xs -> (forall sx. Reverse xs sx -> LabelledArgs env sx -> r) -> r
-mkReverse = rev Ordered ArgsNil
+mkReverse :: forall env xs r
+           . LabelledArgs env xs 
+          -> (forall sx. Reverse xs sx -> LabelledArgs env sx -> r) 
+          -> r
+mkReverse xs k = rev Ordered ArgsNil xs
   where
-    rev :: Reverse' xs ys zs -> LabelledArgs env zs -> LabelledArgs env ys -> (forall sx. Reverse xs sx -> LabelledArgs env sx -> r) -> r
-    rev a zs ArgsNil k' = k' a zs
-    rev a zs (arg :>: args') k' = rev (Revert a) (arg :>: zs) args' k'
+    rev :: Reverse' xs ys zs 
+        -> LabelledArgs env zs 
+        -> LabelledArgs env ys 
+        -> r
+    rev a zs ArgsNil = k a zs
+    rev a zs (arg :>: args) = rev (Revert a) (arg :>: zs) args
 
-addInput  :: forall op scope result total i e sh r
-           . ClusterAST op scope result
+addInput  :: ClusterAST op scope result
           -> ClusterIO total i result
           -> (forall result'
                . ClusterAST op (scope, e) result'
@@ -211,8 +239,7 @@ addInput (Bind lhs op ast) io k =
   addInput ast io $ \ast' io' ->
     k (Bind (Ignr lhs) op ast') io'
 
-addOutput :: forall op scope result total i e sh r
-           . ClusterAST op scope result
+addOutput :: ClusterAST op scope result
           -> ClusterIO total i result
           -> (forall result'
               . ClusterAST op (scope, e) result'

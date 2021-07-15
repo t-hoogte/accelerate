@@ -177,13 +177,13 @@ instance Monoid (FullGraphResult op) where
 -- which helps to re-index into the new environment later.
 -- next iteration might want to use 'dependant-map', to store some type information at type level.
 data Construction (op :: Type -> Type) where
-  CExe :: LabelEnv env -> Args env args -> op args                                  -> Construction op
-  CUse ::                 ScalarType e -> Buffer e                                  -> Construction op
-  CITE :: LabelEnv env -> ExpVar env PrimBool -> Label -> Label                     -> Construction op
-  CWhl :: LabelEnv env -> Label -> Label -> GroundVars env a -> Construction op
-  CLHS ::                 GLeftHandSide a b c -> Label                              -> Construction op
-  CFun :: LabelEnv env -> GLeftHandSide a b c -> Label                              -> Construction op
-  CBod :: Label -> Construction op
+  CExe :: LabelEnv env -> Args env args -> op args              -> Construction op
+  CUse ::                 ScalarType e -> Buffer e              -> Construction op
+  CITE :: LabelEnv env -> ExpVar env PrimBool -> Label -> Label -> Construction op
+  CWhl :: LabelEnv env -> Label -> Label -> GroundVars env a    -> Construction op
+  CLHS ::                 GLeftHandSide a b c -> Label  -> Construction op
+  CFun :: LabelEnv env -> GLeftHandSide a b c -> Label          -> Construction op
+  CBod ::                                        Label          -> Construction op
 
 -- strips underscores
 makeLenses ''FullGraphState
@@ -216,13 +216,18 @@ mkFullGraph (Exec op args) = do
 -- We throw away the uniquenessess information here, in the future we will add uniqueness variables to the ILP
 mkFullGraph (Alet (lhs :: GLeftHandSide bnd env env') _ bnd scp) = do
   l <- freshL
+  currL . parent .= Just l
+  lbnd <- peekFreshL
   bndRes <- mkFullGraph bnd
   -- key observation: if `bnd` is an `Exec`, `bndL == mempty`, so we don't generate infusible edges.
   let nonfuse = S.map (-?> l) (bndRes ^. lset)
+  lscp <- peekFreshL
+  currL . parent .= Just l
   scpRes <- zoomState lhs l (mkFullGraph scp)
+  currL . parent .= l ^. parent
   return $ (bndRes <> scpRes)
             & info.graphI.infusibleEdges <>~ nonfuse
-            & construc                    %~ M.insert l (CLHS lhs l)
+            & construc                    %~ M.insert l (CLHS lhs lbnd)
             & lset                        .~ (scpRes ^. lset) -- Only keep the outgoing edges from the scope, the others have been consumed inside the scope
 
 -- TODO figure out whether we need more information for these. If so, add constructors to 'Construction' for them!
