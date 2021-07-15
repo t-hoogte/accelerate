@@ -146,68 +146,85 @@ data FoldType op env
 
 
 
--- TODO write. Induction on the cluster or the extra?
+-- TODO write. Induction on extra?
 consCluster :: LabelledArgs env args
             -> LabelledArgs env extra
             -> Cluster op args
             -> op extra
             -> (forall args'. Cluster op args' -> LabelledArgs env args' -> r)
             -> r
-consCluster largs lextra (Cluster io ast) = 
-  consCluster' largs lextra ArgsNil (io, ast) id Base (mkConsists $ unLabel lextra) Done
--- consCluster _ lextra (Cluster Empty None) extra k = k (unfused extra (unLabel lextra)) lextra
--- consCluster largs ArgsNil (Cluster io ast) extra k = k (Cluster io (Bind Base extra ast)) largs
--- consCluster largs (x :>: lextra) (Cluster io ast) extra k =
---   consCluster largs      lextra  (Cluster io ast) extra $ \cluster ltot -> 
---     k _ _
+consCluster largs lextra (Cluster io ast) op k =
+  mkReverse lextra $ \rev lartxe->
+    consCluster' largs rev lartxe ast Base io op k
 
 
-consCluster' :: LabelledArgs env args
+
+consCluster' :: LabelledArgs env total
+             -> Reverse' extra added toAdd
              -> LabelledArgs env toAdd
-             -> LabelledArgs env added
-             -> (ClusterIO args i o, ClusterAST op i o) -- ~ Cluster op args, but with i and o in scope
-             -> (ClusterIO args i o -> ClusterIO newio newi o)
-             -> LeftHandSideArgs added newi i
-             -> ConsistsOfArgs extra toAdd added
-             -> ConsistsOfArgs newio added args
+             -> ClusterAST op scope result
+             -> LeftHandSideArgs added i scope
+             -> ClusterIO total i result
              -> op extra
              -> (forall args'. Cluster op args' -> LabelledArgs env args' -> r)
              -> r
-consCluster' largs _ltodo@ArgsNil ldone (io, ast) iof lhsAdded _cextra@Done cio extra k = 
-  k (Cluster (iof io) (Bind lhsAdded extra ast)) (fuselargs cio ldone largs)
+consCluster' ltot Ordered ArgsNil ast lhs io op k = k (Cluster io (Bind lhs op ast)) ltot
 
-consCluster' largs ltodo@(_:>:_) ldone (io, ast) iof lhsAdded cextra@(Todo y) cio extra k =
-  step cextra ltodo ldone $ \cextra' ltodo' ldone' -> 
-    consCluster' largs ltodo' ldone' _ _ _ cextra' _ extra _
+consCluster' ltot (Revert r) (a :>: toAdd) ast lhs io op k = case a of
+  L (ArgArray In _ _ _) _ ->
+    addInput ast io $ \ast' io' ->
+      consCluster' (a :>: ltot) r toAdd ast' (Reqr lhs) io' op k
+  L (ArgArray Out _ _ _) _ ->
+    addOutput ast io $ \ast' io' ->
+      consCluster' (a :>: ltot) r toAdd ast' (Make lhs) io' op k
+  _ -> _
 
 
 
-data ConsistsOfArgs tot todo done where
-  Done :: ConsistsOfArgs       tot  ()          tot
-  Todo :: ConsistsOfArgs       tot        todo  done
-       -> ConsistsOfArgs (a -> tot) (a -> todo) done
+-- Incrementally applying arguments reverses their order, which makes the types messy.
+-- As a solution, we first reverse the arguments to be added, so that we end up
+-- with the original order! This datatype keeps track of the proof that peeling off args
+-- one-by-one from the reversed type yields the original type, which matches the operation.
+type Reverse xs sx = Reverse' xs () sx
+data Reverse' tot acc rev where
+  Ordered :: Reverse' tot     tot       ()
+  Revert  :: Reverse' tot (a -> x)      y
+          -> Reverse' tot       x (a -> y)
 
-mkConsists :: Args env args -> ConsistsOfArgs args args ()
-mkConsists ArgsNil    = Done
-mkConsists (_ :>: xs) = Todo $ mkConsists xs
+mkReverse :: LabelledArgs env xs -> (forall sx. Reverse xs sx -> LabelledArgs env sx -> r) -> r
+mkReverse = rev Ordered ArgsNil
+  where
+    rev :: Reverse' xs ys zs -> LabelledArgs env zs -> LabelledArgs env ys -> (forall sx. Reverse xs sx -> LabelledArgs env sx -> r) -> r
+    rev a zs ArgsNil k' = k' a zs
+    rev a zs (arg :>: args') k' = rev (Revert a) (arg :>: zs) args' k'
 
-fuselargs :: ConsistsOfArgs tot left right 
-          -> LabelledArgs env left 
-          -> LabelledArgs env right 
-          -> LabelledArgs env tot
-fuselargs = undefined 
+addInput  :: forall op scope result total i e sh r
+           . ClusterAST op scope result
+          -> ClusterIO total i result
+          -> (forall result'
+               . ClusterAST op (scope, e) result'
+              -> ClusterIO (In sh e -> total) (i, e) result' 
+              -> r)
+          -> r
+addInput None io k = k None (Input io)
+addInput (Bind lhs op ast) io k =
+  addInput ast io $ \ast' io' ->
+    k (Bind (Ignr lhs) op ast') io'
 
--- remove the innermost Todo
-step :: ConsistsOfArgs tot (a -> todo) done
-     -> LabelledArgs env (a -> todo)
-     -> LabelledArgs env done
-     -> (forall todo' done'. ConsistsOfArgs tot todo' done' 
-                          -> LabelledArgs env todo'
-                          -> LabelledArgs env done'
-                          -> r) 
-     -> r
-step (Todo Done) k = k Done
-step (Todo x@(Todo _)) k = step x $ k . _
+addOutput :: forall op scope result total i e sh r
+           . ClusterAST op scope result
+          -> ClusterIO total i result
+          -> (forall result'
+              . ClusterAST op (scope, e) result'
+             -> ClusterIO (Out sh e -> total) i result' 
+             -> r)
+          -> r
+addOutput None io k = k None (Output Here io)
+addOutput (Bind lhs op ast) io k =
+  addOutput ast io $ \ast' io' ->
+    k (Bind (Ignr lhs) op ast') io'
+
+
 
 {- [NOTE unsafeCoerce result type]
 

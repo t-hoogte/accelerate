@@ -48,6 +48,7 @@ data ClusterAST op env result where
 -- | A version of `LeftHandSide` that works on the function-separated environments: 
 -- Given environment `env`, we can execute `body`, yielding environment `scope`.
 data LeftHandSideArgs body env scope where
+  -- Because 
   Base :: LeftHandSideArgs () args args
   -- The body has an input array
   Reqr :: LeftHandSideArgs              body   env      scope
@@ -62,6 +63,9 @@ data LeftHandSideArgs body env scope where
   -- Behaves like `In` arguments.
   EArg :: LeftHandSideArgs              body   env      scope
        -> LeftHandSideArgs (       e -> body) (env, e) (scope, e)
+  -- Does nothing to this part of the environment
+  Ignr :: LeftHandSideArgs              body   env      scope
+       -> LeftHandSideArgs              body  (env, e) (scope, e)
 
 data ClusterIO args input output where
   Empty  :: ClusterIO () () output
