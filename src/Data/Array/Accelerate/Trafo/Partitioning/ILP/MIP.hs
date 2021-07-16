@@ -25,6 +25,7 @@ import qualified Numeric.Optimization.MIP as MIP
 import qualified Numeric.Optimization.MIP.Solver.Base as MIP
 import Data.Scientific ( Scientific )
 import Data.Bifunctor (bimap)
+
 import Numeric.Optimization.MIP.Solver
     ( cbc, cplex, glpsol, gurobiCl, lpSolve, scip )
 

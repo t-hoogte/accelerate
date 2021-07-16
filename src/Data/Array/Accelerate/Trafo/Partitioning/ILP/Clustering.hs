@@ -103,10 +103,10 @@ openReconstruct labelenv graph clusterslist subclustersmap construct = makeAST l
          CLHS {} -> error "let without scope"
          CFun {} -> error "wrong type: function"
          CBod {} -> error "wrong type: function"
-    makeAST env (cluster:tail) = case makeCluster env cluster of
+    makeAST env (cluster:ctail) = case makeCluster env cluster of
       NotFold con -> case con of
         CLHS glhs b -> case makeAST env [[b]] of -- Is this right???
-          Exists bnd -> case makeAST _ tail of
+          Exists bnd -> case makeAST _ ctail of
             Exists scp -> Exists $ Alet (_ glhs)
                                          (error "ask Ivo")
                                          bnd

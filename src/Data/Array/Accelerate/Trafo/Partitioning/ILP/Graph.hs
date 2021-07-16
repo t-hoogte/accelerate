@@ -221,7 +221,7 @@ mkFullGraph (Alet (lhs :: GLeftHandSide bnd env env') _ bnd scp) = do
   bndRes <- mkFullGraph bnd
   -- key observation: if `bnd` is an `Exec`, `bndL == mempty`, so we don't generate infusible edges.
   let nonfuse = S.map (-?> l) (bndRes ^. lset)
-  lscp <- peekFreshL
+  -- lscp <- peekFreshL
   currL . parent .= Just l
   scpRes <- zoomState lhs l (mkFullGraph scp)
   currL . parent .= l ^. parent

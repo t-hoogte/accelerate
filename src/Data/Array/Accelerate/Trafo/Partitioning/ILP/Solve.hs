@@ -21,7 +21,7 @@ import qualified Data.Map as M
 -- by removing duplicates.
 import qualified Data.Set as S
 import Data.Function ( on )
-import Lens.Micro ( _1 )
+import Lens.Micro ((^.),  _1 )
 import Lens.Micro.Extras ( view )
 import Data.Maybe (fromJust,  mapMaybe )
 
@@ -89,20 +89,28 @@ makeILP (Info
 -- Extract the fusion information (ordered list of clusters of Labels) (head is the first cluster).
 -- Output has the top-level clusters in fst, and the rest in snd.
 interpretSolution :: Solution op -> ([Labels], M.Map Label [Labels])
-interpretSolution = (\(x:xs) -> (x, M.fromList $ map (\l -> ( fromJust 
-                                                            . view parent 
-                                                            . S.findMin 
-                                                            . head 
-                                                            $ l
-                                                            , l)) xs))
-                  . map ( map S.fromList
-                        . partition (view parent)
-                        . map fst )
-                  . partition snd 
-                  . mapMaybe (_1 fromPi)
-                  . M.toList
+interpretSolution =
+    (\(x:xs) -> 
+      ( x
+      , M.fromList $ 
+          map 
+            (\l -> 
+              ( fromJust 
+              . view parent 
+              . S.findMin -- `head` and `findMin` just to get _any_ element, 
+              . head      -- as they all have the same parent 
+              $ l
+              , l))
+            xs))
+  . map ( map ( S.fromList
+              . map fst) 
+        . partition snd)
+  . partition (^. _1.parent)
+  . mapMaybe (_1 fromPi)
+  . M.toList
   where
     fromPi (Pi l) = Just l
     fromPi _      = Nothing
 
+    -- groupBy only really does what you want on a sorted list
     partition f = groupBy ((==) `on` f) . sortOn f
