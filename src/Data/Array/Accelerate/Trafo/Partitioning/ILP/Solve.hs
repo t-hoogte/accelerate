@@ -29,7 +29,8 @@ import Data.Maybe (fromJust,  mapMaybe )
 
 -- Makes the ILP. Note that this function 'appears' to ignore the Label levels completely!
 -- We could add some assertions, but if all the input is well-formed (no labels, constraints, etc
--- that reward putting non-siblings in the same cluster) this is fine.
+-- that reward putting non-siblings in the same cluster) this is fine: We will interpret 'cluster 3'
+-- with parents `Nothing` as a different cluster than 'cluster 3' with parents `Just 5`.
 makeILP :: forall op. MakesILP op => Information op -> ILP op
 makeILP (Info
           (Graph nodes fuseEdges' nofuseEdges)
@@ -93,18 +94,20 @@ interpretSolution =
     (\(x:xs) -> 
       ( x
       , M.fromList $ 
-          map 
+            map
             (\l -> 
               ( fromJust 
               . view parent 
-              . S.findMin -- `head` and `findMin` just to get _any_ element, 
-              . head      -- as they all have the same parent 
+              . S.findMin -- `head` and `findMin` just to get _any_ element:
+              . head      -- there is at least one and the parents are all identical
               $ l
               , l))
             xs))
-  . map ( map ( S.fromList
-              . map fst) 
-        . partition snd)
+  . map 
+    ( map 
+      ( S.fromList
+      . map fst) 
+    . partition snd)
   . partition (^. _1.parent)
   . mapMaybe (_1 fromPi)
   . M.toList

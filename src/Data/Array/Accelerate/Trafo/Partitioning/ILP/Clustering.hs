@@ -18,7 +18,8 @@ import qualified Data.Graph as G
 import qualified Data.Set as S
 import Data.Function (on)
 import Data.Array.Accelerate.AST.Operation
-import Data.Maybe (fromJust)
+import Data.Maybe (fromJust, fromMaybe)
+import Data.Type.Equality
 
 
 -- "open research question"
@@ -106,20 +107,20 @@ openReconstruct labelenv graph clusterslist subclustersmap construct = makeAST l
     makeAST env (cluster:ctail) = case makeCluster env cluster of
       NotFold con -> case con of
         CLHS glhs b -> case makeAST env [[b]] of -- Is this right???
-          Exists bnd -> case makeAST _ ctail of
-            Exists scp -> Exists $ Alet (_ glhs)
+          Exists bnd -> case makeAST undefined ctail of
+            Exists scp -> Exists $ Alet (undefined glhs)
                                          (error "ask Ivo")
                                          bnd
                                          scp
-        _ -> _
-      _ -> _
+        _ -> undefined
+      _ -> undefined
 
     makeASTF :: forall env. LabelEnv env -> Label -> Exists (PreOpenAfun (Cluster op) env)
     makeASTF env l = case makeCluster env [l] of
       NotFold (CBod l') -> case makeAST env [[l']] of
         Exists acc -> Exists $ Abody acc
-      NotFold (CFun env' lhs l') -> case makeASTF _ l' of
-        Exists fun -> Exists $ Alam _ fun
+      NotFold (CFun env' lhs l') -> case makeASTF undefined l' of
+        Exists fun -> Exists $ Alam undefined fun
       NotFold {} -> error "wrong type: acc"
       _ -> error "not a notfold"
 
@@ -130,7 +131,7 @@ openReconstruct labelenv graph clusterslist subclustersmap construct = makeAST l
     makeCluster :: LabelEnv env -> ClusterL -> FoldType op env
     makeCluster env = foldr1 fuseCluster
                     . map ( \l -> case construct M.! l of
-                              CExe env' args op -> InitFold op $ labelled env env' args
+                              CExe env' args op -> InitFold op $ fromJust $ reindexLabelledArgs (mkReindexPartial env' env) args --labelled env env' args
                               c                 -> NotFold c
                           )
 
@@ -141,11 +142,6 @@ openReconstruct labelenv graph clusterslist subclustersmap construct = makeAST l
     fuseCluster Fold{} Fold{} = error "fuseCluster got non-leaf as second argument" -- Should never happen
     fuseCluster NotFold{}   _ = error "fuseCluster encountered NotFold" -- Should only occur in singleton clusters
     fuseCluster _   NotFold{} = error "fuseCluster encountered NotFold" -- Should only occur in singleton clusters
-
-
-labelled :: LabelEnv env -> LabelEnv env1 -> Args env1 args -> LabelledArgs env args
-labelled env env' args = getLabelArgs (fromJust $ reindexArgs (mkReindexPartial env' env) args) env
-
 
 
 -- | Internal datatypes for `makeCluster`.
@@ -167,7 +163,7 @@ consCluster :: forall env args extra op r
             -> r
 consCluster largs lextra (Cluster cIO cAST) op k =
   mkReverse lextra $ \rev lartxe->
-    consCluster' largs rev lartxe cAST Base cIO
+    consCluster' largs rev lartxe cAST (mkBase cIO) cIO
   where
     -- The new, extra operation has args `extra`.
     -- We have already added the args in `added`,
@@ -190,14 +186,20 @@ consCluster largs lextra (Cluster cIO cAST) op k =
     consCluster' ltot Ordered ArgsNil ast lhs io = k (Cluster io (Bind lhs op ast)) ltot
     consCluster' ltot (Revert r) (a :>: toAdd) ast lhs io = case a of
       L (ArgArray In _ _ _) _ ->
-        addInput ast io $ \ast' io' ->
-          consCluster' (a :>: ltot) r toAdd ast' (Reqr lhs) io'
+        maybe
+          (addInput ast io $ \ast' io' -> -- New input, don't fuse
+            consCluster' (a :>: ltot) r toAdd ast' (Reqr Here Here lhs) io')
+          (\lhs' -> -- Existing input, fuse horizontally
+            consCluster'        ltot  r toAdd ast                  lhs' io)
+          (fuseInput a ltot lhs io)
       L (ArgArray Out _ _ _) _ ->
-        addOutput ast io $ \ast' io' ->
-          consCluster' (a :>: ltot) r toAdd ast' (Make lhs) io'
+        fromMaybe
+          (addOutput ast io $ \ast' io' ->
+            consCluster' (a :>: ltot) r toAdd ast' (Make Here lhs) io')
+          (fuseOutput a ltot lhs io $ \ltot' io' lhs' ->
+            consCluster' ltot' r toAdd ast lhs' io')
       -- TODO mutable arrays, and non-array arguments (which behave like input arrays)
-      _ -> _ 
-
+      _ -> undefined
 
 
 -- Incrementally applying arguments reverses their order, which makes the types messy.
@@ -215,23 +217,45 @@ data Reverse' tot acc rev where
           -> Reverse' tot       x (a -> y)
 
 mkReverse :: forall env xs r
-           . LabelledArgs env xs 
-          -> (forall sx. Reverse xs sx -> LabelledArgs env sx -> r) 
+           . LabelledArgs env xs
+          -> (forall sx. Reverse xs sx -> LabelledArgs env sx -> r)
           -> r
 mkReverse xs k = rev Ordered ArgsNil xs
   where
-    rev :: Reverse' xs ys zs 
-        -> LabelledArgs env zs 
-        -> LabelledArgs env ys 
+    rev :: Reverse' xs ys zs
+        -> LabelledArgs env zs
+        -> LabelledArgs env ys
         -> r
     rev a zs ArgsNil = k a zs
     rev a zs (arg :>: args) = rev (Revert a) (arg :>: zs) args
+
+-- Takes care of fusion in the case where we add an input that is already an input: horizontal fusion
+fuseInput :: LabelledArg env (In sh e)
+          -> LabelledArgs  env total
+          -> LeftHandSideArgs added i scope
+          -> ClusterIO total i result
+          -> Maybe (LeftHandSideArgs (In sh e -> added) i scope)
+fuseInput _ ArgsNil _ Empty = Nothing
+fuseInput 
+  x@(L _ (a1, _))
+  ((ArgArray In _ _ _ `L` (a2, _)) :>: as)
+  (Ignr lhs)
+  (Input io)
+  | Just Refl <- matchALabel a1 a2 = 
+    Just $ Reqr Here Here lhs
+  | otherwise =
+    (\(Reqr a b c) -> Reqr (There a) (There b) (Ignr c))
+    <$> fuseInput x as lhs io
+fuseInput x (_ :>: as) (Make t lhs) (Output _ io) =
+    (\(Reqr a b c) -> ttake b t $ \b' t' -> Reqr a b' (Make t' c))
+    <$> fuseInput x as lhs io
+fuseInput _ _ _ _ = undefined -- TODO mut, non-array args
 
 addInput  :: ClusterAST op scope result
           -> ClusterIO total i result
           -> (forall result'
                . ClusterAST op (scope, e) result'
-              -> ClusterIO (In sh e -> total) (i, e) result' 
+              -> ClusterIO (In sh e -> total) (i, e) result'
               -> r)
           -> r
 addInput None io k = k None (Input io)
@@ -239,11 +263,40 @@ addInput (Bind lhs op ast) io k =
   addInput ast io $ \ast' io' ->
     k (Bind (Ignr lhs) op ast') io'
 
+-- Takes care of fusion where we add an output that is later used as input: vertical and diagonal fusion
+fuseOutput :: LabelledArg env (Out sh e)
+           -> LabelledArgs  env total
+           -> LeftHandSideArgs added i scope
+           -> ClusterIO total i result
+           -> (forall total' i'. LabelledArgs env (Out sh e -> total') -> ClusterIO (Out sh e -> total') i' result -> LeftHandSideArgs (Out sh e -> added) i' scope -> r)
+           -> Maybe r
+fuseOutput _ ArgsNil _ Empty _ = Nothing
+fuseOutput
+  x@(L _ (a1, _))
+  (y@(ArgArray In _ _ _ `L` (a2, _)) :>: ltot)
+  (Ignr lhs)
+  (Input io)
+  k
+  | Just Refl <- matchALabel a1 a2 =
+    Just $ k (x :>: ltot) (Output Here io) (Make Here lhs)
+  | otherwise =
+    fuseOutput x ltot lhs io $ \(x' :>: ltot') (Output t1 io') (Make t2 lhs') ->
+      k (x' :>: y :>: ltot') (Output (There t1) $ Input io') (Make (There t2) $ Ignr lhs')
+
+fuseOutput _ _ _ _ _ = undefined -- TODO mut, non-array args
+
+-- :: LabelledArgs env total
+-- -> Reverse' extra added toAdd
+-- -> LabelledArgs env toAdd
+-- -> ClusterAST op scope result
+-- -> LeftHandSideArgs added i scope
+-- -> ClusterIO total i result
+
 addOutput :: ClusterAST op scope result
           -> ClusterIO total i result
           -> (forall result'
               . ClusterAST op (scope, e) result'
-             -> ClusterIO (Out sh e -> total) i result' 
+             -> ClusterIO (Out sh e -> total) i result'
              -> r)
           -> r
 addOutput None io k = k None (Output Here io)

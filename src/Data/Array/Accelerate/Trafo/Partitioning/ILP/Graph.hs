@@ -177,7 +177,7 @@ instance Monoid (FullGraphResult op) where
 -- which helps to re-index into the new environment later.
 -- next iteration might want to use 'dependant-map', to store some type information at type level.
 data Construction (op :: Type -> Type) where
-  CExe :: LabelEnv env -> Args env args -> op args              -> Construction op
+  CExe :: LabelEnv env -> LabelledArgs env args -> op args      -> Construction op
   CUse ::                 ScalarType e -> Buffer e              -> Construction op
   CITE :: LabelEnv env -> ExpVar env PrimBool -> Label -> Label -> Construction op
   CWhl :: LabelEnv env -> Label -> Label -> GroundVars env a    -> Construction op
@@ -205,13 +205,14 @@ mkFullGraph (Exec op args) = do
   l <- freshL
   env <- use lenv
   lenv %= flip (updateLabelEnv args) l -- adds the label l to the outgoing args in the environment
+  let labelledArgs = getLabelArgs args env
   let fuseedges = S.map (-?> l) $ getInputArgLabels args env -- add fusible edges to all inputs
-  let backInfo = mkGraph op (getLabelArgs args env) l -- query the backend for its fusion information - we add l and fuseedges next line
+  let backInfo = mkGraph op labelledArgs l -- query the backend for its fusion information - we add l and fuseedges next line
   return $ FGRes (backInfo
                     & graphI.graphNodes   <>~ S.singleton l
                     & graphI.fusibleEdges <>~ fuseedges)
                  mempty
-                 (M.singleton l $ CExe env args op)
+                 (M.singleton l $ CExe env labelledArgs op)
 
 -- We throw away the uniquenessess information here, in the future we will add uniqueness variables to the ILP
 mkFullGraph (Alet (lhs :: GLeftHandSide bnd env env') _ bnd scp) = do
@@ -356,8 +357,6 @@ constructWhl :: LabelEnv env' -> LabelEnv env
              -> Uniquenesses a -> PreOpenAfun op env' (a -> PrimBool) -> PreOpenAfun op env' (a -> a) -> GroundVars env a
              -> Maybe (PreOpenAcc op env' a)
 constructWhl env' env u cond bdy start = Awhile u cond bdy <$> reindexVars (mkReindexPartial env env') start
-
-
 
 
 

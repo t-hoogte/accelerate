@@ -48,14 +48,16 @@ data ClusterAST op env result where
 -- | A version of `LeftHandSide` that works on the function-separated environments: 
 -- Given environment `env`, we can execute `body`, yielding environment `scope`.
 data LeftHandSideArgs body env scope where
-  -- Because 
-  Base :: LeftHandSideArgs () args args
+  -- Because of `Ignr`, we could also give this the type `LeftHandSideArgs () () ()`.
+  Base :: LeftHandSideArgs () () ()
   -- The body has an input array
-  Reqr :: LeftHandSideArgs              body   env      scope
-       -> LeftHandSideArgs (In  sh e -> body) (env, e) (scope, e)
+  Reqr :: Take e eenv env -> Take e escope scope
+       -> LeftHandSideArgs              body   env      scope
+       -> LeftHandSideArgs (In  sh e -> body) eenv     escope
   -- The body creates an array
-  Make :: LeftHandSideArgs              body   env      scope
-       -> LeftHandSideArgs (Out sh e -> body)  env     (scope, e)
+  Make :: Take e escope scope
+       -> LeftHandSideArgs              body   env      scope
+       -> LeftHandSideArgs (Out sh e -> body)  env     escope
   -- One array that is both input and output
   Adju :: LeftHandSideArgs              body   env      scope
        -> LeftHandSideArgs (Mut sh e -> body) (env, e) (scope, e)
@@ -88,13 +90,18 @@ unfused op args = iolhs args $ \io lhs -> Cluster io (Bind lhs op None)
 
 iolhs :: Args env args -> (forall x y. ClusterIO args x y -> LeftHandSideArgs args x y -> r) -> r
 iolhs ArgsNil                     f =                       f  Empty            Base
-iolhs (ArgArray In  _ _ _ :>: as) f = iolhs as $ \io lhs -> f (Input       io) (Reqr lhs)
-iolhs (ArgArray Out _ _ _ :>: as) f = iolhs as $ \io lhs -> f (Output Here io) (Make lhs)
+iolhs (ArgArray In  _ _ _ :>: as) f = iolhs as $ \io lhs -> f (Input       io) (Reqr Here Here lhs)
+iolhs (ArgArray Out _ _ _ :>: as) f = iolhs as $ \io lhs -> f (Output Here io) (Make Here lhs)
 iolhs (ArgArray Mut _ _ _ :>: as) f = iolhs as $ \io lhs -> f (MutPut Here io) (Adju lhs)
 iolhs (_                  :>: as) f = iolhs as $ \io lhs -> f (ExpPut      io) (EArg lhs)
 
 
-
+mkBase :: ClusterIO args i o -> LeftHandSideArgs () i i
+mkBase Empty = Base
+mkBase (Input ci) = Ignr (mkBase ci)
+mkBase (Output _ ci) = mkBase ci
+mkBase (MutPut _ ci) = Ignr (mkBase ci)
+mkBase (ExpPut ci) = Ignr (mkBase ci)
 
 -- | `xargs` is a type-level list which contains `x`. 
 -- Removing `x` from `xargs` yields `args`.
@@ -102,6 +109,19 @@ data Take x xargs args where
   Here  :: Take x (args, x)       args
   There :: Take x  xargs      args
         -> Take x (xargs, y) (args, y)
+
+
+ttake :: Take x xas as -> Take y xyas xas -> (forall yas. Take x xyas yas -> Take y yas as -> r) -> r
+ttake Here        Here      k = k (There Here) Here
+ttake Here       (There t)  k = k  Here        t
+ttake tx          Here      k = k (There tx)   Here
+ttake (There tx) (There ty) k = ttake tx ty $ \t1 t2 -> k (There t1) (There t2)
+
+
+
+
+
+
 
 -- for the old version of Take (using `->` instead of `(,)`):
 

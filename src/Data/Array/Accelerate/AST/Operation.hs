@@ -44,7 +44,7 @@ module Data.Array.Accelerate.AST.Operation (
 
   paramIn, paramsIn, paramIn', paramsIn',
 
-  ReindexPartial, reindexArg, reindexArgs, reindexExp, reindexVar, reindexVars,
+  ReindexPartial, reindexArg, reindexArgs, reindexExp, reindexPreArgs, reindexVar, reindexVars,
   weakenReindex,
   argVars, argsVars, AccessGroundR(..),
 
@@ -404,8 +404,15 @@ reindexArg k (ArgFun f)                   = ArgFun <$> reindexExp k f
 reindexArg k (ArgArray m repr sh buffers) = ArgArray m repr <$> reindexVars k sh <*> reindexVars k buffers
 
 reindexArgs :: Applicative f => ReindexPartial f env env' -> Args env t -> f (Args env' t)
-reindexArgs _ ArgsNil    = pure ArgsNil
-reindexArgs k (a :>: as) = (:>:) <$> reindexArg k a <*> reindexArgs k as
+reindexArgs = reindexPreArgs reindexArg
+
+reindexPreArgs 
+  :: Applicative f 
+  => (forall f' t'. Applicative f' => ReindexPartial f' env env' ->          s env  t' -> f'         (s env'  t')) 
+                                   -> ReindexPartial f  env env' -> PreArgs (s env) t  -> f (PreArgs (s env') t)
+reindexPreArgs _ _ ArgsNil = pure ArgsNil
+reindexPreArgs reindex k (a :>: as) = (:>:) <$> reindex k a <*> reindexPreArgs reindex k as
+
 
 weakenReindex :: benv :> benv' -> ReindexPartial Identity benv benv'
 weakenReindex k = Identity . (k >:>)

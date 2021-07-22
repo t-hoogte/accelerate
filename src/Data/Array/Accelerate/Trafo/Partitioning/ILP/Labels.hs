@@ -8,6 +8,8 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE TypeOperators #-}
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels where
 
 
@@ -29,6 +31,8 @@ import Lens.Micro.Mtl ((<%=))
 import qualified Data.Map as M
 import Lens.Micro ((^.))
 import Data.Bifunctor (first)
+import Data.Type.Equality
+import Unsafe.Coerce (unsafeCoerce)
 
 {-
 Label is for each AST node: every exec, every let, every branch of control flow, etc has a unique label.
@@ -67,6 +71,12 @@ data ALabel t where
       -> ALabel (m sh e) -- only matches on arrays, but supports In, Out and Mut
   NotArr :: ALabel (t e) -- matches on `Var' e`, `Exp' e` and `Fun' e` 
 
+matchALabel :: ALabel (m sh s) -> ALabel (m' sh' t) -> Maybe (s :~: t)
+matchALabel (Arr e1) (Arr e2) 
+  -- Labels align, so we inform the typechecker that the types must be equal
+  | e1 == e2 = Just $ unsafeCoerce Refl
+matchALabel _ _ = Nothing
+
 type ALabels t = (ALabel t, Labels) -- An ELabel if it corresponds to an array, otherwise Nothing
 
 -- Map identifiers to labels
@@ -90,6 +100,15 @@ instance Semigroup (LabelledArgs env args) where
 unLabel :: LabelledArgs env args -> Args env args
 unLabel ArgsNil              = ArgsNil
 unLabel (arg `L` _ :>: args) = arg :>: unLabel args
+
+reindexLabelledArg :: Applicative f => ReindexPartial f env env' -> LabelledArg env t -> f (LabelledArg env' t)
+reindexLabelledArg k (ArgVar vars                `L` l) = (`L` l)  .   ArgVar          <$> reindexVars k vars
+reindexLabelledArg k (ArgExp e                   `L` l) = (`L` l)  .   ArgExp          <$> reindexExp k e
+reindexLabelledArg k (ArgFun f                   `L` l) = (`L` l)  .   ArgFun          <$> reindexExp k f
+reindexLabelledArg k (ArgArray m repr sh buffers `L` l) = (`L` l) <$> (ArgArray m repr <$> reindexVars k sh <*> reindexVars k buffers)
+
+reindexLabelledArgs :: Applicative f => ReindexPartial f env env' -> LabelledArgs env t -> f (LabelledArgs env' t)
+reindexLabelledArgs = reindexPreArgs reindexLabelledArg
 
 
 -- | Keeps track of which array in the environment belongs to which label
