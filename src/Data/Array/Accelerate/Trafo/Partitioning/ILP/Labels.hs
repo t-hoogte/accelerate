@@ -73,7 +73,7 @@ data ALabel t where
 
 matchALabel :: ALabel (m sh s) -> ALabel (m' sh' t) -> Maybe (s :~: t)
 matchALabel (Arr e1) (Arr e2) 
-  -- Labels align, so we inform the typechecker that the types must be equal
+  -- If the labels align, we inform the typechecker that the types are equal
   | e1 == e2 = Just $ unsafeCoerce Refl
 matchALabel _ _ = Nothing
 
@@ -114,11 +114,11 @@ reindexLabelledArgs = reindexPreArgs reindexLabelledArg
 -- | Keeps track of which array in the environment belongs to which label
 data LabelEnv env where
   LabelEnvNil  :: LabelEnv ()
-  (:>>>:)      :: ELabels -> LabelEnv t -> LabelEnv (t, s)
+  (:>>:)      :: ELabels -> LabelEnv t -> LabelEnv (t, s)
 instance Semigroup (LabelEnv env) where
   LabelEnvNil <> LabelEnvNil = LabelEnvNil
-  (e1,l1):>>>:lenv1 <> (e2,l2):>>>:lenv2
-    | e1 == e2 = (e1, l1<>l2) :>>>: (lenv1 <> lenv2)
+  (e1,l1):>>:lenv1 <> (e2,l2):>>:lenv2
+    | e1 == e2 = (e1, l1<>l2) :>>: (lenv1 <> lenv2)
     | otherwise = error "mappend for LabelEnv found two different labels"
 
 freshE' :: State ELabel ELabel
@@ -134,22 +134,22 @@ freshE' = id <%= (+1)
 -- Use sites need to store the LHS itself too.
 addLhs :: LeftHandSide s v env env' -> Labels -> LabelEnv env -> State ELabel (LabelEnv env')
 addLhs LeftHandSideWildcard{} _ = pure
-addLhs LeftHandSideSingle{}   l = \lenv -> freshE' >>= \e -> pure ((e, l) :>>>: lenv)
+addLhs LeftHandSideSingle{}   l = \lenv -> freshE' >>= \e -> pure ((e, l) :>>: lenv)
 addLhs (LeftHandSidePair x y) l = addLhs x l >=> addLhs y l
 
 
 weakLhsEnv :: LeftHandSide s v env env' -> LabelEnv env' -> LabelEnv env
-weakLhsEnv LeftHandSideSingle{} (_:>>>: env) = env
+weakLhsEnv LeftHandSideSingle{} (_:>>: env) = env
 weakLhsEnv LeftHandSideWildcard{} env = env
 weakLhsEnv (LeftHandSidePair l r) env = weakLhsEnv l (weakLhsEnv r env)
 
 emptyLabelEnv :: LabelEnv env -> LabelEnv env
 emptyLabelEnv LabelEnvNil = LabelEnvNil
-emptyLabelEnv ((e,_):>>>:env) = (e, mempty) :>>>: emptyLabelEnv env
+emptyLabelEnv ((e,_):>>:env) = (e, mempty) :>>: emptyLabelEnv env
 
 getAllLabelsEnv :: LabelEnv env -> Labels
 getAllLabelsEnv LabelEnvNil = mempty
-getAllLabelsEnv ((_,set) :>>>: lenv) = set <> getAllLabelsEnv lenv
+getAllLabelsEnv ((_,set) :>>: lenv) = set <> getAllLabelsEnv lenv
 
 getLabelArgs :: Args env args -> LabelEnv env -> LabelledArgs env args
 getLabelArgs ArgsNil _ = ArgsNil
@@ -181,12 +181,12 @@ getLabelsVar :: Var s env t -> LabelEnv env -> ALabels (m sh t)
 getLabelsVar (varIdx -> idx) = getLabelsIdx idx
 
 getLabelsIdx :: Idx env a -> LabelEnv env -> ALabels (m sh a)
-getLabelsIdx ZeroIdx (el :>>>: _) = first Arr el
-getLabelsIdx (SuccIdx idx) (_ :>>>: env) = getLabelsIdx idx env
+getLabelsIdx ZeroIdx (el :>>: _) = first Arr el
+getLabelsIdx (SuccIdx idx) (_ :>>: env) = getLabelsIdx idx env
 
 getELabelIdx :: Idx env a -> LabelEnv env -> ELabel
-getELabelIdx ZeroIdx ((e,_) :>>>: _) = e
-getELabelIdx (SuccIdx idx) (_ :>>>: env) = getELabelIdx idx env
+getELabelIdx ZeroIdx ((e,_) :>>: _) = e
+getELabelIdx (SuccIdx idx) (_ :>>: env) = getELabelIdx idx env
 
 getLabelsExp :: OpenExp x env y -> LabelEnv env -> ALabels (Exp' y)
 getLabelsExp = undefined -- TODO traverse everything, look for Idxs
@@ -208,9 +208,9 @@ updateLabelEnv (arg :>: args) lenv l = case arg of
 insertAtVars :: TupR (Var a env) b -> LabelEnv env -> (Labels -> Labels) -> LabelEnv env
 insertAtVars TupRunit lenv _ = lenv
 insertAtVars (TupRpair x y) lenv f = insertAtVars x (insertAtVars y lenv f) f
-insertAtVars (TupRsingle (varIdx -> idx)) ((e,lset) :>>>: lenv) f = case idx of
-  ZeroIdx -> (e, f lset) :>>>: lenv
-  SuccIdx idx' ->       (e, lset) :>>>: insertAtVars (TupRsingle (Var undefined idx')) lenv f
+insertAtVars (TupRsingle (varIdx -> idx)) ((e,lset) :>>: lenv) f = case idx of
+  ZeroIdx -> (e, f lset) :>>: lenv
+  SuccIdx idx' ->       (e, lset) :>>: insertAtVars (TupRsingle (Var undefined idx')) lenv f
 insertAtVars (TupRsingle (varIdx -> idx)) LabelEnvNil _ = case idx of VoidIdx x -> x -- convincing the pattern coverage checker of the impossible case
 
 -- | Like `getLabelArgs`, but ignores the `Out` arguments

@@ -47,6 +47,8 @@ import Control.Monad.State
 import Data.Kind ( Type )
 import Unsafe.Coerce (unsafeCoerce)
 import Data.Maybe (isJust, fromJust)
+import Data.Array.Accelerate.Representation.Type (TupR)
+import Data.Array.Accelerate.AST.LeftHandSide (LeftHandSide (LeftHandSideSingle, LeftHandSideWildcard, LeftHandSidePair))
 
 
 -- | Directed edge (a :-> b): `b` depends on `a`.
@@ -172,6 +174,25 @@ instance Semigroup (FullGraphResult op) where
 instance Monoid (FullGraphResult op) where
   mempty = FGRes mempty mempty mempty
 
+
+-- LeftHandSide that ignores the surrounding environments: purely binding information
+data MyLHS s v where
+  LHSSingle :: s v -> ELabels -> MyLHS s v
+  LHSWildcard :: TupR s v -> MyLHS s v
+  LHSPair :: MyLHS s v1 -> MyLHS s v2 -> MyLHS s (v1, v2)
+
+type MyGLHS = MyLHS GroundR
+
+unEnvLHS :: LeftHandSide s v env env' -> LabelEnv env' -> MyLHS s v
+unEnvLHS (LeftHandSideSingle sv) (l :>>: _) = LHSSingle sv l
+unEnvLHS (LeftHandSideWildcard tr) _ = LHSWildcard tr
+unEnvLHS (LeftHandSidePair l r) e = LHSPair (unEnvLHS l (stripLHS r e)) (unEnvLHS r e)
+
+stripLHS :: LeftHandSide s v env env' -> LabelEnv env' -> LabelEnv env
+stripLHS (LeftHandSideSingle _) (_ :>>: le') = le'
+stripLHS (LeftHandSideWildcard _) le = le
+stripLHS (LeftHandSidePair l r) le = stripLHS l (stripLHS r le)
+
 -- | Information to construct AST nodes. Generally, constructors contain
 -- both actual information, and a LabelEnv of the original environment
 -- which helps to re-index into the new environment later.
@@ -181,8 +202,8 @@ data Construction (op :: Type -> Type) where
   CUse ::                 ScalarType e -> Buffer e              -> Construction op
   CITE :: LabelEnv env -> ExpVar env PrimBool -> Label -> Label -> Construction op
   CWhl :: LabelEnv env -> Label -> Label -> GroundVars env a    -> Construction op
-  CLHS ::                 GLeftHandSide a b c -> Label  -> Construction op
-  CFun :: LabelEnv env -> GLeftHandSide a b c -> Label          -> Construction op
+  CLHS ::                 MyGLHS a -> Label                     -> Construction op
+  CFun :: LabelEnv env -> MyGLHS a -> Label                     -> Construction op
   CBod ::                                        Label          -> Construction op
 
 -- strips underscores
@@ -215,6 +236,7 @@ mkFullGraph (Exec op args) = do
                  (M.singleton l $ CExe env labelledArgs op)
 
 -- We throw away the uniquenessess information here, in the future we will add uniqueness variables to the ILP
+-- TODO: see zoomState, addLhs, and the MyLHS type above. Keep track of added elabels, store everything
 mkFullGraph (Alet (lhs :: GLeftHandSide bnd env env') _ bnd scp) = do
   l <- freshL
   currL . parent .= Just l
@@ -227,9 +249,9 @@ mkFullGraph (Alet (lhs :: GLeftHandSide bnd env env') _ bnd scp) = do
   scpRes <- zoomState lhs l (mkFullGraph scp)
   currL . parent .= l ^. parent
   return $ (bndRes <> scpRes)
-            & info.graphI.infusibleEdges <>~ nonfuse
-            & construc                    %~ M.insert l (CLHS lhs lbnd)
-            & lset                        .~ (scpRes ^. lset) -- Only keep the outgoing edges from the scope, the others have been consumed inside the scope
+         & info.graphI.infusibleEdges <>~ nonfuse
+         & construc                    %~ M.insert l (CLHS (unEnvLHS lhs _) lbnd)
+         & lset                        .~ (scpRes ^. lset) -- Only keep the outgoing edges from the scope, the others have been consumed inside the scope
 
 -- TODO figure out whether we need more information for these. If so, add constructors to 'Construction' for them!
 mkFullGraph (Return vars) = do
@@ -241,7 +263,7 @@ mkFullGraph (Compute expr) = do
 mkFullGraph Alloc{} = return mempty
 mkFullGraph (Unit var) = do
   env <- use lenv
-  return $ mempty & lset .~ getLabelsVar var env ^. _2
+  return $ mempty & lset .~ getLabelsVar var  env ^. _2
 
 mkFullGraph (Use sctype buff) = do
   l <- freshL
@@ -310,7 +332,7 @@ mkFullGraphF (Alam lhs f) = do
   env <- use lenv
   return $ res
          & lset     %~ S.insert l
-         & construc %~ M.insert (fromJust $ l^.parent) (CFun env lhs l)
+         & construc %~ M.insert (fromJust $ l^.parent) (CFun env (unEnvLHS lhs) l)
 
 -- Create a fresh L or E and update the state. freshL does not change the parent, which is the most common use case
 freshL :: State (FullGraphState env) Label
@@ -371,7 +393,7 @@ mkReindexPartial env env' idx = go env'
     -- The ELabel in the original environment
     e = getELabelIdx idx env
     go :: forall e a. LabelEnv e -> Maybe (Idx e a)
-    go ((e',_) :>>>: rest) -- e' is the ELabel in the new environment
+    go ((e',_) :>>: rest) -- e' is the ELabel in the new environment
       -- Here we have to convince GHC that the top element in the environment
       -- really does have the same type as the one we were searching for.
       -- Some literature does this stuff too: 'effect handlers in haskell, evidently'

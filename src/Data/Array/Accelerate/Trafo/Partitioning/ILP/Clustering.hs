@@ -7,7 +7,7 @@
 {-# LANGUAGE TypeApplications #-}
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering where
 
-import Data.Array.Accelerate.AST.LeftHandSide
+import Data.Array.Accelerate.AST.LeftHandSide ( Exists(..) )
 import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
@@ -19,7 +19,7 @@ import qualified Data.Set as S
 import Data.Function (on)
 import Data.Array.Accelerate.AST.Operation
 import Data.Maybe (fromJust, fromMaybe)
-import Data.Type.Equality
+import Data.Type.Equality ( type (:~:)(Refl) )
 
 
 -- "open research question"
@@ -70,8 +70,8 @@ openReconstruct :: forall op aenv. LabelEnv aenv -> Graph -> [Labels] -> M.Map L
 openReconstruct labelenv graph clusterslist subclustersmap construct = makeAST labelenv clusters
   where
     -- Make a tree of let bindings
-    -- TODO every time I use a label here (that comes from a Construction) (and I wrap in [[]]),
-    -- should I be using `subclusters`? Go over this again in mkFullGraph too!
+
+    -- In mkFullGraph, we make sure that the bound body of a let will be in an earlier cluster.
     makeAST :: forall env. LabelEnv env -> [ClusterL] -> Exists (PreOpenAcc (Cluster op) env)
     makeAST _ [] = error "empty AST"
     makeAST env [cluster] = case makeCluster env cluster of
@@ -80,7 +80,7 @@ openReconstruct labelenv graph clusterslist subclustersmap construct = makeAST l
       NotFold con -> case con of
          CExe {}    -> error "should be Fold/InitFold!"
          CUse se be               -> Exists $ Use se be
-         CITE env' c t f   -> case (makeAST env [[t]], makeAST env [[f]]) of
+         CITE env' c t f   -> case (makeAST env (subcluster t), makeAST env (subcluster f)) of
             (Exists tacc, Exists facc) -> Exists $ Acond
               (fromJust $ reindexVar (mkReindexPartial env' env) c)
               -- [See NOTE unsafeCoerce result type]
@@ -106,7 +106,7 @@ openReconstruct labelenv graph clusterslist subclustersmap construct = makeAST l
          CBod {} -> error "wrong type: function"
     makeAST env (cluster:ctail) = case makeCluster env cluster of
       NotFold con -> case con of
-        CLHS glhs b -> case makeAST env [[b]] of -- Is this right???
+        CLHS glhs b -> case makeAST env (subcluster b) of -- Is this right???
           Exists bnd -> case makeAST undefined ctail of
             Exists scp -> Exists $ Alet (undefined glhs)
                                          (error "ask Ivo")
@@ -117,7 +117,7 @@ openReconstruct labelenv graph clusterslist subclustersmap construct = makeAST l
 
     makeASTF :: forall env. LabelEnv env -> Label -> Exists (PreOpenAfun (Cluster op) env)
     makeASTF env l = case makeCluster env [l] of
-      NotFold (CBod l') -> case makeAST env [[l']] of
+      NotFold (CBod l') -> case makeAST env (subcluster l') of
         Exists acc -> Exists $ Abody acc
       NotFold (CFun env' lhs l') -> case makeASTF undefined l' of
         Exists fun -> Exists $ Alam undefined fun
@@ -127,6 +127,7 @@ openReconstruct labelenv graph clusterslist subclustersmap construct = makeAST l
     -- do the topological sorting for each set
     clusters = map (topSort graph) clusterslist
     subclusters = M.map (map (topSort graph)) subclustersmap
+    subcluster l = subclusters M.! l
 
     makeCluster :: LabelEnv env -> ClusterL -> FoldType op env
     makeCluster env = foldr1 fuseCluster
@@ -144,7 +145,7 @@ openReconstruct labelenv graph clusterslist subclustersmap construct = makeAST l
     fuseCluster _   NotFold{} = error "fuseCluster encountered NotFold" -- Should only occur in singleton clusters
 
 
--- | Internal datatypes for `makeCluster`.
+-- | Internal datatype for `makeCluster`.
 
 data FoldType op env
   = forall args. Fold (Cluster op args) (LabelledArgs env args)
@@ -176,6 +177,10 @@ consCluster largs lextra (Cluster cIO cAST) op k =
     -- We simply recurse down the `toAdd` args until `toAdd ~ ()` and
     -- `added ~ extra`, when we can use the extra operation to construct
     -- the total cluster.
+
+    -- In each step, we check whether the argument array is already mentioned
+    -- in the operations that follow it: If so, we fuse them (making both arguments
+    -- point to the same place in the environment), otherwise we simply add a new one. 
     consCluster' :: LabelledArgs env total
                  -> Reverse' extra added toAdd
                  -> LabelledArgs env toAdd
@@ -194,9 +199,9 @@ consCluster largs lextra (Cluster cIO cAST) op k =
           (fuseInput a ltot lhs io)
       L (ArgArray Out _ _ _) _ ->
         fromMaybe
-          (addOutput ast io $ \ast' io' ->
+          (addOutput ast io $ \ast' io' -> -- new output
             consCluster' (a :>: ltot) r toAdd ast' (Make Here lhs) io')
-          (fuseOutput a ltot lhs io $ \ltot' io' lhs' ->
+          (fuseOutput a ltot lhs io $ \ltot' io' lhs' -> -- diagonal fusion
             consCluster' ltot' r toAdd ast lhs' io')
       -- TODO mutable arrays, and non-array arguments (which behave like input arrays)
       _ -> undefined

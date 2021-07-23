@@ -89,6 +89,8 @@ makeILP (Info
 
 -- Extract the fusion information (ordered list of clusters of Labels) (head is the first cluster).
 -- Output has the top-level clusters in fst, and the rest in snd.
+
+-- TODO use the Construction map to change `[Label]` to `Either <nonExecLabel> [ExecLabel]`
 interpretSolution :: Solution op -> ([Labels], M.Map Label [Labels])
 interpretSolution =
     (\(x:xs) -> 
