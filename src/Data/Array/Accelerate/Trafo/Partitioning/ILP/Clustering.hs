@@ -228,8 +228,11 @@ consCluster largs lextra (Cluster cIO cAST) op k =
             consCluster' (a :>: ltot) r toAdd ast' (Make Here lhs) io')
           (fuseOutput a ltot lhs io $ \ltot' io' lhs' -> -- diagonal fusion
             consCluster' ltot' r toAdd ast lhs' io')
-      -- TODO mutable arrays, and non-array arguments (which behave like input arrays)
-      _ -> undefined
+      -- TODO mutable arrays
+      L (ArgArray Mut _ _ _) _ -> undefined
+      -- non-array arguments
+      _ -> addNonArr ast io $ \ast' io' ->
+        consCluster' (a :>: ltot) r toAdd ast' (EArg lhs) io'
 
 
 -- Incrementally applying arguments reverses their order, which makes the types messy.
@@ -279,6 +282,17 @@ fuseInput
 fuseInput x (_ :>: as) (Make t lhs) (Output _ io) =
     (\(Reqr a b c) -> ttake b t $ \b' t' -> Reqr a b' (Make t' c))
     <$> fuseInput x as lhs io
+fuseInput x (_ :>: as) Base (Output _ ci) = fuseInput x as Base ci
+fuseInput x (_ :>: as) (Reqr Here Here lhsa) (Input ci) =
+    (\(Reqr a b c) -> Reqr (There a) (There b) $ Reqr Here Here c)
+    <$> fuseInput x as lhsa ci
+fuseInput x (_ :>: as) (Adju lhsa) (MutPut _ ci) =
+    (\(Reqr a b c) -> Reqr (There a) (There b) $ Adju c)
+    <$> fuseInput x as lhsa ci
+fuseInput x (_ :>: as) (EArg lhsa) (ExpPut ci) = 
+    (\(Reqr a b c) -> Reqr (There a) (There b) $ EArg c)
+    <$> fuseInput x as lhsa ci
+fuseInput x (_ :>: as) (Ignr lhsa) io = _
 fuseInput _ _ _ _ = undefined -- TODO mut, non-array args
 
 addInput  :: ClusterAST op scope result
@@ -291,6 +305,18 @@ addInput  :: ClusterAST op scope result
 addInput None io k = k None (Input io)
 addInput (Bind lhs op ast) io k =
   addInput ast io $ \ast' io' ->
+    k (Bind (Ignr lhs) op ast') io'
+
+addNonArr :: ClusterAST op scope result
+          -> ClusterIO total i result
+          -> (forall result'
+               . ClusterAST op (scope, e) result'
+              -> ClusterIO (e -> total) (i, e) result'
+              -> r)
+          -> r
+addNonArr None io k = k None (ExpPut io)
+addNonArr (Bind lhs op ast) io k = 
+  addNonArr ast io $ \ast' io' ->
     k (Bind (Ignr lhs) op ast') io'
 
 -- Takes care of fusion where we add an output that is later used as input: vertical and diagonal fusion
@@ -333,8 +359,6 @@ addOutput None io k = k None (Output Here io)
 addOutput (Bind lhs op ast) io k =
   addOutput ast io $ \ast' io' ->
     k (Bind (Ignr lhs) op ast') io'
-
-
 
 {- [NOTE unsafeCoerce result type]
 
