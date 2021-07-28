@@ -11,6 +11,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -49,6 +50,7 @@ import Unsafe.Coerce (unsafeCoerce)
 import Data.Maybe (isJust, fromJust)
 import Data.Array.Accelerate.Representation.Type (TupR)
 import Data.Array.Accelerate.AST.LeftHandSide (LeftHandSide (LeftHandSideSingle, LeftHandSideWildcard, LeftHandSidePair))
+import Data.Array.Accelerate.Representation.Shape (ShapeR)
 
 
 -- | Directed edge (a :-> b): `b` depends on `a`.
@@ -166,16 +168,17 @@ data FullGraphState env = FGState
 -- | A monoid, so could just put it in the state too. Tradeoff between simplifying code and encoding that this is really 'output info'
 data FullGraphResult op = FGRes
   { _info   :: Information op
-  , _lset   :: Labels    -- sources of open outgoing edges for result
+  , _l_res   :: Maybe Label    -- result
   , _construc :: Map Label (Construction op)
   }
+-- Unlawful instances, but useful shorthand
 instance Semigroup (FullGraphResult op) where
-  FGRes a b c <> FGRes x y z = FGRes (a <> x) (b <> y) (c <> z)
+  FGRes a _ c <> FGRes x _ z = FGRes (a <> x) Nothing (c <> z)
 instance Monoid (FullGraphResult op) where
-  mempty = FGRes mempty mempty mempty
+  mempty = FGRes mempty Nothing mempty
 
 
--- LeftHandSide that ignores the surrounding environments: purely binding information
+-- Version of LeftHandSide that doesn't encode the environment type, but has ELabels to allow recreating one on new Labelled environments
 data MyLHS s v where
   LHSSingle :: s v -> ELabels -> MyLHS s v
   LHSWildcard :: TupR s v -> MyLHS s v
@@ -193,18 +196,28 @@ stripLHS (LeftHandSideSingle _) (_ :>>: le') = le'
 stripLHS (LeftHandSideWildcard _) le = le
 stripLHS (LeftHandSidePair l r) le = stripLHS l (stripLHS r le)
 
+createLHS :: MyGLHS a -> LabelEnv env
+          -> (forall env'. LabelEnv env' -> GLeftHandSide a env env' -> r) -> r
+createLHS _ _ _ = undefined
+
+
 -- | Information to construct AST nodes. Generally, constructors contain
 -- both actual information, and a LabelEnv of the original environment
 -- which helps to re-index into the new environment later.
 -- next iteration might want to use 'dependant-map', to store some type information at type level.
 data Construction (op :: Type -> Type) where
-  CExe :: LabelEnv env -> LabelledArgs env args -> op args      -> Construction op
-  CUse ::                 ScalarType e -> Buffer e              -> Construction op
-  CITE :: LabelEnv env -> ExpVar env PrimBool -> Label -> Label -> Construction op
-  CWhl :: LabelEnv env -> Label -> Label -> GroundVars env a    -> Construction op
-  CLHS ::                 MyGLHS a -> Label                     -> Construction op
-  CFun :: LabelEnv env -> MyGLHS a -> Label                     -> Construction op
-  CBod ::                                        Label          -> Construction op
+  CExe :: LabelEnv env -> LabelledArgs env args -> op args            -> Construction op
+  CUse ::                 ScalarType e -> Buffer e                    -> Construction op
+  CITE :: LabelEnv env -> ExpVar env PrimBool -> Label -> Label       -> Construction op
+  CWhl :: LabelEnv env -> Label -> Label -> GroundVars env a          -> Construction op
+  CLHS ::                 MyGLHS a -> Label                           -> Construction op
+  CFun ::                 MyGLHS a -> Label                           -> Construction op
+  CBod ::                 Label                                       -> Construction op
+  CRet :: LabelEnv env -> GroundVars env a                            -> Construction op
+  CCmp :: LabelEnv env -> Exp env a                                   -> Construction op
+  CAlc :: LabelEnv env -> ShapeR sh -> ScalarType e -> ExpVars env sh -> Construction op
+  CUnt :: LabelEnv env -> ExpVar env e                                -> Construction op
+
 
 -- strips underscores
 makeLenses ''FullGraphState
@@ -232,44 +245,45 @@ mkFullGraph (Exec op args) = do
   return $ FGRes (backInfo
                     & graphI.graphNodes   <>~ S.singleton l
                     & graphI.fusibleEdges <>~ fuseedges)
-                 mempty
+                 Nothing
                  (M.singleton l $ CExe env labelledArgs op)
 
+-- TODO Alet LeftHandSideUnit case
+
 -- We throw away the uniquenessess information here, in the future we will add uniqueness variables to the ILP
--- TODO: see zoomState, addLhs, and the MyLHS type above. Keep track of added elabels, store everything
 mkFullGraph (Alet (lhs :: GLeftHandSide bnd env env') _ bnd scp) = do
   l <- freshL
-  currL . parent .= Just l
-  lbnd <- peekFreshL
   bndRes <- mkFullGraph bnd
-  -- key observation: if `bnd` is an `Exec`, `bndL == mempty`, so we don't generate infusible edges.
-  let nonfuse = S.map (-?> l) (bndRes ^. lset)
-  -- lscp <- peekFreshL
-  currL . parent .= Just l
-  scpRes <- zoomState lhs l (mkFullGraph scp)
-  currL . parent .= l ^. parent
+  (scpRes, mylhs) <- zoomState lhs l (mkFullGraph scp)
   return $ (bndRes <> scpRes)
-         & info.graphI.infusibleEdges <>~ nonfuse
-         & construc                    %~ M.insert l (CLHS (unEnvLHS lhs _) lbnd)
-         & lset                        .~ (scpRes ^. lset) -- Only keep the outgoing edges from the scope, the others have been consumed inside the scope
+         & info.graphI.infusibleEdges <>~ S.fromList [ fromJust (bndRes ^. l_res) -?> l
+                                                     ,                          l -?> fromJust (scpRes ^. l_res)]
+         & construc                    %~ M.insert l (CLHS mylhs (fromJust $ bndRes ^. l_res))
+         & l_res                       .~ (scpRes ^. l_res)
 
--- TODO figure out whether we need more information for these. If so, add constructors to 'Construction' for them!
-mkFullGraph (Return vars) = do
-  env <- use lenv
-  return $ mempty & lset .~ getLabelsTup vars env ^. eitherLens _2 _2
-mkFullGraph (Compute expr) = do
-  env <- use lenv
-  return $ mempty & lset .~ getLabelsExp expr env ^. _2
-mkFullGraph Alloc{} = return mempty
-mkFullGraph (Unit var) = do
-  env <- use lenv
-  return $ mempty & lset .~ getLabelsVar var  env ^. _2
+
+mkFullGraph (Return vars)    = mkFullGraphHelper $ \env ->
+      ( getLabelsTup vars env ^. eitherLens _2 _2
+      , CRet env vars)
+
+mkFullGraph (Compute expr)   = mkFullGraphHelper $ \env ->
+      ( getLabelsExp expr env ^. _2
+      , CCmp env expr)
+
+mkFullGraph (Alloc shr e sh) = mkFullGraphHelper $ \env ->
+      ( getLabelsTup sh env ^. eitherLens _2 _2
+      , CAlc env shr e sh)
+
+mkFullGraph (Unit var)       = mkFullGraphHelper $ \env ->
+      ( getLabelsVar var env ^. _2
+      , CUnt env var)
+
 
 mkFullGraph (Use sctype buff) = do
   l <- freshL
   return $ mempty
          & info.graphI.graphNodes .~ S.singleton l
-         & lset                   .~ S.singleton l
+         & l_res                  ?~ l
          & construc               .~ M.singleton l (CUse sctype buff)
 
 mkFullGraph (Acond cond tacc facc) = do
@@ -290,7 +304,7 @@ mkFullGraph (Acond cond tacc facc) = do
   -- Restore the old parent
   currL.parent .= l_acond ^. parent
   return $ (tRes <> fRes)
-         & lset     .~ S.singleton l_acond
+         & l_res    ?~ l_acond
          & construc %~ M.insert l_acond (CITE env cond l_true l_false)
 
 -- like Acond. The biggest difference is that 'cond' is a function instead of an expression here.
@@ -310,7 +324,7 @@ mkFullGraph (Awhile _ cond bdy startvars) = do
   lenv <>= cEnv
   currL.parent .= l_while ^. parent
   return $ (cRes <> bRes)
-         & lset     .~ S.singleton l_while
+         & l_res    ?~ l_while
          & construc %~ M.insert l_while (CWhl env l_cond l_body startvars)
 
 
@@ -319,36 +333,49 @@ mkFullGraphF :: (MakesILP op)
              => PreOpenAfun op env a
              -> State (FullGraphState env) (FullGraphResult op)
 mkFullGraphF (Abody acc) = do
-  l <- peekFreshL
+  l <- freshL
   res <- mkFullGraph acc
   return $ res
-         & construc %~ M.insert (fromJust $ l^.parent) (CBod l)
+         & l_res    ?~ l
+         & construc %~ M.insert l (CBod (fromJust $ res ^. l_res))
 
 mkFullGraphF (Alam lhs f) = do
   l <- freshL
   currL.parent .= Just l
-  res <- zoomState lhs l (mkFullGraphF f)
+  (res, mylhs) <- zoomState lhs l (mkFullGraphF f)
   currL.parent .= l ^. parent
   env <- use lenv
   return $ res
-         & lset     %~ S.insert l
-         & construc %~ M.insert (fromJust $ l^.parent) (CFun env (unEnvLHS lhs) l)
+         & l_res    ?~ l
+         & construc %~ M.insert (fromJust $ l^.parent) (CFun mylhs l)
+
+-- for the simple cases
+mkFullGraphHelper :: (LabelEnv env -> (Labels, Construction op)) -> State (FullGraphState env) (FullGraphResult op)
+mkFullGraphHelper f = do
+  l <- freshL
+  env <- use lenv
+  let (labels, c) = f env
+  let nonfuse = S.map (-?> l) labels -- TODO add outgoing infusible edges too
+  return $ mempty
+         & info.graphI.infusibleEdges .~ nonfuse
+         & l_res                      ?~ l
+         & construc                   .~ M.singleton l c
+
+
+
 
 -- Create a fresh L or E and update the state. freshL does not change the parent, which is the most common use case
 freshL :: State (FullGraphState env) Label
 freshL = currL <%= (labelId +~ 1)
 freshE :: State (FullGraphState env) ELabel
 freshE = zoom currE freshE'
--- peek what the next label will look like, without modifying the state
-peekFreshL :: State (FullGraphState env) Label
-peekFreshL = (labelId +~ 1) <$> use currL
 
-
-zoomState :: forall env env' a x. GLeftHandSide x env env' -> Label -> State (FullGraphState env') a -> State (FullGraphState env) a
+zoomState :: forall env env' a x. GLeftHandSide x env env' -> Label -> State (FullGraphState env') a -> State (FullGraphState env) (a, MyGLHS x)
 zoomState lhs l f = do
     env <- use lenv
     env' <- zoom currE (addLhs lhs (S.singleton l) env)
-    zoom (zoomStateLens env') f
+    let mylhs = unEnvLHS lhs env'
+    (, mylhs) <$> zoom (zoomStateLens env') f
   where
     -- | This lens allows us to `zoom` into a state computation with a bigger environment,
     -- by first setting `lenv` to `env'`, and afterwards weakening it with `weakLhsEnv`.

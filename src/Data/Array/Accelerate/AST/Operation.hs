@@ -51,7 +51,7 @@ module Data.Array.Accelerate.AST.Operation (
   mapAccExecutable, mapAfunExecutable,
 
   module Data.Array.Accelerate.AST.Exp
-) where
+,reindexAcc) where
 
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Exp
@@ -406,13 +406,38 @@ reindexArg k (ArgArray m repr sh buffers) = ArgArray m repr <$> reindexVars k sh
 reindexArgs :: Applicative f => ReindexPartial f env env' -> Args env t -> f (Args env' t)
 reindexArgs = reindexPreArgs reindexArg
 
-reindexPreArgs 
-  :: Applicative f 
-  => (forall f' t'. Applicative f' => ReindexPartial f' env env' ->          s env  t' -> f'         (s env'  t')) 
+reindexPreArgs
+  :: Applicative f
+  => (forall f' t'. Applicative f' => ReindexPartial f' env env' ->          s env  t' -> f'         (s env'  t'))
                                    -> ReindexPartial f  env env' -> PreArgs (s env) t  -> f (PreArgs (s env') t)
 reindexPreArgs _ _ ArgsNil = pure ArgsNil
 reindexPreArgs reindex k (a :>: as) = (:>:) <$> reindex k a <*> reindexPreArgs reindex k as
 
+reindexAcc :: Applicative f => ReindexPartial f env env' -> PreOpenAcc op env t -> f (PreOpenAcc op env' t)
+reindexAcc r (Exec opargs pa) = Exec opargs <$> reindexArgs r pa
+reindexAcc r (Return tr) = Return <$> reindexVars r tr
+reindexAcc r (Compute poe) = Compute <$> reindexExp r poe
+reindexAcc r (Alet lhs tr poa poa') = reindexLHS r lhs $ \lhs' r' -> Alet lhs' tr <$> reindexAcc r poa <*> reindexAcc r' poa'
+reindexAcc r (Alloc sr st tr) = Alloc sr st <$> reindexVars r tr
+reindexAcc _ (Use st bu) = pure $ Use st bu
+reindexAcc r (Unit var) = Unit <$> reindexVar r var
+reindexAcc r (Acond var poa poa') = Acond <$> reindexVar r var <*> reindexAcc r poa <*> reindexAcc r poa'
+reindexAcc r (Awhile tr poa poa' tr') = Awhile tr <$> reindexAfun r poa <*> reindexAfun r poa' <*> reindexVars r tr'
+
+
+reindexAfun :: Applicative f => ReindexPartial f env env' -> PreOpenAfun op env t -> f (PreOpenAfun op env' t)
+reindexAfun r (Abody poa) = Abody <$> reindexAcc r poa
+reindexAfun r (Alam lhs poa) = reindexLHS r lhs $ \lhs' r' -> Alam lhs' <$> reindexAfun r' poa
+
+
+reindexLHS :: Applicative f => ReindexPartial f env env' -> LeftHandSide s t env env1 -> (forall env1'. LeftHandSide s t env' env1' -> ReindexPartial f env1 env1' -> r) -> r
+reindexLHS r (LeftHandSideSingle st) k = k (LeftHandSideSingle st) $ \case
+  ZeroIdx -> pure ZeroIdx
+  SuccIdx idx -> SuccIdx <$> r idx
+reindexLHS r (LeftHandSideWildcard tr) k = k (LeftHandSideWildcard tr) r
+reindexLHS r (LeftHandSidePair left right) k = reindexLHS r left $ \left' r' -> 
+                                                reindexLHS r' right $ \right' r'' -> 
+                                                  k (LeftHandSidePair left' right') r''
 
 weakenReindex :: benv :> benv' -> ReindexPartial Identity benv benv'
 weakenReindex k = Identity . (k >:>)

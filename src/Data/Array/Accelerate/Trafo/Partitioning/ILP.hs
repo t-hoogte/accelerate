@@ -5,7 +5,7 @@ module Data.Array.Accelerate.Trafo.Partitioning.ILP where
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
     ( MakesILP, Information(Info), makeFullGraph ) 
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve
-    ( interpretSolution, makeILP ) 
+    ( interpretSolution, makeILP, splitExecs ) 
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering 
     ( reconstruct )
 import Data.Array.Accelerate.AST.Partitioned
@@ -37,7 +37,8 @@ ilpFusion s acc = fusedAcc
     (info@(Info graph _ _), constrM) = makeFullGraph acc
     ilp                              = makeILP info
     solution                         = solve' ilp
-    (labelClusters, labelClustersM)  = interpretSolution solution
+    interpreted                      = interpretSolution solution
+    (labelClusters, labelClustersM)  = splitExecs interpreted constrM
     fusedAcc                         = reconstruct graph labelClusters labelClustersM constrM
     solve' = fromJust . unsafePerformIO . solve s
 

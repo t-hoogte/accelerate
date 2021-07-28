@@ -89,8 +89,6 @@ makeILP (Info
 
 -- Extract the fusion information (ordered list of clusters of Labels) (head is the first cluster).
 -- Output has the top-level clusters in fst, and the rest in snd.
-
--- TODO use the Construction map to change `[Label]` to `Either <nonExecLabel> [ExecLabel]`
 interpretSolution :: Solution op -> ([Labels], M.Map Label [Labels])
 interpretSolution =
     (\(x:xs) -> 
@@ -119,3 +117,20 @@ interpretSolution =
 
     -- groupBy only really does what you want on a sorted list
     partition f = groupBy ((==) `on` f) . sortOn f
+
+data ClusterLs = Execs Labels | NonExec Label
+  deriving Eq
+
+-- I think that only `let`s can still be in the same cluster as `exec`s, 
+-- and their bodies should all be in earlier clusters already.
+-- Simply make one cluster per let, before the cluster with execs.
+splitExecs :: ([Labels], M.Map Label [Labels]) -> M.Map Label (Construction op) -> ([ClusterLs], M.Map Label [ClusterLs])
+splitExecs (xs, xM) constrM = (f xs, M.map f xM)
+  where
+    f :: [Labels] -> [ClusterLs]
+    f = concatMap (\ls -> filter (/= Execs mempty) $ map NonExec (S.toList $ S.filter isNonExec ls) ++ [Execs (S.filter isExec ls)])
+
+    isExec l = case constrM M.! l of
+      CExe{} -> True
+      _ -> False
+    isNonExec l = not $ isExec l
