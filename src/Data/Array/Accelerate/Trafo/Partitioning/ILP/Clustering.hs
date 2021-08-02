@@ -23,6 +23,7 @@ import Data.Maybe (fromJust, fromMaybe)
 import Data.Type.Equality ( type (:~:)(Refl) )
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (ClusterLs (Execs, NonExec))
 import Data.Array.Accelerate.AST.Environment (Identity(runIdentity), weakenWithLHS)
+import Control.Applicative
 
 
 -- "open research question"
@@ -263,37 +264,90 @@ mkReverse xs k = rev Ordered ArgsNil xs
     rev a zs (arg :>: args) = rev (Revert a) (arg :>: zs) args
 
 -- Takes care of fusion in the case where we add an input that is already an input: horizontal fusion
+-- TODO horizontal fusion of input with existing mutput
 fuseInput :: LabelledArg env (In sh e)
           -> LabelledArgs  env total
           -> LeftHandSideArgs added i scope
           -> ClusterIO total i result
           -> Maybe (LeftHandSideArgs (In sh e -> added) i scope)
+-- Base case, no fusion
 fuseInput _ ArgsNil _ Empty = Nothing
+
+-- The happy path: Fusion!
 fuseInput
-  x@(L _ (a1, _))
-  ((ArgArray In _ _ _ `L` (a2, _)) :>: as)
+  (L _ (a1, _))
+  ((ArgArray In _ _ _ `L` (a2, _)) :>: _)
   (Ignr lhs)
-  (Input io)
+  (Input _)
   | Just Refl <- matchALabel a1 a2 =
     Just $ Reqr Here Here lhs
-  | otherwise =
-    (\(Reqr a b c) -> Reqr (There a) (There b) (Ignr c))
-    <$> fuseInput x as lhs io
-fuseInput x (_ :>: as) (Make t lhs) (Output _ io) =
-    (\(Reqr a b c) -> ttake b t $ \b' t' -> Reqr a b' (Make t' c))
-    <$> fuseInput x as lhs io
-fuseInput x (_ :>: as) Base (Output _ ci) = fuseInput x as Base ci
-fuseInput x (_ :>: as) (Reqr Here Here lhsa) (Input ci) =
-    (\(Reqr a b c) -> Reqr (There a) (There b) $ Reqr Here Here c)
-    <$> fuseInput x as lhsa ci
-fuseInput x (_ :>: as) (Adju lhsa) (MutPut _ ci) =
-    (\(Reqr a b c) -> Reqr (There a) (There b) $ Adju c)
-    <$> fuseInput x as lhsa ci
-fuseInput x (_ :>: as) (EArg lhsa) (ExpPut ci) = 
+
+-- The rest are recursive cases
+fuseInput x (_ :>: as) lhs (Output _ io) = 
+  fuseInput x as lhs io
+fuseInput x as (Make t lhs) io =
+  (\(Reqr a b c) -> ttake b t $ \b' t' -> Reqr a b' (Make t' c))
+  <$> fuseInput x as lhs io
+
+fuseInput x as (Reqr t t2 lhs) io =
+  removeInput as t io $ \as' io' _ ->
+    (\(Reqr a b c) -> 
+      ttake b t2 $ \b' t2' -> 
+        ttake a t $ \a' t'' -> 
+          Reqr a' b' $ Reqr t'' t2' c) 
+    <$> fuseInput x as' lhs io'
+
+fuseInput x as (Adju t t2 lhs) io =
+  removeInput as t io $ \as' io' _ ->
+    (\(Reqr a b c) ->
+      ttake b t2 $ \b' t2' ->
+        ttake a t $ \a' t'' ->
+          Reqr a' b' $ Adju t'' t2' c)
+    <$> fuseInput x as' lhs io'
+
+fuseInput x as (EArg lhs) io = 
+  removeInput as Here io $ \as' io' Here ->
     (\(Reqr a b c) -> Reqr (There a) (There b) $ EArg c)
-    <$> fuseInput x as lhsa ci
-fuseInput x (_ :>: as) (Ignr lhsa) io = _
-fuseInput _ _ _ _ = undefined -- TODO mut, non-array args
+    <$> fuseInput x as' lhs io'
+
+-- Ignore cases that don't get fused
+fuseInput x (_ :>: as) (Ignr lhs) (Input io) =
+  (\(Reqr a b c) -> Reqr (There a) (There b) (Ignr c))
+  <$> fuseInput x as lhs io
+fuseInput x (_ :>: as) (Ignr lhs) (MutPut _ io) =
+  (\(Reqr a b c) -> Reqr (There a) (There b) (Ignr c))
+  <$> fuseInput x as lhs io
+fuseInput x (_ :>: as) (Ignr lhs) (ExpPut io) = 
+  (\(Reqr a b c) -> Reqr (There a) (There b) (Ignr c))
+  <$> fuseInput x as lhs io
+
+
+removeInput :: LabelledArgs  env total
+            -> Take e i i'
+            -> ClusterIO total i result
+            -> (forall total' result'
+               . LabelledArgs env total' 
+              -> ClusterIO total' i' result'
+              -> Take e result result'
+              -> r)
+            -> r
+removeInput (_ :>: xs) Here (Input io) k = k xs io Here
+removeInput (x :>: xs) (There t) (Input io) k =
+  removeInput xs t io $ \xs' io' t' ->
+    k (x :>: xs') (Input io') (There t')
+removeInput (x :>: xs) t (Output t1 io) k = 
+  removeInput xs t io $ \xs' io' t' -> 
+    ttake t' t1 $ \t2 t3 -> 
+      k (x :>: xs') (Output t3 io') t2
+removeInput (_ :>: xs) Here (MutPut t1 io) k = k xs io t1
+removeInput (x :>: xs) (There t) (MutPut t1 io) k =
+  removeInput xs t io $ \xs' io' t' ->
+    ttake t' t1 $ \t2 t3 ->
+      k (x :>: xs') (MutPut t3 io') t2
+removeInput _ Here (ExpPut _) _ = error "nope"
+removeInput (x :>: xs) (There t) (ExpPut io) k = 
+  removeInput xs t io $ \xs' io' t' -> 
+    k (x :>: xs') (ExpPut io') (There t')
 
 addInput  :: ClusterAST op scope result
           -> ClusterIO total i result
@@ -315,7 +369,7 @@ addNonArr :: ClusterAST op scope result
               -> r)
           -> r
 addNonArr None io k = k None (ExpPut io)
-addNonArr (Bind lhs op ast) io k = 
+addNonArr (Bind lhs op ast) io k =
   addNonArr ast io $ \ast' io' ->
     k (Bind (Ignr lhs) op ast') io'
 
@@ -359,6 +413,10 @@ addOutput None io k = k None (Output Here io)
 addOutput (Bind lhs op ast) io k =
   addOutput ast io $ \ast' io' ->
     k (Bind (Ignr lhs) op ast') io'
+
+-- oneDown :: LeftHandSideArgs body env scope -> 
+--   (forall arg body' env' scope'. LeftHandSideArgs body' env' scope' -> (LeftHandSideArgs (*) (*) (*)))
+
 
 {- [NOTE unsafeCoerce result type]
 

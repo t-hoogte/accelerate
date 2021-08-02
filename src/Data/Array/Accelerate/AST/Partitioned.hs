@@ -59,8 +59,9 @@ data LeftHandSideArgs body env scope where
        -> LeftHandSideArgs              body   env      scope
        -> LeftHandSideArgs (Out sh e -> body)  env     escope
   -- One array that is both input and output
-  Adju :: LeftHandSideArgs              body   env      scope
-       -> LeftHandSideArgs (Mut sh e -> body) (env, e) (scope, e)
+  Adju :: Take e eenv env -> Take e escope scope
+       -> LeftHandSideArgs              body   env      scope
+       -> LeftHandSideArgs (Mut sh e -> body) eenv     escope
   -- Holds `Var' e`, `Exp' e`, `Fun' e`: The non-array Arg options.
   -- Behaves like `In` arguments.
   EArg :: LeftHandSideArgs              body   env      scope
@@ -92,7 +93,7 @@ iolhs :: Args env args -> (forall x y. ClusterIO args x y -> LeftHandSideArgs ar
 iolhs ArgsNil                     f =                       f  Empty            Base
 iolhs (ArgArray In  _ _ _ :>: as) f = iolhs as $ \io lhs -> f (Input       io) (Reqr Here Here lhs)
 iolhs (ArgArray Out _ _ _ :>: as) f = iolhs as $ \io lhs -> f (Output Here io) (Make Here lhs)
-iolhs (ArgArray Mut _ _ _ :>: as) f = iolhs as $ \io lhs -> f (MutPut Here io) (Adju lhs)
+iolhs (ArgArray Mut _ _ _ :>: as) f = iolhs as $ \io lhs -> f (MutPut Here io) (Adju Here Here lhs)
 iolhs (_                  :>: as) f = iolhs as $ \io lhs -> f (ExpPut      io) (EArg lhs)
 
 
@@ -112,14 +113,9 @@ data Take x xargs args where
 
 
 ttake :: Take x xas as -> Take y xyas xas -> (forall yas. Take x xyas yas -> Take y yas as -> r) -> r
-ttake Here        Here      k = k (There Here) Here
-ttake Here       (There t)  k = k  Here        t
 ttake tx          Here      k = k (There tx)   Here
+ttake Here       (There t)  k = k  Here        t
 ttake (There tx) (There ty) k = ttake tx ty $ \t1 t2 -> k (There t1) (There t2)
-
-
-
-
 
 
 
