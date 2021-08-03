@@ -23,8 +23,8 @@ import Data.Maybe (fromJust, fromMaybe)
 import Data.Type.Equality ( type (:~:)(Refl) )
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (ClusterLs (Execs, NonExec))
 import Data.Array.Accelerate.AST.Environment (Identity(runIdentity), weakenWithLHS)
-import Control.Applicative
 
+import Prelude hiding ( take )
 
 -- "open research question"
 -- -- Each set of ints corresponds to a set of Constructions, which themselves contain a set of ints (the things they depend on).
@@ -154,6 +154,11 @@ openReconstruct labelenv graph clusterslist subclustersmap construct = makeAST l
     makeCluster :: LabelEnv env -> ClusterL -> FoldType op env
     makeCluster env (ExecL ls) = foldr1 fuseCluster
                     $ map ( \l -> case construct M.! l of
+                              -- At first thought, this `fromJust` seems to error if we fuse an array away.
+                              -- It does not: The array will still be in the environment, but after we finish
+                              -- the `foldr1`, the input argument will dissapear. We do write the output to the array:
+                              -- if it is never read from (vertical instead of diagonal fusion), we will need to 
+                              -- clean it up afterwards TODO
                               CExe env' args op -> InitFold op $ fromJust $ reindexLabelledArgs (mkReindexPartial env' env) args --labelled env env' args
                               _                 -> error "avoid this next refactor" -- c -> NotFold c
                           ) ls
@@ -227,8 +232,8 @@ consCluster largs lextra (Cluster cIO cAST) op k =
         fromMaybe
           (addOutput ast io $ \ast' io' -> -- new output
             consCluster' (a :>: ltot) r toAdd ast' (Make Here lhs) io')
-          (fuseOutput a ltot lhs io $ \ltot' io' lhs' -> -- diagonal fusion
-            consCluster' ltot' r toAdd ast lhs' io')
+          (fuseOutput a ltot lhs io $ \ltot' lhs' io' _ -> -- diagonal fusion
+            consCluster' (a :>: ltot') r toAdd ast lhs' io')
       -- TODO mutable arrays
       L (ArgArray Mut _ _ _) _ -> undefined
       -- non-array arguments
@@ -263,8 +268,8 @@ mkReverse xs k = rev Ordered ArgsNil xs
     rev a zs ArgsNil = k a zs
     rev a zs (arg :>: args) = rev (Revert a) (arg :>: zs) args
 
--- Takes care of fusion in the case where we add an input that is already an input: horizontal fusion
--- TODO horizontal fusion of input with existing mutput
+-- Takes care of fusion in the case where we add an input that is already an 
+-- input or mutput: horizontal fusion
 fuseInput :: LabelledArg env (In sh e)
           -> LabelledArgs  env total
           -> LeftHandSideArgs added i scope
@@ -272,8 +277,7 @@ fuseInput :: LabelledArg env (In sh e)
           -> Maybe (LeftHandSideArgs (In sh e -> added) i scope)
 -- Base case, no fusion
 fuseInput _ ArgsNil _ Empty = Nothing
-
--- The happy path: Fusion!
+-- The happy paths: Fusion!
 fuseInput
   (L _ (a1, _))
   ((ArgArray In _ _ _ `L` (a2, _)) :>: _)
@@ -281,14 +285,19 @@ fuseInput
   (Input _)
   | Just Refl <- matchALabel a1 a2 =
     Just $ Reqr Here Here lhs
-
+fuseInput
+  (L _ (a1, _))
+  ((ArgArray Mut _ _ _ `L` (a2, _)) :>: _)
+  (Ignr lhs)
+  (MutPut _ _)
+  | Just Refl <- matchALabel a1 a2 =
+    Just $ Reqr Here Here lhs
 -- The rest are recursive cases
 fuseInput x (_ :>: as) lhs (Output _ io) = 
   fuseInput x as lhs io
 fuseInput x as (Make t lhs) io =
   (\(Reqr a b c) -> ttake b t $ \b' t' -> Reqr a b' (Make t' c))
   <$> fuseInput x as lhs io
-
 fuseInput x as (Reqr t t2 lhs) io =
   removeInput as t io $ \as' io' _ ->
     (\(Reqr a b c) -> 
@@ -296,7 +305,6 @@ fuseInput x as (Reqr t t2 lhs) io =
         ttake a t $ \a' t'' -> 
           Reqr a' b' $ Reqr t'' t2' c) 
     <$> fuseInput x as' lhs io'
-
 fuseInput x as (Adju t t2 lhs) io =
   removeInput as t io $ \as' io' _ ->
     (\(Reqr a b c) ->
@@ -304,12 +312,10 @@ fuseInput x as (Adju t t2 lhs) io =
         ttake a t $ \a' t'' ->
           Reqr a' b' $ Adju t'' t2' c)
     <$> fuseInput x as' lhs io'
-
 fuseInput x as (EArg lhs) io = 
   removeInput as Here io $ \as' io' Here ->
     (\(Reqr a b c) -> Reqr (There a) (There b) $ EArg c)
     <$> fuseInput x as' lhs io'
-
 -- Ignore cases that don't get fused
 fuseInput x (_ :>: as) (Ignr lhs) (Input io) =
   (\(Reqr a b c) -> Reqr (There a) (There b) (Ignr c))
@@ -322,16 +328,29 @@ fuseInput x (_ :>: as) (Ignr lhs) (ExpPut io) =
   <$> fuseInput x as lhs io
 
 
-removeInput :: LabelledArgs  env total
+removeInput :: forall env total e i i' result r r' sh e'
+             . LabelledArgs  env total
             -> Take e i i'
             -> ClusterIO total i result
             -> (forall total' result'
                . LabelledArgs env total' 
               -> ClusterIO total' i' result'
               -> Take e result result'
+              -- -> (forall total1 i1 i2
+              --    . Take e i2 i1
+              --   -> LabelledArgs env total1
+              --   -> ClusterIO (Out sh e' -> total1) i1 result'
+              --   -> (forall total1'. LabelledArgs env total1' -> ClusterIO (Out sh e' -> total1') i2 result -> r')
+              --   -> r')
               -> r)
             -> r
-removeInput (_ :>: xs) Here (Input io) k = k xs io Here
+removeInput (_ :>: xs) Here (Input (io :: ClusterIO x y result')) k = 
+  -- let f :: Take e i2 i1 -> LabelledArgs env total1 -> ClusterIO (Out sh e' -> total1) i1 result' -> (forall total1'. LabelledArgs env total1' -> ClusterIO (Out sh e' -> total1') i2 result -> r') -> r'
+  --     f = \t l (Output t' c) k' -> case t of
+  --       Here -> k' (x :>: l) (Output (There t') $ Input c)
+  --       There t1 -> _
+  -- in k xs io Here f
+  k xs io Here
 removeInput (x :>: xs) (There t) (Input io) k =
   removeInput xs t io $ \xs' io' t' ->
     k (x :>: xs') (Input io') (There t')
@@ -344,7 +363,7 @@ removeInput (x :>: xs) (There t) (MutPut t1 io) k =
   removeInput xs t io $ \xs' io' t' ->
     ttake t' t1 $ \t2 t3 ->
       k (x :>: xs') (MutPut t3 io') t2
-removeInput _ Here (ExpPut _) _ = error "nope"
+removeInput _ Here (ExpPut _) _ = error "should never want to remove this"
 removeInput (x :>: xs) (There t) (ExpPut io) k = 
   removeInput xs t io $ \xs' io' t' -> 
     k (x :>: xs') (ExpPut io') (There t')
@@ -378,20 +397,67 @@ fuseOutput :: LabelledArg env (Out sh e)
            -> LabelledArgs  env total
            -> LeftHandSideArgs added i scope
            -> ClusterIO total i result
-           -> (forall total' i'. LabelledArgs env (Out sh e -> total') -> ClusterIO (Out sh e -> total') i' result -> LeftHandSideArgs (Out sh e -> added) i' scope -> r)
+           -> (forall total' i'
+               . LabelledArgs env total' 
+              -> LeftHandSideArgs (Out sh e -> added)  i' scope 
+              -> ClusterIO        (Out sh e -> total') i' result
+              -> Take e i i'
+              -> r)
            -> Maybe r
+-- Base case, no fusion
 fuseOutput _ ArgsNil _ Empty _ = Nothing
+-- Fusion!
 fuseOutput
-  x@(L _ (a1, _))
-  (y@(ArgArray In _ _ _ `L` (a2, _)) :>: ltot)
+  (L _ (a1, _))
+  (ArgArray In _ _ _ `L` (a2, _) :>: ltot)
   (Ignr lhs)
   (Input io)
   k
   | Just Refl <- matchALabel a1 a2 =
-    Just $ k (x :>: ltot) (Output Here io) (Make Here lhs)
-  | otherwise =
-    fuseOutput x ltot lhs io $ \(x' :>: ltot') (Output t1 io') (Make t2 lhs') ->
-      k (x' :>: y :>: ltot') (Output (There t1) $ Input io') (Make (There t2) $ Ignr lhs')
+    Just $ k ltot (Make Here lhs) (Output Here io) Here
+-- If we fuse an output into a mutable use, the total operation is just an output
+fuseOutput
+  (L _ (a1, _))
+  (ArgArray Mut _ _ _ `L` (a2, _) :>: ltot)
+  (Ignr lhs)
+  (MutPut t io)
+  k
+  | Just Refl <- matchALabel a1 a2 =
+    Just $ k ltot (Make Here lhs) (Output t io) Here
+-- recursive cases
+fuseOutput x (a :>: as) lhs (Output t1 io) k =
+  fuseOutput x as lhs io $ \as' lhs' (Output t2 io') t ->
+    ttake t2 t1 $ \t2' t1' ->
+      k (a :>: as') lhs' (Output t2' (Output t1' io')) t
+fuseOutput x as (Make t1 lhs) io k =
+  fuseOutput x as lhs io $ \as' (Make t2 lhs') io' t ->
+    ttake t2 t1 $ \t2' t1' ->
+      k as' (Make t2' (Make t1' lhs')) io' t
+-- fuseOutput (x:: LabelledArg env (Out sh e)) as (Reqr t1 t2 lhs) io k =
+--   removeInput as t1 io $ \as' io' _ repair ->
+--     fuseOutput x as' lhs io' $ \as'' (Make t4 lhs') (Output t5 io'') t ->
+--       ttake t t1 $ \t' t1' ->
+--         ttake t4 t2 $ \t4' t2' ->
+--           repair t1' as'' (Output t5 io'') $ 
+--             \as''' (Output t6 io''') ->
+--               k as''' (Make t4' $ Reqr t1' t2' lhs') (Output t6 io''') t'
+
+fuseOutput x as (Reqr t1 t2 lhs) io k =
+  removeInput as t1 io $ \as' io' t3 ->
+    fuseOutput x as' lhs io' $ \as'' (Make t4 lhs') (Output t5 io'') t ->
+      ttake t t1 $ \t' t1' ->
+        ttake t4 t2 $ \t4' t2' ->
+          ttake t5 t3 $ \t5' t3' ->
+            k (_ as'') (Make t4' $ Reqr t1' t2' lhs') (Output t5' $ _ io'') t'
+
+-- TODO fuseOutput on a Reqr is difficult. In fuseInput, I solved this with 'removeInput'
+-- to get the recursion going. removeInput deletes a constructor from the IO and an element
+-- from the argslist. fuseOutput has to return the IO and the argslist, so it cannot use this
+-- as easily.
+
+  --  | otherwise =
+  --   fuseOutput x ltot lhs io $ \(x' :>: ltot') (Output t1 io') (Make t2 lhs') ->
+  --     k (x' :>: y :>: ltot') (Output (There t1) $ Input io') (Make (There t2) $ Ignr lhs')
 
 fuseOutput _ _ _ _ _ = undefined -- TODO mut, non-array args
 

@@ -107,7 +107,7 @@ mkBase (ExpPut ci) = Ignr (mkBase ci)
 -- | `xargs` is a type-level list which contains `x`. 
 -- Removing `x` from `xargs` yields `args`.
 data Take x xargs args where
-  Here  :: Take x (args, x)       args
+  Here  :: Take x ( args, x)  args
   There :: Take x  xargs      args
         -> Take x (xargs, y) (args, y)
 
@@ -117,9 +117,16 @@ ttake tx          Here      k = k (There tx)   Here
 ttake Here       (There t)  k = k  Here        t
 ttake (There tx) (There ty) k = ttake tx ty $ \t1 t2 -> k (There t1) (There t2)
 
+put :: Take x xas as -> s x -> PreArgs s as -> PreArgs s xas
+put = _
 
+take :: Take x xas as -> PreArgs s xas -> (s x, PreArgs s xas)
+take = _
 
--- for the old version of Take (using `->` instead of `(,)`):
+data Take' x xargs args where
+  Here'  :: Take' x (x ->  args)       args
+  There' :: Take' x       xargs        args
+         -> Take' x (y -> xargs) (y -> args)
 
 -- take :: Take x xc c -> Args env xc -> (Arg env x, Args env c)
 -- labelledTake :: Take x xc c -> LabelArgs xc -> (ALabels x, LabelArgs c)
