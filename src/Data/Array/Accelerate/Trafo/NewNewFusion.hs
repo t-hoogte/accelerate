@@ -74,4 +74,4 @@ withSimplStats x = x
 #endif
 
 dontFuse :: op args -> Cluster op args
-dontFuse = undefined
+dontFuse op = unfused op ()

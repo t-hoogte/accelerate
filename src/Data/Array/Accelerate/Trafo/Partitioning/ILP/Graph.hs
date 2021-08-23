@@ -196,9 +196,19 @@ stripLHS (LeftHandSideSingle _) (_ :>>: le') = le'
 stripLHS (LeftHandSideWildcard _) le = le
 stripLHS (LeftHandSidePair l r) le = stripLHS l (stripLHS r le)
 
-createLHS :: MyGLHS a -> LabelEnv env
-          -> (forall env'. LabelEnv env' -> GLeftHandSide a env env' -> r) -> r
-createLHS _ _ _ = undefined
+createLHS :: MyGLHS a 
+          -> LabelEnv env
+          -> ( forall env'
+             . LabelEnv env' 
+            -> GLeftHandSide a env env' 
+            -> r) 
+          -> r
+createLHS (LHSSingle g e) env k = k (e :>>: env) (LeftHandSideSingle g)
+createLHS (LHSWildcard t) env k = k env (LeftHandSideWildcard t)
+createLHS (LHSPair l r)   env k = 
+  createLHS   l env  $ \env'  l' ->
+    createLHS r env' $ \env'' r' -> 
+      k env'' (LeftHandSidePair l' r')
 
 
 -- | Information to construct AST nodes. Generally, constructors contain

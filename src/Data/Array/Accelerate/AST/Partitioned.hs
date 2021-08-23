@@ -113,29 +113,16 @@ data Take x xargs args where
 
 
 ttake :: Take x xas as -> Take y xyas xas -> (forall yas. Take x xyas yas -> Take y yas as -> r) -> r
-ttake tx          Here      k = k (There tx)   Here
-ttake Here       (There t)  k = k  Here        t
-ttake (There tx) (There ty) k = ttake tx ty $ \t1 t2 -> k (There t1) (There t2)
+ttake  tx           Here       k = k (There tx)   Here
+ttake  Here        (There t)   k = k  Here        t
+ttake  (There tx)  (There ty)  k = ttake tx ty $ \t1 t2 -> k (There t1) (There t2)
 
-put :: Take x xas as -> s x -> PreArgs s as -> PreArgs s xas
-put = _
-
-take :: Take x xas as -> PreArgs s xas -> (s x, PreArgs s xas)
-take = _
+ttake' :: Take' x xas as -> Take' y xyas xas -> (forall yas. Take' x xyas yas -> Take' y yas as -> r) -> r
+ttake' tx           Here'      k = k (There' tx)   Here'
+ttake' Here'       (There' t)  k = k  Here'        t
+ttake' (There' tx) (There' ty) k = ttake' tx ty $ \t1 t2 -> k (There' t1) (There' t2)
 
 data Take' x xargs args where
   Here'  :: Take' x (x ->  args)       args
   There' :: Take' x       xargs        args
          -> Take' x (y -> xargs) (y -> args)
-
--- take :: Take x xc c -> Args env xc -> (Arg env x, Args env c)
--- labelledTake :: Take x xc c -> LabelArgs xc -> (ALabels x, LabelArgs c)
--- take         Here      (x :>:  xs) = (x, xs)
--- take         (There t) (x :>:  xs) = second (x :>:)  $ take t xs
--- labelledTake Here      (x :>>: xs) = (x, xs)
--- labelledTake (There t) (x :>>: xs) = second (x :>>:) $ labelledTake t xs
-
--- put :: Take x xc c -> (Arg env x, Args env c) -> Args env xc
--- put Here      (x,       xs) = x :>: xs
--- put (There t) (x, y :>: xs) = y :>: put t (x, xs)
-

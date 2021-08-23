@@ -71,7 +71,7 @@ data ALabel t where
       -> ALabel (m sh e) -- only matches on arrays, but supports In, Out and Mut
   NotArr :: ALabel (t e) -- matches on `Var' e`, `Exp' e` and `Fun' e` 
 
-matchALabel :: ALabel (m sh s) -> ALabel (m' sh' t) -> Maybe (s :~: t)
+matchALabel :: ALabel (m sh s) -> ALabel (m' sh' t) -> Maybe ((sh,s) :~: (sh',t))
 matchALabel (Arr e1) (Arr e2) 
   -- If the labels align, we inform the typechecker that the types are equal
   | e1 == e2 = Just $ unsafeCoerce Refl
@@ -208,10 +208,10 @@ updateLabelEnv (arg :>: args) lenv l = case arg of
 insertAtVars :: TupR (Var a env) b -> LabelEnv env -> (Labels -> Labels) -> LabelEnv env
 insertAtVars TupRunit lenv _ = lenv
 insertAtVars (TupRpair x y) lenv f = insertAtVars x (insertAtVars y lenv f) f
-insertAtVars (TupRsingle (varIdx -> idx)) ((e,lset) :>>: lenv) f = case idx of
+insertAtVars (TupRsingle (Var t idx)) ((e,lset) :>>: lenv) f = case idx of
   ZeroIdx -> (e, f lset) :>>: lenv
-  SuccIdx idx' ->       (e, lset) :>>: insertAtVars (TupRsingle (Var undefined idx')) lenv f
-insertAtVars (TupRsingle (varIdx -> idx)) LabelEnvNil _ = case idx of VoidIdx x -> x -- convincing the pattern coverage checker of the impossible case
+  SuccIdx idx' ->       (e, lset) :>>: insertAtVars (TupRsingle (Var t idx')) lenv f
+insertAtVars (TupRsingle (Var _ idx)) LabelEnvNil _ = case idx of VoidIdx x -> x -- convincing the pattern coverage checker of the impossible case
 
 -- | Like `getLabelArgs`, but ignores the `Out` arguments
 getInputArgLabels :: Args env args -> LabelEnv env -> Labels
