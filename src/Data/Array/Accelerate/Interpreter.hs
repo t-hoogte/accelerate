@@ -80,6 +80,25 @@ import System.IO.Unsafe                                             ( unsafePerf
 import Text.Printf                                                  ( printf )
 import Unsafe.Coerce
 import Prelude                                                      hiding ( (!!), sum )
+import Data.Array.Accelerate.AST.Partitioned
+
+
+
+-- Stuff for the Partitioned AST
+---------------------
+
+-- Conceptually, this computes the body of the fused loop
+-- It only deals with scalar values - wrap it in a loop!
+transform :: Monad m  -- The interpreter will want to use this with `m ~ Identity`, but other backends might not (e.g. `m ~ CodeGen PTX`)
+          => (op body -> ToIn body -> m (ToOut body)) -- function to handle primitives, might end up in the typeclass of `op` 
+          -> ClusterAST op i o -- Tree of fused primitives
+          -> i                 -- input
+          -> m o               -- output
+transform tbody None i = return i
+transform tbody (Bind lhs op c) i = tbody op (getIn lhs i) >>= transform c . genOut lhs i
+
+
+
 
 
 -- Program execution

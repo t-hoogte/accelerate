@@ -8,6 +8,7 @@
 {-# LANGUAGE TemplateHaskell       #-}
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE TypeOperators         #-}
+{-# LANGUAGE TupleSections #-}
 
 -- |
 -- Module      : Data.Array.Accelerate.AST.Partitioned
@@ -23,6 +24,7 @@ module Data.Array.Accelerate.AST.Partitioned where
 import Data.Array.Accelerate.AST.Operation
 
 import Prelude hiding ( take )
+import Data.Bifunctor
 
 
 
@@ -62,10 +64,9 @@ data LeftHandSideArgs body env scope where
   Adju :: Take e eenv env -> Take e escope scope
        -> LeftHandSideArgs              body   env      scope
        -> LeftHandSideArgs (Mut sh e -> body) eenv     escope
-  -- Holds `Var' e`, `Exp' e`, `Fun' e`: The non-array Arg options.
-  -- Behaves like `In` arguments.
+  -- TODO: duplicate for Var' and Fun'
   EArg :: LeftHandSideArgs              body   env      scope
-       -> LeftHandSideArgs (       e -> body) (env, e) (scope, e)
+       -> LeftHandSideArgs (Exp'   e -> body) (env, e) (scope, e)
   -- Does nothing to this part of the environment
   Ignr :: LeftHandSideArgs              body   env      scope
        -> LeftHandSideArgs              body  (env, e) (scope, e)
@@ -80,11 +81,18 @@ data ClusterIO args input output where
   MutPut :: Take e eoutput output
          -> ClusterIO              args   input      output
          -> ClusterIO (Mut sh e -> args) (input, e) eoutput
-  -- Contract: Only use this for `Var`, `Exp`, `Fun` args;
-  -- don't abuse as backdoor with in/out/mut
+  -- TODO: duplicate for Var' and Fun'
   ExpPut :: ClusterIO              args   input      output
-         -> ClusterIO (       e -> args) (input, e) (output, e)
+         -> ClusterIO (Exp'   e -> args) (input, e) (output, e)
 
+-- | `xargs` is a type-level list which contains `x`. 
+-- Removing `x` from `xargs` yields `args`.
+data Take x xargs args where
+  Here  :: Take x ( args, x)  args
+  There :: Take x  xargs      args
+        -> Take x (xargs, y) (args, y)
+
+        
 -- A cluster from a single node
 unfused :: op args -> Args env args -> Cluster op args
 unfused op args = iolhs args $ \io lhs -> Cluster io (Bind lhs op None)
@@ -94,8 +102,8 @@ iolhs ArgsNil                     f =                       f  Empty            
 iolhs (ArgArray In  _ _ _ :>: as) f = iolhs as $ \io lhs -> f (Input       io) (Reqr Here Here lhs)
 iolhs (ArgArray Out _ _ _ :>: as) f = iolhs as $ \io lhs -> f (Output Here io) (Make Here lhs)
 iolhs (ArgArray Mut _ _ _ :>: as) f = iolhs as $ \io lhs -> f (MutPut Here io) (Adju Here Here lhs)
-iolhs (_                  :>: as) f = iolhs as $ \io lhs -> f (ExpPut      io) (EArg lhs)
-
+iolhs (ArgExp _           :>: as) f = iolhs as $ \io lhs -> f (ExpPut      io) (EArg lhs)
+iolhs _ _ = undefined -- TODO Var', Fun'
 
 mkBase :: ClusterIO args i o -> LeftHandSideArgs () i i
 mkBase Empty = Base
@@ -104,13 +112,14 @@ mkBase (Output _ ci) = mkBase ci
 mkBase (MutPut _ ci) = Ignr (mkBase ci)
 mkBase (ExpPut ci) = Ignr (mkBase ci)
 
--- | `xargs` is a type-level list which contains `x`. 
--- Removing `x` from `xargs` yields `args`.
-data Take x xargs args where
-  Here  :: Take x ( args, x)  args
-  There :: Take x  xargs      args
-        -> Take x (xargs, y) (args, y)
 
+take :: Take a ab b -> ab -> (a, b)
+take Here (b, a) = (a, b)
+take (There t) (ab', c) = second (,c) $ take t ab'
+
+put :: Take a ab b -> a -> b -> ab
+put Here a b = (b, a)
+put (There t) a (b, c) = (put t a b, c)
 
 ttake :: Take x xas as -> Take y xyas xas -> (forall yas. Take x xyas yas -> Take y yas as -> r) -> r
 ttake  tx           Here       k = k (There tx)   Here
@@ -126,3 +135,39 @@ data Take' x xargs args where
   Here'  :: Take' x (x ->  args)       args
   There' :: Take' x       xargs        args
          -> Take' x (y -> xargs) (y -> args)
+
+type family ToIn  a where
+  ToIn  ()              = ()
+  ToIn  (In sh e  -> x) = (ToIn x, e)
+  ToIn  (Mut sh e -> x) = (ToIn x, e)
+  ToIn  (Exp'   e -> x) = (ToIn x, e)
+  ToIn  (_ -> x)        =  ToIn x
+type family ToOut a where
+  ToOut ()              = ()
+  ToOut (Out sh e -> x) = (ToOut x, e)
+  ToOut (Mut sh e -> x) = (ToOut x, e)
+  ToOut (_  -> x)       =  ToOut x
+
+getIn :: LeftHandSideArgs body i o -> i -> ToIn body
+getIn Base () = ()
+getIn (Reqr t1 t2 lhs) i = let (x, i') = take t1 i in (getIn lhs i', x)
+getIn (Make t lhs) i = getIn lhs i
+getIn (Adju t1 t2 lhs) i = let (x, i') = take t1 i in (getIn lhs i', x)
+getIn (EArg lhs) (i, x) = (getIn lhs i, x)
+getIn (Ignr lhs) (i, x) =  getIn lhs i
+
+genOut :: LeftHandSideArgs body i o -> i -> ToOut body -> o
+genOut Base             ()    o     = 
+  ()
+genOut (Reqr t1 t2 lhs) i     o     = 
+  let (x, i') = take t1 i 
+  in put t2 x (genOut lhs i' o)
+genOut (Make t lhs)     i    (o, x) = 
+  put t x (genOut lhs i o)
+genOut (Adju t1 t2 lhs) i    (o, x) = 
+  let (y, i') = take t1 i 
+  in put t2 x (genOut lhs i' o)
+genOut (EArg lhs)      (i, x) o     =
+  (genOut lhs i o, x)
+genOut (Ignr lhs)      (i, x) o     =
+  (genOut lhs i o, x)

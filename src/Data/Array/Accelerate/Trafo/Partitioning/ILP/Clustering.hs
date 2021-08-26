@@ -337,7 +337,7 @@ fuseInput x (_ :>: as) (Ignr lhs) (ExpPut io) =
   <$> fuseInput x as lhs io
 
 
-removeInput :: forall env total e i i' result r -- r' sh e'
+removeInput :: forall env total e i i' result r
              . LabelledArgs  env total
             -> Take e i i'
             -> ClusterIO total i result
@@ -347,20 +347,9 @@ removeInput :: forall env total e i i' result r -- r' sh e'
               -> Take e result result'
               -> Take' (x sh e) total total'
               -> LabelledArg env (x sh e)
-              -- -> (forall total1 i1 i2
-              --    . Take e i2 i1
-              --   -> LabelledArgs env total1
-              --   -> ClusterIO (Out sh e' -> total1) i1 result'
-              --   -> (forall total1'. LabelledArgs env total1' -> ClusterIO (Out sh e' -> total1') i2 result -> r')
-              --   -> r')
               -> r)
             -> r
 removeInput (a :>: xs) Here (Input (io :: ClusterIO x y result')) k = 
-  -- let f :: Take e i2 i1 -> LabelledArgs env total1 -> ClusterIO (Out sh e' -> total1) i1 result' -> (forall total1'. LabelledArgs env total1' -> ClusterIO (Out sh e' -> total1') i2 result -> r') -> r'
-  --     f = \t l (Output t' c) k' -> case t of
-  --       Here -> k' (x :>: l) (Output (There t') $ Input c)
-  --       There t1 -> _
-  -- in k xs io Here f
   k xs io Here Here' a
 removeInput (x :>: xs) (There t) (Input io) k =
   removeInput xs t io $ \xs' io' t' t'' a ->
@@ -520,10 +509,6 @@ addOutput None io k = k None (Output Here io)
 addOutput (Bind lhs op ast) io k =
   addOutput ast io $ \ast' io' ->
     k (Bind (Ignr lhs) op ast') io'
-
--- oneDown :: LeftHandSideArgs body env scope -> 
---   (forall arg body' env' scope'. LeftHandSideArgs body' env' scope' -> (LeftHandSideArgs (*) (*) (*)))
-
 
 {- [NOTE unsafeCoerce result type]
 
