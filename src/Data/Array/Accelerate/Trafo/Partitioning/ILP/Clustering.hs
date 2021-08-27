@@ -242,8 +242,9 @@ consCluster largs lextra (Cluster cIO cAST) op k =
       -- interesting happens here.
       L (ArgArray Mut _ _ _) _ -> undefined
       -- non-array arguments
-      _ -> addNonArr ast io $ \ast' io' ->
+      L (ArgExp _) _ -> addExp ast io $ \ast' io' ->
         consCluster' (a :>: ltot) r toAdd ast' (EArg lhs) io'
+      _ -> undefined -- TODO Var', Fun'
 
 foo :: Take' (x sh e) total total' -> LabelledArgs env total -> PreArgs (LabelledArg env) total'
 foo Here' (_ :>: as) = as
@@ -399,16 +400,16 @@ addInput (Bind lhs op ast) io k =
   addInput ast io $ \ast' io' ->
     k (Bind (Ignr lhs) op ast') io'
 
-addNonArr :: ClusterAST op scope result
+addExp :: ClusterAST op scope result
           -> ClusterIO total i result
           -> (forall result'
-               . ClusterAST op (scope, e) result'
-              -> ClusterIO (e -> total) (i, e) result'
+               . ClusterAST op (scope, Exp' e) result'
+              -> ClusterIO (Exp' e -> total) (i, Exp' e) result'
               -> r)
           -> r
-addNonArr None io k = k None (ExpPut io)
-addNonArr (Bind lhs op ast) io k =
-  addNonArr ast io $ \ast' io' ->
+addExp None io k = k None (ExpPut io)
+addExp (Bind lhs op ast) io k =
+  addExp ast io $ \ast' io' ->
     k (Bind (Ignr lhs) op ast') io'
 
 -- Takes care of fusion where we add an output that is later used as input: vertical and diagonal fusion

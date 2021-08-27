@@ -26,7 +26,23 @@ import Data.Array.Accelerate.AST.Operation
 import Prelude hiding ( take )
 import Data.Bifunctor
 
-
+-- In this model, every thread has one input element per input array,
+-- and one output element per output array. That works perfectly for
+-- a Map, Generate, ZipWith - but the rest requires some fiddling:
+--
+-- - Folds, Scans and Stencils need to cooperate, and not every thread will
+--   return a value. This makes them harder to squeeze into the interpreter,
+--   but the LLVM backends are used to such tricks.
+--
+-- - Fusing Backpermute does not translate well to this composition of loop
+--   bodies. Instead, we will need a pass (after construction of these clusters)
+--   that propagates backpermutes to the start of each cluster (or the 
+--    originating backpermute, if fused).
+--
+-- - I'm not sure how to handle Permute: It hints towards needing a constructor
+--   that passes an entire mut array to all elements, like Exp' and friends.
+--   It currently uses `Mut` in Desugar.hs, but in the fusion files that means
+--   'somethat that is both input and output', e.g. an in-place Map.
 
 type PartitionedAcc  op = PreOpenAcc  (Cluster op)
 type PartitionedAfun op = PreOpenAfun (Cluster op)
@@ -66,7 +82,7 @@ data LeftHandSideArgs body env scope where
        -> LeftHandSideArgs (Mut sh e -> body) eenv     escope
   -- TODO: duplicate for Var' and Fun'
   EArg :: LeftHandSideArgs              body   env      scope
-       -> LeftHandSideArgs (Exp'   e -> body) (env, e) (scope, e)
+       -> LeftHandSideArgs (Exp'   e -> body) (env, Exp' e) (scope, Exp' e)
   -- Does nothing to this part of the environment
   Ignr :: LeftHandSideArgs              body   env      scope
        -> LeftHandSideArgs              body  (env, e) (scope, e)
@@ -83,7 +99,7 @@ data ClusterIO args input output where
          -> ClusterIO (Mut sh e -> args) (input, e) eoutput
   -- TODO: duplicate for Var' and Fun'
   ExpPut :: ClusterIO              args   input      output
-         -> ClusterIO (Exp'   e -> args) (input, e) (output, e)
+         -> ClusterIO (Exp'   e -> args) (input, Exp' e) (output, Exp' e)
 
 -- | `xargs` is a type-level list which contains `x`. 
 -- Removing `x` from `xargs` yields `args`.
@@ -140,7 +156,7 @@ type family ToIn  a where
   ToIn  ()              = ()
   ToIn  (In sh e  -> x) = (ToIn x, e)
   ToIn  (Mut sh e -> x) = (ToIn x, e)
-  ToIn  (Exp'   e -> x) = (ToIn x, e)
+  ToIn  (Exp'   e -> x) = (ToIn x, Exp' e)
   ToIn  (_ -> x)        =  ToIn x
 type family ToOut a where
   ToOut ()              = ()
