@@ -237,13 +237,13 @@ makeLenses ''Information
 
 
 makeFullGraph :: (MakesILP op)
-              => OperationAcc op () a
+              => PreOpenAcc op () a
               -> (Information op, Map Label (Construction op))
 makeFullGraph acc = (i, constrM)
   where (FGRes i _ constrM, _) = runState (mkFullGraph acc) (FGState LabelEnvNil (Label 0 Nothing) 0)
 
 mkFullGraph :: forall op env a. (MakesILP op)
-            => OperationAcc op env a
+            => PreOpenAcc op env a
             -> State (FullGraphState env) (FullGraphResult op)
 mkFullGraph (Exec op args) = do
   l <- freshL
@@ -338,9 +338,9 @@ mkFullGraph (Awhile _ cond bdy startvars) = do
          & construc %~ M.insert l_while (CWhl env l_cond l_body startvars)
 
 
--- | Like mkFullGraph, but for @OperationAfun@.
+-- | Like mkFullGraph, but for @PreOpenAfun@.
 mkFullGraphF :: (MakesILP op)
-             => OperationAfun op env a
+             => PreOpenAfun op env a
              -> State (FullGraphState env) (FullGraphResult op)
 mkFullGraphF (Abody acc) = do
   l <- freshL
@@ -401,20 +401,20 @@ zoomState lhs l f = do
 
 constructExe :: LabelEnv env' -> LabelEnv env
              -> Args env args -> op args
-             -> Maybe (OperationAcc op env' ())
+             -> Maybe (PreOpenAcc op env' ())
 constructExe env' env args op = Exec op <$> reindexArgs (mkReindexPartial env env') args
 constructUse :: ScalarType e -> Buffer e
-             -> OperationAcc op env (Buffer e)
+             -> PreOpenAcc op env (Buffer e)
 constructUse = Use
 constructITE :: LabelEnv env' -> LabelEnv env
-             -> ExpVar env PrimBool -> OperationAcc op env' a -> OperationAcc op env' a
-             -> Maybe (OperationAcc op env' a)
+             -> ExpVar env PrimBool -> PreOpenAcc op env' a -> PreOpenAcc op env' a
+             -> Maybe (PreOpenAcc op env' a)
 constructITE env' env cond tbranch fbranch = Acond <$> reindexVar (mkReindexPartial env env') cond
                                                    <*> pure tbranch
                                                    <*> pure fbranch
 constructWhl :: LabelEnv env' -> LabelEnv env
-             -> Uniquenesses a -> OperationAfun op env' (a -> PrimBool) -> OperationAfun op env' (a -> a) -> GroundVars env a
-             -> Maybe (OperationAcc op env' a)
+             -> Uniquenesses a -> PreOpenAfun op env' (a -> PrimBool) -> PreOpenAfun op env' (a -> a) -> GroundVars env a
+             -> Maybe (PreOpenAcc op env' a)
 constructWhl env' env u cond bdy start = Awhile u cond bdy <$> reindexVars (mkReindexPartial env env') start
 
 

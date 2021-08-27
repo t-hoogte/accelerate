@@ -1,9 +1,8 @@
 {-# LANGUAGE GADTs           #-}
-{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes      #-}
 {-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE TypeFamilies    #-}
 {-# LANGUAGE TypeOperators   #-}
+{-# LANGUAGE TypeFamilies    #-}
 {-# OPTIONS_HADDOCK hide #-}
 -- |
 -- Module      : Data.Array.Accelerate.Schedule.Uniform
@@ -32,17 +31,16 @@ import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
-import Data.Array.Accelerate.AST.Operation   as Operation           hiding (PreOpenAcc(..), PreOpenAfun(..), pattern Exec)
+import Data.Array.Accelerate.AST.Operation   as Operation           hiding (PreOpenAcc(..), PreOpenAfun(..))
 import Control.Concurrent.MVar
 import Data.IORef
-import Data.Kind
 
 -- Generic schedule for a uniform memory space and uniform scheduling.
 -- E.g., we don't have host and device memory or scheduling.
 -- The schedule will exploit task parallelism.
 
 -- The schedule consists of bindings, effects and (parallel) control flow
-data UniformSchedule (exe :: Type -> Type -> Type) env where
+data UniformSchedule exe env where
   Return  :: UniformSchedule exe env
 
   Alet    :: BLeftHandSide t env env'
@@ -124,8 +122,8 @@ data Binding env t where
   RefRead       :: BaseVar env (Ref t) -> Binding env t
 
 -- Effects do not have a return value.
-data Effect (exe :: Type -> Type -> Type) env where
-  Exec          :: exe env args
+data Effect exe env where
+  Exec          :: exe args
                 -> Args env args
                 -> Effect exe env
 

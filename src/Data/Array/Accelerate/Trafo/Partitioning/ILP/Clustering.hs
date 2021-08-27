@@ -45,7 +45,7 @@ Data.Graph (containers) has a nice topological sort.
 -- Note that the return type `a` is not existentially qualified: The caller of this function tells
 -- us what the result type should be (namely, what it was before fusion). We use unsafe tricks to
 -- fulfill this contract: if something goes wrong during fusion or at the caller, bad things happen.
-reconstruct :: forall op a. Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> PartitionedAcc op () a
+reconstruct :: forall op a. Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> PreOpenAcc (Cluster op) () a
 reconstruct a b c d = case openReconstruct LabelEnvNil a b c d of
           -- see [NOTE unsafeCoerce result type]
           Exists res -> unsafeCoerce @(PartitionedAcc op () _)
@@ -73,7 +73,7 @@ topSort (Graph _ fedges _) cluster = ExecL topsorted
     topsorted = map (getLabels M.!) $ G.topSort graph
 
 
-openReconstruct :: forall op aenv. LabelEnv aenv -> Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> Exists (PartitionedAcc op aenv)
+openReconstruct :: forall op aenv. LabelEnv aenv -> Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> Exists (PreOpenAcc (Cluster op) aenv)
 openReconstruct labelenv graph clusterslist subclustersmap construct = makeAST labelenv clusters mempty
   where
     -- Make a tree of let bindings
@@ -82,11 +82,11 @@ openReconstruct labelenv graph clusterslist subclustersmap construct = makeAST l
     -- Those are stored in the 'prev' argument.
     -- Note also that we currently assume that the final cluster is the return argument: If all computations are relevant
     -- and our analysis is sound, the return argument should always appear last. If not.. oops
-    makeAST :: forall aenv. LabelEnv aenv -> [ClusterL] -> M.Map Label (Exists (PartitionedAcc op aenv)) -> Exists (PartitionedAcc op aenv)
+    makeAST :: forall env. LabelEnv env -> [ClusterL] -> M.Map Label (Exists (PreOpenAcc (Cluster op) env)) -> Exists (PreOpenAcc (Cluster op) env)
     makeAST _ [] _ = error "empty AST"
     makeAST env [cluster] prev = case makeCluster env cluster of
-      Fold     c (unLabel -> args) -> Exists $ ExecC c args
-      InitFold o (unLabel -> args) -> Exists $ ExecC (unfused o args) args
+      Fold     c (unLabel -> args) -> Exists $ Exec c args
+      InitFold o (unLabel -> args) -> Exists $ Exec (unfused o args) args
       NotFold con -> case con of
          CExe {}    -> error "should be Fold/InitFold!"
          CUse se be               -> Exists $ Use se be
@@ -94,21 +94,21 @@ openReconstruct labelenv graph clusterslist subclustersmap construct = makeAST l
             (Exists tacc, Exists facc) -> Exists $ Acond
               (fromJust $ reindexVar (mkReindexPartial env' env) c)
               -- [See NOTE unsafeCoerce result type]
-              (unsafeCoerce @(PartitionedAcc op aenv _)
-                            @(PartitionedAcc op aenv _)
+              (unsafeCoerce @(PreOpenAcc (Cluster op) env _)
+                            @(PreOpenAcc (Cluster op) env _)
                             tacc)
-              (unsafeCoerce @(PartitionedAcc op aenv _)
-                            @(PartitionedAcc op aenv _)
+              (unsafeCoerce @(PreOpenAcc (Cluster op) env _)
+                            @(PreOpenAcc (Cluster op) env _)
                             facc)
          CWhl env' c b i  -> case (makeASTF env c prev, makeASTF env b prev) of
             (Exists cfun, Exists bfun) -> Exists $ Awhile
               (error "ask Ivo")
               -- [See NOTE unsafeCoerce result type]
-              (unsafeCoerce @(PartitionedAfun op aenv _)
-                            @(PartitionedAfun op aenv (_ -> PrimBool))
+              (unsafeCoerce @(PreOpenAfun (Cluster op) env _)
+                            @(PreOpenAfun (Cluster op) env (_ -> PrimBool))
                             cfun)
-              (unsafeCoerce @(PartitionedAfun op aenv _)
-                            @(PartitionedAfun op aenv (_ -> _))
+              (unsafeCoerce @(PreOpenAfun (Cluster op) env _)
+                            @(PreOpenAfun (Cluster op) env (_ -> _))
                             bfun)
               (fromJust $ reindexVars (mkReindexPartial env' env) i)
          CLHS {} -> error "let without scope"
@@ -126,14 +126,14 @@ openReconstruct labelenv graph clusterslist subclustersmap construct = makeAST l
               Exists scp -> Exists $ Alet lhs
                                           (error "ask Ivo")
                                           -- [See NOTE unsafeCoerce result type]
-                                          (unsafeCoerce @(PartitionedAcc op aenv _)
-                                                        @(PartitionedAcc op aenv a)
+                                          (unsafeCoerce @(PreOpenAcc (Cluster op) env _)
+                                                        @(PreOpenAcc (Cluster op) env a)
                                                         bnd)
                                           scp
         _ -> makeAST env ctail $ foldC (`M.insert` makeAST env [cluster] prev) prev cluster
       _   -> makeAST env ctail $ foldC (`M.insert` makeAST env [cluster] prev) prev cluster
 
-    makeASTF :: forall aenv. LabelEnv aenv -> Label -> M.Map Label (Exists (PartitionedAcc op aenv)) -> Exists (PartitionedAfun op aenv)
+    makeASTF :: forall env. LabelEnv env -> Label -> M.Map Label (Exists (PreOpenAcc (Cluster op) env)) -> Exists (PreOpenAfun (Cluster op) env)
     makeASTF env l prev = case makeCluster env (NonExecL l) of
       NotFold (CBod l') -> case makeAST env (subcluster l') prev of
         Exists acc -> Exists $ Abody acc
@@ -173,26 +173,26 @@ openReconstruct labelenv graph clusterslist subclustersmap construct = makeAST l
     fuseCluster NotFold{}   _ = error "fuseCluster encountered NotFold" -- Should only occur in singleton clusters
     fuseCluster _   NotFold{} = error "fuseCluster encountered NotFold" -- Should only occur in singleton clusters
 
-weakenAcc :: LeftHandSide s t env env' -> PartitionedAcc op env a -> PartitionedAcc op env' a
-weakenAcc lhs = runIdentity . reindexAccC (weakenReindex $ weakenWithLHS lhs)
+weakenAcc :: LeftHandSide s t env env' -> PreOpenAcc op env a -> PreOpenAcc op env' a
+weakenAcc lhs =  runIdentity . reindexAcc (weakenReindex $ weakenWithLHS lhs)
 
 
 -- | Internal datatype for `makeCluster`.
 
-data FoldType op aenv
-  = forall args. Fold (Cluster aenv op args) (LabelledArgs aenv args)
-  | forall args. InitFold (op args) (LabelledArgs aenv args) -- like Fold, but without a Swap
+data FoldType op env
+  = forall args. Fold (Cluster op args) (LabelledArgs env args)
+  | forall args. InitFold (op args) (LabelledArgs env args) -- like Fold, but without a Swap
   | NotFold (Construction op)
 
 
 
 
-consCluster :: forall aenv args extra op r
-             . LabelledArgs aenv args
-            -> LabelledArgs aenv extra
-            -> Cluster aenv op args
+consCluster :: forall env args extra op r
+             . LabelledArgs env args
+            -> LabelledArgs env extra
+            -> Cluster op args
             -> op extra
-            -> (forall args'. Cluster aenv op args' -> LabelledArgs aenv args' -> r)
+            -> (forall args'. Cluster op args' -> LabelledArgs env args' -> r)
             -> r
 consCluster largs lextra (Cluster cIO cAST) op k =
   mkReverse lextra $ \rev lartxe->
@@ -213,11 +213,11 @@ consCluster largs lextra (Cluster cIO cAST) op k =
     -- In each step, we check whether the argument array is already mentioned
     -- in the operations that follow it: If so, we fuse them (making both arguments
     -- point to the same place in the environment), otherwise we simply add a new one. 
-    consCluster' :: LabelledArgs aenv total
+    consCluster' :: LabelledArgs env total
                  -> Reverse' extra added toAdd
-                 -> LabelledArgs aenv toAdd
-                 -> ClusterAST aenv op scope result
-                 -> LeftHandSideArgs aenv added i scope
+                 -> LabelledArgs env toAdd
+                 -> ClusterAST op scope result
+                 -> LeftHandSideArgs added i scope
                  -> ClusterIO total i result
                  -> r
     consCluster' ltot Ordered ArgsNil ast lhs io = k (Cluster io (Bind lhs op ast)) ltot
@@ -242,7 +242,7 @@ consCluster largs lextra (Cluster cIO cAST) op k =
       -- interesting happens here.
       L (ArgArray Mut _ _ _) _ -> undefined
       -- non-array arguments
-      L (ArgExp _) _ -> addNonArr ast io $ \ast' io' ->
+      _ -> addNonArr ast io $ \ast' io' ->
         consCluster' (a :>: ltot) r toAdd ast' (EArg lhs) io'
 
 foo :: Take' (x sh e) total total' -> LabelledArgs env total -> PreArgs (LabelledArg env) total'
@@ -279,11 +279,11 @@ mkReverse xs k = rev Ordered ArgsNil xs
 
 -- Takes care of fusion in the case where we add an input that is already an 
 -- input or mutput: horizontal fusion
-fuseInput :: LabelledArg aenv (In sh e)
-          -> LabelledArgs aenv total
-          -> LeftHandSideArgs aenv added i scope
+fuseInput :: LabelledArg env (In sh e)
+          -> LabelledArgs  env total
+          -> LeftHandSideArgs added i scope
           -> ClusterIO total i result
-          -> Maybe (LeftHandSideArgs aenv (In sh e -> added) i scope)
+          -> Maybe (LeftHandSideArgs (In sh e -> added) i scope)
 -- Base case, no fusion
 fuseInput _ ArgsNil _ Empty = Nothing
 -- The happy paths: Fusion!
@@ -387,10 +387,10 @@ restoreInput (MutPut t cio) (There' tt) (There ti)        tr  x = ttake t tr $ \
   MutPut t' $ restoreInput cio tt ti tr' x
 restoreInput _ _ _ _ _ = error "I think this means that the take(')s in restoreInput don't agree with each other"
 
-addInput  :: ClusterAST aenv op scope result
+addInput  :: ClusterAST op scope result
           -> ClusterIO total i result
           -> (forall result'
-             . ClusterAST aenv op (scope, e) result'
+             . ClusterAST op (scope, e) result'
             -> ClusterIO (In sh e -> total) (i, e) result'
             -> r)
           -> r
@@ -399,11 +399,11 @@ addInput (Bind lhs op ast) io k =
   addInput ast io $ \ast' io' ->
     k (Bind (Ignr lhs) op ast') io'
 
-addNonArr :: ClusterAST aenv op scope result
+addNonArr :: ClusterAST op scope result
           -> ClusterIO total i result
           -> (forall result'
-               . ClusterAST aenv op (scope, Exp aenv e) result'
-              -> ClusterIO (Exp' e -> total) (i, Exp aenv e) result'
+               . ClusterAST op (scope, e) result'
+              -> ClusterIO (e -> total) (i, e) result'
               -> r)
           -> r
 addNonArr None io k = k None (ExpPut io)
@@ -412,13 +412,13 @@ addNonArr (Bind lhs op ast) io k =
     k (Bind (Ignr lhs) op ast') io'
 
 -- Takes care of fusion where we add an output that is later used as input: vertical and diagonal fusion
-fuseOutput :: LabelledArg aenv (Out sh e)
-           -> LabelledArgs aenv total
-           -> LeftHandSideArgs aenv added i scope
+fuseOutput :: LabelledArg env (Out sh e)
+           -> LabelledArgs  env total
+           -> LeftHandSideArgs added i scope
            -> ClusterIO total i result
            -> (forall total' i' inOrMut
                . Take' (inOrMut sh e) total total'
-              -> LeftHandSideArgs aenv (Out sh e -> added)  i' scope 
+              -> LeftHandSideArgs (Out sh e -> added)  i' scope 
               -> ClusterIO        (Out sh e -> total') i' result
               -> Take e i i'
               -> r)
@@ -498,10 +498,10 @@ fuseOutput x (_ :>: as) (EArg lhs) (ExpPut io) k =
   fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
     k (There' t') (Make (There t1) $ EArg lhs') (Output (There t2) $ ExpPut io') (There t)
 
-addOutput :: ClusterAST aenv op scope result
+addOutput :: ClusterAST op scope result
           -> ClusterIO total i result
           -> (forall result'
-              . ClusterAST aenv op (scope, e) result'
+              . ClusterAST op (scope, e) result'
              -> ClusterIO (Out sh e -> total) i result'
              -> r)
           -> r

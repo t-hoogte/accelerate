@@ -47,11 +47,11 @@ class IsSchedule sched where
   type ScheduleInput  sched a
   type ScheduleOutput sched a
 
-  convertScheduleFun :: PartitionedAfun op () t -> sched (Clustered op ()) (Scheduled sched t)
+  convertScheduleFun :: PartitionedAfun op () t -> sched (Cluster op) (Scheduled sched t)
 
   mapSchedule :: (forall env'. exe env' -> exe' env') -> sched exe env -> sched exe' env
 
-convertSchedule :: forall sched op t. IsSchedule sched => PartitionedAcc op () t -> sched (Clustered op ()) (ScheduleOutput sched t -> ())
+convertSchedule :: forall sched op t. IsSchedule sched => PartitionedAcc op () t -> sched (Cluster op) (ScheduleOutput sched t -> ())
 convertSchedule acc
   | Refl <- reprIsBody @sched $ groundsR acc = convertScheduleFun (Abody acc)
 
