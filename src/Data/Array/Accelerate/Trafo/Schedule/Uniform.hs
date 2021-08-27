@@ -47,6 +47,7 @@ import Data.List
 import qualified Data.Set                               as S
 import Prelude hiding (id, (.))
 import Control.Category
+import Data.Kind (Type)
 
 -- * Compilation from PartitionedAcc to UniformSchedule
 data FutureValue senv t
@@ -332,10 +333,10 @@ declareOutput (TupRpair t1 t2) us
     (u1, u2) = pairUniqueness us
 declareOutput TupRunit         _                     = DeclareOutput OutputEnvUnit weakenId (const TupRunit)
 
-writeOutput :: OutputEnv fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule (C.Cluster op) fenv''
+writeOutput :: OutputEnv fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule op fenv''
 writeOutput outputEnv outputVars valueVars = go outputEnv outputVars valueVars Return
   where
-    go :: OutputEnv fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule (C.Cluster op) fenv'' -> UniformSchedule (C.Cluster op) fenv''
+    go :: OutputEnv fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule op fenv'' -> UniformSchedule op fenv''
     go OutputEnvUnit _ _ = id
     go (OutputEnvPair o1 o2) (TupRpair r1 r2) (TupRpair v1 v2) = go o1 r1 v1 . go o2 r2 v2
     go (OutputEnvShared _ _) (TupRpair (TupRsingle signal) (TupRsingle ref)) (TupRsingle v)
@@ -479,10 +480,10 @@ data TupleIdx s t where
   TupleIdxRight :: TupleIdx r t -> TupleIdx (l, r) t
   TupleIdxSelf  :: TupleIdx t t
 
-data PartialSchedule op genv t where
+data PartialSchedule (op :: Type -> Type -> Type) genv t where
   PartialDo     :: OutputEnv () fenv t r
                 -> ConvertEnv genv fenv fenv'
-                -> UniformSchedule (C.Cluster op) fenv'
+                -> UniformSchedule op fenv'
                 -> PartialSchedule op genv t
 
   -- Returns a tuple of variables. Note that (some of) these
@@ -612,11 +613,11 @@ unionVars _                _                = TupRsingle NoVars
 data Exists' (a :: (* -> * -> *) -> *) where
   Exists' :: a m -> Exists' a
 
-partialSchedule :: forall op genv1 t1. C.PartitionedAcc op genv1 t1 -> PartialSchedule op genv1 t1
+partialSchedule :: forall op genv1 t1. C.PartitionedAcc op genv1 t1 -> PartialSchedule (C.Clustered op) genv1 t1
 partialSchedule = fst . travA (TupRsingle Shared)
   where
-    travA :: forall genv t. Uniquenesses t -> C.PartitionedAcc op genv t -> (PartialSchedule op genv t, MaybeVars genv t)
-    travA _  (C.Exec cluster args)
+    travA :: forall genv t. Uniquenesses t -> C.PartitionedAcc op genv t -> (PartialSchedule (C.Clustered op) genv t, MaybeVars genv t)
+    travA _  (C.ExecC cluster args)
       | Exists env <- convertEnvFromList $ map (foldr1 combineMod) $ groupBy (\(Exists v1) (Exists v2) -> isJust $ matchIdx (varIdx v1) (varIdx v2)) $ argsVars args -- TODO: Remove duplicates more efficiently
       , Reads reEnv k inputBindings <- readRefs $ convertEnvRefs env
       , Just args' <- reindexArgs (reEnvIdx reEnv) args
@@ -627,7 +628,7 @@ partialSchedule = fst . travA (TupRsingle Shared)
             ( PartialDo OutputEnvUnit env
                 $ Effect (SignalAwait signals)
                 $ inputBindings
-                $ Effect (Exec cluster args')
+                $ Effect (Exec (C.Clustered (_ cluster) args') args')
                 $ Effect (SignalResolve resolvers)
                 $ Return
             , TupRunit
@@ -668,7 +669,7 @@ partialSchedule = fst . travA (TupRsingle Shared)
         c' = partialScheduleFun c
         f' = partialScheduleFun f
 
-partialScheduleFun :: C.PartitionedAfun op genv t -> PartialScheduleFun op genv t
+partialScheduleFun :: C.PartitionedAfun op genv t -> PartialScheduleFun (C.Clustered op) genv t
 partialScheduleFun (C.Alam lhs f) = Plam lhs $ partialScheduleFun f
 partialScheduleFun (C.Abody b)    = Pbody $ partialSchedule b
 

@@ -53,7 +53,7 @@ convertAcc
     => Config
     -> OperationAcc op benv a
     -> PartitionedAcc op benv a
-convertAcc _ =  withSimplStats $ mapAccExecutable dontFuse
+convertAcc _ =  withSimplStats $ mapAccExecutable undefined
 
 convertAccWith :: HasCallStack => Config -> OperationAcc op benv a -> PartitionedAcc op benv a
 convertAccWith config = convertAcc config
@@ -61,7 +61,7 @@ convertAccWith config = convertAcc config
 -- | Apply the fusion transformation to a function of array arguments
 --
 convertAfun :: HasCallStack => Config -> OperationAfun op benv f -> PartitionedAfun op benv f
-convertAfun _ = withSimplStats $ mapAfunExecutable dontFuse
+convertAfun _ = withSimplStats $ mapAfunExecutable undefined
 
 convertAfunWith :: HasCallStack => Config -> OperationAfun op benv f -> PartitionedAfun op benv f
 convertAfunWith config = convertAfun config
@@ -72,6 +72,3 @@ withSimplStats x = unsafePerformIO Stats.resetSimplCount `seq` x
 #else
 withSimplStats x = x
 #endif
-
-dontFuse :: op args -> Cluster op args
-dontFuse op = unfused op ()
