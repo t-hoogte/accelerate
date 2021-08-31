@@ -43,6 +43,7 @@ module Data.Array.Accelerate.Trafo.Exp.Substitution (
 
   RebuildArrayInstr, rebuildArrayInstrMap,
   rebuildNoArrayInstr, mapArrayInstr,
+  arrayInstrs, arrayInstrsFun,
 
   -- ** Checks
   isIdentity, extractExpVars,
@@ -61,6 +62,7 @@ import Data.Array.Accelerate.Representation.Type
 import qualified Data.Array.Accelerate.Debug.Stats      as Stats
 
 import Data.Kind
+import Data.Maybe
 import Control.Applicative                              hiding ( Const )
 import Control.Monad
 import Prelude                                          hiding ( exp, seq )
@@ -520,6 +522,43 @@ rebuildArrayInstrFun
 rebuildArrayInstrFun v (Body e)    = Body <$> rebuildArrayInstrOpenExp v e
 rebuildArrayInstrFun v (Lam lhs f) = Lam lhs <$> rebuildArrayInstrFun v f
 
+arrayInstrs :: PreOpenExp arr env a -> [Exists arr]
+arrayInstrs e = arrayInstrs' e []
+
+arrayInstrsFun :: PreOpenFun arr env a -> [Exists arr]
+arrayInstrsFun f = arrayInstrsFun' f []
+
+arrayInstrs' :: PreOpenExp arr env a -> [Exists arr] -> [Exists arr]
+arrayInstrs' expr = case expr of
+  Let _ e1 e2 -> arrayInstrs' e1 . arrayInstrs' e2
+  Evar _      -> id
+  Foreign _ _ _ x -> arrayInstrs' x
+  Pair e1 e2      -> arrayInstrs' e1 . arrayInstrs' e2
+  Nil             -> id
+  VecPack _ e     -> arrayInstrs' e
+  VecUnpack _ e   -> arrayInstrs' e
+  IndexSlice _ slix sh -> arrayInstrs' slix . arrayInstrs' sh
+  IndexFull  _ slix sl -> arrayInstrs' slix . arrayInstrs' sl
+  ToIndex   _ sh ix    -> arrayInstrs' sh . arrayInstrs' ix
+  FromIndex _ sh ix    -> arrayInstrs' sh . arrayInstrs' ix
+  Case e rhs def       -> arrayInstrs' e . alts rhs . maybe id arrayInstrs' def
+  Cond c t f           -> arrayInstrs' c . arrayInstrs' t . arrayInstrs' f
+  While c f x          -> arrayInstrsFun' c . arrayInstrsFun' f . arrayInstrs' x
+  Const _ _            -> id
+  PrimConst _          -> id
+  PrimApp _ x          -> arrayInstrs' x
+  ArrayInstr arr _     -> (Exists arr :)
+  ShapeSize _ sh       -> arrayInstrs' sh
+  Undef _              -> id
+  Coerce _ _ e         -> arrayInstrs' e
+  where
+    alts :: [(TAG, PreOpenExp arr env b)] -> [Exists arr] -> [Exists arr]
+    alts [] = id
+    alts ((_, e):as) = arrayInstrs' e . alts as
+
+arrayInstrsFun' :: PreOpenFun arr env a -> [Exists arr] -> [Exists arr]
+arrayInstrsFun' (Body e)  = arrayInstrs' e
+arrayInstrsFun' (Lam _ f) = arrayInstrsFun' f
 
 extractExpVars :: PreOpenExp arr env a -> Maybe (ExpVars env a)
 extractExpVars Nil          = Just TupRunit

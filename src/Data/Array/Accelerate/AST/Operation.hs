@@ -67,7 +67,7 @@ import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Data.Array.Accelerate.Trafo.Exp.Shrink
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Error
-import Data.Typeable                                ( (:~:)(..) )
+import Data.Typeable                                                ( (:~:)(..) )
 
 import Data.ByteString.Builder.Extra
 import Language.Haskell.TH                                          ( Q, TExp )
@@ -385,7 +385,10 @@ paramsIn' (TupRsingle v)   = ArrayInstr (Parameter v) Nil
 
 type ReindexPartial f env env' = forall a. Idx env a -> f (Idx env' a)
 
-reindexVar :: Applicative f => ReindexPartial f env env' -> Var s env t -> f (Var s env' t)
+-- The first argument is ReindexPartial, but without the forall and specialized to 't'.
+-- This makes it usable in more situations.
+--
+reindexVar :: Applicative f => (Idx env t -> f (Idx env' t)) -> Var s env t -> f (Var s env' t)
 reindexVar k (Var repr ix) = Var repr <$> k ix
 
 reindexVars :: Applicative f => ReindexPartial f env env' -> Vars s env t -> f (Vars s env' t)

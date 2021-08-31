@@ -18,13 +18,15 @@
 
 module Data.Array.Accelerate.AST.IdxSet (
   IdxSet,
-  member, intersect, union, insert, skip,
-  push, empty, drop, drop', fromList
+  member, varMember, intersect, union, insert, insertVar, skip,
+  push, empty, drop, drop', fromList, fromVarList,
+  singleton, singletonVar,
 ) where
 
 import Prelude hiding (drop)
 
 import Data.Array.Accelerate.AST.Idx
+import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.AST.Environment hiding ( push )
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Maybe
@@ -36,6 +38,9 @@ data Present a = Present
 member :: Idx env t -> IdxSet env -> Bool
 member idx (IdxSet set) = isJust $ prjPartial idx set
 
+varMember :: Var s env t -> IdxSet env -> Bool
+varMember (Var _ idx) = member idx
+
 intersect :: IdxSet env -> IdxSet env -> IdxSet env
 intersect (IdxSet a) (IdxSet b) = IdxSet $ intersectPartialEnv (\_ _ -> Present) a b
 
@@ -44,6 +49,9 @@ union (IdxSet a) (IdxSet b) = IdxSet $ unionPartialEnv (\_ _ -> Present) a b
 
 insert :: Idx env t -> IdxSet env -> IdxSet env
 insert idx (IdxSet a) = IdxSet $ partialUpdate Present idx a
+
+insertVar :: Var s env t -> IdxSet env -> IdxSet env
+insertVar (Var _ idx) = insert idx
 
 skip :: IdxSet env -> IdxSet (env, t)
 skip = IdxSet . PNone . unIdxSet
@@ -67,3 +75,12 @@ toList = map (\(EnvBinding idx _) -> Exists idx) . partialEnvToList . unIdxSet
 
 fromList :: [Exists (Idx env)] -> IdxSet env
 fromList = IdxSet . partialEnvFromList (\_ _ -> Present) . map (\(Exists idx) -> EnvBinding idx Present)
+
+fromVarList :: [Exists (Var s env)] -> IdxSet env
+fromVarList = fromList . map (\(Exists (Var _ idx)) -> Exists idx)
+
+singleton :: Idx env t -> IdxSet env
+singleton idx = IdxSet $ partialEnvSingleton idx Present
+
+singletonVar :: Var s env t -> IdxSet env
+singletonVar (Var _ idx) = singleton idx

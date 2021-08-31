@@ -32,6 +32,8 @@ module Data.Array.Accelerate.Trafo.Operation.Substitution (
   pair, alet,
   weakenArrayInstr,
   strengthenArrayInstr,
+
+  reindexVar, reindexVars,
 ) where
 
 import Data.Array.Accelerate.AST.Idx

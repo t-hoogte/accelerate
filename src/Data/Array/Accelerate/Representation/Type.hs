@@ -162,6 +162,11 @@ mapTupR f (TupRsingle a)   = TupRsingle $ f a
 mapTupR _ TupRunit         = TupRunit
 mapTupR f (TupRpair a1 a2) = mapTupR f a1 `TupRpair` mapTupR f a2
 
+traverseTupR :: Applicative f => (forall s. a s -> f (b s)) -> TupR a t -> f (TupR b t)
+traverseTupR f (TupRsingle a)   = TupRsingle <$> f a
+traverseTupR _ TupRunit         = pure TupRunit
+traverseTupR f (TupRpair a1 a2) = TupRpair <$> traverseTupR f a1 <*> traverseTupR f a2
+
 functionImpossible :: TypeR (s -> t) -> a
 functionImpossible (TupRsingle (SingleScalarType (NumSingleType tp))) = case tp of
   IntegralNumType t -> case t of {}

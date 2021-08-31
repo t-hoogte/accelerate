@@ -22,7 +22,7 @@ module Data.Array.Accelerate.AST.Environment (
   unionPartialEnv, EnvBinding(..), partialEnvFromList, mapPartialEnv,
   mapMaybePartialEnv, partialEnvValues, diffPartialEnv, diffPartialEnvWith,
   intersectPartialEnv, partialEnvTail, partialEnvLast, partialEnvSkip,
-  partialUpdate, partialEnvToList,
+  partialUpdate, partialEnvToList, partialEnvSingleton,
 
   prjUpdate', prjReplace', update', updates', mapEnv,
   Identity(..), (:>)(..), weakenId, weakenSucc, weakenSucc', weakenEmpty,
@@ -178,6 +178,10 @@ partialEnvValues :: PartialEnv (IdentityF a) env -> [a]
 partialEnvValues PEnd                      = []
 partialEnvValues (PNone env)               =     partialEnvValues env
 partialEnvValues (PPush env (IdentityF a)) = a : partialEnvValues env
+
+partialEnvSingleton :: Idx env t -> f t -> PartialEnv f env
+partialEnvSingleton ZeroIdx       v = PPush PEnd v
+partialEnvSingleton (SuccIdx idx) v = PNone $ partialEnvSingleton idx v
 
 -- Wrapper to put homogenous types in an Env or PartialEnv
 newtype IdentityF t f = IdentityF t
