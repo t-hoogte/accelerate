@@ -316,62 +316,62 @@ data ConvertEnv genv fenv fenv' where
   ConvertEnvFuture  :: GroundVar genv e
                     -> ConvertEnv genv fenv ((fenv, Signal), Ref e)
 
-data OutputEnv fenv fenv' t r where
-  OutputEnvPair     :: OutputEnv fenv1 fenv2 t  r
-                    -> OutputEnv fenv2 fenv3 t' r'
-                    -> OutputEnv fenv1 fenv3 (t, t') (r, r')
+data PartialDoOutput fenv fenv' t r where
+  PartialDoOutputPair     :: PartialDoOutput fenv1 fenv2 t  r
+                    -> PartialDoOutput fenv2 fenv3 t' r'
+                    -> PartialDoOutput fenv1 fenv3 (t, t') (r, r')
 
   -- First SignalResolver grants access to the ref, the second grants read access and the
   -- third guarantees that all reads have been finished.
   -- Together they thus grant write access.
   --
-  OutputEnvUnique   :: fenv' ~ ((((fenv, OutputRef (Buffer t)), SignalResolver), SignalResolver), SignalResolver)
+  PartialDoOutputUnique   :: fenv' ~ ((((fenv, OutputRef (Buffer t)), SignalResolver), SignalResolver), SignalResolver)
                     => ScalarType t
-                    -> OutputEnv fenv  fenv' (Buffer t) (((SignalResolver, SignalResolver), SignalResolver), OutputRef (Buffer t))
+                    -> PartialDoOutput fenv  fenv' (Buffer t) (((SignalResolver, SignalResolver), SignalResolver), OutputRef (Buffer t))
 
   -- First SignalResolver grants access to the ref, the second grants read access.
   --
-  OutputEnvShared   :: fenv' ~ (((fenv, OutputRef (Buffer t)), SignalResolver), SignalResolver)
+  PartialDoOutputShared   :: fenv' ~ (((fenv, OutputRef (Buffer t)), SignalResolver), SignalResolver)
                     => ScalarType t
-                    -> OutputEnv fenv  fenv' (Buffer t) ((SignalResolver, SignalResolver), OutputRef (Buffer t))
+                    -> PartialDoOutput fenv  fenv' (Buffer t) ((SignalResolver, SignalResolver), OutputRef (Buffer t))
 
   -- Scalar values or shared buffers
-  OutputEnvScalar   :: fenv' ~ ((fenv, OutputRef t), SignalResolver)
+  PartialDoOutputScalar   :: fenv' ~ ((fenv, OutputRef t), SignalResolver)
                     => ScalarType t
-                    -> OutputEnv fenv  fenv' t (SignalResolver, OutputRef t)
+                    -> PartialDoOutput fenv  fenv' t (SignalResolver, OutputRef t)
 
-  OutputEnvUnit     :: OutputEnv fenv  fenv () ()
+  PartialDoOutputUnit     :: PartialDoOutput fenv  fenv () ()
 
-outputEnvGroundsR :: OutputEnv fenv fenv' t r -> GroundsR t
-outputEnvGroundsR (OutputEnvPair out1 out2) = outputEnvGroundsR out1 `TupRpair` outputEnvGroundsR out2
-outputEnvGroundsR (OutputEnvUnique tp) = TupRsingle $ GroundRbuffer tp
-outputEnvGroundsR (OutputEnvShared tp) = TupRsingle $ GroundRbuffer tp
-outputEnvGroundsR (OutputEnvScalar tp) = TupRsingle $ GroundRscalar tp
-outputEnvGroundsR OutputEnvUnit        = TupRunit
+partialDoOutputGroundsR :: PartialDoOutput fenv fenv' t r -> GroundsR t
+partialDoOutputGroundsR (PartialDoOutputPair out1 out2) = partialDoOutputGroundsR out1 `TupRpair` partialDoOutputGroundsR out2
+partialDoOutputGroundsR (PartialDoOutputUnique tp) = TupRsingle $ GroundRbuffer tp
+partialDoOutputGroundsR (PartialDoOutputShared tp) = TupRsingle $ GroundRbuffer tp
+partialDoOutputGroundsR (PartialDoOutputScalar tp) = TupRsingle $ GroundRscalar tp
+partialDoOutputGroundsR PartialDoOutputUnit        = TupRunit
 
-data OutputVars t r where
-  OutputVarsPair :: OutputVars t  r
-                 -> OutputVars t' r'
-                 -> OutputVars (t, t') (r, r')
+data OutputEnv t r where
+  OutputEnvPair :: OutputEnv t  r
+                 -> OutputEnv t' r'
+                 -> OutputEnv (t, t') (r, r')
 
   -- The SignalResolvers grant access to the reference, to reading the buffer and writing to the buffer.
   -- The consumer of this buffer is the unique consumer of it, and thus takes ownership (and responsibility to deallocate it).
-  OutputVarsUnique :: OutputVars (Buffer t) (((SignalResolver, SignalResolver), SignalResolver), OutputRef (Buffer t))
+  OutputEnvUnique :: OutputEnv (Buffer t) (((SignalResolver, SignalResolver), SignalResolver), OutputRef (Buffer t))
 
   -- The SignalResolvers grant access to the reference and to reading the buffer.
   -- The consumer of this buffer does not get ownership, there may be multiple references to this buffer.
-  OutputVarsShared :: OutputVars (Buffer t) ((SignalResolver, SignalResolver), OutputRef (Buffer t))
+  OutputEnvShared :: OutputEnv (Buffer t) ((SignalResolver, SignalResolver), OutputRef (Buffer t))
 
-  OutputVarsScalar :: ScalarType t -> OutputVars t (SignalResolver, OutputRef t)
+  OutputEnvScalar :: ScalarType t -> OutputEnv t (SignalResolver, OutputRef t)
 
   -- There is no output (unit) or the output variables are reused
   -- with destination-passing-style.
   -- We thus do not need to copy the results manually.
   --
-  OutputVarsIgnore :: OutputVars t ()
+  OutputEnvIgnore :: OutputEnv t ()
 
 data DefineOutput fenv t where
-  DefineOutput :: OutputEnv fenv fenv' t r
+  DefineOutput :: PartialDoOutput fenv fenv' t r
                 -> fenv :> fenv'
                 -> (forall fenv'' . fenv' :> fenv'' -> BaseVars fenv'' r)
                 -> DefineOutput fenv t
@@ -382,7 +382,7 @@ defineOutput :: forall fenv t.
               -> DefineOutput fenv t
 defineOutput (TupRsingle (GroundRbuffer tp)) (TupRsingle Unique) = DefineOutput env subst value
   where
-    env = OutputEnvUnique tp
+    env = PartialDoOutputUnique tp
 
     subst = weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId
 
@@ -391,7 +391,7 @@ defineOutput (TupRsingle (GroundRbuffer tp)) (TupRsingle Unique) = DefineOutput 
 defineOutput (TupRsingle (GroundRscalar tp)) (TupRsingle Unique) = bufferImpossible tp
 defineOutput (TupRsingle (GroundRbuffer tp)) _ = DefineOutput env subst value
   where
-    env = OutputEnvShared tp
+    env = PartialDoOutputShared tp
 
     subst = weakenSucc $ weakenSucc $ weakenSucc weakenId
 
@@ -399,32 +399,32 @@ defineOutput (TupRsingle (GroundRbuffer tp)) _ = DefineOutput env subst value
     value k = (TupRsingle (Var BaseRsignalResolver $ k >:> ZeroIdx) `TupRpair` TupRsingle (Var BaseRsignalResolver $ k >:> SuccIdx ZeroIdx)) `TupRpair` TupRsingle (Var (BaseRrefWrite $ GroundRbuffer tp) (k >:> SuccIdx (SuccIdx ZeroIdx)))
 defineOutput (TupRsingle (GroundRscalar tp)) _ = DefineOutput env subst value
   where
-    env = OutputEnvScalar tp
+    env = PartialDoOutputScalar tp
 
     subst = weakenSucc $ weakenSucc weakenId
 
     value :: forall fenv''. ((fenv, OutputRef t), SignalResolver) :> fenv'' -> BaseVars fenv'' (SignalResolver, OutputRef t)
     value k = TupRsingle (Var BaseRsignalResolver $ k >:> ZeroIdx) `TupRpair` TupRsingle (Var (BaseRrefWrite $ GroundRscalar tp) (k >:> SuccIdx ZeroIdx))
 defineOutput (TupRpair t1 t2) us
-  | DefineOutput env1 subst1 value1 <- defineOutput t1 u1
-  , DefineOutput env2 subst2 value2 <- defineOutput t2 u2 = DefineOutput (OutputEnvPair env1 env2) (subst2 .> subst1) (\k -> value1 (k .> subst2) `TupRpair` value2 k)
+  | DefineOutput out1 subst1 value1 <- defineOutput t1 u1
+  , DefineOutput out2 subst2 value2 <- defineOutput t2 u2 = DefineOutput (PartialDoOutputPair out1 out2) (subst2 .> subst1) (\k -> value1 (k .> subst2) `TupRpair` value2 k)
   where
     (u1, u2) = pairUniqueness us
-defineOutput TupRunit         _                     = DefineOutput OutputEnvUnit weakenId (const TupRunit)
+defineOutput TupRunit         _                     = DefineOutput PartialDoOutputUnit weakenId (const TupRunit)
 
-writeOutput :: OutputEnv fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule (Cluster op) fenv''
-writeOutput outputEnv outputVars valueVars = go outputEnv outputVars valueVars Return
+writeOutput :: PartialDoOutput fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule (Cluster op) fenv''
+writeOutput doOutput outputVars valueVars = go doOutput outputVars valueVars Return
   where
-    go :: OutputEnv fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule (Cluster op) fenv'' -> UniformSchedule (Cluster op) fenv''
-    go OutputEnvUnit _ _ = id
-    go (OutputEnvPair o1 o2) (TupRpair r1 r2) (TupRpair v1 v2) = go o1 r1 v1 . go o2 r2 v2
-    go (OutputEnvScalar _) (TupRpair (TupRsingle signal) (TupRsingle ref)) (TupRsingle v)
+    go :: PartialDoOutput fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule (Cluster op) fenv'' -> UniformSchedule (Cluster op) fenv''
+    go PartialDoOutputUnit _ _ = id
+    go (PartialDoOutputPair o1 o2) (TupRpair r1 r2) (TupRpair v1 v2) = go o1 r1 v1 . go o2 r2 v2
+    go (PartialDoOutputScalar _) (TupRpair (TupRsingle signal) (TupRsingle ref)) (TupRsingle v)
       = Effect (RefWrite ref v)
       . Effect (SignalResolve [varIdx signal])
-    go (OutputEnvShared _) (TupRpair (TupRsingle s1 `TupRpair` TupRsingle s2) (TupRsingle ref)) (TupRsingle v)
+    go (PartialDoOutputShared _) (TupRpair (TupRsingle s1 `TupRpair` TupRsingle s2) (TupRsingle ref)) (TupRsingle v)
       = Effect (RefWrite ref v)
       . Effect (SignalResolve [varIdx s1, varIdx s2])
-    go (OutputEnvUnique _) (TupRpair (TupRpair (TupRsingle s1 `TupRpair` TupRsingle s2) (TupRsingle s3)) (TupRsingle ref)) (TupRsingle v)
+    go (PartialDoOutputUnique _) (TupRpair (TupRpair (TupRsingle s1 `TupRpair` TupRsingle s2) (TupRsingle s3)) (TupRsingle ref)) (TupRsingle v)
       = Effect (RefWrite ref v)
       . Effect (SignalResolve [varIdx s1, varIdx s2, varIdx s3])
 
@@ -571,7 +571,7 @@ data TupleIdx s t where
   TupleIdxSelf  :: TupleIdx t t
 
 data PartialSchedule op genv t where
-  PartialDo     :: OutputEnv () fenv t r
+  PartialDo     :: PartialDoOutput () fenv t r
                 -> ConvertEnv genv fenv fenv'
                 -> UniformSchedule (Cluster op) fenv'
                 -> PartialSchedule op genv t
@@ -662,7 +662,7 @@ data PartialScheduleFun op genv t where
         -> PartialScheduleFun op genv  t
 
 instance HasGroundsR (PartialSchedule op genv) where
-  groundsR (PartialDo outputEnv _ _) = outputEnvGroundsR outputEnv
+  groundsR (PartialDo doOutput _ _) = partialDoOutputGroundsR doOutput
   groundsR (PartialReturn _ vars) = mapTupR varType vars
   groundsR (PartialDeclare _ _ _ _ _ p) = groundsR p
   groundsR (PartialAcond _ _ p _) = groundsR p
@@ -737,7 +737,7 @@ partialSchedule = (\(s, used, _) -> (s, used)) . travA (TupRsingle Shared)
             signals = convertEnvSignals env
             resolvers = convertEnvSignalResolvers k env
           in
-            ( PartialDo OutputEnvUnit env
+            ( PartialDo PartialDoOutputUnit env
                 $ Effect (SignalAwait signals)
                 $ inputBindings
                 $ Effect (Exec cluster')
@@ -816,7 +816,7 @@ strengthenVars k (TupRpair v1 v2)        = TupRpair <$> strengthenVars k v1 <*> 
 
 partialLift :: forall op genv s. GroundsR s -> (forall fenv. genv :?> fenv -> Maybe (Binding fenv s)) -> [Exists (GroundVar genv)] -> (PartialSchedule op genv s, IdxSet genv, MaybeVars genv s)
 partialLift tp f vars
-  | DefineOutput outputEnv kOut varsOut <- defineOutput @() @s tp (mapTupR uniqueIfBuffer tp)
+  | DefineOutput doOutput kOut varsOut <- defineOutput @() @s tp (mapTupR uniqueIfBuffer tp)
   , Exists env <- convertEnvReadonlyFromList $ nubBy (\(Exists v1) (Exists v2) -> isJust $ matchVar v1 v2) vars -- TODO: Remove duplicates more efficiently
   , Reads reEnv k inputBindings <- readRefs $ convertEnvRefs env
   , DeclareVars lhs k' value <- declareVars $ mapTupR BaseRground tp
@@ -826,12 +826,12 @@ partialLift tp f vars
       signals = convertEnvSignals env
       resolvers = convertEnvSignalResolvers (k' .> k) env
     in
-      ( PartialDo outputEnv env
+      ( PartialDo doOutput env
           $ Effect (SignalAwait signals)
           $ inputBindings
           $ Alet lhs binding
           $ Effect (SignalResolve resolvers)
-          $ writeOutput outputEnv (varsOut (k' .> k .> convertEnvWeaken env)) (value weakenId)
+          $ writeOutput doOutput (varsOut (k' .> k .> convertEnvWeaken env)) (value weakenId)
       , IdxSet.fromList $ convertEnvToList env
       , mapTupR (const NoVars) tp
       )
@@ -1358,7 +1358,7 @@ lhsRef tp = LeftHandSidePair (LeftHandSideSingle $ BaseRref tp) (LeftHandSideSin
 fromPartialSub
   :: forall op fenv genv t r.
      HasCallStack
-  => OutputVars t r
+  => OutputEnv t r
   -> BaseVars fenv r
   -> FutureEnv fenv genv
   -> PartialSchedule op genv t
@@ -1385,14 +1385,14 @@ fromPartialFun env = \case
 fromPartial
   :: forall op fenv genv t r.
      HasCallStack
-  => OutputVars t r
+  => OutputEnv t r
   -> BaseVars fenv r
   -> FutureEnv fenv genv
   -> PartialSchedule op genv t
   -> UniformSchedule (Cluster op) fenv
 fromPartial outputEnv outputVars env = \case
     PartialDo outputEnv' convertEnv (schedule :: UniformSchedule (Cluster op) fenv')
-      | Just Refl <- matchOutputVarsWithEnv outputEnv outputEnv' ->
+      | Just Refl <- matchOutputEnvWithEnv outputEnv outputEnv' ->
         let
           kEnv = partialDoSubstituteOutput outputEnv' outputVars
           kEnv' :: Env (NewIdx fenv) fenv'
@@ -1402,7 +1402,7 @@ fromPartial outputEnv outputVars env = \case
           k idx = Identity $ prj' idx kEnv'
         in
           runIdentity $ reindexSchedule k schedule -- Something with a substitution
-      | otherwise -> internalError "OutputVars and OutputEnv do not match"
+      | otherwise -> internalError "OutputEnv and PartialDoOutput do not match"
     PartialReturn uniquenesses vars -> travReturn vars 
     PartialDeclare syncEnv lhs dest uniquenesses bnd body
       | DeclareBinding k instr outputEnvBnd outputVarsBnd env' <- declareBinding outputEnv outputVars env lhs dest uniquenesses ->
@@ -1415,9 +1415,9 @@ fromPartial outputEnv outputVars env = \case
     travReturn :: GroundVars genv t -> UniformSchedule (Cluster op) fenv
     travReturn vars = forks ((\(signals, s) -> await signals s) <$> travReturn' outputEnv outputVars vars [])
 
-    travReturn' :: OutputVars t' r' -> BaseVars fenv r' -> GroundVars genv t' -> [([Idx fenv Signal], UniformSchedule (Cluster op) fenv)] -> [([Idx fenv Signal], UniformSchedule (Cluster op) fenv)]
-    travReturn' (OutputVarsPair o1 o2) (TupRpair r1 r2) (TupRpair v1 v2) accum = travReturn' o1 r1 v1 $ travReturn' o2 r2 v2 accum
-    travReturn' (OutputVarsScalar tp') (TupRpair (TupRsingle destSignal) (TupRsingle destRef)) (TupRsingle (Var tp ix)) accum = task : accum
+    travReturn' :: OutputEnv t' r' -> BaseVars fenv r' -> GroundVars genv t' -> [([Idx fenv Signal], UniformSchedule (Cluster op) fenv)] -> [([Idx fenv Signal], UniformSchedule (Cluster op) fenv)]
+    travReturn' (OutputEnvPair o1 o2) (TupRpair r1 r2) (TupRpair v1 v2) accum = travReturn' o1 r1 v1 $ travReturn' o2 r2 v2 accum
+    travReturn' (OutputEnvScalar tp') (TupRpair (TupRsingle destSignal) (TupRsingle destRef)) (TupRsingle (Var tp ix)) accum = task : accum
       where
         task = case prjPartial ix env of
           Nothing -> internalError "Variable not present in environment"
@@ -1429,7 +1429,7 @@ fromPartial outputEnv outputVars env = \case
               $ Return
             )
           Just FutureBuffer{} -> bufferImpossible tp'
-    travReturn' OutputVarsShared (TupRpair (TupRsingle destSignalRef `TupRpair` TupRsingle destSignalRead) (TupRsingle destRef)) (TupRsingle (Var tp ix)) accum = task : accum
+    travReturn' OutputEnvShared (TupRpair (TupRsingle destSignalRef `TupRpair` TupRsingle destSignalRead) (TupRsingle destRef)) (TupRsingle (Var tp ix)) accum = task : accum
       where
         task = case prjPartial ix env of
           Nothing -> internalError "Variable not present in environment"
@@ -1443,7 +1443,7 @@ fromPartial outputEnv outputVars env = \case
               $ Effect (SignalResolve [weakenSucc weakenId >:> varIdx destSignalRead])
               $ Return
             )
-    travReturn' OutputVarsUnique (TupRpair (TupRpair (TupRsingle destSignalRef `TupRpair` TupRsingle destSignalRead) (TupRsingle destSignalWrite)) (TupRsingle destRef)) (TupRsingle (Var tp ix)) accum = task : accum
+    travReturn' OutputEnvUnique (TupRpair (TupRpair (TupRsingle destSignalRef `TupRpair` TupRsingle destSignalRead) (TupRsingle destSignalWrite)) (TupRsingle destRef)) (TupRsingle (Var tp ix)) accum = task : accum
       where
         task = case prjPartial ix env of
           Nothing -> internalError "Variale not present in environment"
@@ -1461,7 +1461,7 @@ fromPartial outputEnv outputVars env = \case
               $ Return
             )
     -- Destination was reused. No need to copy
-    travReturn' OutputVarsIgnore _ _ accum = accum
+    travReturn' OutputEnvIgnore _ _ accum = accum
     travReturn' _ _ _ _ = internalError "Invalid variables"
 
     acond :: ExpVar genv PrimBool -> PartialSchedule op genv t -> PartialSchedule op genv t -> UniformSchedule (Cluster op) fenv
@@ -1492,7 +1492,7 @@ fromPartial outputEnv outputVars env = \case
 fromPartialAwhile
   :: forall op fenv genv t r.
      HasCallStack
-  => OutputVars t r
+  => OutputEnv t r
   -> BaseVars fenv r
   -> FutureEnv fenv genv
   -> Uniquenesses t
@@ -1518,7 +1518,7 @@ awhileInputOutput env0 env (TupRpair u1 u2) (TupRpair v1 v2)
       (LeftHandSidePair lhs1 lhs2)
       env2
       (TupRpair i1 i2)
-      (OutputVarsPair outputEnv1 outputEnv2)
+      (OutputEnvPair outputEnv1 outputEnv2)
 awhileInputOutput env0 env TupRunit TupRunit
   = AwhileInputOutput
       InputOutputRunit
@@ -1526,7 +1526,7 @@ awhileInputOutput env0 env TupRunit TupRunit
       (LeftHandSideWildcard TupRunit)
       env
       TupRunit
-      OutputVarsIgnore
+      OutputEnvIgnore
 awhileInputOutput env0 env (TupRsingle uniqueness) (TupRsingle (Var groundR idx))
   | GroundRbuffer tp <- groundR -- Unique buffer
   , Unique <- uniqueness
@@ -1554,7 +1554,7 @@ awhileInputOutput env0 env (TupRsingle uniqueness) (TupRsingle (Var groundR idx)
                 FutureBuffer tp (k >:> SuccIdx (SuccIdx $ SuccIdx $ ZeroIdx)) (k >:> ZeroIdx) (Move (k >:> SuccIdx (SuccIdx ZeroIdx))) (Just $ Move (k >:> SuccIdx ZeroIdx)))
         initial
         -- Output
-        OutputVarsUnique
+        OutputEnvUnique
   | GroundRbuffer tp <- groundR -- Shared buffer
   = let
       initial = case prjPartial idx env0 of
@@ -1577,7 +1577,7 @@ awhileInputOutput env0 env (TupRsingle uniqueness) (TupRsingle (Var groundR idx)
                 FutureBuffer tp (k >:> SuccIdx (SuccIdx ZeroIdx)) (k >:> ZeroIdx) (Move (k >:> SuccIdx ZeroIdx)) Nothing)
         initial
         -- Output
-        OutputVarsShared
+        OutputEnvShared
   | GroundRscalar tp <- groundR -- Scalar
   = let
       initial = case prjPartial idx env0 of
@@ -1596,7 +1596,7 @@ awhileInputOutput env0 env (TupRsingle uniqueness) (TupRsingle (Var groundR idx)
         (\k -> env (weakenSucc $ weakenSucc k) `PPush` FutureScalar tp (k >:> SuccIdx ZeroIdx) (k >:> ZeroIdx))
         initial
         -- Output
-        (OutputVarsScalar tp)
+        (OutputEnvScalar tp)
 
 data AwhileInputOutput fenv0 fenv genv t where
   AwhileInputOutput
@@ -1607,7 +1607,7 @@ data AwhileInputOutput fenv0 fenv genv t where
     -> (forall fenv''. fenv' :> fenv'' -> FutureEnv fenv'' genv')
     -> BaseVars fenv0 input
     -- Output
-    -> OutputVars t output
+    -> OutputEnv t output
     -> AwhileInputOutput fenv0 fenv genv t
 
 
@@ -1621,28 +1621,28 @@ data AwhileInputOutput fenv0 fenv genv t where
           -> UniformSchedule exe env
 -}
 
-matchOutputVarsWithEnv :: OutputVars t r -> OutputEnv fenv fenv' t r' -> Maybe (r :~: r')
-matchOutputVarsWithEnv (OutputVarsPair v1 v2) (OutputEnvPair e1 e2)
-  | Just Refl <- matchOutputVarsWithEnv v1 e1
-  , Just Refl <- matchOutputVarsWithEnv v2 e2               = Just Refl
-matchOutputVarsWithEnv OutputVarsShared{} OutputEnvShared{} = Just Refl
-matchOutputVarsWithEnv OutputVarsUnique{} OutputEnvUnique{} = Just Refl
-matchOutputVarsWithEnv OutputVarsIgnore   OutputEnvUnit     = Just Refl
-matchOutputVarsWithEnv _                  _                 = Nothing
+matchOutputEnvWithEnv :: OutputEnv t r -> PartialDoOutput fenv fenv' t r' -> Maybe (r :~: r')
+matchOutputEnvWithEnv (OutputEnvPair v1 v2) (PartialDoOutputPair e1 e2)
+  | Just Refl <- matchOutputEnvWithEnv v1 e1
+  , Just Refl <- matchOutputEnvWithEnv v2 e2               = Just Refl
+matchOutputEnvWithEnv OutputEnvShared{} PartialDoOutputShared{} = Just Refl
+matchOutputEnvWithEnv OutputEnvUnique{} PartialDoOutputUnique{} = Just Refl
+matchOutputEnvWithEnv OutputEnvIgnore   PartialDoOutputUnit     = Just Refl
+matchOutputEnvWithEnv _                  _                 = Nothing
 
-partialDoSubstituteOutput :: forall fenv fenv' t r. OutputEnv () fenv t r -> BaseVars fenv' r -> Env (NewIdx fenv') fenv
+partialDoSubstituteOutput :: forall fenv fenv' t r. PartialDoOutput () fenv t r -> BaseVars fenv' r -> Env (NewIdx fenv') fenv
 partialDoSubstituteOutput = go Empty
   where
-    go :: Env (NewIdx fenv') fenv1 -> OutputEnv fenv1 fenv2 t' r' -> BaseVars fenv' r' -> Env (NewIdx fenv') fenv2
-    go env (OutputEnvPair o1 o2) (TupRpair v1 v2)
+    go :: Env (NewIdx fenv') fenv1 -> PartialDoOutput fenv1 fenv2 t' r' -> BaseVars fenv' r' -> Env (NewIdx fenv') fenv2
+    go env (PartialDoOutputPair o1 o2) (TupRpair v1 v2)
       = go (go env o1 v1) o2 v2
-    go env OutputEnvUnit TupRunit
+    go env PartialDoOutputUnit TupRunit
       = env
-    go env (OutputEnvScalar _) (TupRpair (TupRsingle v1) (TupRsingle v2))
+    go env (PartialDoOutputScalar _) (TupRpair (TupRsingle v1) (TupRsingle v2))
       = env `Push` NewIdxJust (varIdx v2) `Push` NewIdxJust (varIdx v1)
-    go env (OutputEnvShared _) (TupRpair (TupRpair (TupRsingle v1) (TupRsingle v2)) (TupRsingle v3))
+    go env (PartialDoOutputShared _) (TupRpair (TupRpair (TupRsingle v1) (TupRsingle v2)) (TupRsingle v3))
       = env `Push` NewIdxJust (varIdx v3) `Push` NewIdxJust (varIdx v2) `Push` NewIdxJust (varIdx v1)
-    go env (OutputEnvUnique _) (TupRpair (TupRpair (TupRpair (TupRsingle v1) (TupRsingle v2)) (TupRsingle v3)) (TupRsingle v4))
+    go env (PartialDoOutputUnique _) (TupRpair (TupRpair (TupRpair (TupRsingle v1) (TupRsingle v2)) (TupRsingle v3)) (TupRsingle v4))
       = env `Push` NewIdxJust (varIdx v4) `Push` NewIdxJust (varIdx v3) `Push` NewIdxJust (varIdx v2) `Push` NewIdxJust (varIdx v1)
     go _ _ _ = internalError "Impossible BaseVars"
 
@@ -1739,14 +1739,14 @@ data DeclareOutput op fenv t where
                 -> BLeftHandSide (Output t) fenv fenv'
                 -> fenv' :> fenv''
                 -> (UniformSchedule (Cluster op) fenv'' -> UniformSchedule (Cluster op) fenv')
-                -> OutputVars t r
+                -> OutputEnv t r
                 -> (forall fenv'''. fenv'' :> fenv''' -> BaseVars fenv''' r)
                 -> DeclareOutput op fenv t
 
 data DeclareOutputInternal op fenv' t where
   DeclareOutputInternal :: fenv' :> fenv''
                         -> (UniformSchedule (Cluster op) fenv'' -> UniformSchedule (Cluster op) fenv')
-                        -> OutputVars t r
+                        -> OutputEnv t r
                         -> (forall fenv'''. fenv'' :> fenv''' -> BaseVars fenv''' r)
                         -> DeclareOutputInternal op fenv' t
 
@@ -1764,7 +1764,7 @@ declareOutput grounds
       = DeclareOutputInternal
           weakenId
           id
-          OutputVarsIgnore
+          OutputEnvIgnore
           $ const TupRunit
     go k (TupRpair gL gR) (TupRpair vL vR)
       | DeclareOutputInternal kL instrL outL varsL' <- go k         gL vL
@@ -1772,13 +1772,13 @@ declareOutput grounds
       = DeclareOutputInternal
           (kR .> kL)
           (instrL . instrR)
-          (OutputVarsPair outL outR)
+          (OutputEnvPair outL outR)
           $ \k' -> varsL' (k' .> kR) `TupRpair` varsR' k'
     go k (TupRsingle (GroundRbuffer tp)) (TupRsingle signal `TupRpair` TupRsingle ref)
       = DeclareOutputInternal
           (weakenSucc $ weakenSucc weakenId)
           (Alet lhsSignal NewSignal)
-          OutputVarsShared
+          OutputEnvShared
           $ \k' ->
             let k'' = k' .> weakenSucc' (weakenSucc' k)
             in TupRsingle (Var BaseRsignalResolver $ weaken k' ZeroIdx)
@@ -1790,7 +1790,7 @@ declareOutput grounds
       = DeclareOutputInternal
           weakenId
           id
-          (OutputVarsScalar tp)
+          (OutputEnvScalar tp)
           $ \k' ->
             let k'' = k' .> k
             in TupRsingle (weaken k'' signal)
@@ -1800,14 +1800,14 @@ declareOutput grounds
 data DeclareBinding op fenv genv' t where
   DeclareBinding :: fenv :> fenv'
                  -> (UniformSchedule (Cluster op) fenv' -> UniformSchedule (Cluster op) fenv)
-                 -> OutputVars t r
+                 -> OutputEnv t r
                  -> (forall fenv''. fenv' :> fenv'' -> BaseVars fenv'' r)
                  -> (forall fenv''. fenv' :> fenv'' -> FutureEnv fenv'' genv')
                  -> DeclareBinding op fenv genv' t
 
 declareBinding
   :: forall op fenv genv genv' bnd ret ret'.
-     OutputVars ret ret'
+     OutputEnv ret ret'
   -> BaseVars fenv ret'
   -> FutureEnv fenv genv
   -> GLeftHandSide bnd genv genv'
@@ -1820,26 +1820,26 @@ declareBinding retEnv retVars = \fenv -> go weakenId (\k -> mapPartialEnv (weake
     go k fenv (LeftHandSidePair lhs1 lhs2) (TupRpair dest1 dest2) (TupRpair u1 u2)
       | DeclareBinding k1 instr1 out1 vars1 fenv1 <- go k         fenv  lhs1 dest1 u1
       , DeclareBinding k2 instr2 out2 vars2 fenv2 <- go (k1 .> k) fenv1 lhs2 dest2 u2
-      = DeclareBinding (k2 .> k1) (instr1 . instr2) (OutputVarsPair out1 out2) (\k' -> TupRpair (vars1 $ k' .> k2) (vars2 k')) fenv2
+      = DeclareBinding (k2 .> k1) (instr1 . instr2) (OutputEnvPair out1 out2) (\k' -> TupRpair (vars1 $ k' .> k2) (vars2 k')) fenv2
     go k fenv (LeftHandSideWildcard _) _ _
       = DeclareBinding
           weakenId
           id
-          OutputVarsIgnore
+          OutputEnvIgnore
           (const TupRunit)
           fenv
     go k fenv (LeftHandSideSingle _) (TupRsingle (DestinationReuse idx)) _
       = DeclareBinding
           weakenId
           id
-          OutputVarsIgnore
+          OutputEnvIgnore
           (const TupRunit)
           (\k' -> PNone $ fenv k')
     go k fenv (LeftHandSideSingle (GroundRscalar tp)) _ _
       = DeclareBinding
           (weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId)
           instr
-          (OutputVarsScalar tp)
+          (OutputEnvScalar tp)
           (\k' -> TupRpair
                     (TupRsingle $ Var BaseRsignalResolver $ k' >:> idx2)
                     (TupRsingle $ Var (BaseRrefWrite $ GroundRscalar tp) $ k' >:> idx0))
@@ -1861,7 +1861,7 @@ declareBinding retEnv retVars = \fenv -> go weakenId (\k -> mapPartialEnv (weake
       = DeclareBinding
           (weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId)
           instr
-          OutputVarsUnique
+          OutputEnvUnique
           (\k' -> TupRpair
                     ( TupRpair
                       ( TupRpair
@@ -1897,7 +1897,7 @@ declareBinding retEnv retVars = \fenv -> go weakenId (\k -> mapPartialEnv (weake
       = DeclareBinding
           (weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId)
           instr
-          OutputVarsShared
+          OutputEnvShared
           (\k' -> TupRpair
                     ( TupRpair
                       (TupRsingle $ Var BaseRsignalResolver $ k' >:> idx4)
