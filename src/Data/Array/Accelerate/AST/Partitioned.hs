@@ -70,36 +70,34 @@ data LeftHandSideArgs body env scope where
   Base :: LeftHandSideArgs () () ()
   -- The body has an input array
   Reqr :: Take e eenv env -> Take e escope scope
-       -> LeftHandSideArgs              body   env      scope
-       -> LeftHandSideArgs (In  sh e -> body) eenv     escope
+       -> LeftHandSideArgs              body   env             scope
+       -> LeftHandSideArgs (In  sh e -> body) eenv            escope
   -- The body creates an array
   Make :: Take e escope scope
-       -> LeftHandSideArgs              body   env      scope
-       -> LeftHandSideArgs (Out sh e -> body)  env     escope
-  -- One array that is both input and output
-  Adju :: Take e eenv env -> Take e escope scope
-       -> LeftHandSideArgs              body   env      scope
-       -> LeftHandSideArgs (Mut sh e -> body) eenv     escope
+       -> LeftHandSideArgs              body   env             scope
+       -> LeftHandSideArgs (Out sh e -> body)  env            escope
   -- TODO: duplicate for Var' and Fun'
-  EArg :: LeftHandSideArgs              body   env      scope
-       -> LeftHandSideArgs (Exp'   e -> body) (env, Exp' e) (scope, Exp' e)
+  EArg :: LeftHandSideArgs              body   env             scope
+       -> LeftHandSideArgs (Exp'   e -> body) (env, Exp' e)   (scope, Exp' e)
+  -- Used for Permute: Each 'thread' gets atomic update acess to all values. Behaves like Exp', Var' and Fun'.
+  Adju :: LeftHandSideArgs              body   env             scope
+       -> LeftHandSideArgs (Mut sh e -> body) (env, Mut sh e) (scope, Mut sh e)
   -- Does nothing to this part of the environment
-  Ignr :: LeftHandSideArgs              body   env      scope
-       -> LeftHandSideArgs              body  (env, e) (scope, e)
+  Ignr :: LeftHandSideArgs              body   env             scope
+       -> LeftHandSideArgs              body  (env, e)        (scope, e)
 
 data ClusterIO args input output where
   Empty  :: ClusterIO () () output
   Input  :: ClusterIO              args   input      output
          -> ClusterIO (In  sh e -> args) (input, e) (output, e)
   Output :: Take e eoutput output
-         -> ClusterIO              args   input      output
-         -> ClusterIO (Out sh e -> args)  input     eoutput
-  MutPut :: Take e eoutput output
-         -> ClusterIO              args   input      output
-         -> ClusterIO (Mut sh e -> args) (input, e) eoutput
+         -> ClusterIO              args   input             output
+         -> ClusterIO (Out sh e -> args)  input            eoutput
+  MutPut :: ClusterIO              args   input             output
+         -> ClusterIO (Mut sh e -> args) (input, Mut sh e) (output, Mut sh e)
   -- TODO: duplicate for Var' and Fun'
-  ExpPut :: ClusterIO              args   input      output
-         -> ClusterIO (Exp'   e -> args) (input, Exp' e) (output, Exp' e)
+  ExpPut :: ClusterIO              args   input             output
+         -> ClusterIO (Exp'   e -> args) (input, Exp' e)   (output, Exp' e)
 
 -- | `xargs` is a type-level list which contains `x`. 
 -- Removing `x` from `xargs` yields `args`.
@@ -117,7 +115,7 @@ iolhs :: Args env args -> (forall x y. ClusterIO args x y -> LeftHandSideArgs ar
 iolhs ArgsNil                     f =                       f  Empty            Base
 iolhs (ArgArray In  _ _ _ :>: as) f = iolhs as $ \io lhs -> f (Input       io) (Reqr Here Here lhs)
 iolhs (ArgArray Out _ _ _ :>: as) f = iolhs as $ \io lhs -> f (Output Here io) (Make Here lhs)
-iolhs (ArgArray Mut _ _ _ :>: as) f = iolhs as $ \io lhs -> f (MutPut Here io) (Adju Here Here lhs)
+iolhs (ArgArray Mut _ _ _ :>: as) f = iolhs as $ \io lhs -> f (MutPut io) (Adju lhs)
 iolhs (ArgExp _           :>: as) f = iolhs as $ \io lhs -> f (ExpPut      io) (EArg lhs)
 iolhs _ _ = undefined -- TODO Var', Fun'
 
@@ -125,7 +123,7 @@ mkBase :: ClusterIO args i o -> LeftHandSideArgs () i i
 mkBase Empty = Base
 mkBase (Input ci) = Ignr (mkBase ci)
 mkBase (Output _ ci) = mkBase ci
-mkBase (MutPut _ ci) = Ignr (mkBase ci)
+mkBase (MutPut ci) = Ignr (mkBase ci)
 mkBase (ExpPut ci) = Ignr (mkBase ci)
 
 
@@ -155,20 +153,20 @@ data Take' x xargs args where
 type family ToIn  a where
   ToIn  ()              = ()
   ToIn  (In sh e  -> x) = (ToIn x, e)
-  ToIn  (Mut sh e -> x) = (ToIn x, e)
+  ToIn  (Mut sh e -> x) = (ToIn x, Mut sh e)
   ToIn  (Exp'   e -> x) = (ToIn x, Exp' e)
   ToIn  (_ -> x)        =  ToIn x
 type family ToOut a where
   ToOut ()              = ()
   ToOut (Out sh e -> x) = (ToOut x, e)
-  ToOut (Mut sh e -> x) = (ToOut x, e)
+  ToOut (Mut sh e -> x) = (ToOut x, Mut sh e)
   ToOut (_  -> x)       =  ToOut x
 
 getIn :: LeftHandSideArgs body i o -> i -> ToIn body
 getIn Base () = ()
 getIn (Reqr t1 t2 lhs) i = let (x, i') = take t1 i in (getIn lhs i', x)
 getIn (Make t lhs) i = getIn lhs i
-getIn (Adju t1 t2 lhs) i = let (x, i') = take t1 i in (getIn lhs i', x)
+getIn (Adju lhs) (i, x) = (getIn lhs i, x)
 getIn (EArg lhs) (i, x) = (getIn lhs i, x)
 getIn (Ignr lhs) (i, x) =  getIn lhs i
 
@@ -180,9 +178,8 @@ genOut (Reqr t1 t2 lhs) i     o     =
   in put t2 x (genOut lhs i' o)
 genOut (Make t lhs)     i    (o, x) = 
   put t x (genOut lhs i o)
-genOut (Adju t1 t2 lhs) i    (o, x) = 
-  let (y, i') = take t1 i 
-  in put t2 x (genOut lhs i' o)
+genOut (Adju lhs) (i, y)    (o, x) = 
+  (genOut lhs i o, x)
 genOut (EArg lhs)      (i, x) o     =
   (genOut lhs i o, x)
 genOut (Ignr lhs)      (i, x) o     =
