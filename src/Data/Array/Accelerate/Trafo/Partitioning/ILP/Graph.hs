@@ -112,9 +112,11 @@ deriving instance Read (BackendVar op) => Read (Var op)
 
 -- convenience synonyms
 pi :: Label -> Expression op
-pi l      = 1 .*. Pi l
+pi l      = c $ Pi l
+-- | Safe constructor for Fused variables
 fused :: Label -> Label -> Expression op
-fused x y = 1 .*. Fused x y
+fused x y = let x' :-> y' = x -?> y 
+            in c $ Fused x' y'
 
 -- There is no strict reason for DesugarAcc to be a superclass of MakesILP, other than
 -- that the input of MakesILP is the output of DesugarAcc.
@@ -248,7 +250,7 @@ mkFullGraph :: forall op env a. (MakesILP op)
 mkFullGraph (Exec op args) = do
   l <- freshL
   env <- use lenv
-  lenv %= flip (updateLabelEnv args) l -- adds the label l to the outgoing args in the environment
+  lenv %= flip (updateLabelEnv args) l -- replace the labels of the output arrays with l
   let labelledArgs = getLabelArgs args env
   let fuseedges = S.map (-?> l) $ getInputArgLabels args env -- add fusible edges to all inputs
   let backInfo = mkGraph op labelledArgs l -- query the backend for its fusion information - we add l and fuseedges next line

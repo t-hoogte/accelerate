@@ -21,15 +21,17 @@ import {-# SOURCE #-} Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph ( Var, 
 
 data OptDir = Maximise | Minimise
 
-data ILP op = ILP OptDir (Expression op) (Constraint op) (Bounds op)
+data ILP op = ILP OptDir (Expression op) (Constraint op) (Bounds op) Int
 
 type Solution op = M.Map (Var op) Int
 
+-- given `n` (for the number of nodes in the ILP), make an Int
+newtype Number = Number (Int -> Int)
+
 data Expression op where
-  Constant :: Int -> Expression op
+  Constant :: Number -> Expression op
   (:+)  :: Expression op -> Expression op -> Expression op
-  (:-)  :: Expression op -> Expression op -> Expression op
-  (:*)  :: Int -> Var op -> Expression op 
+  (:*)  :: Number -> Var op -> Expression op 
 
 data Constraint op where
   (:>=) :: Expression op -> Expression op -> Constraint op
@@ -54,14 +56,29 @@ instance Monoid    (Bounds op) where mempty = NoBounds
 
 
 -- Synonyms for the constructors above
+infixl 8 .+.
+infixl 8 .-.
+infixl 8 .*.
 (.+.)  :: Expression op -> Expression op -> Expression op
 (.+.) = (:+)
 (.-.)  :: Expression op -> Expression op -> Expression op
-(.-.) = (:-)
-(.*.)  :: Int               -> Var            op -> Expression op 
-(.*.) = (:*)
+e1 .-. e2 = e1 .+. ((-1) .*. e2)
+(.*.)  :: Int           -> Expression op -> Expression op 
+i .*. (Constant (Number f)) = Constant $ Number $ (*i) . f
+i .*. (e1 :+ e2) = (:+) (i .*. e1) (i .*. e2)
+i .*. (Number f :* v) = (:*) (Number ((*i) . f)) v
+timesN :: Expression op -> Expression op
+timesN (Constant (Number f)) = Constant (Number (\n -> n * f n))
+timesN ((:+) e1 e2) = (:+) (timesN e1) (timesN e2)
+timesN ((:*) (Number f) v) = (:*) (Number (\n -> n * f n)) v
+c :: Var op -> Expression op
+c = (Number (const 1) :*)
 int :: Int -> Expression op
-int = Constant
+int = Constant . Number . const
+
+infixr 7 .>=.
+infixr 7 .<=.
+infixr 7 .==.
 (.>=.) :: Expression op -> Expression op -> Constraint op
 (.>=.) = (:>=)
 (.<=.) :: Expression op -> Expression op -> Constraint op

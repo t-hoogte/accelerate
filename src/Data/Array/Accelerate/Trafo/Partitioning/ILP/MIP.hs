@@ -30,13 +30,13 @@ import Numeric.Optimization.MIP.Solver
     ( cbc, cplex, glpsol, gurobiCl, lpSolve, scip )
 
 instance (MakesILP op, MIP.IsSolver s IO) => ILPSolver s op where
-  solve s (ILP dir obj constr bnds) = makeSolution <$> MIP.solve s options problem
+  solve s (ILP dir obj constr bnds n) = makeSolution <$> MIP.solve s options problem
     where
       options = MIP.SolveOptions{ MIP.solveTimeLimit   = Nothing
                                 , MIP.solveLogger      = putStrLn . ("AccILPSolver says: " ++)
                                 , MIP.solveErrorLogger = putStrLn . ("AccILPSolverError: " ++) }
 
-      problem = Problem (Just "AccelerateILP") (mkFun dir $ expr obj) (cons constr) [] [] vartypes (bounds bnds)
+      problem = Problem (Just "AccelerateILP") (mkFun dir $ expr n obj) (cons n constr) [] [] vartypes (bounds bnds)
       
       mkFun Maximise = ObjectiveFunction (Just "AccelerateObjective") OptMax
       mkFun Minimise = ObjectiveFunction (Just "AccelerateObjective") OptMin
@@ -46,19 +46,18 @@ instance (MakesILP op, MIP.IsSolver s IO) => ILPSolver s op where
 -- MIP has a Num instance for expressions, but it's scary (because 
 -- you can't guarantee linearity with arbitrary multiplications).
 -- We use that instance here, knowing that our own Expression can only be linear.
-expr :: MakesILP op => Expression op -> MIP.Expr Scientific
-expr (Constant i) = fromIntegral i
-expr (x :+ y) = expr x + expr y
-expr (x :- y) = expr x - expr y
-expr (x :* y) = fromIntegral x * varExpr (var y)
+expr :: MakesILP op => Int -> Expression op -> MIP.Expr Scientific
+expr n (Constant (Number f)) = fromIntegral (f n)
+expr n (x :+ y) = expr n x + expr n y
+expr n ((Number f) :* y) = fromIntegral (f n) * varExpr (var y)
 
-cons :: MakesILP op => Constraint op -> [MIP.Constraint Scientific]
-cons (x :>= y) = [expr x MIP..>=. expr y]
-cons (x :<= y) = [expr x MIP..<=. expr y]
-cons (x :== y) = [expr x MIP..==. expr y]
+cons :: MakesILP op => Int -> Constraint op -> [MIP.Constraint Scientific]
+cons n (x :>= y) = [expr n x MIP..>=. expr n y]
+cons n (x :<= y) = [expr n x MIP..<=. expr n y]
+cons n (x :== y) = [expr n x MIP..==. expr n y]
 
-cons (x :&& y) = cons x <> cons y
-cons TrueConstraint = mempty
+cons n (x :&& y) = cons n x <> cons n y
+cons n TrueConstraint = mempty
 
 bounds :: MakesILP op => Bounds op -> M.Map MIP.Var (Extended Scientific, Extended Scientific)
 bounds (Binary v) = M.singleton (var v) (Finite 0, Finite 1)

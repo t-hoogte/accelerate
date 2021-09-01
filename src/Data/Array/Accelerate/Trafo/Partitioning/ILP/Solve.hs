@@ -42,15 +42,15 @@ makeILP (Info
     fuseEdges = fuseEdges' S.\\ nofuseEdges
 
     combine :: ILP op -> ILP op
-    combine (ILP dir fun cons bnds) =
+    combine (ILP dir fun cons bnds _) =
              ILP dir fun (cons <> backendconstraints)
                          (bnds <> backendbounds)
-
+                         n
     -- n is used in some of the constraints, as an upperbound on the number of clusters.
     n :: Int
     n = S.size nodes
 
-    graphILP = ILP Minimise objFun myConstraints myBounds
+    graphILP = ILP Minimise objFun myConstraints myBounds n
 
     -- Placeholder, currently maximising the number of vertical/diagonal fusions.
     -- Since we want all clusters to have one 'iteration size', the final objFun should
@@ -71,7 +71,7 @@ makeILP (Info
                 (\(i :-> j) -> between
                               ( fused i j       )
                               ( pi j .-. pi i   )
-                              ( n .*. Fused i j ))
+                              ( timesN $ c (Fused i j )))
                 fuseEdges
 
     -- pi_j - pi_i >= 1 for all infusible edges (i,j)

@@ -12,6 +12,7 @@
 {-# LANGUAGE ViewPatterns        #-}
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 {-# OPTIONS_HADDOCK prune #-}
+{-# LANGUAGE InstanceSigs #-}
 -- |
 -- Module      : Data.Array.Accelerate.Interpreter
 -- Description : Reference backend (interpreted)
@@ -53,6 +54,10 @@ import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Unsafe.Coerce (unsafeCoerce)
 import Control.Monad.ST
 import Data.Bits
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP (..), Information (Info), Var (Fused, BackendSpecific), (-?>), fused)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
+import qualified Data.Set as S
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
 
 
 -- Conceptually, this computes the body of the fused loop
@@ -79,6 +84,36 @@ instance DesugarAcc InterpretOp where
   mkBackpermute a b c = Exec IBackpermute (a :>: b :>: c :>: ArgsNil)
   mkGenerate    a b   = Exec IGenerate    (a :>: b :>:       ArgsNil)
   -- etc
+
+-- -2 is left>right, -1 is right>left, n is 'according to computation n' (e.g. Backpermute) (Note that Labels are uniquely identified by an Int, the parent just gives extra information)
+data OrderV = OrderIn  Label
+            | OrderOut Label
+  deriving (Eq, Ord, Read, Show)
+
+instance MakesILP InterpretOp where
+  type BackendVar InterpretOp = OrderV
+
+  mkGraph INoop _ _ = mempty
+  mkGraph IBackpermute (_ :>: ((L _ (_, S.toList -> ~[lIn])) :>: _)) l@(Label i _) =
+    Info
+      mempty
+      (  inputDirectionConstraint l lIn
+      <> c (BackendSpecific $ OrderIn l) .==. int i) -- enforce that the backpermute follows its own rules
+      mempty
+  mkGraph IGenerate _ _ = mempty
+  mkGraph IMap (f :>: L _ (_, S.toList -> ~[lIn]) :>: o :>: ArgsNil) l = 
+    Info 
+      mempty 
+      (  inputDirectionConstraint l lIn
+      <> c (BackendSpecific $ OrderIn l) .==. c (BackendSpecific $ OrderOut l))
+      mempty
+
+-- | If l and lIn are fused, the out-order of lIn and the in-order of l should match
+inputDirectionConstraint :: Label -> Label -> Constraint InterpretOp
+inputDirectionConstraint l lIn =            
+                timesN (fused lIn l) .>=. c (BackendSpecific $ OrderIn l) .-. c (BackendSpecific $ OrderOut lIn)
+    <> (-1) .*. timesN (fused lIn l) .<=. c (BackendSpecific $ OrderIn l) .-. c (BackendSpecific $ OrderOut lIn)
+
 
 
 

@@ -69,7 +69,7 @@ data ALabel t where
   Arr :: ELabel -- buffer
      -- -> ELabel -- shape
       -> ALabel (m sh e) -- only matches on arrays, but supports In, Out and Mut
-  NotArr :: ALabel (t e) -- matches on `Var' e`, `Exp' e` and `Fun' e` 
+  NotArr :: ALabel (t e) -- matches on `Var' e`, `Exp' e` and `Fun' e` (matches but doesn't belong with arrays)
 
 matchALabel :: ALabel (m sh s) -> ALabel (m' sh' t) -> Maybe ((sh,s) :~: (sh',t))
 matchALabel (Arr e1) (Arr e2) 
@@ -195,16 +195,16 @@ getLabelsFun :: OpenFun x env y -> LabelEnv env -> ALabels (Fun' y)
 getLabelsFun (Body expr) lenv = first body $ getLabelsExp expr lenv
 getLabelsFun (Lam _ fun) lenv = first lam  $ getLabelsFun fun  lenv
 
+-- | Replaces the labelset associated with the buffers of out-args with `S.singleton l`.
 updateLabelEnv :: Args env args -> LabelEnv env -> Label -> LabelEnv env
 updateLabelEnv ArgsNil lenv _ = lenv
 updateLabelEnv (arg :>: args) lenv l = case arg of
-  -- CHECK we only look at the 'Buffer' vars here, not the 'shape' ones. Is that ok?
-  ArgArray Out _ _ vars -> updateLabelEnv args (insertAtVars vars lenv $ S.insert l) l
-  ArgArray Mut _ _ vars -> updateLabelEnv args (insertAtVars vars lenv $ S.insert l) l
-  -- TODO maybe we should also traverse the other args? Does LabelEnv need two sets of Labels (potentially fusible & infusible)?
+  -- We only look at the 'Buffer' vars here, not the 'shape' ones.
+  ArgArray Out _ _ vars -> updateLabelEnv args (insertAtVars vars lenv $ const $ S.singleton l) l
+  ArgArray Mut _ _ vars -> updateLabelEnv args (insertAtVars vars lenv $ const $ S.singleton l) l
   _ -> updateLabelEnv args lenv l
 
--- Updates the labels with a function. In practice, this is either `S.insert l` or `const (S.singleton l)`
+-- Updates the labels with a function. Currently, this is always `const (S.singleton l)`
 insertAtVars :: TupR (Var a env) b -> LabelEnv env -> (Labels -> Labels) -> LabelEnv env
 insertAtVars TupRunit lenv _ = lenv
 insertAtVars (TupRpair x y) lenv f = insertAtVars x (insertAtVars y lenv f) f
