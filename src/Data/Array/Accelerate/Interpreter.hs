@@ -54,10 +54,11 @@ import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Unsafe.Coerce (unsafeCoerce)
 import Control.Monad.ST
 import Data.Bits
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP (..), Information (Info), Var (Fused, BackendSpecific), (-?>), fused)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP (..), Information (Info), Var (BackendSpecific), (-?>), fused, infusibleEdges)
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
 import qualified Data.Set as S
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
+import Lens.Micro ((.~), (&))
 
 
 -- Conceptually, this computes the body of the fused loop
@@ -76,16 +77,22 @@ data InterpretOp args where
   IMap :: InterpretOp (Fun' (s -> t) -> In sh s -> Out sh t -> ())
   IBackpermute :: InterpretOp (Fun' (sh' -> sh) -> In sh t -> Out sh' t -> ())
   IGenerate :: InterpretOp (Fun' (sh -> t) -> Out sh t -> ())
-
-
+  IPermute :: InterpretOp (Fun' (e -> e -> e)
+           -> Mut sh' e
+           -> Fun' (sh -> PrimMaybe sh')
+           -> In sh e 
+           -> ())
 
 instance DesugarAcc InterpretOp where
-  mkMap         a b c = Exec IMap         (a :>: b :>: c :>: ArgsNil)
-  mkBackpermute a b c = Exec IBackpermute (a :>: b :>: c :>: ArgsNil)
-  mkGenerate    a b   = Exec IGenerate    (a :>: b :>:       ArgsNil)
+  mkMap         a b c   = Exec IMap         (a :>: b :>: c :>:       ArgsNil)
+  mkBackpermute a b c   = Exec IBackpermute (a :>: b :>: c :>:       ArgsNil)
+  mkGenerate    a b     = Exec IGenerate    (a :>: b :>:             ArgsNil)
+  mkPermute     a b c d = Exec IPermute     (a :>: b :>: c :>: d :>: ArgsNil)
   -- etc
 
--- -2 is left>right, -1 is right>left, n is 'according to computation n' (e.g. Backpermute) (Note that Labels are uniquely identified by an Int, the parent just gives extra information)
+-- -2 is left>right, -1 is right>left, n is 'according to computation n' (e.g. Backpermute) 
+-- (Note that Labels are uniquely identified by an Int, the parent just gives extra information)
+-- Use Output = -3 for 'cannot be fused with consumer', as that is more difficult to express (we don't know the consumer yet)
 data OrderV = OrderIn  Label
             | OrderOut Label
   deriving (Eq, Ord, Read, Show)
@@ -99,14 +106,21 @@ instance MakesILP InterpretOp where
       mempty
       (  inputDirectionConstraint l lIn
       <> c (BackendSpecific $ OrderIn l) .==. int i) -- enforce that the backpermute follows its own rules
-      mempty
-  mkGraph IGenerate _ _ = mempty
+      (inOutBounds l)
+  mkGraph IGenerate _ l = Info mempty mempty (lower (-2) (BackendSpecific $ OrderOut l))
   mkGraph IMap (f :>: L _ (_, S.toList -> ~[lIn]) :>: o :>: ArgsNil) l = 
     Info 
       mempty 
       (  inputDirectionConstraint l lIn
       <> c (BackendSpecific $ OrderIn l) .==. c (BackendSpecific $ OrderOut l))
-      mempty
+      (inOutBounds l)
+  mkGraph IPermute (comb :>: L _ (_, S.toList -> ~[lTarget]) :>: f :>: L _ (_, S.toList -> ~[lIn]) :>: ArgsNil) l =
+    Info
+      (mempty & infusibleEdges .~ S.singleton (lTarget -?> l)) -- Cannot fuse with the producer of the target array
+      (  inputDirectionConstraint l lIn
+      <> c (BackendSpecific $ OrderOut l) .==. int (-3)) -- convention meaning infusible
+      (lower (-2) (BackendSpecific $ OrderIn l))
+
 
 -- | If l and lIn are fused, the out-order of lIn and the in-order of l should match
 inputDirectionConstraint :: Label -> Label -> Constraint InterpretOp
@@ -114,8 +128,8 @@ inputDirectionConstraint l lIn =
                 timesN (fused lIn l) .>=. c (BackendSpecific $ OrderIn l) .-. c (BackendSpecific $ OrderOut lIn)
     <> (-1) .*. timesN (fused lIn l) .<=. c (BackendSpecific $ OrderIn l) .-. c (BackendSpecific $ OrderOut lIn)
 
-
-
+inOutBounds :: Label -> Bounds InterpretOp
+inOutBounds l = lower (-2) (BackendSpecific $ OrderIn l) <> lower (-2) (BackendSpecific $ OrderOut l)
 
 -- -- Program execution
 -- -- -----------------

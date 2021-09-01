@@ -57,10 +57,12 @@ cons n (x :<= y) = [expr n x MIP..<=. expr n y]
 cons n (x :== y) = [expr n x MIP..==. expr n y]
 
 cons n (x :&& y) = cons n x <> cons n y
-cons n TrueConstraint = mempty
+cons _ TrueConstraint = mempty
 
 bounds :: MakesILP op => Bounds op -> M.Map MIP.Var (Extended Scientific, Extended Scientific)
 bounds (Binary v) = M.singleton (var v) (Finite 0, Finite 1)
+bounds (Lower      l v  ) = M.singleton (var v) (Finite (fromIntegral l), PosInf)
+bounds (     Upper   v u) = M.singleton (var v) (NegInf                 , Finite (fromIntegral u))
 bounds (LowerUpper l v u) = M.singleton (var v) (Finite (fromIntegral l), Finite (fromIntegral u))
 bounds (x :<> y) = bounds x <> bounds y
 bounds NoBounds = mempty
@@ -68,6 +70,8 @@ bounds NoBounds = mempty
 -- make all variables that occur in the bounds have integer type.
 allIntegers :: MakesILP op => Bounds op -> M.Map MIP.Var VarType 
 allIntegers (Binary v)         = M.singleton (var v) IntegerVariable
+allIntegers (Lower      _ v  ) = M.singleton (var v) IntegerVariable
+allIntegers (     Upper   v _) = M.singleton (var v) IntegerVariable
 allIntegers (LowerUpper _ v _) = M.singleton (var v) IntegerVariable
 allIntegers (x :<> y) = allIntegers x <> allIntegers y
 allIntegers NoBounds = mempty

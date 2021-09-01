@@ -251,7 +251,7 @@ mkFullGraph (Exec op args) = do
   l <- freshL
   env <- use lenv
   lenv %= flip (updateLabelEnv args) l -- replace the labels of the output arrays with l
-  let labelledArgs = getLabelArgs args env
+  let labelledArgs = getLabelArgs args env -- uses the old env! Notably, in the case of Permute, gets the _previous_ writer
   let fuseedges = S.map (-?> l) $ getInputArgLabels args env -- add fusible edges to all inputs
   let backInfo = mkGraph op labelledArgs l -- query the backend for its fusion information - we add l and fuseedges next line
   return $ FGRes (backInfo

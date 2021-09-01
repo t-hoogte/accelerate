@@ -48,6 +48,8 @@ instance Monoid    (Constraint op) where mempty = TrueConstraint
 data Bounds op where
   Binary :: Var op -> Bounds op
   LowerUpper :: Int -> Var op -> Int -> Bounds op
+  Lower :: Int -> Var op -> Bounds op
+  Upper :: Var op -> Int -> Bounds op
   (:<>) :: Bounds op -> Bounds op -> Bounds op
   NoBounds :: Bounds op
 
@@ -89,6 +91,10 @@ binary :: Var op -> Bounds op
 binary = Binary
 lowerUpper :: Int -> Var op -> Int -> Bounds op
 lowerUpper = LowerUpper
+lower :: Int -> Var op -> Bounds op
+lower = Lower
+upper :: Var op -> Int -> Bounds op
+upper = Upper
 
 -- Convenience
 (.>.)  :: Expression op -> Expression op -> Constraint op
