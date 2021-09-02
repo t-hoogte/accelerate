@@ -71,6 +71,7 @@ import Data.Typeable                                ( (:~:)(..) )
 import Data.ByteString.Builder.Extra
 import Language.Haskell.TH                                          ( Q, TExp )
 import Data.Kind (Type)
+import Control.DeepSeq (NFData (rnf))
 
 -- | An intermediate representation parameterized over executable operations.
 -- This data type only consists of the control flow structure and
@@ -505,3 +506,8 @@ groundToExpVar (TupRsingle t)   (TupRsingle (Var _ ix)) = TupRsingle (Var t ix)
 groundToExpVar (TupRpair t1 t2) (TupRpair v1 v2)        = groundToExpVar t1 v1 `TupRpair` groundToExpVar t2 v2
 groundToExpVar TupRunit         TupRunit                = TupRunit
 groundToExpVar _                _                       = error "Impossible pair"
+
+instance NFData (OperationAcc op env a) where
+  rnf = _
+instance NFData (OperationAfun op env a) where
+  rnf = _

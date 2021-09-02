@@ -33,16 +33,19 @@ import Data.Array.Accelerate.Sugar.Array                  ( ArraysR )
 import Data.Array.Accelerate.Sugar.Elt                    ( EltR )
 import Data.Array.Accelerate.Smart
 import Data.Array.Accelerate.Trafo.Config
-import Data.Array.Accelerate.Trafo.Delayed
+-- import Data.Array.Accelerate.Trafo.Delayed
 import Data.Array.Accelerate.Trafo.Sharing                ( Afunction, ArraysFunctionR, Function, EltFunctionR )
 import qualified Data.Array.Accelerate.AST                as AST
-import qualified Data.Array.Accelerate.Trafo.Fusion       as Fusion
+-- import qualified Data.Array.Accelerate.Trafo.Fusion       as Fusion
 import qualified Data.Array.Accelerate.Trafo.LetSplit     as LetSplit
 import qualified Data.Array.Accelerate.Trafo.Exp.Simplify as Rewrite
 import qualified Data.Array.Accelerate.Trafo.Sharing      as Sharing
 -- import qualified Data.Array.Accelerate.Trafo.Vectorise    as Vectorise
 
 import Control.DeepSeq
+import Data.Array.Accelerate.AST.Partitioned (PartitionedAcc, PartitionedAfun)
+import Data.Array.Accelerate.Trafo.Desugar (DesugarAcc, desugar, DesugaredArrays, desugarAfun, DesugaredAfun)
+import qualified Data.Array.Accelerate.Trafo.NewNewFusion as NewNewFusion
 
 #ifdef ACCELERATE_DEBUG
 import Text.Printf
@@ -58,12 +61,13 @@ import Data.Array.Accelerate.Debug.Internal.Timed
 -- | Convert a closed array expression to de Bruijn form while also
 --   incorporating sharing observation and array fusion.
 --
-convertAcc :: Acc arrs -> DelayedAcc (ArraysR arrs)
+convertAcc :: DesugarAcc op => Acc arrs -> PartitionedAcc op () (DesugaredArrays (ArraysR arrs))
 convertAcc = convertAccWith defaultOptions
 
-convertAccWith :: Config -> Acc arrs -> DelayedAcc (ArraysR arrs)
+convertAccWith :: DesugarAcc op => Config -> Acc arrs -> PartitionedAcc op () (DesugaredArrays (ArraysR arrs))
 convertAccWith config
-  = phase "array-fusion"           (Fusion.convertAccWith config)
+  = phase "array-fusion"           (NewNewFusion.convertAccWith config)
+  . phase "desugar"                 desugar
   . phase "array-split-lets"       LetSplit.convertAcc
   -- phase "vectorise-sequences"    Vectorise.vectoriseSeqAcc `when` vectoriseSequences
   . phase "sharing-recovery"       (Sharing.convertAccWith config)
@@ -72,12 +76,13 @@ convertAccWith config
 -- | Convert a unary function over array computations, incorporating sharing
 --   observation and array fusion
 --
-convertAfun :: Afunction f => f -> DelayedAfun (ArraysFunctionR f)
+convertAfun :: (Afunction f, DesugarAcc op) => f -> PartitionedAfun op () (DesugaredAfun (ArraysFunctionR f))
 convertAfun = convertAfunWith defaultOptions
 
-convertAfunWith :: Afunction f => Config -> f -> DelayedAfun (ArraysFunctionR f)
+convertAfunWith :: (Afunction f, DesugarAcc op) => Config -> f -> PartitionedAfun op () (DesugaredAfun (ArraysFunctionR f))
 convertAfunWith config
-  = phase "array-fusion"           (Fusion.convertAfunWith config)
+  = phase "array-fusion"           (NewNewFusion.convertAfunWith config)
+  . phase "desugar"                desugarAfun
   . phase "array-split-lets"       LetSplit.convertAfun
   -- phase "vectorise-sequences"    Vectorise.vectoriseSeqAfun  `when` vectoriseSequences
   . phase "sharing-recovery"       (Sharing.convertAfunWith config)

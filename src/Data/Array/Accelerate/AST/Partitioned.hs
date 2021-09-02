@@ -25,6 +25,8 @@ import Data.Array.Accelerate.AST.Operation
 
 import Prelude hiding ( take )
 import Data.Bifunctor
+import Control.DeepSeq (NFData (rnf))
+import qualified GHC.Generics
 
 -- In this model, every thread has one input element per input array,
 -- and one output element per output array. That works perfectly for
@@ -184,3 +186,12 @@ genOut (EArg lhs)      (i, x) o     =
   (genOut lhs i o, x)
 genOut (Ignr lhs)      (i, x) o     =
   (genOut lhs i o, x)
+
+-- instance NFData (Cluster op args) where
+--   rnf = _
+-- instance NFData (ClusterAST op env result) where
+--   rnf = _
+-- instance NFData (LeftHandSideArgs body env scope) where
+--   rnf = _
+-- instance NFData (ClusterIO args input output) where
+--   rnf = _

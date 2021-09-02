@@ -28,10 +28,10 @@
 -- the semantics clearly, not on performance.
 --
 
-module Data.Array.Accelerate.Interpreter (
+module Data.Array.Accelerate.Interpreter
 
 
-) where
+  where
 import Prelude                                                      hiding ( (!!), sum )
 import Data.Array.Accelerate.AST.Partitioned hiding (Empty)
 import Data.Array.Accelerate.AST.Operation

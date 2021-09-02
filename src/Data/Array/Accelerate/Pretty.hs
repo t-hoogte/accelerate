@@ -5,6 +5,7 @@
 {-# LANGUAGE OverloadedStrings    #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
 {-# LANGUAGE TemplateHaskell      #-}
+{-# LANGUAGE TypeApplications     #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 {-# OPTIONS_HADDOCK hide #-}
@@ -43,7 +44,8 @@ import Data.Array.Accelerate.Smart                                  ( Acc, Exp )
 import Data.Array.Accelerate.Sugar.Array
 import Data.Array.Accelerate.Sugar.Elt
 import Data.Array.Accelerate.Trafo
-import Data.Array.Accelerate.Trafo.Delayed
+-- import Data.Array.Accelerate.Trafo.Delayed
+import Data.Array.Accelerate.Interpreter (InterpretOp)
 
 import Data.Maybe
 import Data.Text.Prettyprint.Doc
@@ -55,18 +57,20 @@ import System.IO.Unsafe
 import qualified Data.Text.Lazy                                     as T
 import qualified System.Console.ANSI                                as Term
 import qualified System.Console.Terminal.Size                       as Term
+import Data.Array.Accelerate.AST.Operation (OperationAcc, OperationAfun)
 
 #if ACCELERATE_DEBUG
 import Control.DeepSeq
 import Data.Array.Accelerate.Debug.Internal.Stats
 #endif
 
-
+-- Use the Interpreter's fusion rules to show an Accelerate computation
+-- We should also add a way to do this with other fusion rules
 instance Arrays arrs => Show (Acc arrs) where
-  show = withSimplStats . show . convertAcc
+  show = withSimplStats . show . convertAcc @InterpretOp
 
 instance Afunction (Acc a -> f) => Show (Acc a -> f) where
-  show = withSimplStats . show . convertAfun
+  show = withSimplStats . show . convertAfun @_ @InterpretOp
 
 instance Elt e => Show (Exp e) where
   show = withSimplStats . show . convertExp
@@ -95,13 +99,13 @@ instance PrettyEnv aenv => Show (OpenAcc aenv a) where
 instance PrettyEnv aenv => Show (OpenAfun aenv f) where
   show = renderForTerminal . prettyPreOpenAfun configPlain prettyOpenAcc (prettyEnv (pretty 'a'))
 
-instance PrettyEnv aenv => Show (DelayedOpenAcc aenv a) where
-  show = let config = if shouldPrintHash then configWithHash else configPlain
-         in renderForTerminal . prettyDelayedOpenAcc config context0 (prettyEnv (pretty 'a'))
+instance PrettyEnv aenv => Show (OperationAcc op aenv a) where
+  -- show = let config = if shouldPrintHash then configWithHash else configPlain
+  --        in renderForTerminal . prettyDelayedOpenAcc config context0 (prettyEnv (pretty 'a'))
 
-instance PrettyEnv aenv => Show (DelayedOpenAfun aenv f) where
-  show = let config = if shouldPrintHash then configWithHash else configPlain
-         in renderForTerminal . prettyPreOpenAfun config prettyDelayedOpenAcc (prettyEnv (pretty 'a'))
+instance PrettyEnv aenv => Show (OperationAfun op aenv f) where
+  -- show = let config = if shouldPrintHash then configWithHash else configPlain
+  --        in renderForTerminal . prettyPreOpenAfun config prettyDelayedOpenAcc (prettyEnv (pretty 'a'))
 
 instance (PrettyEnv env, PrettyEnv aenv) => Show (OpenExp env aenv e) where
   show = renderForTerminal . prettyOpenExp context0 (prettyEnv (pretty 'x')) (prettyEnv (pretty 'a'))
@@ -130,6 +134,8 @@ terminalSupportsANSI :: Bool
 terminalSupportsANSI = unsafePerformIO $ Term.hSupportsANSI stdout
 
 {-# NOINLINE terminalLayoutOptions #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeApplications #-}
 terminalLayoutOptions :: LayoutOptions
 terminalLayoutOptions
   = unsafePerformIO
@@ -151,20 +157,20 @@ extractOpenAcc :: OpenAcc aenv a -> PreOpenAcc OpenAcc aenv a
 extractOpenAcc (OpenAcc pacc) = pacc
 
 
-prettyDelayedOpenAcc :: HasCallStack => PrettyAcc DelayedOpenAcc
-prettyDelayedOpenAcc config context aenv (Manifest pacc)
-  = prettyPreOpenAcc config context prettyDelayedOpenAcc extractDelayedOpenAcc aenv pacc
-prettyDelayedOpenAcc _      _       aenv (Delayed _ sh f _)
-  = parens
-  $ nest shiftwidth
-  $ sep [ delayed "delayed"
-        ,          prettyOpenExp app Empty aenv sh
-        , parens $ prettyOpenFun     Empty aenv f
-        ]
+-- prettyDelayedOpenAcc :: HasCallStack => PrettyAcc DelayedOpenAcc
+-- prettyDelayedOpenAcc config context aenv (Manifest pacc)
+--   = prettyPreOpenAcc config context prettyDelayedOpenAcc extractDelayedOpenAcc aenv pacc
+-- prettyDelayedOpenAcc _      _       aenv (Delayed _ sh f _)
+--   = parens
+--   $ nest shiftwidth
+--   $ sep [ delayed "delayed"
+--         ,          prettyOpenExp app Empty aenv sh
+--         , parens $ prettyOpenFun     Empty aenv f
+--         ]
 
-extractDelayedOpenAcc :: HasCallStack => DelayedOpenAcc aenv a -> PreOpenAcc DelayedOpenAcc aenv a
-extractDelayedOpenAcc (Manifest pacc) = pacc
-extractDelayedOpenAcc Delayed{}       = internalError "expected manifest array"
+-- extractDelayedOpenAcc :: HasCallStack => DelayedOpenAcc aenv a -> PreOpenAcc DelayedOpenAcc aenv a
+-- extractDelayedOpenAcc (Manifest pacc) = pacc
+-- extractDelayedOpenAcc Delayed{}       = internalError "expected manifest array"
 
 
 -- Unfortunately, using unsafePerformIO here means that the getFlag will be

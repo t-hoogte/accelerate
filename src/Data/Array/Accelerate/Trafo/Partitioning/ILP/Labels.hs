@@ -231,8 +231,8 @@ getLabelsExp (Cond poe' poe2 poe3) env      = let (NotArr, a) = getLabelsExp poe
                                                   (NotArr, b) = getLabelsExp poe2 env
                                                   (NotArr, c) = getLabelsExp poe3 env
                                               in  (NotArr, a <> b <> c)
-getLabelsExp (While pof pof' poe') env      = let (NotArr, a) = getLabelsExp pof env
-                                                  (NotArr, b) = getLabelsExp pof' env
+getLabelsExp (While pof pof' poe') env      = let (NotArr, a) = getLabelsFun pof env
+                                                  (NotArr, b) = getLabelsFun pof' env
                                                   (NotArr, c) = getLabelsExp poe' env
                                               in  (NotArr, a <> b <> c)
 getLabelsExp (Const st y) env               = (NotArr, mempty)

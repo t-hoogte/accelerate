@@ -34,7 +34,7 @@ module Data.Array.Accelerate.Pretty.Print (
   -- ** Configuration
   PrettyConfig(..),
   configPlain,
-  configWithHash,
+  -- configWithHash,
 
   -- ** Internals
   Adoc,
@@ -68,7 +68,7 @@ import Data.Array.Accelerate.Sugar.Foreign
 import Data.Array.Accelerate.Type
 import qualified Data.Array.Accelerate.AST                          as AST
 import qualified Data.Array.Accelerate.Analysis.Hash                as Hash
-import qualified Data.Array.Accelerate.Trafo.Delayed                as Delayed
+-- import qualified Data.Array.Accelerate.Trafo.Delayed                as Delayed
 
 import Data.Char
 import Data.String
@@ -129,15 +129,15 @@ data PrettyConfig acc
 configPlain :: PrettyConfig acc
 configPlain = PrettyConfig { confOperator = const fromString }
 
-configWithHash :: PrettyConfig Delayed.DelayedOpenAcc
-configWithHash =
-  PrettyConfig
-    { confOperator = \pacc name ->
-        let hashval = Hash.hashPreOpenAccWith
-                          (Hash.defaultHashOptions { Hash.perfect = False })
-                          Delayed.encodeDelayedOpenAcc
-                          pacc
-        in fromString (name ++ "_" ++ show hashval) }
+-- configWithHash :: PrettyConfig Delayed.DelayedOpenAcc
+-- configWithHash =
+--   PrettyConfig
+--     { confOperator = \pacc name ->
+--         let hashval = Hash.hashPreOpenAccWith
+--                           (Hash.defaultHashOptions { Hash.perfect = False })
+--                           Delayed.encodeDelayedOpenAcc
+--                           pacc
+--         in fromString (name ++ "_" ++ show hashval) }
 
 
 -- Array computations
