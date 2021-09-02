@@ -50,7 +50,9 @@ module Data.Array.Accelerate.AST.Operation (
 
   mapAccExecutable, mapAfunExecutable,
 
-  module Data.Array.Accelerate.AST.Exp
+  module Data.Array.Accelerate.AST.Exp,
+
+  NFData'(..)
 ,reindexAcc) where
 
 import Data.Array.Accelerate.AST.Environment
@@ -502,7 +504,10 @@ groundToExpVar (TupRpair t1 t2) (TupRpair v1 v2)        = groundToExpVar t1 v1 `
 groundToExpVar TupRunit         TupRunit                = TupRunit
 groundToExpVar _                _                       = error "Impossible pair"
 
-instance NFData (OperationAcc op env a) where
-  rnf = _
-instance NFData (OperationAfun op env a) where
-  rnf = _
+class NFData' f where
+  rnf' :: f a -> ()
+
+instance NFData' op => NFData (OperationAcc op env a) where
+  rnf = error "implement NFData on OperationAcc"
+instance NFData' op => NFData (OperationAfun op env a) where
+  rnf = error "implement NFData on OperationAfun"

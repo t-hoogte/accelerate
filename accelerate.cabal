@@ -380,11 +380,9 @@ library
         Data.Array.Accelerate.Sugar.Vec
         Data.Array.Accelerate.Trafo
         Data.Array.Accelerate.Trafo.Config
-        Data.Array.Accelerate.Trafo.Delayed
         Data.Array.Accelerate.Trafo.Desugar
         Data.Array.Accelerate.Trafo.Exp.Shrink
         Data.Array.Accelerate.Trafo.Exp.Substitution
-        Data.Array.Accelerate.Trafo.Fusion
         Data.Array.Accelerate.Trafo.NewNewFusion
         Data.Array.Accelerate.Trafo.Partitioning.ILP
         Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering

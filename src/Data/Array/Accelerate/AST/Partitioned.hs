@@ -195,3 +195,7 @@ genOut (Ignr lhs)      (i, x) o     =
 --   rnf = _
 -- instance NFData (ClusterIO args input output) where
 --   rnf = _
+
+
+instance NFData' op => NFData' (Cluster op) where
+  rnf' = error "todo"

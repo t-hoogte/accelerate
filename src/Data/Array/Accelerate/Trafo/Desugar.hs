@@ -66,7 +66,7 @@ data Boundary env t where
             -> Boundary env (Array sh e)
 
 
-class DesugarAcc (op :: Type -> Type) where
+class NFData' op => DesugarAcc (op :: Type -> Type) where
   mkMap         :: Arg env (Fun' (s -> t))
                 -> Arg env (In sh s)
                 -> Arg env (Out sh t)

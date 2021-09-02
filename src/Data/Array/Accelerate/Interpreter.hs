@@ -132,6 +132,12 @@ inputDirectionConstraint l lIn =
 inOutBounds :: Label -> Bounds InterpretOp
 inOutBounds l = lower (-2) (BackendSpecific $ OrderIn l) <> lower (-2) (BackendSpecific $ OrderOut l)
 
+
+
+instance NFData' InterpretOp where
+  rnf' = error "todo"
+
+
 -- -- Program execution
 -- -- -----------------
 
