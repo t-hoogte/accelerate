@@ -64,3 +64,11 @@ mapLeftHandSide :: (forall v. s v -> u v) -> LeftHandSide s t env env' -> LeftHa
 mapLeftHandSide f (LeftHandSideSingle s)   = LeftHandSideSingle $ f s
 mapLeftHandSide f (LeftHandSideWildcard r) = LeftHandSideWildcard $ mapTupR f r
 mapLeftHandSide f (LeftHandSidePair as bs) = LeftHandSidePair (mapLeftHandSide f as) (mapLeftHandSide f bs)
+
+flattenTupR :: TupR s t -> [Exists s]
+flattenTupR = (`go` [])
+  where
+    go :: TupR s t -> [Exists s] -> [Exists s]
+    go (TupRsingle s)   accum = Exists s : accum
+    go (TupRpair t1 t2) accum = go t1 $ go t2 accum
+    go TupRunit         accum = accum

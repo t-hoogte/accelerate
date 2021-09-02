@@ -30,7 +30,7 @@ module Data.Array.Accelerate.Trafo.Substitution (
   subTop, subAtop, apply1,
 
   -- ** Weakening
-  (:>), Sink(..), SinkExp(..), weakenVars, weakenArrayInstr,
+  (:>), Sink(..), Sink'(..), SinkExp(..), weakenVars, weakenArrayInstr,
 
   -- ** Strengthening
   (:?>), strengthen, strengthenE,
@@ -170,6 +170,9 @@ class Sink f where
   -- {-# INLINEABLE weaken #-}
   -- default weaken :: Rebuildable f => env :> env' -> f env t -> f env' t
   -- weaken k = Stats.substitution "weaken" . rebuildA rebuildWeakenVar
+
+class Sink' f where
+  weaken' :: env :> env' -> f env -> f env'
 
 --instance Rebuildable f => Sink f where -- undecidable, incoherent
 --  weaken k = Stats.substitution "weaken" . rebuildA rebuildWeakenVar

@@ -342,6 +342,7 @@ library
         Data.Array.Accelerate.AST.Environment
         Data.Array.Accelerate.AST.Exp
         Data.Array.Accelerate.AST.Idx
+        Data.Array.Accelerate.AST.IdxSet
         Data.Array.Accelerate.AST.LeftHandSide
         Data.Array.Accelerate.AST.Operation
         Data.Array.Accelerate.AST.Partitioned
