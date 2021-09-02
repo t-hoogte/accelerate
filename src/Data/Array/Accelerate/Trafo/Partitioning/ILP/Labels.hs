@@ -188,8 +188,59 @@ getELabelIdx :: Idx env a -> LabelEnv env -> ELabel
 getELabelIdx ZeroIdx ((e,_) :>>: _) = e
 getELabelIdx (SuccIdx idx) (_ :>>: env) = getELabelIdx idx env
 
+-- recurses through, only does interesting stuff at ArrayInstructions (first two cases)
 getLabelsExp :: OpenExp x env y -> LabelEnv env -> ALabels (Exp' y)
-getLabelsExp = undefined -- TODO traverse everything, look for Idxs
+getLabelsExp (ArrayInstr (Index var) poe') env     = let (_, a) = getLabelsVar var env
+                                                         (NotArr, b) = getLabelsExp poe' env
+                                                     in  (NotArr, a <> b)
+getLabelsExp (ArrayInstr (Parameter var) poe') env = let (_, a) = getLabelsVar var env
+                                                         (NotArr, b) = getLabelsExp poe' env
+                                                     in  (NotArr, a <> b)
+getLabelsExp (Let lhs poe' poe2) env        = let (NotArr, a) = getLabelsExp poe' env
+                                                  (NotArr, b) = getLabelsExp poe2 env
+                                              in  (NotArr, a <> b)
+getLabelsExp (Evar var) env                 = (NotArr, mempty)
+getLabelsExp (Foreign tr asm pof poe') env  = (NotArr, mempty) -- TODO the fallback can't do indexing, ignoring the foreign
+getLabelsExp (Pair poe' poe2) env           = let (NotArr, a) = getLabelsExp poe' env
+                                                  (NotArr, b) = getLabelsExp poe2 env
+                                              in  (NotArr, a <> b)
+getLabelsExp Nil env                        = (NotArr, mempty)
+getLabelsExp (VecPack vr poe') env          = first (\NotArr -> NotArr) $ getLabelsExp poe' env
+getLabelsExp (VecUnpack vr poe') env        = first (\NotArr -> NotArr) $ getLabelsExp poe' env
+getLabelsExp (IndexSlice si poe' poe2) env  = let (NotArr, a) = getLabelsExp poe' env
+                                                  (NotArr, b) = getLabelsExp poe2 env
+                                              in  (NotArr, a <> b)
+getLabelsExp (IndexFull si poe' poe2) env   = let (NotArr, a) = getLabelsExp poe' env
+                                                  (NotArr, b) = getLabelsExp poe2 env
+                                              in  (NotArr, a <> b)
+getLabelsExp (ToIndex sr poe' poe2) env     = let (NotArr, a) = getLabelsExp poe' env
+                                                  (NotArr, b) = getLabelsExp poe2 env
+                                              in  (NotArr, a <> b)
+getLabelsExp (FromIndex sr poe' poe2) env   = let (NotArr, a) = getLabelsExp poe' env
+                                                  (NotArr, b) = getLabelsExp poe2 env
+                                              in  (NotArr, a <> b)
+getLabelsExp (Case poe' x0 Nothing) env     = let (NotArr, a) = foldr (\((`getLabelsExp` env) . snd -> (NotArr, c)) (NotArr, d) -> (NotArr, c <> d)) 
+                                                                      (NotArr, mempty) 
+                                                                      x0
+                                                  (NotArr, b) = getLabelsExp poe' env
+                                              in  (NotArr, a <> b)
+getLabelsExp (Case poe' x0 (Just poe)) env  = let (NotArr, a) = getLabelsExp (Case poe' x0 Nothing) env
+                                                  (NotArr, b) = getLabelsExp poe env
+                                              in  (NotArr, a <> b)
+getLabelsExp (Cond poe' poe2 poe3) env      = let (NotArr, a) = getLabelsExp poe' env
+                                                  (NotArr, b) = getLabelsExp poe2 env
+                                                  (NotArr, c) = getLabelsExp poe3 env
+                                              in  (NotArr, a <> b <> c)
+getLabelsExp (While pof pof' poe') env      = let (NotArr, a) = getLabelsExp pof env
+                                                  (NotArr, b) = getLabelsExp pof' env
+                                                  (NotArr, c) = getLabelsExp poe' env
+                                              in  (NotArr, a <> b <> c)
+getLabelsExp (Const st y) env               = (NotArr, mempty)
+getLabelsExp (PrimConst pc) env             = (NotArr, mempty)
+getLabelsExp (PrimApp pf poe') env          = first (\NotArr -> NotArr) $ getLabelsExp poe' env
+getLabelsExp (ShapeSize sr poe') env        = first (\NotArr -> NotArr) $ getLabelsExp poe' env
+getLabelsExp (Undef st) env                 = (NotArr, mempty)
+getLabelsExp (Coerce st st' poe') env       = (NotArr, mempty)
 
 getLabelsFun :: OpenFun x env y -> LabelEnv env -> ALabels (Fun' y)
 getLabelsFun (Body expr) lenv = first body $ getLabelsExp expr lenv

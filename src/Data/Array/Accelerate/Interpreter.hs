@@ -88,11 +88,12 @@ instance DesugarAcc InterpretOp where
   mkBackpermute a b c   = Exec IBackpermute (a :>: b :>: c :>:       ArgsNil)
   mkGenerate    a b     = Exec IGenerate    (a :>: b :>:             ArgsNil)
   mkPermute     a b c d = Exec IPermute     (a :>: b :>: c :>: d :>: ArgsNil)
-  -- etc
+  -- etc, but the rest piggybacks off of Generate for now (see Desugar.hs)
 
 -- -2 is left>right, -1 is right>left, n is 'according to computation n' (e.g. Backpermute) 
 -- (Note that Labels are uniquely identified by an Int, the parent just gives extra information)
 -- Use Output = -3 for 'cannot be fused with consumer', as that is more difficult to express (we don't know the consumer yet)
+-- We restrict all the Inputs to (-2, PosInf).
 data OrderV = OrderIn  Label
             | OrderOut Label
   deriving (Eq, Ord, Read, Show)
