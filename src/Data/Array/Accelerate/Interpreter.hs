@@ -59,6 +59,11 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
 import qualified Data.Set as S
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
 import Lens.Micro ((.~), (&))
+import qualified Data.Array.Accelerate.Sugar.Array as Sugar
+import qualified Data.Array.Accelerate.Smart as Smart
+import System.IO.Unsafe (unsafePerformIO)
+import Data.Array.Accelerate.Trafo (convertAcc)
+import Control.DeepSeq (($!!))
 
 
 -- Conceptually, this computes the body of the fused loop
@@ -138,20 +143,21 @@ instance NFData' InterpretOp where
   rnf' = error "todo"
 
 
--- -- Program execution
--- -- -----------------
+-- Program execution
+-- -----------------
 
--- -- | Run a complete embedded array program using the reference interpreter.
--- --
--- run :: (HasCallStack, Sugar.Arrays a) => Smart.Acc a -> a
--- run a = unsafePerformIO execute
---   where
---     !acc    = convertAcc a
---     execute = do
---       Debug.dumpGraph $!! acc
---       Debug.dumpSimplStats
---       res <- phase "execute" Debug.elapsed $ evaluate $ evalOpenAcc acc Empty
---       return $ Sugar.toArr $ snd res
+-- | Run a complete embedded array program using the reference interpreter.
+--
+run :: forall a. (HasCallStack, Sugar.Arrays a) => Smart.Acc a -> a
+run a = unsafePerformIO execute
+  where
+    acc :: PartitionedAcc InterpretOp () (DesugaredArrays (Sugar.ArraysR a))
+    !acc    = convertAcc a
+    execute = do
+      Debug.dumpGraph $!! acc
+      Debug.dumpSimplStats
+      res <- phase "execute" Debug.elapsed $ undefined
+      return $ Sugar.toArr $ snd res
 
 -- -- | This is 'runN' specialised to an array program of one argument.
 -- --
