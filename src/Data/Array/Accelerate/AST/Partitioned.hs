@@ -27,6 +27,9 @@ import Prelude hiding ( take )
 import Data.Bifunctor
 import Control.DeepSeq (NFData (rnf))
 import qualified GHC.Generics
+import Data.Array.Accelerate.Trafo.Desugar (ArrayDescriptor(ArrayDescriptor))
+import Data.Array.Accelerate.Representation.Array (Array)
+import qualified Data.Array.Accelerate.AST.Environment as Env
 
 -- In this model, every thread has one input element per input array,
 -- and one output element per output array. That works perfectly for
@@ -71,11 +74,11 @@ data LeftHandSideArgs body env scope where
   -- Because of `Ignr`, we could also give this the type `LeftHandSideArgs () () ()`.
   Base :: LeftHandSideArgs () () ()
   -- The body has an input array
-  Reqr :: Take e eenv env -> Take e escope scope
+  Reqr :: Take (Value e) eenv env -> Take (Value e) escope scope
        -> LeftHandSideArgs              body   env             scope
        -> LeftHandSideArgs (In  sh e -> body) eenv            escope
   -- The body creates an array
-  Make :: Take e escope scope
+  Make :: Take (Value e) escope scope
        -> LeftHandSideArgs              body   env             scope
        -> LeftHandSideArgs (Out sh e -> body)  env            escope
   -- TODO: duplicate for Var' and Fun'
@@ -88,11 +91,12 @@ data LeftHandSideArgs body env scope where
   Ignr :: LeftHandSideArgs              body   env             scope
        -> LeftHandSideArgs              body  (env, e)        (scope, e)
 
+-- input ~ InArgs args, and output is a permuted version of OutArgs args
 data ClusterIO args input output where
   Empty  :: ClusterIO () () output
   Input  :: ClusterIO              args   input      output
-         -> ClusterIO (In  sh e -> args) (input, e) (output, e)
-  Output :: Take e eoutput output
+         -> ClusterIO (In  sh e -> args) (input, Value e) (output, Value e)
+  Output :: Take (Value e) eoutput output
          -> ClusterIO              args   input             output
          -> ClusterIO (Out sh e -> args)  input            eoutput
   MutPut :: ClusterIO              args   input             output
@@ -152,19 +156,21 @@ data Take' x xargs args where
   There' :: Take' x       xargs        args
          -> Take' x (y -> xargs) (y -> args)
 
-type family ToIn  a where
-  ToIn  ()              = ()
-  ToIn  (In sh e  -> x) = (ToIn x, e)
-  ToIn  (Mut sh e -> x) = (ToIn x, Mut sh e)
-  ToIn  (Exp'   e -> x) = (ToIn x, Exp' e)
-  ToIn  (_ -> x)        =  ToIn x
-type family ToOut a where
-  ToOut ()              = ()
-  ToOut (Out sh e -> x) = (ToOut x, e)
-  ToOut (Mut sh e -> x) = (ToOut x, Mut sh e)
-  ToOut (_  -> x)       =  ToOut x
+type family InArgs  a where
+  InArgs  ()              = ()
+  InArgs  (In sh e  -> x) = (InArgs x, Value e)
+  InArgs  (Mut sh e -> x) = (InArgs x, Mut sh e)
+  InArgs  (Exp'   e -> x) = (InArgs x, Exp' e)
+  InArgs  (Fun'   e -> x) = (InArgs x, Fun' e)
+  InArgs  (Var'   e -> x) = (InArgs x, Var' e)
+  InArgs  (Out sh e -> x) =  InArgs x
+type family OutArgs a where
+  OutArgs ()              = ()
+  OutArgs (Out sh e -> x) = (OutArgs x, Value e)
+  OutArgs (Mut sh e -> x) = (OutArgs x, Mut sh e)
+  OutArgs (_  -> x)       =  OutArgs x
 
-getIn :: LeftHandSideArgs body i o -> i -> ToIn body
+getIn :: LeftHandSideArgs body i o -> i -> InArgs body
 getIn Base () = ()
 getIn (Reqr t1 t2 lhs) i = let (x, i') = take t1 i in (getIn lhs i', x)
 getIn (Make t lhs) i = getIn lhs i
@@ -172,7 +178,7 @@ getIn (Adju lhs) (i, x) = (getIn lhs i, x)
 getIn (EArg lhs) (i, x) = (getIn lhs i, x)
 getIn (Ignr lhs) (i, x) =  getIn lhs i
 
-genOut :: LeftHandSideArgs body i o -> i -> ToOut body -> o
+genOut :: LeftHandSideArgs body i o -> i -> OutArgs body -> o
 genOut Base             ()    o     = 
   ()
 genOut (Reqr t1 t2 lhs) i     o     = 
@@ -186,6 +192,19 @@ genOut (EArg lhs)      (i, x) o     =
   (genOut lhs i o, x)
 genOut (Ignr lhs)      (i, x) o     =
   (genOut lhs i o, x)
+
+type family FromArgs env a where
+  FromArgs env ()            = ()
+  FromArgs env (x, Exp'   e) = (FromArgs env x, Exp     env e)
+  FromArgs env (x, Var'   e) = (FromArgs env x, ExpVars env e)
+  FromArgs env (x, Fun'   e) = (FromArgs env x, Fun     env e)
+  FromArgs env (x, Mut sh e) = (FromArgs env x, ArrayDescriptor env (Array sh e))
+  FromArgs env (x, Value  e) = (FromArgs env x,             e)
+
+type FromIn  env args = FromArgs env ( InArgs args)
+type FromOut env args = FromArgs env (OutArgs args)
+
+newtype Value e = Value e
 
 -- instance NFData (Cluster op args) where
 --   rnf = _

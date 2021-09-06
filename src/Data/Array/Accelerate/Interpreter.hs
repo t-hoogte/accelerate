@@ -42,7 +42,7 @@ import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Slice
-import Data.Array.Accelerate.AST.Environment
+import Data.Array.Accelerate.AST.Environment hiding (Identity(..))
 import Data.Array.Accelerate.Type
 import Data.Primitive.Vec
 import Data.Primitive.Types
@@ -64,29 +64,39 @@ import qualified Data.Array.Accelerate.Smart as Smart
 import System.IO.Unsafe (unsafePerformIO)
 import Data.Array.Accelerate.Trafo (convertAcc)
 import Control.DeepSeq (($!!))
-
+import Control.Monad.Identity
+import Data.Composition
+import qualified Data.Array.Accelerate.AST.Environment as Env
 
 -- Conceptually, this computes the body of the fused loop
 -- It only deals with scalar values - wrap it in a loop!
-transform :: Monad m  -- The interpreter will want to use this with `m ~ Identity`, but other backends might not (e.g. `m ~ CodeGen PTX`)
-          => (forall body. op body -> ToIn body -> m (ToOut body)) -- function to handle primitives, might end up in the typeclass of `op` 
-          -> ClusterAST op i o -- Tree of fused primitives
-          -> i                 -- input
-          -> m o               -- output
-transform tbody None i = return i
-transform tbody (Bind lhs op c) i = tbody op (getIn lhs i) >>= transform tbody c . genOut lhs i
-
+-- transform :: Monad m  -- The interpreter will want to use this with `m ~ Identity`, but other backends might not (e.g. `m ~ CodeGen PTX`)
+--           => (forall body. op body -> Args env body -> ToIn body -> m (ToOut body)) -- function to handle primitives, might end up in the typeclass of `op` 
+--           -> ClusterAST op i o -- Tree of fused primitives
+--           -> i                 -- input
+--           -> m o               -- output
+-- transform tbody None i = return i
+-- transform tbody (Bind lhs op c) i = tbody op (getIn lhs i) >>= transform tbody c . genOut lhs i
+evalCluster :: Monad m
+            => (forall env body. op body -> FromIn env body -> Val env -> m (FromOut env body))
+            -> ClusterIO args i o
+            -> ClusterAST op i o
+            -> Args env args
+            -> Val env
+            -> i
+            -> m o
+evalCluster k ci ca pa env i = _
 
 data InterpretOp args where
-  INoop :: InterpretOp ()
-  IMap :: InterpretOp (Fun' (s -> t) -> In sh s -> Out sh t -> ())
+  INoop        :: InterpretOp ()
+  IMap         :: InterpretOp (Fun' (s -> t) -> In sh s -> Out sh t -> ())
   IBackpermute :: InterpretOp (Fun' (sh' -> sh) -> In sh t -> Out sh' t -> ())
-  IGenerate :: InterpretOp (Fun' (sh -> t) -> Out sh t -> ())
-  IPermute :: InterpretOp (Fun' (e -> e -> e)
-           -> Mut sh' e
-           -> Fun' (sh -> PrimMaybe sh')
-           -> In sh e 
-           -> ())
+  IGenerate    :: InterpretOp (Fun' (sh -> t) -> Out sh t -> ())
+  IPermute     :: InterpretOp (Fun' (e -> e -> e)
+                              -> Mut sh' e
+                              -> Fun' (sh -> PrimMaybe sh')
+                              -> In sh e 
+                              -> ())
 
 instance DesugarAcc InterpretOp where
   mkMap         a b c   = Exec IMap         (a :>: b :>: c :>:       ArgsNil)
@@ -105,42 +115,66 @@ data OrderV = OrderIn  Label
 
 instance MakesILP InterpretOp where
   type BackendVar InterpretOp = OrderV
-
+  -- TODO add folds/scans/stencils, and solve problems: in particular, iteration size needs to be uniform
   mkGraph INoop _ _ = mempty
   mkGraph IBackpermute (_ :>: ((L _ (_, S.toList -> ~[lIn])) :>: _)) l@(Label i _) =
     Info
       mempty
       (  inputDirectionConstraint l lIn
-      <> c (BackendSpecific $ OrderIn l) .==. int i) -- enforce that the backpermute follows its own rules
+      <> var (OrderIn l) .==. int i) -- enforce that the backpermute follows its own rules
       (inOutBounds l)
   mkGraph IGenerate _ l = Info mempty mempty (lower (-2) (BackendSpecific $ OrderOut l))
   mkGraph IMap (f :>: L _ (_, S.toList -> ~[lIn]) :>: o :>: ArgsNil) l = 
     Info 
       mempty 
       (  inputDirectionConstraint l lIn
-      <> c (BackendSpecific $ OrderIn l) .==. c (BackendSpecific $ OrderOut l))
+      <> var (OrderIn l) .==. var (OrderOut l))
       (inOutBounds l)
   mkGraph IPermute (comb :>: L _ (_, S.toList -> ~[lTarget]) :>: f :>: L _ (_, S.toList -> ~[lIn]) :>: ArgsNil) l =
     Info
       (mempty & infusibleEdges .~ S.singleton (lTarget -?> l)) -- Cannot fuse with the producer of the target array
       (  inputDirectionConstraint l lIn
-      <> c (BackendSpecific $ OrderOut l) .==. int (-3)) -- convention meaning infusible
+      <> var (OrderOut l) .==. int (-3)) -- convention meaning infusible
       (lower (-2) (BackendSpecific $ OrderIn l))
 
 
 -- | If l and lIn are fused, the out-order of lIn and the in-order of l should match
 inputDirectionConstraint :: Label -> Label -> Constraint InterpretOp
 inputDirectionConstraint l lIn =            
-                timesN (fused lIn l) .>=. c (BackendSpecific $ OrderIn l) .-. c (BackendSpecific $ OrderOut lIn)
-    <> (-1) .*. timesN (fused lIn l) .<=. c (BackendSpecific $ OrderIn l) .-. c (BackendSpecific $ OrderOut lIn)
+                timesN (fused lIn l) .>=. var (OrderIn l) .-. var (OrderOut lIn)
+    <> (-1) .*. timesN (fused lIn l) .<=. var (OrderIn l) .-. var (OrderOut lIn)
 
 inOutBounds :: Label -> Bounds InterpretOp
 inOutBounds l = lower (-2) (BackendSpecific $ OrderIn l) <> lower (-2) (BackendSpecific $ OrderOut l)
 
-
+var :: BackendVar InterpretOp -> Expression InterpretOp
+var = c . BackendSpecific
 
 instance NFData' InterpretOp where
   rnf' = error "todo"
+
+
+
+fromArgs :: Int -> Env.Val env -> Args env args -> FromIn env args
+fromArgs i _ ArgsNil = ()
+fromArgs i env (ArgVar v :>: args) = (fromArgs i env args, v)
+fromArgs i env (ArgExp e :>: args) = (fromArgs i env args, e)
+fromArgs i env (ArgFun f :>: args) = (fromArgs i env args, f)
+fromArgs i env (ArgArray Mut _ sh buf :>: args) = (fromArgs i env args, ArrayDescriptor sh buf)
+fromArgs i env (ArgArray In ar sh buf :>: args) =
+  let sh'  = varsGetVal sh  env
+      buf' = varsGetVal buf env
+  in undefined -- take the i-th element of buf'
+fromArgs i env (ArgArray Out ar sh buf :>: args) = fromArgs i env args
+
+evalOp :: InterpretOp args -> Val env -> FromIn env args -> FromOut env args
+evalOp INoop _ () = ()
+evalOp IMap env (((), x), f) = _ f x
+evalOp IBackpermute env fa = _
+evalOp IGenerate env fa = _
+evalOp IPermute env fa = _
+
+
 
 
 -- Program execution

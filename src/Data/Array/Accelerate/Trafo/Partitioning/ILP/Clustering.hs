@@ -304,14 +304,8 @@ fuseInput x as (Reqr t t2 lhs) io =
         ttake a t $ \a' t'' -> 
           Reqr a' b' $ Reqr t'' t2' c) 
     <$> fuseInput x as' lhs io'
-fuseInput x as (Adju lhs) io =
-  removeInput as Here io $ \as' io' Here _ _ ->
-    (\(Reqr a b c) -> Reqr (There a) (There b) $ Adju c)
-    <$> fuseInput x as' lhs io'
-fuseInput x as (EArg lhs) io = 
-  removeInput as Here io $ \as' io' Here _ _ ->
-    (\(Reqr a b c) -> Reqr (There a) (There b) $ EArg c)
-    <$> fuseInput x as' lhs io'
+fuseInput x (_ :>: as) (Adju lhs) (MutPut io) = (\(Reqr a b c) -> Reqr (There a) (There b) $ Adju c) <$> fuseInput x as lhs io
+fuseInput x (_ :>: as) (EArg lhs) (ExpPut io) = (\(Reqr a b c) -> Reqr (There a) (There b) $ EArg c) <$> fuseInput x as lhs io
 -- Ignore cases that don't get fused
 fuseInput x (_ :>: as) (Ignr lhs) (Input io) =
   (\(Reqr a b c) -> Reqr (There a) (There b) (Ignr c))
@@ -323,15 +317,14 @@ fuseInput x (_ :>: as) (Ignr lhs) (ExpPut io) =
   (\(Reqr a b c) -> Reqr (There a) (There b) (Ignr c))
   <$> fuseInput x as lhs io
 
-
 removeInput :: forall env total e i i' result r
              . LabelledArgs  env total
-            -> Take e i i'
+            -> Take (Value e) i i'
             -> ClusterIO total i result
             -> (forall total' result' sh
                . LabelledArgs env total' 
               -> ClusterIO total' i' result'
-              -> Take e result result'
+              -> Take (Value e) result result'
               -> Take' (In sh e) total total'
               -> LabelledArg env (In sh e)
               -> r)
@@ -348,8 +341,6 @@ removeInput (x :>: xs) t (Output t1 io) k =
 removeInput (x :>: xs) (There t) (MutPut io) k =
   removeInput xs t io $ \xs' io' t' t'' a ->
     k (x :>: xs') (MutPut io') (There t') (There' t'') a
-removeInput _ Here (MutPut _) _ = error "should never want to remove this"
-removeInput _ Here (ExpPut _) _ = error "should never want to remove this"
 removeInput (x :>: xs) (There t) (ExpPut io) k = 
   removeInput xs t io $ \xs' io' t' t'' a -> 
     k (x :>: xs') (ExpPut io') (There t') (There' t'') a
@@ -358,8 +349,8 @@ removeInput (x :>: xs) (There t) (ExpPut io) k =
 
 restoreInput :: ClusterIO total' i' result' 
              -> Take' (In sh e) total total'
-             -> Take e i i'
-             -> Take e result result'
+             -> Take (Value e) i i'
+             -> Take (Value e) result result'
              -> LabelledArg env (In sh e)
              -> ClusterIO total i result
 restoreInput cio Here' Here Here (ArgArray In  _ _ _ `L` _) = Input cio
@@ -376,8 +367,8 @@ restoreInput _ _ _ _ _ = error "I think this means that the take(')s in restoreI
 addInput  :: ClusterAST op scope result
           -> ClusterIO total i result
           -> (forall result'
-             . ClusterAST op (scope, e) result'
-            -> ClusterIO (In sh e -> total) (i, e) result'
+             . ClusterAST op (scope, Value e) result'
+            -> ClusterIO (In sh e -> total) (i, Value e) result'
             -> r)
           -> r
 addInput None io k = k None (Input io)
@@ -406,7 +397,7 @@ fuseOutput :: LabelledArg env (Out sh e)
                . Take' (inOrMut sh e) total total'
               -> LeftHandSideArgs (Out sh e -> added)  i' scope 
               -> ClusterIO        (Out sh e -> total') i' result
-              -> Take e i i'
+              -> Take (Value e) i i'
               -> r)
            -> Maybe r
 -- Base case, no fusion
@@ -456,16 +447,10 @@ fuseOutput x (_ :>: as) (Ignr lhs) (ExpPut io) k =
   fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
     k (There' t') (Make (There t1) $ Ignr lhs') (Output (There t2) $ ExpPut io') (There t)
 -- EArg goes just like Ignr
-fuseOutput x (_ :>: as) (EArg lhs) (Input io) k =
-  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
-    k (There' t') (Make (There t1) $ EArg lhs') (Output (There t2) $ Input io') (There t)
 fuseOutput x (_ :>: as) (EArg lhs) (ExpPut io) k = 
   fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
     k (There' t') (Make (There t1) $ EArg lhs') (Output (There t2) $ ExpPut io') (There t)
 -- Adju is like EArg
-fuseOutput x (_ :>: as) (Adju lhs) (Input io) k =
-  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
-    k (There' t') (Make (There t1) $ Adju lhs') (Output (There t2) $ Input io') (There t)
 fuseOutput x (_ :>: as) (Adju lhs) (MutPut io) k = 
   fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
     k (There' t') (Make (There t1) $ Adju lhs') (Output (There t2) $ MutPut io') (There t)
@@ -473,7 +458,7 @@ fuseOutput x (_ :>: as) (Adju lhs) (MutPut io) k =
 addOutput :: ClusterAST op scope result
           -> ClusterIO total i result
           -> (forall result'
-              . ClusterAST op (scope, e) result'
+              . ClusterAST op (scope, Value e) result'
              -> ClusterIO (Out sh e -> total) i result'
              -> r)
           -> r

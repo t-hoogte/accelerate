@@ -482,9 +482,9 @@ arrayInstrGroundVars :: Exists (ArrayInstr benv) -> Exists (GroundVar benv)
 arrayInstrGroundVars (Exists (Parameter (Var tp ix))) = Exists $ Var (GroundRscalar tp) ix
 arrayInstrGroundVars (Exists (Index var))             = Exists var
 
-mapAccExecutable :: (forall args. op args -> op' args) -> PreOpenAcc op benv t -> PreOpenAcc op' benv t
+mapAccExecutable :: (forall args benv'. op args -> Args benv' args -> op' args) -> PreOpenAcc op benv t -> PreOpenAcc op' benv t
 mapAccExecutable f = \case
-  Exec op args                  -> Exec (f op) args
+  Exec op args                  -> Exec (f op args) args
   Return vars                   -> Return vars
   Compute e                     -> Compute e
   Alet lhs uniqueness bnd body  -> Alet lhs uniqueness (mapAccExecutable f bnd) (mapAccExecutable f body)
@@ -494,7 +494,7 @@ mapAccExecutable f = \case
   Acond var a1 a2               -> Acond var (mapAccExecutable f a1) (mapAccExecutable f a2)
   Awhile uniqueness c g a       -> Awhile uniqueness (mapAfunExecutable f c) (mapAfunExecutable f g) a
 
-mapAfunExecutable :: (forall args. op args -> op' args) -> PreOpenAfun op benv t -> PreOpenAfun op' benv t
+mapAfunExecutable :: (forall args benv'. op args -> Args benv' args -> op' args) -> PreOpenAfun op benv t -> PreOpenAfun op' benv t
 mapAfunExecutable f (Abody a)    = Abody    $ mapAccExecutable  f a
 mapAfunExecutable f (Alam lhs a) = Alam lhs $ mapAfunExecutable f a
 

@@ -290,6 +290,7 @@ library
         , array                         >= 0.4
         , base-orphans                  >= 0.3
         , bytestring                    >= 0.10.2
+        , composition
         , containers                    >= 0.3
         , cryptonite                    >= 0.21
         , deepseq                       >= 1.3

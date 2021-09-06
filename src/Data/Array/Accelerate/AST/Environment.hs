@@ -6,6 +6,7 @@
 {-# LANGUAGE TypeApplications    #-}
 {-# LANGUAGE TypeOperators       #-}
 {-# OPTIONS_HADDOCK hide #-}
+{-# LANGUAGE PatternSynonyms #-}
 -- |
 -- Module      : Data.Array.Accelerate.AST.Environment
 -- Copyright   : [2008..2020] The Accelerate Team
@@ -17,7 +18,7 @@
 --
 
 module Data.Array.Accelerate.AST.Environment (
-  Env(..), PartialEnv(..), Val, IdentityF(..),
+  Env(.., Push'), PartialEnv(..), Val, IdentityF(..),
   push, push', prj, prj', prjPartial,
   unionPartialEnv, EnvBinding(..), partialEnvFromList, mapPartialEnv,
   mapMaybePartialEnv, partialEnvValues, diffPartialEnv, diffPartialEnvWith,
@@ -27,7 +28,7 @@ module Data.Array.Accelerate.AST.Environment (
   prjUpdate', prjReplace', update', updates', mapEnv,
   Identity(..), (:>)(..), weakenId, weakenSucc, weakenSucc', weakenEmpty,
   sink, (.>), sinkWithLHS, weakenWithLHS, substituteLHS,
-) where
+varsGet,varsGetVal) where
 
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Var
@@ -50,6 +51,10 @@ data PartialEnv f env where
   PNone  :: PartialEnv f env ->        PartialEnv f (env, t)
 
 type Val = Env Identity
+
+pattern Push' :: () => (env' ~ (env, t)) => Val env -> t -> Val env'
+pattern Push' env t = Push env (Identity t)
+{-# COMPLETE Empty, Push' #-}
 
 -- Push a set of variables into an environment
 --
@@ -304,3 +309,12 @@ substituteLHS lhs vars = Weaken f
       SuccIdx idx' -> Right idx'
     go (LeftHandSidePair l1 l2) (TupRpair v1 v2) idx = go l2 v2 idx >>= go l1 v1
     go _ _ _ = error "LHS and tuple mismatch"
+
+
+varsGet :: Applicative f => Vars s env t -> Env f env -> f t
+varsGet TupRunit _ = pure ()
+varsGet (TupRsingle (Var _ idx)) env = prj' idx env
+varsGet (TupRpair v1 v2) env = (,) <$> varsGet v1 env <*> varsGet v2 env
+
+varsGetVal :: Vars s env t -> Val env -> t
+varsGetVal vars = runIdentity . varsGet vars
