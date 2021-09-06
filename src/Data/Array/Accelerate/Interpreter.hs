@@ -67,6 +67,7 @@ import Control.DeepSeq (($!!))
 import Control.Monad.Identity
 import Data.Composition
 import qualified Data.Array.Accelerate.AST.Environment as Env
+import Data.Array.Accelerate.Array.Unique
 
 -- Conceptually, this computes the body of the fused loop
 -- It only deals with scalar values - wrap it in a loop!
@@ -167,12 +168,23 @@ fromArgs i env (ArgArray In ar sh buf :>: args) =
   in undefined -- take the i-th element of buf'
 fromArgs i env (ArgArray Out ar sh buf :>: args) = fromArgs i env args
 
-evalOp :: InterpretOp args -> Val env -> FromIn env args -> FromOut env args
-evalOp INoop _ () = ()
-evalOp IMap env (((), x), f) = _ f x
-evalOp IBackpermute env fa = _
-evalOp IGenerate env fa = _
-evalOp IPermute env fa = _
+
+evalOp :: Int -> InterpretOp args -> Val env -> FromIn env args -> IO (FromOut env args)
+evalOp _ INoop _ () = pure ()
+evalOp _ IMap env (((), x), f) = pure ((), evalFun f env x)
+evalOp _ IBackpermute _ _ = error "Should be filtered out earlier? Or just treat as id here"
+evalOp i IGenerate env args = undefined -- TODO: This is strange: we need the shape to implement, but that is currently part of the output. Should the shape of an output array be an input?
+evalOp i IPermute env (((((), e), f), target), comb) = 
+  case evalFun f env (_ i) of
+    (0, _) -> pure ((), target)
+    (1, ((), sh)) -> case target of
+      ArrayDescriptor shvars bufvars -> do -- TODO: the array can consist of multiple buffers
+        let j = _ sh
+        x <- unsafeReadArray _ j
+        let x' = evalFun comb env x e
+        unsafeWriteArray _ j x'
+        return ((), target)
+    _ -> error "PrimMaybe's tag was non-zero and non-one"
 
 
 
