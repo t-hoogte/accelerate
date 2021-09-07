@@ -25,11 +25,8 @@ import Data.Array.Accelerate.AST.Operation
 
 import Prelude hiding ( take )
 import Data.Bifunctor
-import Control.DeepSeq (NFData (rnf))
-import qualified GHC.Generics
-import Data.Array.Accelerate.Trafo.Desugar (ArrayDescriptor(ArrayDescriptor))
+import Data.Array.Accelerate.Trafo.Desugar (ArrayDescriptor(..))
 import Data.Array.Accelerate.Representation.Array (Array)
-import qualified Data.Array.Accelerate.AST.Environment as Env
 
 -- In this model, every thread has one input element per input array,
 -- and one output element per output array. That works perfectly for
@@ -80,7 +77,7 @@ data LeftHandSideArgs body env scope where
   -- The body creates an array
   Make :: Take (Value e) escope scope
        -> LeftHandSideArgs              body   env             scope
-       -> LeftHandSideArgs (Out sh e -> body)  env            escope
+       -> LeftHandSideArgs (Out sh e -> body) (env, Sh sh)    escope
   -- TODO: duplicate for Var' and Fun'
   EArg :: LeftHandSideArgs              body   env             scope
        -> LeftHandSideArgs (Exp'   e -> body) (env, Exp' e)   (scope, Exp' e)
@@ -98,7 +95,7 @@ data ClusterIO args input output where
          -> ClusterIO (In  sh e -> args) (input, Value e) (output, Value e)
   Output :: Take (Value e) eoutput output
          -> ClusterIO              args   input             output
-         -> ClusterIO (Out sh e -> args)  input            eoutput
+         -> ClusterIO (Out sh e -> args) (input, Sh sh)    eoutput
   MutPut :: ClusterIO              args   input             output
          -> ClusterIO (Mut sh e -> args) (input, Mut sh e) (output, Mut sh e)
   -- TODO: duplicate for Var' and Fun'
@@ -127,10 +124,10 @@ iolhs _ _ = undefined -- TODO Var', Fun'
 
 mkBase :: ClusterIO args i o -> LeftHandSideArgs () i i
 mkBase Empty = Base
-mkBase (Input ci) = Ignr (mkBase ci)
-mkBase (Output _ ci) = mkBase ci
-mkBase (MutPut ci) = Ignr (mkBase ci)
-mkBase (ExpPut ci) = Ignr (mkBase ci)
+mkBase (Input    ci) = Ignr (mkBase ci)
+mkBase (Output _ ci) = Ignr (mkBase ci)
+mkBase (MutPut   ci) = Ignr (mkBase ci)
+mkBase (ExpPut   ci) = Ignr (mkBase ci)
 
 
 take :: Take a ab b -> ab -> (a, b)
@@ -163,7 +160,7 @@ type family InArgs  a where
   InArgs  (Exp'   e -> x) = (InArgs x, Exp' e)
   InArgs  (Fun'   e -> x) = (InArgs x, Fun' e)
   InArgs  (Var'   e -> x) = (InArgs x, Var' e)
-  InArgs  (Out sh e -> x) =  InArgs x
+  InArgs  (Out sh e -> x) = (InArgs x, Sh sh)
 type family OutArgs a where
   OutArgs ()              = ()
   OutArgs (Out sh e -> x) = (OutArgs x, Value e)
@@ -172,21 +169,21 @@ type family OutArgs a where
 
 getIn :: LeftHandSideArgs body i o -> i -> InArgs body
 getIn Base () = ()
-getIn (Reqr t1 t2 lhs) i = let (x, i') = take t1 i in (getIn lhs i', x)
-getIn (Make t lhs) i = getIn lhs i
-getIn (Adju lhs) (i, x) = (getIn lhs i, x)
-getIn (EArg lhs) (i, x) = (getIn lhs i, x)
-getIn (Ignr lhs) (i, x) =  getIn lhs i
+getIn (Reqr t1 _ lhs) i = let (x, i') = take t1 i in (getIn lhs i', x)
+getIn (Make _ lhs) (i, sh) = (getIn lhs i, sh)
+getIn (Adju lhs)   (i, x)  = (getIn lhs i, x)
+getIn (EArg lhs)   (i, x)  = (getIn lhs i, x)
+getIn (Ignr lhs)   (i, _)  =  getIn lhs i
 
 genOut :: LeftHandSideArgs body i o -> i -> OutArgs body -> o
-genOut Base             ()    o     = 
+genOut Base             ()    _     = 
   ()
 genOut (Reqr t1 t2 lhs) i     o     = 
   let (x, i') = take t1 i 
   in put t2 x (genOut lhs i' o)
-genOut (Make t lhs)     i    (o, x) = 
+genOut (Make t lhs)    (i, _) (o, x) = 
   put t x (genOut lhs i o)
-genOut (Adju lhs) (i, y)    (o, x) = 
+genOut (Adju lhs) (i, _)    (o, x) = 
   (genOut lhs i o, x)
 genOut (EArg lhs)      (i, x) o     =
   (genOut lhs i o, x)
@@ -200,11 +197,14 @@ type family FromArgs env a where
   FromArgs env (x, Fun'   e) = (FromArgs env x, Fun     env e)
   FromArgs env (x, Mut sh e) = (FromArgs env x, ArrayDescriptor env (Array sh e))
   FromArgs env (x, Value  e) = (FromArgs env x,             e)
+  FromArgs env (x, Sh    sh) = (FromArgs env x,            sh)
 
 type FromIn  env args = FromArgs env ( InArgs args)
 type FromOut env args = FromArgs env (OutArgs args)
 
+-- helps for type inference and safety: If we instead use 'e', it can match all the other options too. 
 newtype Value e = Value e
+newtype Sh sh   = Shape sh
 
 -- instance NFData (Cluster op args) where
 --   rnf = _

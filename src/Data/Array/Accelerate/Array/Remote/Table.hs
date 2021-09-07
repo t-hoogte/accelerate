@@ -61,10 +61,7 @@ import Data.Array.Accelerate.Array.Buffer
 -- import Data.Array.Accelerate.Array.Data
 import Data.Array.Accelerate.Array.Remote.Class
 import Data.Array.Accelerate.Array.Remote.Nursery                   ( Nursery(..) )
-import Data.Array.Accelerate.Array.Unique                           ( UniqueArray(..) )
-import Data.Array.Accelerate.Error                                  ( internalError )
 import Data.Array.Accelerate.Lifetime
-import Data.Array.Accelerate.Type
 import qualified Data.Array.Accelerate.Array.Remote.Nursery         as N
 import qualified Data.Array.Accelerate.Debug.Internal.Flags         as Debug
 import qualified Data.Array.Accelerate.Debug.Internal.Monitoring    as Debug

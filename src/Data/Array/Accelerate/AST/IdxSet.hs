@@ -21,7 +21,7 @@ module Data.Array.Accelerate.AST.IdxSet (
   member, varMember, intersect, union, insert, insertVar, skip,
   push, empty, drop, drop', fromList, fromVarList,
   singleton, singletonVar,
-) where
+toList) where
 
 import Prelude hiding (drop)
 

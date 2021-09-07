@@ -39,7 +39,7 @@ import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Trafo.Exp.Substitution
-import Data.Array.Accelerate.Trafo.Operation.Substitution   (strengthenArrayInstr, reindexVar, reindexVars)
+import Data.Array.Accelerate.Trafo.Operation.Substitution   (strengthenArrayInstr)
 import Data.Array.Accelerate.Trafo.Substitution
 import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Type
@@ -49,11 +49,9 @@ import qualified Data.Array.Accelerate.AST.Partitioned  as C
 import Data.Kind
 import Data.Maybe
 import Data.List
-    ( groupBy, nub, nubBy, sort, group )
-import qualified Data.Set                               as S
+    ( groupBy, nubBy, sort, group )
 import Prelude hiding (id, (.), read)
 import Control.Category
-import GHC.Stack
 import qualified Data.Array.Accelerate.AST.Environment as Env
 
 instance Sink' (UniformSchedule exe) where

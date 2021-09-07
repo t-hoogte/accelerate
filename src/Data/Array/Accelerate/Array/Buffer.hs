@@ -31,7 +31,8 @@ module Data.Array.Accelerate.Array.Buffer (
   newBuffers, newBuffer,
   indexBuffers, indexBuffer, readBuffers, readBuffer, writeBuffers, writeBuffer,
   touchBuffers, touchBuffer, touchMutableBuffers, touchMutableBuffer,
-  rnfBuffers, rnfBuffer, unsafeFreezeBuffer, unsafeFreezeBuffers,
+  rnfBuffers, rnfBuffer, unsafeFreezeBuffer, unsafeFreezeBuffers, 
+  veryUnsafeUnfreezeBuffers,
 
   -- * Type macros
   HTYPE_INT, HTYPE_WORD, HTYPE_CLONG, HTYPE_CULONG, HTYPE_CCHAR,

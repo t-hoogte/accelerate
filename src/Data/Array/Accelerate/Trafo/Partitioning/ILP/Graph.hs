@@ -87,7 +87,7 @@ data Information op = Info
   , _bounds :: Bounds op
   }
 instance Semigroup (Information op) where
-  Info g c b <> Info g' c' b' = Info (g <> g') (c <> c') (b <> b')
+  Info x y z <> Info x' y' z' = Info (x <> x') (y <> y') (z <> z')
 instance Monoid (Information op) where
   mempty = Info mempty mempty mempty
 
@@ -175,7 +175,7 @@ data FullGraphResult op = FGRes
   }
 -- Unlawful instances, but useful shorthand
 instance Semigroup (FullGraphResult op) where
-  FGRes a _ c <> FGRes x _ z = FGRes (a <> x) Nothing (c <> z)
+  FGRes x _ z <> FGRes x' _ z' = FGRes (x <> x') Nothing (z <> z')
 instance Monoid (FullGraphResult op) where
   mempty = FGRes mempty Nothing mempty
 
@@ -356,7 +356,6 @@ mkFullGraphF (Alam lhs f) = do
   currL.parent .= Just l
   (res, mylhs) <- zoomState lhs l (mkFullGraphF f)
   currL.parent .= l ^. parent
-  env <- use lenv
   return $ res
          & l_res    ?~ l
          & construc %~ M.insert (fromJust $ l^.parent) (CFun mylhs l)
@@ -366,12 +365,12 @@ mkFullGraphHelper :: (LabelEnv env -> (Labels, Construction op)) -> State (FullG
 mkFullGraphHelper f = do
   l <- freshL
   env <- use lenv
-  let (labels, c) = f env
+  let (labels, con) = f env
   let nonfuse = S.map (-?> l) labels -- TODO add outgoing infusible edges too
   return $ mempty
          & info.graphI.infusibleEdges .~ nonfuse
          & l_res                      ?~ l
-         & construc                   .~ M.singleton l c
+         & construc                   .~ M.singleton l con
 
 
 

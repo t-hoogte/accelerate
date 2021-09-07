@@ -46,7 +46,6 @@ import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.AST.Operation   as Operation           hiding (PreOpenAcc(..), PreOpenAfun(..))
 import Data.Array.Accelerate.AST.Partitioned as Partitioned         hiding (PartitionedAcc, PartitionedAfun)
 import Data.Array.Accelerate.Trafo.Exp.Substitution
-import Data.Array.Accelerate.Trafo.Operation.Substitution
 import Control.Concurrent.MVar
 import Data.IORef
 import Data.Typeable                                                ( (:~:)(..) )
@@ -266,9 +265,9 @@ freeVars (Acond c t f s)
   $ IdxSet.union (freeVars t)
   $ IdxSet.union (freeVars f)
   $ freeVars s
-freeVars (Awhile _ step init continuation)
+freeVars (Awhile _ step ini continuation)
   = IdxSet.union (funFreeVars step)
-  $ IdxSet.union (IdxSet.fromVarList $ flattenTupR init)
+  $ IdxSet.union (IdxSet.fromVarList $ flattenTupR ini)
   $ freeVars continuation
 freeVars (Fork s1 s2) = freeVars s1 `IdxSet.union` freeVars s2
 
@@ -290,7 +289,7 @@ bindingFreeVars (Compute e)    = IdxSet.fromList $ map f $ arrayInstrs e
     f (Exists (Parameter (Var _ idx))) = Exists idx
 
 effectFreeVars :: Effect exe env -> IdxSet env
-effectFreeVars (Exec exe args)           = IdxSet.fromVarList $ argsVars args
+effectFreeVars (Exec _ args)           = IdxSet.fromVarList $ argsVars args
 effectFreeVars (SignalAwait signals)     = IdxSet.fromList $ map Exists $ signals
 effectFreeVars (SignalResolve resolvers) = IdxSet.fromList $ map Exists resolvers
 effectFreeVars (RefWrite ref value)      = IdxSet.insertVar ref $ IdxSet.singletonVar value

@@ -292,10 +292,8 @@ fuseInput
   | Just Refl <- matchALabel a1 a2 =
     Just $ Reqr Here Here lhs
 -- The rest are recursive cases
-fuseInput x (_ :>: as) lhs (Output _ io) = 
-  fuseInput x as lhs io
-fuseInput x as (Make t lhs) io =
-  (\(Reqr a b c) -> ttake b t $ \b' t' -> Reqr a b' (Make t' c))
+fuseInput x (_ :>: as) (Make t lhs) (Output _ io) = 
+  (\(Reqr a b c) -> ttake b t $ \b' t' -> Reqr (There a) b' (Make t' c))
   <$> fuseInput x as lhs io
 fuseInput x as (Reqr t t2 lhs) io =
   removeInput as t io $ \as' io' _ _ _ ->
@@ -307,6 +305,9 @@ fuseInput x as (Reqr t t2 lhs) io =
 fuseInput x (_ :>: as) (Adju lhs) (MutPut io) = (\(Reqr a b c) -> Reqr (There a) (There b) $ Adju c) <$> fuseInput x as lhs io
 fuseInput x (_ :>: as) (EArg lhs) (ExpPut io) = (\(Reqr a b c) -> Reqr (There a) (There b) $ EArg c) <$> fuseInput x as lhs io
 -- Ignore cases that don't get fused
+fuseInput x (_ :>: as) (Ignr lhs) (Output _ io) = 
+  (\(Reqr a b c) -> Reqr (There a) (There b) (Ignr c))
+  <$> fuseInput x as lhs io
 fuseInput x (_ :>: as) (Ignr lhs) (Input io) =
   (\(Reqr a b c) -> Reqr (There a) (There b) (Ignr c))
   <$> fuseInput x as lhs io
@@ -334,7 +335,7 @@ removeInput (a :>: xs) Here (Input io) k =
 removeInput (x :>: xs) (There t) (Input io) k =
   removeInput xs t io $ \xs' io' t' t'' a ->
     k (x :>: xs') (Input io') (There t') (There' t'') a
-removeInput (x :>: xs) t (Output t1 io) k = 
+removeInput (x :>: xs) (There t) (Output t1 io) k =
   removeInput xs t io $ \xs' io' t' t'' -> 
     ttake t' t1 $ \t2 t3 -> 
       k (x :>: xs') (Output t3 io') t2 (There' t'')
@@ -358,8 +359,9 @@ restoreInput (Input    cio) (There' tt) (There ti) (There tr) x =
   Input     $ restoreInput cio tt ti tr x
 restoreInput (ExpPut   cio) (There' tt) (There ti) (There tr) x = 
   ExpPut    $ restoreInput cio tt ti tr x
-restoreInput (Output t cio) (There' tt)        ti         tr  x = ttake t tr $ \t' tr' -> 
-  Output t' $ restoreInput cio tt ti tr' x
+restoreInput (Output t cio) (There' tt) (There ti)        tr  x = 
+  ttake t tr $ \t' tr' -> 
+    Output t' $ restoreInput cio tt ti tr' x
 restoreInput (MutPut   cio) (There' tt) (There ti) (There tr) x =
   MutPut    $ restoreInput cio tt ti tr x
 restoreInput _ _ _ _ _ = error "I think this means that the take(')s in restoreInput don't agree with each other"
@@ -393,10 +395,10 @@ fuseOutput :: LabelledArg env (Out sh e)
            -> LabelledArgs  env total
            -> LeftHandSideArgs added i scope
            -> ClusterIO total i result
-           -> (forall total' i' inOrMut
-               . Take' (inOrMut sh e) total total'
-              -> LeftHandSideArgs (Out sh e -> added)  i' scope 
-              -> ClusterIO        (Out sh e -> total') i' result
+           -> (forall total' i'
+               . Take' (In sh e) total total'
+              -> LeftHandSideArgs (Out sh e -> added)  (i', Sh sh) scope 
+              -> ClusterIO        (Out sh e -> total') (i', Sh sh) result
               -> Take (Value e) i i'
               -> r)
            -> Maybe r
@@ -411,19 +413,13 @@ fuseOutput
   k
   | Just Refl <- matchALabel a1 a2 =
     Just $ k Here' (Make Here lhs) (Output Here io) Here
--- Recursive cases
--- We have one recursive case on _ _ _ (Output _ _),
--- in all other cases we recurse down `lhs` and assume
--- that `io` is not `Output`.
-fuseOutput x (_ :>: as) lhs (Output t1 io) k =
-  fuseOutput x as lhs io $ \t' lhs' (Output t2 io') t ->
-    ttake t2 t1 $ \t2' t1' ->
-      k (There' t') lhs' (Output t2' (Output t1' io')) t
+
 -- Make case
-fuseOutput x as (Make t1 lhs) io k =
-  fuseOutput x as lhs io $ \t' (Make t2 lhs') io' t ->
-    ttake t2 t1 $ \t2' t1' ->
-      k t' (Make t2' (Make t1' lhs')) io' t
+fuseOutput x (_ :>: as) (Make t1 lhs) (Output t2 io) k =
+  fuseOutput x as lhs io $ \t' (Make t3 lhs') (Output t4 io') t ->
+    ttake t3 t1 $ \t3' t1' ->
+      ttake t4 t2 $ \t4' t2' ->
+        k (There' t') (Make t3' (Make t1' lhs')) (Output t4' $ Output t2' io') (There t)
 -- The Reqr case is difficult: we use `removeInput` to recurse past the `Reqr`, but
 -- (other than in fuseInput) we have to pass the result of recursing through
 -- `restoreInput` to reassemble the CIO. More elegant (no error cases) would be to
@@ -446,6 +442,10 @@ fuseOutput x (_ :>: as) (Ignr lhs) (MutPut io) k =
 fuseOutput x (_ :>: as) (Ignr lhs) (ExpPut io) k = 
   fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
     k (There' t') (Make (There t1) $ Ignr lhs') (Output (There t2) $ ExpPut io') (There t)
+fuseOutput x (_ :>: as) (Ignr lhs) (Output t1 io) k =
+  fuseOutput x as lhs io $ \t' (Make t2 lhs') (Output t3 io') t ->
+    ttake t3 t1 $ \t3' t1' ->
+      k (There' t') (Make (There t2) $ Ignr lhs') (Output t3' (Output t1' io')) (There t)
 -- EArg goes just like Ignr
 fuseOutput x (_ :>: as) (EArg lhs) (ExpPut io) k = 
   fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
@@ -459,7 +459,7 @@ addOutput :: ClusterAST op scope result
           -> ClusterIO total i result
           -> (forall result'
               . ClusterAST op (scope, Value e) result'
-             -> ClusterIO (Out sh e -> total) i result'
+             -> ClusterIO (Out sh e -> total) (i, Sh sh) result'
              -> r)
           -> r
 addOutput None io k = k None (Output Here io)

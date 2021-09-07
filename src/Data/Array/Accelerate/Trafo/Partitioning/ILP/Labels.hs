@@ -72,7 +72,7 @@ data ALabel t where
   NotArr :: ALabel (t e) -- matches on `Var' e`, `Exp' e` and `Fun' e` (matches but doesn't belong with arrays)
 
 matchALabel :: ALabel (m sh s) -> ALabel (m' sh' t) -> Maybe ((sh,s) :~: (sh',t))
-matchALabel (Arr e1) (Arr e2) 
+matchALabel (Arr e1) (Arr e2)
   -- If the labels align, we inform the typechecker that the types are equal
   | e1 == e2 = Just $ unsafeCoerce Refl
 matchALabel _ _ = Nothing
@@ -196,31 +196,31 @@ getLabelsExp (ArrayInstr (Index var) poe') env     = let (_, a) = getLabelsVar v
 getLabelsExp (ArrayInstr (Parameter var) poe') env = let (_, a) = getLabelsVar var env
                                                          (NotArr, b) = getLabelsExp poe' env
                                                      in  (NotArr, a <> b)
-getLabelsExp (Let lhs poe' poe2) env        = let (NotArr, a) = getLabelsExp poe' env
+getLabelsExp (Let _ poe' poe2) env                 = let (NotArr, a) = getLabelsExp poe' env
+                                                         (NotArr, b) = getLabelsExp poe2 env
+                                                     in  (NotArr, a <> b)
+getLabelsExp (Evar _) _                            = (NotArr, mempty)
+getLabelsExp Foreign{} _                           = (NotArr, mempty) -- TODO the fallback can't do indexing, ignoring the foreign
+getLabelsExp (Pair poe' poe2) env                  = let (NotArr, a) = getLabelsExp poe' env
+                                                         (NotArr, b) = getLabelsExp poe2 env
+                                                     in  (NotArr, a <> b)
+getLabelsExp Nil _                                 = (NotArr, mempty)
+getLabelsExp (VecPack _ poe') env                  = first (\NotArr -> NotArr) $ getLabelsExp poe' env
+getLabelsExp (VecUnpack _ poe') env                = first (\NotArr -> NotArr) $ getLabelsExp poe' env
+getLabelsExp (IndexSlice _ poe' poe2) env   = let (NotArr, a) = getLabelsExp poe' env
                                                   (NotArr, b) = getLabelsExp poe2 env
                                               in  (NotArr, a <> b)
-getLabelsExp (Evar var) env                 = (NotArr, mempty)
-getLabelsExp (Foreign tr asm pof poe') env  = (NotArr, mempty) -- TODO the fallback can't do indexing, ignoring the foreign
-getLabelsExp (Pair poe' poe2) env           = let (NotArr, a) = getLabelsExp poe' env
+getLabelsExp (IndexFull _ poe' poe2) env    = let (NotArr, a) = getLabelsExp poe' env
                                                   (NotArr, b) = getLabelsExp poe2 env
                                               in  (NotArr, a <> b)
-getLabelsExp Nil env                        = (NotArr, mempty)
-getLabelsExp (VecPack vr poe') env          = first (\NotArr -> NotArr) $ getLabelsExp poe' env
-getLabelsExp (VecUnpack vr poe') env        = first (\NotArr -> NotArr) $ getLabelsExp poe' env
-getLabelsExp (IndexSlice si poe' poe2) env  = let (NotArr, a) = getLabelsExp poe' env
+getLabelsExp (ToIndex _ poe' poe2) env      = let (NotArr, a) = getLabelsExp poe' env
                                                   (NotArr, b) = getLabelsExp poe2 env
                                               in  (NotArr, a <> b)
-getLabelsExp (IndexFull si poe' poe2) env   = let (NotArr, a) = getLabelsExp poe' env
+getLabelsExp (FromIndex _ poe' poe2) env    = let (NotArr, a) = getLabelsExp poe' env
                                                   (NotArr, b) = getLabelsExp poe2 env
                                               in  (NotArr, a <> b)
-getLabelsExp (ToIndex sr poe' poe2) env     = let (NotArr, a) = getLabelsExp poe' env
-                                                  (NotArr, b) = getLabelsExp poe2 env
-                                              in  (NotArr, a <> b)
-getLabelsExp (FromIndex sr poe' poe2) env   = let (NotArr, a) = getLabelsExp poe' env
-                                                  (NotArr, b) = getLabelsExp poe2 env
-                                              in  (NotArr, a <> b)
-getLabelsExp (Case poe' x0 Nothing) env     = let (NotArr, a) = foldr (\((`getLabelsExp` env) . snd -> (NotArr, c)) (NotArr, d) -> (NotArr, c <> d)) 
-                                                                      (NotArr, mempty) 
+getLabelsExp (Case poe' x0 Nothing) env     = let (NotArr, a) = foldr (\((`getLabelsExp` env) . snd -> (NotArr, c)) (NotArr, d) -> (NotArr, c <> d))
+                                                                      (NotArr, mempty)
                                                                       x0
                                                   (NotArr, b) = getLabelsExp poe' env
                                               in  (NotArr, a <> b)
@@ -235,12 +235,12 @@ getLabelsExp (While pof pof' poe') env      = let (NotArr, a) = getLabelsFun pof
                                                   (NotArr, b) = getLabelsFun pof' env
                                                   (NotArr, c) = getLabelsExp poe' env
                                               in  (NotArr, a <> b <> c)
-getLabelsExp (Const st y) env               = (NotArr, mempty)
-getLabelsExp (PrimConst pc) env             = (NotArr, mempty)
-getLabelsExp (PrimApp pf poe') env          = first (\NotArr -> NotArr) $ getLabelsExp poe' env
-getLabelsExp (ShapeSize sr poe') env        = first (\NotArr -> NotArr) $ getLabelsExp poe' env
-getLabelsExp (Undef st) env                 = (NotArr, mempty)
-getLabelsExp (Coerce st st' poe') env       = (NotArr, mempty)
+getLabelsExp (Const _ _) _                  = (NotArr, mempty)
+getLabelsExp (PrimConst _) _                = (NotArr, mempty)
+getLabelsExp (PrimApp _ poe') env           = first (\NotArr -> NotArr) $ getLabelsExp poe' env
+getLabelsExp (ShapeSize _ poe') env         = first (\NotArr -> NotArr) $ getLabelsExp poe' env
+getLabelsExp (Undef _) _                    = (NotArr, mempty)
+getLabelsExp Coerce {} _                    = (NotArr, mempty)
 
 getLabelsFun :: OpenFun x env y -> LabelEnv env -> ALabels (Fun' y)
 getLabelsFun (Body expr) lenv = first body $ getLabelsExp expr lenv

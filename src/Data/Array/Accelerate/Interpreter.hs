@@ -13,6 +13,7 @@
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 {-# OPTIONS_HADDOCK prune #-}
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE TupleSections #-}
 -- |
 -- Module      : Data.Array.Accelerate.Interpreter
 -- Description : Reference backend (interpreted)
@@ -64,10 +65,10 @@ import qualified Data.Array.Accelerate.Smart as Smart
 import System.IO.Unsafe (unsafePerformIO)
 import Data.Array.Accelerate.Trafo (convertAcc)
 import Control.DeepSeq (($!!))
-import Control.Monad.Identity
-import Data.Composition
 import qualified Data.Array.Accelerate.AST.Environment as Env
-import Data.Array.Accelerate.Array.Unique
+import Data.Array.Accelerate.Array.Buffer
+import Data.Array.Accelerate.AST.Var (varsType)
+import Data.Type.Equality
 
 -- Conceptually, this computes the body of the fused loop
 -- It only deals with scalar values - wrap it in a loop!
@@ -96,7 +97,7 @@ data InterpretOp args where
   IPermute     :: InterpretOp (Fun' (e -> e -> e)
                               -> Mut sh' e
                               -> Fun' (sh -> PrimMaybe sh')
-                              -> In sh e 
+                              -> In sh e
                               -> ())
 
 instance DesugarAcc InterpretOp where
@@ -125,9 +126,9 @@ instance MakesILP InterpretOp where
       <> var (OrderIn l) .==. int i) -- enforce that the backpermute follows its own rules
       (inOutBounds l)
   mkGraph IGenerate _ l = Info mempty mempty (lower (-2) (BackendSpecific $ OrderOut l))
-  mkGraph IMap (f :>: L _ (_, S.toList -> ~[lIn]) :>: o :>: ArgsNil) l = 
-    Info 
-      mempty 
+  mkGraph IMap (f :>: L _ (_, S.toList -> ~[lIn]) :>: o :>: ArgsNil) l =
+    Info
+      mempty
       (  inputDirectionConstraint l lIn
       <> var (OrderIn l) .==. var (OrderOut l))
       (inOutBounds l)
@@ -141,7 +142,7 @@ instance MakesILP InterpretOp where
 
 -- | If l and lIn are fused, the out-order of lIn and the in-order of l should match
 inputDirectionConstraint :: Label -> Label -> Constraint InterpretOp
-inputDirectionConstraint l lIn =            
+inputDirectionConstraint l lIn =
                 timesN (fused lIn l) .>=. var (OrderIn l) .-. var (OrderOut lIn)
     <> (-1) .*. timesN (fused lIn l) .<=. var (OrderIn l) .-. var (OrderOut lIn)
 
@@ -162,32 +163,39 @@ fromArgs i env (ArgVar v :>: args) = (fromArgs i env args, v)
 fromArgs i env (ArgExp e :>: args) = (fromArgs i env args, e)
 fromArgs i env (ArgFun f :>: args) = (fromArgs i env args, f)
 fromArgs i env (ArgArray Mut _ sh buf :>: args) = (fromArgs i env args, ArrayDescriptor sh buf)
-fromArgs i env (ArgArray In ar sh buf :>: args) =
-  let sh'  = varsGetVal sh  env
-      buf' = varsGetVal buf env
-  in undefined -- take the i-th element of buf'
-fromArgs i env (ArgArray Out ar sh buf :>: args) = fromArgs i env args
+fromArgs i env (ArgArray In _ _ buf :>: args) =
+  let buf' = varsGetVal buf env
+  in (fromArgs i env args, indexBuffers (bufferScalarType $ varsType buf) buf' i)
+fromArgs i env (ArgArray Out ar sh buf :>: args) = (fromArgs i env args, varsGetVal sh env)
 
 
 evalOp :: Int -> InterpretOp args -> Val env -> FromIn env args -> IO (FromOut env args)
 evalOp _ INoop _ () = pure ()
-evalOp _ IMap env (((), x), f) = pure ((), evalFun f env x)
+evalOp _ IMap env ((_, x), f) = pure ((), evalFun f env x)
 evalOp _ IBackpermute _ _ = error "Should be filtered out earlier? Or just treat as id here"
 evalOp i IGenerate env args = undefined -- TODO: This is strange: we need the shape to implement, but that is currently part of the output. Should the shape of an output array be an input?
-evalOp i IPermute env (((((), e), f), target), comb) = 
+evalOp i IPermute env (((((), e), f), target), comb) =
   case evalFun f env (_ i) of
     (0, _) -> pure ((), target)
     (1, ((), sh)) -> case target of
-      ArrayDescriptor shvars bufvars -> do -- TODO: the array can consist of multiple buffers
+      ArrayDescriptor _ (bufvars :: GroundVars env (Buffers e)) -> do
         let j = _ sh
-        x <- unsafeReadArray _ j
+        let buf = varsGetVal bufvars env
+        let buf' = veryUnsafeUnfreezeBuffers @e (bufferScalarType $ varsType bufvars) buf
+        x <- readBuffers @e (bufferScalarType $ varsType bufvars) buf' j
         let x' = evalFun comb env x e
-        unsafeWriteArray _ j x'
+        writeBuffers (bufferScalarType $ varsType bufvars) buf' j x'
         return ((), target)
     _ -> error "PrimMaybe's tag was non-zero and non-one"
 
-
-
+-- TODO fix types, this is ridiculous. @Ivo how `should` such a function work? Is Distribute just an abstraction that hurts more than it helps?
+bufferScalarType :: forall e. TupR GroundR (Buffers e) -> TypeR e
+bufferScalarType TupRunit 
+  | Refl :: e :~: () <- unsafeCoerce Refl 
+  = TupRunit 
+bufferScalarType (TupRpair tr' tr2) = unsafeCoerce $ TupRpair (bufferScalarType (unsafeCoerce tr')) (bufferScalarType (unsafeCoerce tr2))
+bufferScalarType (TupRsingle (GroundRbuffer st)) = unsafeCoerce $ TupRsingle st
+bufferScalarType (TupRsingle (GroundRscalar x)) = case x of {} -- all non-buffer
 
 -- Program execution
 -- -----------------
