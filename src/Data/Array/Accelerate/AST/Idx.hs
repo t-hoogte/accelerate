@@ -24,7 +24,7 @@
 
 module Data.Array.Accelerate.AST.Idx (
 
-  Idx, pattern ZeroIdx, pattern SuccIdx, pattern VoidIdx,
+  Idx(ZeroIdx, SuccIdx, VoidIdx),
   idxToInt,
   rnfIdx, liftIdx, matchIdx,
 
