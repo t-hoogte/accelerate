@@ -27,7 +27,7 @@
 --
 
 module Data.Array.Accelerate.Trafo.Schedule.Uniform (
-  scheduleAcc, scheduleAfun
+  -- Only exports the instance IsSchedule UniformScheduleFun
 ) where
 
 import Data.Array.Accelerate.Analysis.Match
@@ -36,7 +36,6 @@ import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.IdxSet (IdxSet)
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.AST.Schedule.Uniform
-import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Type
@@ -45,6 +44,7 @@ import Data.Array.Accelerate.Trafo.Operation.Substitution   (strengthenArrayInst
 import Data.Array.Accelerate.Trafo.Substitution
 import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Type
+import Data.Array.Accelerate.Schedule
 import qualified Data.Array.Accelerate.AST.IdxSet           as IdxSet
 import qualified Data.Array.Accelerate.AST.Operation    as C
 import qualified Data.Array.Accelerate.AST.Partitioned  as C
@@ -56,16 +56,35 @@ import Prelude hiding (id, (.), read)
 import Control.Category
 import qualified Data.Array.Accelerate.AST.Environment as Env
 
-scheduleAcc :: C.PartitionedAcc op () t -> UniformScheduleFun (Cluster op) () (Output t -> ())
-scheduleAcc acc
-  | Refl <- scheduleFunctionIsBody $ groundsR acc
-  , (partial, _) <- partialSchedule acc = fromPartialFun PEnd (Pbody partial)
+instance IsSchedule UniformScheduleFun where
+  type ScheduleInput  UniformScheduleFun a = Input a
+  type ScheduleOutput UniformScheduleFun a = Output a
 
-scheduleAfun :: C.PartitionedAfun op () t -> (UniformScheduleFun (Cluster op) () (ScheduleFunction t))
-scheduleAfun afun
-  | (partial, _) <- partialScheduleFun afun = fromPartialFun PEnd partial
+  convertScheduleFun afun
+    | (partial, _) <- partialScheduleFun afun = fromPartialFun PEnd partial
 
-instance Sink' (UniformSchedule exe) where
+  mapSchedule f (Slam lhs s) = Slam lhs $ mapSchedule f s
+  mapSchedule f (Sbody s) = Sbody $ mapSchedule' f s
+
+mapSchedule' :: forall op op' env. (forall s. op s -> op' s) -> UniformSchedule op env -> UniformSchedule op' env
+mapSchedule' f = \case
+  Return                      -> Return
+  Alet lhs bnd body           -> Alet lhs bnd $ trav body
+  Effect eff next             -> Effect (travEffect eff) $ trav next
+  Acond c true false next     -> Acond c (trav true) (trav false) (trav next)
+  Awhile io body initial next -> Awhile io (mapSchedule f body) initial $ trav next
+  Fork a b                    -> Fork (trav a) (trav b)
+  where
+    trav :: UniformSchedule op env' -> UniformSchedule op' env'
+    trav = mapSchedule' f
+
+    travEffect = \case
+      Exec op args          -> Exec (f op) args
+      SignalAwait signals   -> SignalAwait signals
+      SignalResolve signals -> SignalResolve signals
+      RefWrite ref value    -> RefWrite ref value
+
+instance Sink' (UniformSchedule op) where
   weaken' _ Return                        = Return
   weaken' k (Alet lhs b s)                
     | Exists lhs' <- rebuildLHS lhs   = Alet lhs' (weaken k b) (weaken' (sinkWithLHS lhs lhs' k) s)
@@ -74,7 +93,7 @@ instance Sink' (UniformSchedule exe) where
   weaken' k (Awhile io f input s)     = Awhile io (weaken k f) (mapTupR (weaken k) input) (weaken' k s)
   weaken' k (Fork s1 s2)              = Fork (weaken' k s1) (weaken' k s2)
 
-instance Sink (UniformScheduleFun exe) where
+instance Sink (UniformScheduleFun op) where
   weaken k (Slam lhs f)
     | Exists lhs' <- rebuildLHS lhs = Slam lhs' $ weaken (sinkWithLHS lhs lhs' k) f
   weaken k (Sbody s)    = Sbody $ weaken' k s
@@ -88,7 +107,7 @@ instance Sink Binding where
   weaken k (Unit var)          = Unit $ weaken k var
   weaken k (RefRead ref)       = RefRead $ weaken k ref
 
-instance Sink' (Effect exe) where
+instance Sink' (Effect op) where
   weaken' k (Exec op args) = Exec op $ runIdentity $ reindexArgs (weakenReindex k) args
   weaken' k (SignalAwait vars) = SignalAwait $ map (weaken k) vars
   weaken' k (SignalResolve vars) = SignalResolve $ map (weaken k) vars
@@ -1615,11 +1634,11 @@ fromPartialFun
      HasCallStack
   => FutureEnv fenv genv
   -> PartialScheduleFun op genv t
-  -> UniformScheduleFun (Cluster op) fenv (ScheduleFunction t)
+  -> UniformScheduleFun (Cluster op) fenv (Scheduled UniformScheduleFun t)
 fromPartialFun env = \case
   Pbody body
     | grounds <- groundsR body
-    , Refl <- scheduleFunctionIsBody $ grounds
+    , Refl <- reprIsBody @UniformScheduleFun $ grounds
     , DeclareOutput k1 lhs k2 instr outputEnv outputVars <- declareOutput grounds
     -> Slam lhs $ Sbody $ instr $ fromPartial outputEnv (outputVars weakenId) (mapPartialEnv (weaken (k2 .> k1)) env) body
   Plam lhs fun
@@ -1924,6 +1943,10 @@ data AwhileInputOutput fenv0 fenv genv genv' t where
     -> BasesR output
     -> AwhileInputOutput fenv0 fenv genv genv' t
 
+typeFromRef :: BaseR (Ref t) -> GroundR t
+typeFromRef (BaseRref tp) = tp
+typeFromRef (BaseRground (GroundRscalar _)) = internalError "Reference impossible"
+
 -- Note that the result of the loop (type variable 'result') does not
 -- have to match with the result of an iteration (type variable 'output').
 -- It can happen that a buffer is unique inside the loop, but is returned
@@ -1958,9 +1981,7 @@ awhileWriteResult = \env resVars io vars -> go env resVars io vars []
     -- Internally unique buffer to unique buffer in result
       | InputOutputRpair (InputOutputRpair (InputOutputRpair InputOutputRsignal InputOutputRsignal) InputOutputRsignal) InputOutputRref <- io
       , TupRsingle signal `TupRpair` TupRsingle readAccess `TupRpair` TupRsingle writeAccess `TupRpair` TupRsingle ref <- input
-      , ground' <- case varType ref of
-          BaseRref t -> t
-          BaseRground (GroundRscalar _) -> internalError "Reference impossible"
+      , ground' <- typeFromRef $ varType ref
       , Just Refl <- matchGroundR ground ground'
       = (:)
       $ Effect (SignalAwait [varIdx signal])
@@ -1982,9 +2003,7 @@ awhileWriteResult = \env resVars io vars -> go env resVars io vars []
     -- Internally shared buffer to shared buffer in result
       | InputOutputRpair (InputOutputRpair InputOutputRsignal InputOutputRsignal) InputOutputRref <- io
       , TupRsingle signal `TupRpair` TupRsingle readAccess `TupRpair` TupRsingle ref <- input
-      , ground' <- case varType ref of
-          BaseRref t -> t
-          BaseRground (GroundRscalar _) -> internalError "Reference impossible"
+      , ground' <- typeFromRef $ varType ref
       , Just Refl <- matchGroundR ground ground'
       = (:)
       $ Effect (SignalAwait [varIdx signal])
@@ -2012,9 +2031,7 @@ awhileWriteResult = \env resVars io vars -> go env resVars io vars []
     -- Internally shared buffer to shared buffer in result
       | InputOutputRpair InputOutputRsignal InputOutputRref <- io
       , TupRsingle signal `TupRpair` TupRsingle ref <- input
-      , ground <- case varType ref of
-          BaseRref t -> t
-          BaseRground (GroundRscalar _) -> internalError "Reference impossible"
+      , ground <- typeFromRef $ varType ref
       , Just Refl <- matchGroundR (GroundRscalar tp) ground
       = (:)
       $ Effect (SignalAwait [varIdx signal])

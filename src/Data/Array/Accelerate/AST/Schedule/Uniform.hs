@@ -20,7 +20,6 @@
 module Data.Array.Accelerate.AST.Schedule.Uniform (
   UniformSchedule(..), UniformScheduleFun(..),
   Input, Output, inputSingle, inputR, outputR, InputOutputR(..),
-  ScheduleFunction, scheduleFunctionIsBody,
   Binding(..), Effect(..),
   BaseR(..), BasesR, BaseVar, BaseVars, BLeftHandSide,
   Signal(..), SignalResolver(..), Ref(..), OutputRef(..),
@@ -145,32 +144,6 @@ outputR (TupRsingle ground)
   -- We must pattern match to convince the type checker that
   -- t is not () or (a, b).
   | Refl <- inputSingle ground = TupRsingle BaseRsignalResolver `TupRpair` TupRsingle (BaseRrefWrite ground)
-
-type family ScheduleFunction t where
-  ScheduleFunction (t1 -> t2) = Input t1 -> ScheduleFunction t2
-  ScheduleFunction t          = Output t -> ()
-
--- Pattern match to convince the type checker that t is not a function.
-scheduleFunctionIsBody :: GroundsR t -> ScheduleFunction t :~: (Output t -> ())
-scheduleFunctionIsBody TupRunit = Refl
-scheduleFunctionIsBody TupRpair{} = Refl
-scheduleFunctionIsBody (TupRsingle (GroundRbuffer _)) = Refl
-scheduleFunctionIsBody (TupRsingle (GroundRscalar tp))
-  | VectorScalarType _ <- tp = Refl
-  | SingleScalarType (NumSingleType tp') <- tp = case tp' of
-      IntegralNumType TypeInt    -> Refl
-      IntegralNumType TypeInt8   -> Refl
-      IntegralNumType TypeInt16  -> Refl
-      IntegralNumType TypeInt32  -> Refl
-      IntegralNumType TypeInt64  -> Refl
-      IntegralNumType TypeWord   -> Refl
-      IntegralNumType TypeWord8  -> Refl
-      IntegralNumType TypeWord16 -> Refl
-      IntegralNumType TypeWord32 -> Refl
-      IntegralNumType TypeWord64 -> Refl
-      FloatingNumType TypeHalf   -> Refl
-      FloatingNumType TypeFloat  -> Refl
-      FloatingNumType TypeDouble -> Refl
 
 -- Relation between input and output
 data InputOutputR input output where

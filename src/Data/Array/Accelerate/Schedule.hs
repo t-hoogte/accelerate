@@ -25,7 +25,8 @@
 -- Stability   : experimental
 -- Portability : non-portable (GHC extensions)
 --
--- This module should implement fusion.
+-- This module defines the interface for schedules, to be implemented
+-- in other modules.
 --
 
 module Data.Array.Accelerate.Schedule (
@@ -47,11 +48,11 @@ class IsSchedule sched where
   type ScheduleInput  sched a
   type ScheduleOutput sched a
 
-  convertScheduleFun :: PartitionedAfun op () t -> sched (Cluster op) (Scheduled sched t)
+  convertScheduleFun :: PartitionedAfun op () t -> sched (Cluster op) () (Scheduled sched t)
 
-  mapSchedule :: (forall env'. op env' -> op' env') -> sched op env -> sched op' env
+  mapSchedule :: (forall s. op s -> op' s) -> sched op env t -> sched op' env t
 
-convertSchedule :: forall sched op t. IsSchedule sched => PartitionedAcc op () t -> sched (Cluster op) (ScheduleOutput sched t -> ())
+convertSchedule :: forall sched op t. IsSchedule sched => PartitionedAcc op () t -> sched (Cluster op) () (ScheduleOutput sched t -> ())
 convertSchedule acc
   | Refl <- reprIsBody @sched $ groundsR acc = convertScheduleFun (Abody acc)
 

@@ -56,10 +56,10 @@ reindexPartial k = reindexA' (ReindexF k)
 reindexPartialAfun :: (Applicative f) => ReindexPartial f env env' -> PreOpenAfun op env t -> f (PreOpenAfun op env' t)
 reindexPartialAfun k = reindexAfun' (ReindexF k)
 
-instance Sink (PreOpenAcc exe) where
+instance Sink (PreOpenAcc op) where
   weaken k = runIdentity . reindexPartial (Identity . (k >:>))
 
-instance Sink (PreOpenAfun exe) where
+instance Sink (PreOpenAfun op) where
   weaken k = runIdentity . reindexPartialAfun (Identity . (k >:>))
 
 instance Sink Arg where
