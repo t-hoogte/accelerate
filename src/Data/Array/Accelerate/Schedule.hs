@@ -36,12 +36,11 @@ module Data.Array.Accelerate.Schedule (
 ) where
 
 import Data.Array.Accelerate.AST.Partitioned
-import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Representation.Type
 import Data.Typeable                                                ( (:~:)(..) )
+import Data.Array.Accelerate.AST.Operation
 
-import Data.Array.Accelerate.Debug.Flags                ( array_fusion )
 
 class IsSchedule sched where
   -- 'a' is a ground type (ie, can be represented using GroundR)

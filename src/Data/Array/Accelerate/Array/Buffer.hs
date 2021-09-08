@@ -31,7 +31,8 @@ module Data.Array.Accelerate.Array.Buffer (
   newBuffers, newBuffer,
   indexBuffers, indexBuffer, readBuffers, readBuffer, writeBuffers, writeBuffer,
   touchBuffers, touchBuffer, touchMutableBuffers, touchMutableBuffer,
-  rnfBuffers, rnfBuffer, unsafeFreezeBuffer, unsafeFreezeBuffers,
+  rnfBuffers, rnfBuffer, unsafeFreezeBuffer, unsafeFreezeBuffers, 
+  veryUnsafeUnfreezeBuffers,
 
   -- * Type macros
   HTYPE_INT, HTYPE_WORD, HTYPE_CLONG, HTYPE_CULONG, HTYPE_CCHAR,
@@ -54,9 +55,9 @@ import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Type
 import Data.Primitive.Vec
 
-import Data.Array.Accelerate.Debug.Flags
-import Data.Array.Accelerate.Debug.Monitoring
-import Data.Array.Accelerate.Debug.Trace
+import Data.Array.Accelerate.Debug.Internal.Flags
+import Data.Array.Accelerate.Debug.Internal.Monitoring
+import Data.Array.Accelerate.Debug.Internal.Trace
 
 
 -- standard libraries
@@ -215,7 +216,7 @@ readBuffer (VectorScalarType v) !(MutableBuffer array) (I# ix#)
         !addr#  = unPtr# (unsafeUniqueArrayPtr array) `plusAddr#` (ix# *# bytes#)
      in
      IO $ \s0 ->
-       case newByteArray# bytes# s0                      of { (# s1, mba# #) ->
+       case newAlignedPinnedByteArray# bytes# 16# s0     of { (# s1, mba# #) ->
        case copyAddrToByteArray# addr# mba# 0# bytes# s1 of { s2             ->
        case unsafeFreezeByteArray# mba# s2               of { (# s3, ba# #)  ->
          (# s3, Vec ba# #)

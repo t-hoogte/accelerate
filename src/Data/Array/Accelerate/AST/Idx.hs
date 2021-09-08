@@ -1,6 +1,14 @@
-{-# LANGUAGE GADTs           #-}
-{-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE TypeOperators   #-}
+{-# LANGUAGE BangPatterns        #-}
+{-# LANGUAGE CPP                 #-}
+{-# LANGUAGE EmptyCase           #-}
+{-# LANGUAGE GADTs               #-}
+{-# LANGUAGE LambdaCase          #-}
+{-# LANGUAGE PatternSynonyms     #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell     #-}
+{-# LANGUAGE TypeApplications    #-}
+{-# LANGUAGE TypeOperators       #-}
+{-# LANGUAGE ViewPatterns        #-}
 {-# OPTIONS_HADDOCK hide #-}
 -- |
 -- Module      : Data.Array.Accelerate.AST.Idx
@@ -14,13 +22,27 @@
 -- Typed de Bruijn indices
 --
 
-module Data.Array.Accelerate.AST.Idx
-  where
+module Data.Array.Accelerate.AST.Idx (
 
-import Language.Haskell.TH
-import Data.Typeable                                                ( (:~:)(..) )
+  Idx, pattern ZeroIdx, pattern SuccIdx, pattern VoidIdx,
+  idxToInt,
+  rnfIdx, liftIdx, matchIdx,
 
--- De Bruijn variable index projecting a specific type from a type
+  PairIdx(..)
+
+) where
+
+import Language.Haskell.TH ( Q, TExp )
+
+#ifndef ACCELERATE_INTERNAL_CHECKS
+import Data.Type.Equality ((:~:)(Refl))
+import Unsafe.Coerce (unsafeCoerce)
+#endif
+
+
+#ifdef ACCELERATE_INTERNAL_CHECKS
+
+-- | De Bruijn variable index projecting a specific type from a type
 -- environment.  Type environments are nested pairs (..((), t1), t2, ..., tn).
 --
 data Idx env t where
@@ -41,9 +63,6 @@ instance Ord (Idx env t) where
   SuccIdx ix <= SuccIdx ix' = ix <= ix'
   _          <= _           = False
 
-data PairIdx p a where
-  PairIdxLeft  :: PairIdx (a, b) a
-  PairIdxRight :: PairIdx (a, b) b
 
 
 idxToInt :: Idx env t -> Int
@@ -64,3 +83,60 @@ matchIdx ZeroIdx     ZeroIdx     = Just Refl
 matchIdx (SuccIdx u) (SuccIdx v) = matchIdx u v
 matchIdx _           _           = Nothing
 
+#else
+
+-- | De Bruijn variable index projecting a specific type from a type
+-- environment.  Type environments are nested pairs (..((), t1), t2, ..., tn).
+--
+-- Outside of this file, pretend that this is an ordinary GADT:
+-- data Idx env t where
+--   ZeroIdx ::              Idx (env, t) t
+--   SuccIdx :: Idx env t -> Idx (env, s) t
+-- 
+-- For performance, it uses an Int under the hood.
+newtype Idx env t = UnsafeIdxConstructor { unsafeRunIdx :: Int } deriving ( Eq, Ord )
+
+{-# COMPLETE ZeroIdx, SuccIdx #-}
+
+pattern ZeroIdx :: forall env envt t. () => (envt ~ (env, t)) => Idx envt t
+pattern ZeroIdx <- (\x -> (idxToInt x, unsafeCoerce @(envt :~: envt) @(envt :~: (env, t)) Refl) -> (0, Refl))
+  where
+    ZeroIdx = UnsafeIdxConstructor 0
+
+pattern SuccIdx :: () => (envs ~ (env, s)) => Idx env t -> Idx envs t
+pattern SuccIdx idx <- (unSucc -> Just (idx, Refl))
+  where
+    SuccIdx (UnsafeIdxConstructor i) = UnsafeIdxConstructor (i+1)
+
+unSucc :: Idx envs t -> Maybe (Idx env t, envs :~: (env, s))
+unSucc (UnsafeIdxConstructor i)
+  | i < 1     = Nothing
+  | otherwise = Just (UnsafeIdxConstructor (i-1), unsafeCoerce Refl)
+
+idxToInt :: Idx env t -> Int
+idxToInt = unsafeRunIdx
+
+rnfIdx :: Idx env t -> ()
+rnfIdx !_ = ()
+
+liftIdx :: Idx env t -> Q (TExp (Idx env t))
+liftIdx (UnsafeIdxConstructor i) = [|| UnsafeIdxConstructor i ||]
+
+{-# INLINEABLE matchIdx #-}
+matchIdx :: Idx env s -> Idx env t -> Maybe (s :~: t)
+matchIdx (UnsafeIdxConstructor i) (UnsafeIdxConstructor j)
+  | i == j = Just $ unsafeCoerce Refl
+  | otherwise = Nothing
+
+#endif
+
+-- | Despite the 'complete' pragma above, GHC can't infer that there is no
+-- pattern possible if the environment is empty. This can be used instead.
+pattern VoidIdx :: forall env t a. (env ~ ()) => () => a -> Idx env t
+pattern VoidIdx a <- (\case{} -> a)
+{-# COMPLETE VoidIdx #-}
+
+
+data PairIdx p a where
+  PairIdxLeft  :: PairIdx (a, b) a
+  PairIdxRight :: PairIdx (a, b) b

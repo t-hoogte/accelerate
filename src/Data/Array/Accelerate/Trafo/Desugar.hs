@@ -66,7 +66,7 @@ data Boundary env t where
             -> Boundary env (Array sh e)
 
 
-class DesugarAcc (op :: Type -> Type) where
+class NFData' op => DesugarAcc (op :: Type -> Type) where
   mkMap         :: Arg env (Fun' (s -> t))
                 -> Arg env (In sh s)
                 -> Arg env (Out sh t)
@@ -919,7 +919,7 @@ desugarUnzip _       _   TupRunit                 = TupRunit
 desugarUnzip buffers lhs (TupRpair v1 v2)         = desugarUnzip buffers lhs v1 `TupRpair` desugarUnzip buffers lhs v2
 desugarUnzip buffers lhs (TupRsingle (Var _ idx)) = case lookupVar buffers lhs idx of
     Right u -> u
-    Left ix' -> case ix' of {}
+    Left (VoidIdx void) -> void
     -- Left branch is unreachable, as `Idx () y` is an empty type
   where
     lookupVar :: GroundVars benv (Buffers x) -> ELeftHandSide x env1 env2 -> Idx env2 y -> Either (Idx env1 y) (GroundVars benv (Buffers y))

@@ -24,6 +24,7 @@ module Data.Array.Accelerate.AST.Schedule.Uniform (
   Binding(..), Effect(..),
   BaseR(..), BasesR, BaseVar, BaseVars, BLeftHandSide,
   Signal(..), SignalResolver(..), Ref(..), OutputRef(..),
+  module Operation,
   module Partitioned,
   await, resolve,
   signalResolverImpossible, scalarSignalResolverImpossible,
@@ -42,9 +43,9 @@ import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
-import Data.Array.Accelerate.AST.Partitioned as Partitioned         hiding (PartitionedAcc, PartitionedAfun, PreOpenAcc(..), PreOpenAfun(..))
+import Data.Array.Accelerate.AST.Operation   as Operation           hiding (PreOpenAcc(..), PreOpenAfun(..))
+import Data.Array.Accelerate.AST.Partitioned as Partitioned         hiding (PartitionedAcc, PartitionedAfun)
 import Data.Array.Accelerate.Trafo.Exp.Substitution
-import Data.Array.Accelerate.Trafo.Operation.Substitution
 import Control.Concurrent.MVar
 import Data.IORef
 import Data.Typeable                                                ( (:~:)(..) )
@@ -212,7 +213,8 @@ data Binding env t where
 
 -- Effects do not have a return value.
 data Effect exe env where
-  Exec          :: exe env
+  Exec          :: exe args
+                -> Args env args
                 -> Effect exe env
 
   SignalAwait   :: [Idx env Signal] -> Effect exe env
@@ -254,7 +256,7 @@ resolve :: [Idx env SignalResolver] -> UniformSchedule exe env -> UniformSchedul
 resolve [] = id
 resolve signals = Effect (SignalResolve signals)
 
-freeVars :: IsExecutableAcc exe => UniformSchedule exe env -> IdxSet env
+freeVars :: UniformSchedule exe env -> IdxSet env
 freeVars Return = IdxSet.empty
 freeVars (Alet lhs bnd s) = bindingFreeVars bnd `IdxSet.union` IdxSet.drop' lhs (freeVars s)
 freeVars (Effect effect s) = effectFreeVars effect `IdxSet.union` freeVars s
@@ -263,13 +265,13 @@ freeVars (Acond c t f s)
   $ IdxSet.union (freeVars t)
   $ IdxSet.union (freeVars f)
   $ freeVars s
-freeVars (Awhile _ step init continuation)
+freeVars (Awhile _ step ini continuation)
   = IdxSet.union (funFreeVars step)
-  $ IdxSet.union (IdxSet.fromVarList $ flattenTupR init)
+  $ IdxSet.union (IdxSet.fromVarList $ flattenTupR ini)
   $ freeVars continuation
 freeVars (Fork s1 s2) = freeVars s1 `IdxSet.union` freeVars s2
 
-funFreeVars :: IsExecutableAcc exe => UniformScheduleFun exe env t -> IdxSet env
+funFreeVars :: UniformScheduleFun exe env t -> IdxSet env
 funFreeVars (Sbody s)    = freeVars s
 funFreeVars (Slam lhs f) = IdxSet.drop' lhs $ funFreeVars f
 
@@ -286,8 +288,8 @@ bindingFreeVars (Compute e)    = IdxSet.fromList $ map f $ arrayInstrs e
     f (Exists (Index (Var _ idx)))     = Exists idx
     f (Exists (Parameter (Var _ idx))) = Exists idx
 
-effectFreeVars :: IsExecutableAcc exe => Effect exe env -> IdxSet env
-effectFreeVars (Exec exe)                = IdxSet.fromVarList $ execVars exe
+effectFreeVars :: Effect exe env -> IdxSet env
+effectFreeVars (Exec _ args)           = IdxSet.fromVarList $ argsVars args
 effectFreeVars (SignalAwait signals)     = IdxSet.fromList $ map Exists $ signals
 effectFreeVars (SignalResolve resolvers) = IdxSet.fromList $ map Exists resolvers
 effectFreeVars (RefWrite ref value)      = IdxSet.insertVar ref $ IdxSet.singletonVar value

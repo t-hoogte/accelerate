@@ -5,6 +5,7 @@
 {-# LANGUAGE OverloadedStrings    #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
 {-# LANGUAGE TemplateHaskell      #-}
+{-# LANGUAGE TypeApplications     #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 {-# OPTIONS_HADDOCK hide #-}
@@ -35,6 +36,7 @@ module Data.Array.Accelerate.Pretty (
 ) where
 
 import Data.Array.Accelerate.AST                                    hiding ( Acc, Exp )
+import Data.Array.Accelerate.Debug.Internal.Flags
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Pretty.Graphviz
 import Data.Array.Accelerate.Pretty.Print                           hiding ( Keyword(..) )
@@ -42,7 +44,8 @@ import Data.Array.Accelerate.Smart                                  ( Acc, Exp )
 import Data.Array.Accelerate.Sugar.Array
 import Data.Array.Accelerate.Sugar.Elt
 import Data.Array.Accelerate.Trafo
-import Data.Array.Accelerate.Trafo.Delayed
+-- import Data.Array.Accelerate.Trafo.Delayed
+import Data.Array.Accelerate.Interpreter (InterpretOp)
 
 import Data.Maybe
 import Data.Text.Prettyprint.Doc
@@ -54,19 +57,20 @@ import System.IO.Unsafe
 import qualified Data.Text.Lazy                                     as T
 import qualified System.Console.ANSI                                as Term
 import qualified System.Console.Terminal.Size                       as Term
+import Data.Array.Accelerate.AST.Operation (OperationAcc, OperationAfun)
 
 #if ACCELERATE_DEBUG
 import Control.DeepSeq
-import Data.Array.Accelerate.Debug.Flags
-import Data.Array.Accelerate.Debug.Stats
+import Data.Array.Accelerate.Debug.Internal.Stats
 #endif
 
-
+-- Use the Interpreter's fusion rules to show an Accelerate computation
+-- We should also add a way to do this with other fusion rules
 instance Arrays arrs => Show (Acc arrs) where
-  show = withSimplStats . show . convertAcc
+  show = withSimplStats . show . convertAcc @InterpretOp
 
 instance Afunction (Acc a -> f) => Show (Acc a -> f) where
-  show = withSimplStats . show . convertAfun
+  show = withSimplStats . show . convertAfun @_ @InterpretOp
 
 instance Elt e => Show (Exp e) where
   show = withSimplStats . show . convertExp
@@ -90,16 +94,18 @@ instance Function (Exp a -> f) => Show (Exp a -> f) where
 --
 
 instance PrettyEnv aenv => Show (OpenAcc aenv a) where
-  show = renderForTerminal . prettyOpenAcc context0 (prettyEnv (pretty 'a'))
+  show = renderForTerminal . prettyOpenAcc configPlain context0 (prettyEnv (pretty 'a'))
 
 instance PrettyEnv aenv => Show (OpenAfun aenv f) where
-  show = renderForTerminal . prettyPreOpenAfun prettyOpenAcc (prettyEnv (pretty 'a'))
+  show = renderForTerminal . prettyPreOpenAfun configPlain prettyOpenAcc (prettyEnv (pretty 'a'))
 
-instance PrettyEnv aenv => Show (DelayedOpenAcc aenv a) where
-  show = renderForTerminal . prettyDelayedOpenAcc context0 (prettyEnv (pretty 'a'))
+instance PrettyEnv aenv => Show (OperationAcc op aenv a) where
+  -- show = let config = if shouldPrintHash then configWithHash else configPlain
+  --        in renderForTerminal . prettyDelayedOpenAcc config context0 (prettyEnv (pretty 'a'))
 
-instance PrettyEnv aenv => Show (DelayedOpenAfun aenv f) where
-  show = renderForTerminal . prettyPreOpenAfun prettyDelayedOpenAcc (prettyEnv (pretty 'a'))
+instance PrettyEnv aenv => Show (OperationAfun op aenv f) where
+  -- show = let config = if shouldPrintHash then configWithHash else configPlain
+  --        in renderForTerminal . prettyPreOpenAfun config prettyDelayedOpenAcc (prettyEnv (pretty 'a'))
 
 instance (PrettyEnv env, PrettyEnv aenv) => Show (OpenExp env aenv e) where
   show = renderForTerminal . prettyOpenExp context0 (prettyEnv (pretty 'x')) (prettyEnv (pretty 'a'))
@@ -128,6 +134,8 @@ terminalSupportsANSI :: Bool
 terminalSupportsANSI = unsafePerformIO $ Term.hSupportsANSI stdout
 
 {-# NOINLINE terminalLayoutOptions #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeApplications #-}
 terminalLayoutOptions :: LayoutOptions
 terminalLayoutOptions
   = unsafePerformIO
@@ -142,27 +150,40 @@ terminalLayoutOptions
                         | otherwise = 0.8
 
 prettyOpenAcc :: PrettyAcc OpenAcc
-prettyOpenAcc context aenv (OpenAcc pacc) =
-  prettyPreOpenAcc context prettyOpenAcc extractOpenAcc aenv pacc
+prettyOpenAcc config context aenv (OpenAcc pacc) =
+  prettyPreOpenAcc config context prettyOpenAcc extractOpenAcc aenv pacc
 
 extractOpenAcc :: OpenAcc aenv a -> PreOpenAcc OpenAcc aenv a
 extractOpenAcc (OpenAcc pacc) = pacc
 
 
-prettyDelayedOpenAcc :: HasCallStack => PrettyAcc DelayedOpenAcc
-prettyDelayedOpenAcc context aenv (Manifest pacc)
-  = prettyPreOpenAcc context prettyDelayedOpenAcc extractDelayedOpenAcc aenv pacc
-prettyDelayedOpenAcc _       aenv (Delayed _ sh f _)
-  = parens
-  $ nest shiftwidth
-  $ sep [ delayed "delayed"
-        ,          prettyOpenExp app Empty aenv sh
-        , parens $ prettyOpenFun     Empty aenv f
-        ]
+-- prettyDelayedOpenAcc :: HasCallStack => PrettyAcc DelayedOpenAcc
+-- prettyDelayedOpenAcc config context aenv (Manifest pacc)
+--   = prettyPreOpenAcc config context prettyDelayedOpenAcc extractDelayedOpenAcc aenv pacc
+-- prettyDelayedOpenAcc _      _       aenv (Delayed _ sh f _)
+--   = parens
+--   $ nest shiftwidth
+--   $ sep [ delayed "delayed"
+--         ,          prettyOpenExp app Empty aenv sh
+--         , parens $ prettyOpenFun     Empty aenv f
+--         ]
 
-extractDelayedOpenAcc :: HasCallStack => DelayedOpenAcc aenv a -> PreOpenAcc DelayedOpenAcc aenv a
-extractDelayedOpenAcc (Manifest pacc) = pacc
-extractDelayedOpenAcc Delayed{}       = internalError "expected manifest array"
+-- extractDelayedOpenAcc :: HasCallStack => DelayedOpenAcc aenv a -> PreOpenAcc DelayedOpenAcc aenv a
+-- extractDelayedOpenAcc (Manifest pacc) = pacc
+-- extractDelayedOpenAcc Delayed{}       = internalError "expected manifest array"
+
+
+-- Unfortunately, using unsafePerformIO here means that the getFlag will be
+-- evaluated only once when the first 'show' is performed on a Delayed value;
+-- afterwards, the thunk will have been evaluated, and all future pretty-print
+-- outputs will use the same result.
+-- This cannot be prevented using a NOINLINE pragma, since then the function
+-- itself is still a thunk that will only be evaluated once.
+--
+-- The practical result of this is that @setFlag verbose@ will not change
+-- anything after a Delayed has already been printed once.
+shouldPrintHash :: Bool
+shouldPrintHash = unsafePerformIO $ getFlag verbose
 
 
 -- Debugging

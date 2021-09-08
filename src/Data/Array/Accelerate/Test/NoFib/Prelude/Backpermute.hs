@@ -90,7 +90,7 @@ test_take runN dim e =
   property $ do
     sh@(_:.n) <- forAll dim
     xs        <- forAll (array sh e)
-    i         <- forAll (Gen.int (Range.linear 0 (n-1)))
+    i         <- forAll (Gen.int (Range.linear (-2) (n+1)))
     let !go = runN (\v -> A.take (the v)) in go (scalar i) xs ~~~ takeRef i xs
 
 test_drop
@@ -103,7 +103,7 @@ test_drop runN dim e =
   property $ do
     sh@(_:.n) <- forAll dim
     xs        <- forAll (array sh e)
-    i         <- forAll (Gen.int (Range.linear 0 (n-1)))
+    i         <- forAll (Gen.int (Range.linear (-2) (n+1)))
     let !go = runN (\v -> A.drop (the v)) in go (scalar i) xs ~~~ dropRef i xs
 
 test_gather
@@ -123,7 +123,7 @@ test_gather runN dim dim' e =
         toIxArr = fromList sh' . P.map (S.fromIndex sh)
     --
     xs  <- forAll (array sh e)
-    ix  <- forAll (toIxArr <$> Gen.list (Range.singleton n') (Gen.int (Range.linear 0 (n-1))))
+    ix  <- forAll (toIxArr P.<$> Gen.list (Range.singleton n') (Gen.int (Range.linear 0 (n-1))))
     --
     let !go = runN $ \i -> A.backpermute (A.shape i) (i A.!)
     --
@@ -158,5 +158,6 @@ dropRef
     -> Array (sh:.Int) e
 dropRef n arr =
   let sh :. m = S.shape arr
-  in  fromFunction (sh :. P.max 0 (m-n)) (\(sz:.i) -> arr S.! (sz :. i+n))
+      n' = P.max 0 n
+  in  fromFunction (sh :. P.max 0 (m - n')) (\(sz:.i) -> arr S.! (sz :. i+n'))
 

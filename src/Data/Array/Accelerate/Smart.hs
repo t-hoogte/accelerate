@@ -31,7 +31,7 @@ module Data.Array.Accelerate.Smart (
   -- * HOAS AST
   -- ** Array computations
   Acc(..), SmartAcc(..), PreSmartAcc(..),
-  Level, Direction(..),
+  Level, Direction(..), Message(..),
 
   -- ** Scalar expressions
   Exp(..), SmartExp(..), PreSmartExp(..),
@@ -101,7 +101,7 @@ import qualified Data.Array.Accelerate.Representation.Stencil       as R
 import qualified Data.Array.Accelerate.Sugar.Array                  as Sugar
 import qualified Data.Array.Accelerate.Sugar.Shape                  as Sugar
 
-import Data.Array.Accelerate.AST                                    ( Direction(..)
+import Data.Array.Accelerate.AST                                    ( Direction(..), Message(..)
                                                                     , PrimBool, PrimMaybe
                                                                     , PrimFun(..), primFunType
                                                                     , PrimConst(..), primConstType )
@@ -145,7 +145,7 @@ import GHC.TypeLits
 -- >       xs' = use xs
 -- >       ys' = use ys
 -- >   in
--- >   fold (+) 0 ( zipWith (*) xs' ys' )
+-- >   fold (+) 0 (zipWith (*) xs' ys')
 --
 -- The function @dotp@ consumes two one-dimensional arrays ('Vector's) of
 -- values, and produces a single ('Scalar') result as output. As the return type
@@ -177,7 +177,7 @@ import GHC.TypeLits
 -- as input (which is typically what we want):
 --
 -- > dotp :: Num a => Acc (Vector a) -> Acc (Vector a) -> Acc (Scalar a)
--- > dotp xs ys = fold (+) 0 ( zipWith (*) xs ys )
+-- > dotp xs ys = fold (+) 0 $ zipWith (*) xs ys
 --
 -- We might then be inclined to lift our dot-product program to the following
 -- (incorrect) matrix-vector product, by applying @dotp@ to each row of the
@@ -185,9 +185,9 @@ import GHC.TypeLits
 --
 -- > mvm_ndp :: Num a => Acc (Matrix a) -> Acc (Vector a) -> Acc (Vector a)
 -- > mvm_ndp mat vec =
--- >   let Z :. rows :. cols  = unlift (shape mat)  :: Z :. Exp Int :. Exp Int
--- >   in  generate (index1 rows)
--- >                (\row -> the $ dotp vec (slice mat (lift (row :. All))))
+-- >   let I2 rows cols = shape mat
+-- >   in  generate (I1 rows)
+-- >                (\(I1 row) -> the $ dotp vec (slice mat (I2 row All_)))
 --
 -- Here, we use 'Data.Array.Accelerate.generate' to create a one-dimensional
 -- vector by applying at each index a function to 'Data.Array.Accelerate.slice'
@@ -213,12 +213,12 @@ import GHC.TypeLits
 -- are in the input matrix, and perform the dot-product of the vector with every
 -- row simultaneously:
 --
--- > mvm :: A.Num a => Acc (Matrix a) -> Acc (Vector a) -> Acc (Vector a)
+-- > mvm :: Num a => Acc (Matrix a) -> Acc (Vector a) -> Acc (Vector a)
 -- > mvm mat vec =
--- >   let Z :. rows :. cols = unlift (shape mat) :: Z :. Exp Int :. Exp Int
--- >       vec'              = A.replicate (lift (Z :. rows :. All)) vec
+-- >   let I2 rows cols = shape mat
+-- >       vec'         = replicate (I2 rows All_) vec
 -- >   in
--- >   A.fold (+) 0 ( A.zipWith (*) mat vec' )
+-- >   fold (+) 0 $ zipWith (*) mat vec'
 --
 -- Note that the intermediate, replicated array @vec'@ is never actually created
 -- in memory; it will be fused directly into the operation which consumes it. We
@@ -353,6 +353,11 @@ data PreSmartAcc acc exp as where
   Aprj          :: PairIdx (arrs1, arrs2) arrs
                 -> acc (arrs1, arrs2)
                 -> PreSmartAcc acc exp arrs
+
+  Atrace        :: Message arrs1
+                -> acc arrs1
+                -> acc arrs2
+                -> PreSmartAcc acc exp arrs2
 
   Use           :: ArrayR (Array sh e)
                 -> Array sh e
@@ -799,6 +804,7 @@ instance HasArraysR acc => HasArraysR (PreSmartAcc acc exp) where
                                    PairIdxLeft  -> t1
                                    PairIdxRight -> t2
     Aprj _ _                  -> error "Ejector seat? You're joking!"
+    Atrace _ _ a              -> arraysR a
     Use repr _                -> TupRsingle repr
     Unit tp _                 -> TupRsingle $ ArrayR ShapeRz $ tp
     Generate repr _ _         -> TupRsingle repr
@@ -1308,6 +1314,7 @@ showPreAccOp Awhile{}              = "Awhile"
 showPreAccOp Apair{}               = "Apair"
 showPreAccOp Anil{}                = "Anil"
 showPreAccOp Aprj{}                = "Aprj"
+showPreAccOp Atrace{}              = "Atrace"
 showPreAccOp Unit{}                = "Unit"
 showPreAccOp Generate{}            = "Generate"
 showPreAccOp Reshape{}             = "Reshape"

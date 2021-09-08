@@ -30,28 +30,31 @@ module Data.Array.Accelerate.Trafo.Schedule.Uniform (
   scheduleAcc, scheduleAfun
 ) where
 
-import Prelude hiding (read)
-
+import Data.Array.Accelerate.Analysis.Match
+import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.IdxSet (IdxSet)
-import qualified Data.Array.Accelerate.AST.IdxSet           as IdxSet
-import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.AST.Schedule.Uniform
-import Data.Array.Accelerate.AST.Environment
-import qualified Data.Array.Accelerate.AST.Partitioned      as C
-import Data.Array.Accelerate.Analysis.Match
-import Data.Array.Accelerate.Trafo.Var
-import Data.Array.Accelerate.Trafo.Substitution
-import Data.Array.Accelerate.Trafo.Exp.Substitution
-import Data.Array.Accelerate.Trafo.Operation.Substitution   (strengthenArrayInstr)
+import Data.Array.Accelerate.AST.Var
+import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Type
+import Data.Array.Accelerate.Trafo.Exp.Substitution
+import Data.Array.Accelerate.Trafo.Operation.Substitution   (strengthenArrayInstr)
+import Data.Array.Accelerate.Trafo.Substitution
+import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Type
-import Data.Array.Accelerate.Error
+import qualified Data.Array.Accelerate.AST.IdxSet           as IdxSet
+import qualified Data.Array.Accelerate.AST.Operation    as C
+import qualified Data.Array.Accelerate.AST.Partitioned  as C
 import Data.Kind
 import Data.Maybe
 import Data.List
+    ( groupBy, nubBy, sort, group )
+import Prelude hiding (id, (.), read)
+import Control.Category
+import qualified Data.Array.Accelerate.AST.Environment as Env
 
 scheduleAcc :: C.PartitionedAcc op () t -> UniformScheduleFun (Cluster op) () (Output t -> ())
 scheduleAcc acc
@@ -82,7 +85,8 @@ fromPartialFun
   -> PartialScheduleFun op genv t
   -> UniformScheduleFun (Cluster op) fenv (ScheduleFunction t)
 -}
-instance IsExecutableAcc exe => Sink' (UniformSchedule exe) where
+
+instance Sink' (UniformSchedule exe) where
   weaken' _ Return                        = Return
   weaken' k (Alet lhs b s)                
     | Exists lhs' <- rebuildLHS lhs   = Alet lhs' (weaken k b) (weaken' (sinkWithLHS lhs lhs' k) s)
@@ -91,7 +95,7 @@ instance IsExecutableAcc exe => Sink' (UniformSchedule exe) where
   weaken' k (Awhile io f input s)     = Awhile io (weaken k f) (mapTupR (weaken k) input) (weaken' k s)
   weaken' k (Fork s1 s2)              = Fork (weaken' k s1) (weaken' k s2)
 
-instance IsExecutableAcc exe => Sink (UniformScheduleFun exe) where
+instance Sink (UniformScheduleFun exe) where
   weaken k (Slam lhs f)
     | Exists lhs' <- rebuildLHS lhs = Slam lhs' $ weaken (sinkWithLHS lhs lhs' k) f
   weaken k (Sbody s)    = Sbody $ weaken' k s
@@ -105,8 +109,8 @@ instance Sink Binding where
   weaken k (Unit var)          = Unit $ weaken k var
   weaken k (RefRead ref)       = RefRead $ weaken k ref
 
-instance IsExecutableAcc exe => Sink' (Effect exe) where
-  weaken' k (Exec exe) = Exec $ runIdentity $ reindexExecPartial (weakenReindex k) exe
+instance Sink' (Effect exe) where
+  weaken' k (Exec exe args) = Exec exe $ runIdentity $ reindexArgs (weakenReindex k) args
   weaken' k (SignalAwait vars) = SignalAwait $ map (weaken k) vars
   weaken' k (SignalResolve vars) = SignalResolve $ map (weaken k) vars
   weaken' k (RefWrite ref value) = RefWrite (weaken k ref) (weaken k value)
@@ -443,6 +447,14 @@ defineOutput (TupRpair t1 t2) us
     (u1, u2) = pairUniqueness us
 defineOutput TupRunit         _                     = DefineOutput PartialDoOutputUnit weakenId (const TupRunit)
 
+-- writeOutput :: OutputEnv fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule (C.Cluster op) fenv''
+-- writeOutput outputEnv outputVars valueVars = go outputEnv outputVars valueVars Return
+--   where
+--     go :: OutputEnv fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule (C.Cluster op) fenv'' -> UniformSchedule (C.Cluster op) fenv''
+--     go OutputEnvUnit _ _ = id
+--     go (OutputEnvPair o1 o2) (TupRpair r1 r2) (TupRpair v1 v2) = go o1 r1 v1 . go o2 r2 v2
+--     go (OutputEnvShared _ _) (TupRpair (TupRsingle signal) (TupRsingle ref)) (TupRsingle v)
+
 writeOutput :: PartialDoOutput fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule (Cluster op) fenv''
 writeOutput doOutput outputVars valueVars = go doOutput outputVars valueVars Return
   where
@@ -602,7 +614,7 @@ data TupleIdx s t where
 data PartialSchedule op genv t where
   PartialDo     :: PartialDoOutput () fenv t r
                 -> ConvertEnv genv fenv fenv'
-                -> UniformSchedule (Cluster op) fenv'
+                -> UniformSchedule (C.Cluster op) fenv'
                 -> PartialSchedule op genv t
 
   -- Returns a tuple of variables. Note that (some of) these
@@ -758,10 +770,13 @@ partialSchedule :: forall op genv1 t1. C.PartitionedAcc op genv1 t1 -> (PartialS
 partialSchedule = (\(s, used, _) -> (s, used)) . travA (TupRsingle Shared)
   where
     travA :: forall genv t. Uniquenesses t -> C.PartitionedAcc op genv t -> (PartialSchedule op genv t, IdxSet genv, MaybeVars genv t)
-    travA _  (C.Exec cluster)
-      | Exists env <- convertEnvFromList $ map (foldr1 combineMod) $ groupBy (\(Exists v1) (Exists v2) -> isJust $ matchIdx (varIdx v1) (varIdx v2)) $ execVars cluster -- TODO: Remove duplicates more efficiently
+    travA _  (C.Exec cluster args)
+      | Exists env <- convertEnvFromList $ map (foldr1 combineMod) $ groupBy (\(Exists v1) (Exists v2) -> isJust $ matchIdx (varIdx v1) (varIdx v2)) $ argsVars args -- TODO: Remove duplicates more efficiently
+    -- travA :: forall genv t. Uniquenesses t -> C.PartitionedAcc op genv t -> (PartialSchedule op genv t, IdxSet genv, MaybeVars genv t)
+    -- travA _  (C.Exec cluster)
+    --   | Exists env <- convertEnvFromList $ map (foldr1 combineMod) $ groupBy (\(Exists v1) (Exists v2) -> isJust $ matchIdx (varIdx v1) (varIdx v2)) $ execVars cluster -- TODO: Remove duplicates more efficiently
       , Reads reEnv k inputBindings <- readRefs $ convertEnvRefs env
-      , Just cluster' <- reindexExecPartial (reEnvIdx reEnv) cluster
+      , Just args' <- reindexArgs (reEnvIdx reEnv) args
         = let
             signals = convertEnvSignals env
             resolvers = convertEnvSignalResolvers k env
@@ -769,7 +784,7 @@ partialSchedule = (\(s, used, _) -> (s, used)) . travA (TupRsingle Shared)
             ( PartialDo PartialDoOutputUnit env
                 $ Effect (SignalAwait signals)
                 $ inputBindings
-                $ Effect (Exec cluster')
+                $ Effect (Exec cluster args')
                 $ Effect (SignalResolve resolvers)
                 $ Return
             , IdxSet.fromList $ convertEnvToList env
@@ -2080,7 +2095,7 @@ matchOutputEnvWithEnv OutputEnvIgnore   PartialDoOutputUnit     = Just Refl
 matchOutputEnvWithEnv _                  _                 = Nothing
 
 partialDoSubstituteOutput :: forall fenv fenv' t r. PartialDoOutput () fenv t r -> BaseVars fenv' r -> Env (NewIdx fenv') fenv
-partialDoSubstituteOutput = go Empty
+partialDoSubstituteOutput = go Env.Empty
   where
     go :: Env (NewIdx fenv') fenv1 -> PartialDoOutput fenv1 fenv2 t' r' -> BaseVars fenv' r' -> Env (NewIdx fenv') fenv2
     go env (PartialDoOutputPair o1 o2) (TupRpair v1 v2)
@@ -2387,7 +2402,7 @@ data SunkReindexPartialN f env env' where
   ReindexF :: ReindexPartialN f env env' -> SunkReindexPartialN f env env'
 
 
-reindexSchedule :: (IsExecutableAcc exe, Applicative f) => ReindexPartialN f env env' -> UniformSchedule exe env -> f (UniformSchedule exe env')
+reindexSchedule :: (Applicative f) => ReindexPartialN f env env' -> UniformSchedule exe env -> f (UniformSchedule exe env')
 reindexSchedule k = reindexSchedule' $ ReindexF k
 
 sinkReindexWithLHS :: LeftHandSide s t env1 env1' -> LeftHandSide s t env2 env2' -> SunkReindexPartialN f env1 env2 -> SunkReindexPartialN f env1' env2'
@@ -2407,7 +2422,7 @@ reindex' (Sink k) = \case
     in
       f <$> reindex' k ix
 
-reindexSchedule' :: (IsExecutableAcc exe, Applicative f) => SunkReindexPartialN f env env' -> UniformSchedule exe env -> f (UniformSchedule exe env')
+reindexSchedule' :: (Applicative f) => SunkReindexPartialN f env env' -> UniformSchedule exe env -> f (UniformSchedule exe env')
 reindexSchedule' k = \case
   Return -> pure Return
   Alet lhs bnd s
@@ -2420,15 +2435,15 @@ reindexSchedule' k = \case
 reindexVarUnsafe :: Applicative f => SunkReindexPartialN f env env' -> Var s env t -> f (Var s env' t)
 reindexVarUnsafe k (Var tp idx) = Var tp . fromNewIdxUnsafe <$> reindex' k idx
 
-reindexScheduleFun' :: (IsExecutableAcc exe, Applicative f) => SunkReindexPartialN f env env' -> UniformScheduleFun exe env t -> f (UniformScheduleFun exe env' t)
+reindexScheduleFun' :: (Applicative f) => SunkReindexPartialN f env env' -> UniformScheduleFun exe env t -> f (UniformScheduleFun exe env' t)
 reindexScheduleFun' k = \case
   Sbody s -> Sbody <$> reindexSchedule' k s
   Slam lhs f
     | Exists lhs' <- rebuildLHS lhs -> Slam lhs' <$> reindexScheduleFun' (sinkReindexWithLHS lhs lhs' k) f
 
-reindexEffect' :: forall exe f env env'. (IsExecutableAcc exe, Applicative f) => SunkReindexPartialN f env env' -> Effect exe env -> f (Effect exe env')
+reindexEffect' :: forall exe f env env'. (Applicative f) => SunkReindexPartialN f env env' -> Effect exe env -> f (Effect exe env')
 reindexEffect' k = \case
-  Exec exe -> Exec <$> reindexExecPartial (fromNewIdxUnsafe <.> reindex' k) exe
+  Exec exe args -> Exec exe <$> reindexArgs (fromNewIdxUnsafe <.> reindex' k) args
   SignalAwait signals -> SignalAwait <$> traverse (fromNewIdxSignal <.> reindex' k) signals
   SignalResolve resolvers -> SignalResolve . mapMaybe toMaybe <$> traverse (reindex' k) resolvers
   RefWrite ref value -> RefWrite <$> reindexVar (fromNewIdxOutputRef <.> reindex' k) ref <*> reindexVar (fromNewIdxUnsafe <.> reindex' k) value
