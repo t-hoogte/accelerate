@@ -173,7 +173,7 @@ evalOp :: Int -> InterpretOp args -> Val env -> FromIn env args -> IO (FromOut e
 evalOp _ INoop _ () = pure ()
 evalOp _ IMap env ((_, x), f) = pure ((), evalFun f env x)
 evalOp _ IBackpermute _ _ = error "Should be filtered out earlier? Or just treat as id here"
-evalOp i IGenerate env args = undefined -- TODO: This is strange: we need the shape to implement, but that is currently part of the output. Should the shape of an output array be an input?
+evalOp i IGenerate env (((), sh), f) = pure ((), evalFun f env $ _ i sh)
 evalOp i IPermute env (((((), e), f), target), comb) =
   case evalFun f env (_ i) of
     (0, _) -> pure ((), target)
