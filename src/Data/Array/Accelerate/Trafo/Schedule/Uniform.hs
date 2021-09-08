@@ -3,6 +3,7 @@
 {-# LANGUAGE GADTs               #-}
 {-# LANGUAGE KindSignatures      #-}
 {-# LANGUAGE LambdaCase          #-}
+{-# LANGUAGE MultiWayIf          #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE PatternGuards       #-}
 {-# LANGUAGE RankNTypes          #-}
@@ -38,7 +39,7 @@ import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.AST.Schedule.Uniform
 import Data.Array.Accelerate.AST.Environment
 import qualified Data.Array.Accelerate.AST.Partitioned      as C
-import Data.Array.Accelerate.Analysis.Match                 ( (:~:)(..) )
+import Data.Array.Accelerate.Analysis.Match
 import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Trafo.Substitution
 import Data.Array.Accelerate.Trafo.Exp.Substitution
@@ -1039,6 +1040,9 @@ data ChainFutureEnv op fenv genv where
 
 chainFutureEnvironment :: fenv :> fenv' -> FutureEnv fenv genv -> SyncEnv genv -> SyncEnv genv -> ChainFutureEnv op fenv' genv
 chainFutureEnvironment _ PEnd PEnd PEnd = ChainFutureEnv id weakenId PEnd PEnd
+chainFutureEnvironment k (PPush fenv f@(FutureScalar _ _ _)) senvLeft senvRight
+  | ChainFutureEnv instr k1 fenvLeft fenvRight <- chainFutureEnvironment k fenv (partialEnvTail senvLeft) (partialEnvTail senvRight)
+  = ChainFutureEnv instr k1 (PPush fenvLeft $ weaken (k1 .> k) f) (PPush fenvRight $ weaken (k1 .> k) f)
 -- Used in both subterms
 chainFutureEnvironment k (PPush fenv f) (PPush senvLeft sLeft) (PPush senvRight sRight)
   | ChainFuture    instr1 k1 fLeft    fRight    <- chainFuture (weaken k f) sLeft sRight
@@ -1051,11 +1055,11 @@ chainFutureEnvironment k (PPush fenv f) (PPush senvLeft sLeft) (PPush senvRight 
 -- Only used in left subterm
 chainFutureEnvironment k (PPush fenv f) (PPush senvLeft _) senvRight
   | ChainFutureEnv instr k1 fenvLeft fenvRight <- chainFutureEnvironment k fenv senvLeft (partialEnvTail senvRight)
-  = ChainFutureEnv instr k1 (PPush fenvLeft (weaken (k1 .> k) f)) (partialEnvSkip fenvRight)
+  = ChainFutureEnv instr k1 (PPush fenvLeft $ weaken (k1 .> k) f) (partialEnvSkip fenvRight)
 -- Only used in right subterm
 chainFutureEnvironment k (PPush fenv f) senvLeft (PPush senvRight _)
   | ChainFutureEnv instr k1 fenvLeft fenvRight <- chainFutureEnvironment k fenv (partialEnvTail senvLeft) senvRight
-  = ChainFutureEnv instr k1 (partialEnvSkip fenvLeft) (PPush fenvRight (weaken (k1 .> k) f))
+  = ChainFutureEnv instr k1 (partialEnvSkip fenvLeft) (PPush fenvRight $ weaken (k1 .> k) f)
 -- Index not present
 chainFutureEnvironment k (PNone fenv) senvLeft senvRight
   | ChainFutureEnv instr k1 fenvLeft fenvRight <- chainFutureEnvironment k fenv (partialEnvTail senvLeft) (partialEnvTail senvRight)
@@ -1348,6 +1352,258 @@ chainFuture (FutureBuffer tp signal ref read mwrite) SyncWrite SyncWrite
     signal3   = SuccIdx $ ZeroIdx
     resolver3 = ZeroIdx
 
+-- Data type for the existentially qualified type variable fenv' used in loopFutureEnvironment
+-- This is split in 3 data types, as we must introduce variables in the input arguments,
+-- output arguments and in the body in local declarations.
+-- LoopFutureEnv, LoopFutureEnvOutput and LoopFutureEnvBody are similar to
+-- LoopFuture, LoopFutureOutput and LoopFutureBody but contain 
+data LoopFutureEnv op fenv1 genv where
+  LoopFutureEnv
+    :: InputOutputR input output
+    -- Input
+    -> fenv1 :> fenv2
+    -> BLeftHandSide input fenv1 fenv2
+    -- Output
+    -> (forall fenv3. fenv2 :> fenv3 -> LoopFutureEnvOutput op fenv3 genv output)
+    -> LoopFutureEnv op fenv1 genv
+
+data LoopFutureEnvOutput op fenv3 genv output where
+  LoopFutureEnvOutput
+    :: fenv3 :> fenv4
+    -> BLeftHandSide output fenv3 fenv4
+    -> (forall fenv5. fenv4 :> fenv5 -> LoopFutureEnvBody op fenv5 genv)
+    -> LoopFutureEnvOutput op fenv3 genv output
+
+data LoopFutureEnvBody op fenv5 genv where
+  LoopFutureEnvBody
+    -- Instruction to declare new signals
+    :: (UniformSchedule (Cluster op) fenv6 -> UniformSchedule (Cluster op) fenv5)
+    -> fenv5 :> fenv6
+    -> FutureEnv fenv6 genv
+    -> FutureEnv fenv6 genv
+    -> (forall fenv7. fenv6 :> fenv7 -> [UniformSchedule (Cluster op) fenv7]) -- Instructions to be called when the loop terminates
+    -> LoopFutureEnvBody op fenv5 genv
+
+futureEnvOuter :: GLeftHandSide s genv1 genv2 -> FutureEnv fenv genv2 -> FutureEnvOuter fenv genv1 genv2
+futureEnvOuter (LeftHandSideWildcard _) env           = FutureEnvOuter env $ flip const
+futureEnvOuter (LeftHandSideSingle _)   (PPush env a) = FutureEnvOuter env $ \k env' -> PPush env' $ weaken k a
+futureEnvOuter (LeftHandSideSingle _)   (PNone env)   = FutureEnvOuter env $ \_ env' -> PNone env'
+futureEnvOuter (LeftHandSidePair l1 l2) env
+  | FutureEnvOuter env2 f2 <- futureEnvOuter l2 env
+  , FutureEnvOuter env1 f1 <- futureEnvOuter l1 env2
+  = FutureEnvOuter env1 $ \k env' -> f2 k $ f1 k env'
+
+data FutureEnvOuter fenv genv1 genv2 where
+  FutureEnvOuter
+    :: FutureEnv fenv genv1
+    -> (forall fenv'. fenv :> fenv' -> FutureEnv fenv' genv1 -> FutureEnv fenv' genv2)
+    -> FutureEnvOuter fenv genv1 genv2
+
+loopFutureEnvironment :: fenv :> fenv1 -> FutureEnv fenv genv -> SyncEnv genv -> SyncEnv genv -> LoopFutureEnv op fenv1 genv
+loopFutureEnvironment _ PEnd _ _
+  = LoopFutureEnv
+      InputOutputRunit
+      weakenId
+      (LeftHandSideWildcard TupRunit)
+      $ \_ ->
+        LoopFutureEnvOutput
+          weakenId
+          (LeftHandSideWildcard TupRunit)
+          $ \_ ->
+            LoopFutureEnvBody
+              id
+              weakenId
+              PEnd
+              PEnd
+              $ const []
+loopFutureEnvironment k (PPush fenv f) senvLeft senvRight
+  | LoopFuture    ioA k12A lhsInputA outputA <- loopFuture (weaken k f) (partialEnvLast senvLeft) (partialEnvLast senvRight)
+  , LoopFutureEnv ioB k12B lhsInputB outputB <- loopFutureEnvironment (k12A .> k) fenv (partialEnvTail senvLeft) (partialEnvTail senvRight)
+  = LoopFutureEnv
+      (InputOutputRpair ioA ioB)
+      (k12B .> k12A)
+      (LeftHandSidePair lhsInputA lhsInputB)
+      $ \k23 ->
+        if -- This is a 'multi-way' (or actually a single-way) if, to pattern match on LoopFuture{Env}Output
+          | LoopFutureOutput    k34A lhsOutputA bodyA <- outputA (k23 .> k12B)
+          , LoopFutureEnvOutput k34B lhsOutputB bodyB <- outputB (k34A .> k23)
+          -> LoopFutureEnvOutput
+              (k34B .> k34A)
+              (LeftHandSidePair lhsOutputA lhsOutputB)
+              $ \k45 ->
+                if
+                  | LoopFutureBody instrA k56A futureLeft futureRight releaseA <- bodyA (k45 .> k34B)
+                  , LoopFutureEnvBody instrB k56B fenvLeft fenvRight releaseB <- bodyB (k56A .> k45)
+                  -> LoopFutureEnvBody
+                      (instrA . instrB)
+                      (k56B .> k56A)
+                      (partialEnvPush fenvLeft  (weaken k56B <$> futureLeft))
+                      (partialEnvPush fenvRight (weaken k56B <$> futureRight))
+                      $ maybe
+                        releaseB
+                        (\r k67 -> weaken' (k67 .> k56B) r : releaseB k67)
+                        releaseA
+loopFutureEnvironment k (PNone fenv) senvLeft senvRight
+  | LoopFutureEnv io k12 lhsInput output <- loopFutureEnvironment k fenv (partialEnvTail senvLeft) (partialEnvTail senvRight)
+  = LoopFutureEnv
+      io
+      k12
+      lhsInput
+      $ \k23 ->
+        if -- Again a multi-way if with only one alternative to pattern match on LoopFutureOutput
+          | LoopFutureEnvOutput k34 lhsOutput body <- output k23
+          -> LoopFutureEnvOutput
+              k34
+              lhsOutput
+              $ \k45 ->
+                if
+                  | LoopFutureEnvBody instr k56 fenvLeft fenvRight release <- body k45
+                  -> LoopFutureEnvBody instr k56 (partialEnvSkip fenvLeft) (partialEnvSkip fenvRight) release
+
+-- Data type for the existentially qualified type variable fenv' used in loopFuture
+-- This is split in 3 data types, as we must introduce variables in the input arguments,
+-- output arguments and in the body in local declarations.
+data LoopFuture op fenv1 t where
+  LoopFuture
+    :: InputOutputR input output
+    -- Input
+    -> fenv1 :> fenv2
+    -> BLeftHandSide input fenv1 fenv2
+    -- Output
+    -> (forall fenv3. fenv2 :> fenv3 -> LoopFutureOutput op fenv3 t output)
+    -> LoopFuture op fenv1 t
+
+data LoopFutureOutput op fenv3 t output where
+  LoopFutureOutput
+    :: fenv3 :> fenv4
+    -> BLeftHandSide output fenv3 fenv4
+    -> (forall fenv5. fenv4 :> fenv5 -> LoopFutureBody op fenv5 t)
+    -> LoopFutureOutput op fenv3 t output
+
+data LoopFutureBody op fenv5 t where
+  LoopFutureBody
+    -- Instruction to declare new signals
+    :: (UniformSchedule (Cluster op) fenv6 -> UniformSchedule (Cluster op) fenv5)
+    -> fenv5 :> fenv6
+    -> Maybe (Future fenv6 t)
+    -> Maybe (Future fenv6 t)
+    -> Maybe (UniformSchedule (Cluster op) fenv6) -- Instruction to be called when the loop terminates
+    -> LoopFutureBody op fenv5 t
+
+loopFuture :: Future fenv1 t -> Maybe (Sync t) -> Maybe (Sync t) -> LoopFuture op fenv1 t
+-- Illegal and impossible cases
+loopFuture (FutureScalar tp _ _) (Just SyncRead)  _ = bufferImpossible tp
+loopFuture (FutureScalar tp _ _) _  (Just SyncRead) = bufferImpossible tp
+loopFuture _ (Just SyncWrite) _ = internalError "A loop illegally requested write permissions on a variable from the environment."
+loopFuture _ _ (Just SyncWrite) = internalError "A loop illegally requested write permissions on a variable from the environment."
+loopFuture (FutureBuffer _ _ _ _ (Just _)) _ _ = internalError "Write permissions cannot be used in a loop. The sub-environment rule might be missing."
+loopFuture future@(FutureBuffer tp signal ref (Borrow acquireRead releaseRead) Nothing) (Just SyncRead) (Just SyncRead)
+  -- A borrowed buffer, used in both the condition and the body.
+  -- We need one signal in the state of the loop, to denote that the previous
+  -- iterations have finished working with the array.  The accompanying signal
+  -- resolver is resolved when this signal is finished and the current
+  -- iteration is done working with the array. When the loop has finished and
+  -- those signals are resolved, we will also release the entire buffer by
+  -- resolving 'releaseRead'.
+  --
+  -- This buffer is used in both the condition and the step function. Hence we
+  -- need two signals and two signal resolvers to synchronize this.
+  = LoopFuture
+      InputOutputRsignal
+      (weakenSucc weakenId)
+      (LeftHandSideSingle BaseRsignal)
+      $ \k23 ->
+        LoopFutureOutput
+          (weakenSucc weakenId)
+          (LeftHandSideSingle BaseRsignalResolver)
+          $ \k45 ->
+            let
+              awaits = [k26 >:> ZeroIdx, SuccIdx ZeroIdx, SuccIdx $ SuccIdx $ SuccIdx ZeroIdx]
+              instr = \i ->
+                Alet lhsSignal NewSignal
+                $ Alet lhsSignal NewSignal
+                $ Fork i
+                $ Effect (SignalAwait awaits) $ Effect (SignalResolve [k46 >:> ZeroIdx]) Return
+              release = Effect (SignalAwait awaits) $ Effect (SignalResolve [k >:> releaseRead]) Return
+              k56 = weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId
+              k46 = k56 .> k45
+              k26 = k46 .> weakenSucc weakenId .> k23
+              k = k26 .> weakenSucc weakenId
+            in
+              LoopFutureBody
+                instr
+                k56
+                (Just $ FutureBuffer tp (weaken k signal) (weaken k ref) (Borrow (weaken k acquireRead) $ SuccIdx $ SuccIdx ZeroIdx) Nothing)
+                (Just $ FutureBuffer tp (weaken k signal) (weaken k ref) (Borrow (weaken k acquireRead) ZeroIdx) Nothing)
+                (Just release)
+loopFuture future@(FutureBuffer tp signal ref (Borrow acquireRead releaseRead) Nothing) mleft mright
+  | left || right
+  -- A borrowed buffer, used in only one subterm of the loop (condition or step).
+  -- This is similar to the previous case, but slightly simpler. We only need
+  -- to declare one signal and one signal resolver to synchronize this.
+  = LoopFuture
+      InputOutputRsignal
+      (weakenSucc weakenId)
+      (LeftHandSideSingle BaseRsignal)
+      $ \k23 ->
+        LoopFutureOutput
+          (weakenSucc weakenId)
+          (LeftHandSideSingle BaseRsignalResolver)
+          $ \k45 ->
+            let
+              awaits = [k26 >:> ZeroIdx, SuccIdx ZeroIdx]
+              instr = \i ->
+                Alet lhsSignal NewSignal
+                $ Fork i
+                $ Effect (SignalAwait [k26 >:> ZeroIdx, SuccIdx ZeroIdx]) $ Effect (SignalResolve [k46 >:> ZeroIdx]) Return
+              future' = FutureBuffer tp (weaken k signal) (weaken k ref) (Borrow (weaken k acquireRead) ZeroIdx) Nothing
+              release
+                -- If the buffer is only used in the left subterm (the condition),
+                -- then wait on the previous iteration and the signal from the condition.
+                | left = Effect (SignalAwait [k26 >:> ZeroIdx, SuccIdx ZeroIdx]) $ Effect (SignalResolve [k >:> releaseRead]) Return
+                -- If the buffer is only used in the right subterm (the step function),
+                -- then don't wait on the signal from this subterm. The release instruction
+                -- is executed when the condition is false, so the step function is not
+                -- executed any more in this iteration.
+                -- We do resolve the signal for this subterm, to assure that any other
+                -- threads waiting on this signal can proceed; they don't have to wait
+                -- on the step function to finish.
+                | otherwise = Effect (SignalAwait [k26 >:> ZeroIdx]) $ Effect (SignalResolve [k >:> releaseRead, ZeroIdx]) Return
+              k56 = weakenSucc $ weakenSucc $ weakenId
+              k46 = k56 .> k45
+              k26 = k46 .> weakenSucc weakenId .> k23
+              k = k26 .> weakenSucc weakenId
+            in
+              LoopFutureBody
+                instr
+                k56
+                (fmap (const future') mleft)
+                (fmap (const future') mright)
+                (Just release)
+  where
+    left = isJust mleft
+    right = isJust mright
+loopFuture future left right
+  -- A buffer with Move lock or a scalar, no further synchronisation needed
+  = LoopFuture
+      InputOutputRunit
+      weakenId
+      (LeftHandSideWildcard TupRunit)
+      $ \k23 ->
+        LoopFutureOutput
+          weakenId
+          (LeftHandSideWildcard TupRunit)
+          $ \k45 ->
+          let
+            future' = weaken (k45 .> k23) future
+          in
+            LoopFutureBody
+              id
+              weakenId
+              (fmap (const future') left)
+              (fmap (const future') right)
+              Nothing
+
 lhsSignal :: LeftHandSide BaseR (Signal, SignalResolver) fenv ((fenv, Signal), SignalResolver)
 lhsSignal = LeftHandSidePair (LeftHandSideSingle BaseRsignal) (LeftHandSideSingle BaseRsignalResolver)
 
@@ -1500,18 +1756,72 @@ fromPartialAwhile
   -> PartialScheduleFun op genv (t -> t)
   -> GroundVars genv t
   -> UniformSchedule (Cluster op) fenv
-fromPartialAwhile outputEnv outputVars env uniquenesses (Plam lhsC (Pbody condition)) (Plam lhsS (Pbody step)) initial
+fromPartialAwhile outputEnv outputVars env uniquenesses conditionFun@(Plam lhsC (Pbody condition)) stepFun@(Plam lhsS (Pbody step)) initial
   | tp <- mapTupR varType initial
-  , AwhileInputOutput io k lhsInput env' initial' outputEnv' <- awhileInputOutput env (\k -> mapPartialEnv (weaken k) env) uniquenesses initial
+  , Exists groundLhs <- unionLeftHandSides lhsC lhsS
+  , AwhileInputOutput io k1 lhsInput env' initial' outputEnv' outputRepr <- awhileInputOutput env (\k -> mapPartialEnv (weaken $ weakenSucc $ weakenSucc k) env) uniquenesses initial groundLhs
+  , FutureEnvOuter envOuter envLambdaInput <- futureEnvOuter groundLhs (env' weakenId)
+  , LoopFutureEnv syncLoopIo k2 lhsSyncLoopInput syncLoopOutput <- loopFutureEnvironment weakenId envOuter (syncEnvFun conditionFun) (syncEnvFun stepFun)
+  , lhsOutputBool <- LeftHandSideSingle BaseRsignalResolver `LeftHandSidePair` LeftHandSideSingle (BaseRrefWrite $ GroundRscalar scalarType)
+  , DeclareVars lhsOutput k3 outputVars' <- declareVars outputRepr
+  , LoopFutureEnvOutput k4 lhsSyncLoopOutput syncLoopBody <- syncLoopOutput (weakenSucc $ weakenSucc k3)
+  , LoopFutureEnvBody syncLoopInstr k5 envC' envS' syncLoopRelease <- syncLoopBody weakenId
+  , envC <- environmentForSubLHS (envLambdaInput (k5 .> k4 .> k3 .> weakenSucc' (weakenSucc' k2)) envC') groundLhs lhsC
+  , envS <- environmentForSubLHS (envLambdaInput (k5 .> k4 .> k3 .> weakenSucc' (weakenSucc' k2)) envS') groundLhs lhsS 
   = let
-      
+      initial'' = mapTupR (weaken $ weakenSucc $ weakenSucc weakenId) initial'
+      loopSyncInitial = mapTupR defaultSignal $ lhsToTupR lhsSyncLoopInput
 
-    in Awhile io undefined initial' Return
+      defaultSignal :: BaseR s -> BaseVar ((fenv, Signal), SignalResolver) s
+      defaultSignal BaseRsignal = Var BaseRsignal $ SuccIdx ZeroIdx
+      defaultSignal _           = internalError "Expected signal"
 
-awhileInputOutput :: FutureEnv fenv0 genv0 -> (forall fenv''. fenv :> fenv'' -> FutureEnv fenv'' genv) -> Uniquenesses t -> GroundVars genv0 t -> AwhileInputOutput fenv0 fenv genv t
-awhileInputOutput env0 env (TupRpair u1 u2) (TupRpair v1 v2)
-  | AwhileInputOutput io1 k1 lhs1 env1 i1 outputEnv1 <- awhileInputOutput env0 env u1 v1
-  , AwhileInputOutput io2 k2 lhs2 env2 i2 outputEnv2 <- awhileInputOutput env0 env1 u2 v2
+      f = Slam (LeftHandSidePair lhsInput lhsSyncLoopInput)
+        $ Slam lhsOutputBool
+        $ Slam (LeftHandSidePair lhsOutput lhsSyncLoopOutput)
+        $ Sbody
+        $ syncLoopInstr
+        $ Alet lhsSignal NewSignal
+        $ Alet (lhsRef $ GroundRscalar scalarType) (NewRef $ GroundRscalar scalarType)
+        $ serial
+          [ fromPartial
+              (OutputEnvScalar scalarType)
+              (TupRsingle (Var BaseRsignalResolver $ SuccIdx $ SuccIdx ZeroIdx) `TupRpair` TupRsingle (Var (BaseRrefWrite $ GroundRscalar scalarType) ZeroIdx))
+              (mapPartialEnv (weaken $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId) envC)
+              condition
+          , -- Wait on signal of condition
+            Effect (SignalAwait [SuccIdx $ SuccIdx $ SuccIdx ZeroIdx])
+            -- Read condition
+            $ Alet (LeftHandSideSingle $ BaseRground $ GroundRscalar scalarType) (RefRead $ Var (BaseRref $ GroundRscalar scalarType) $ SuccIdx ZeroIdx)
+            -- Write to output variable for condition
+            $ Effect (RefWrite (Var (BaseRrefWrite $ GroundRscalar scalarType) ((weakenSucc' $ weakenSucc' $ weakenSucc' $ weakenSucc' $ weakenSucc' $ k5 .> k4 .> k3) >:> ZeroIdx)) (Var (BaseRground $ GroundRscalar scalarType) ZeroIdx))
+            $ Acond (Var scalarType ZeroIdx)
+              ( -- Condition is true, perform next iteration
+                fromPartial
+                  outputEnv'
+                  (outputVars' $ weakenSucc' $ weakenSucc' $ weakenSucc' $ weakenSucc' $ weakenSucc' $ k5 .> k4)
+                  (mapPartialEnv (weaken $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId) envS)
+                  step
+              )
+              ( -- Condition is false, write output
+                forks $ syncLoopRelease (weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId)
+                  ++ awhileWriteResult
+                      outputEnv
+                      (mapTupR (weaken $ weakenSucc' $ weakenSucc' $ weakenSucc' $ weakenSucc' $ weakenSucc' k5 .> k4 .> k3 .> weakenSucc' (weakenSucc' k2) .> weakenSucc (weakenSucc k1)) outputVars)
+                      io
+                      (mapTupR (weaken $ weakenSucc' $ weakenSucc' $ weakenSucc' $ weakenSucc' $ weakenSucc' k5 .> k4 .> k3 .> weakenSucc' (weakenSucc' k2)) $ fromMaybe (internalError "Expected a complete LHS") $ lhsFullVars lhsInput)
+              )
+              Return
+          ]
+    in
+      Alet lhsSignal NewSignal
+      $ Effect (SignalResolve [ZeroIdx])
+      $ Awhile (InputOutputRpair io syncLoopIo) f (TupRpair initial'' loopSyncInitial) Return
+
+awhileInputOutput :: FutureEnv fenv0 genv0 -> (forall fenv''. fenv :> fenv'' -> FutureEnv fenv'' genv) -> Uniquenesses t -> GroundVars genv0 t -> GLeftHandSide t genv genv' -> AwhileInputOutput fenv0 fenv genv genv' t
+awhileInputOutput env0 env (TupRpair u1 u2) (TupRpair v1 v2) (LeftHandSidePair lhs1 lhs2)
+  | AwhileInputOutput io1 k1 lhs1 env1 i1 outputEnv1 g1 <- awhileInputOutput env0 env  u1 v1 lhs1
+  , AwhileInputOutput io2 k2 lhs2 env2 i2 outputEnv2 g2 <- awhileInputOutput env0 env1 u2 v2 lhs2
   = AwhileInputOutput
       (InputOutputRpair io1 io2)
       (k2 .> k1)
@@ -1519,7 +1829,9 @@ awhileInputOutput env0 env (TupRpair u1 u2) (TupRpair v1 v2)
       env2
       (TupRpair i1 i2)
       (OutputEnvPair outputEnv1 outputEnv2)
-awhileInputOutput env0 env TupRunit TupRunit
+      (TupRpair g1 g2)
+awhileInputOutput env0 env uniquenesses vars (LeftHandSideWildcard (TupRpair t1 t2)) = awhileInputOutput env0 env uniquenesses vars (LeftHandSideWildcard t1 `LeftHandSidePair` LeftHandSideWildcard t2)
+awhileInputOutput env0 env TupRunit TupRunit (LeftHandSideWildcard TupRunit)
   = AwhileInputOutput
       InputOutputRunit
       weakenId
@@ -1527,7 +1839,8 @@ awhileInputOutput env0 env TupRunit TupRunit
       env
       TupRunit
       OutputEnvIgnore
-awhileInputOutput env0 env (TupRsingle uniqueness) (TupRsingle (Var groundR idx))
+      TupRunit
+awhileInputOutput env0 env (TupRsingle uniqueness) (TupRsingle (Var groundR idx)) (LeftHandSideSingle _)
   | GroundRbuffer tp <- groundR -- Unique buffer
   , Unique <- uniqueness
   = let
@@ -1555,6 +1868,7 @@ awhileInputOutput env0 env (TupRsingle uniqueness) (TupRsingle (Var groundR idx)
         initial
         -- Output
         OutputEnvUnique
+        (TupRsingle BaseRsignalResolver `TupRpair` TupRsingle BaseRsignalResolver `TupRpair` TupRsingle BaseRsignalResolver `TupRpair` TupRsingle (BaseRrefWrite groundR))
   | GroundRbuffer tp <- groundR -- Shared buffer
   = let
       initial = case prjPartial idx env0 of
@@ -1578,6 +1892,7 @@ awhileInputOutput env0 env (TupRsingle uniqueness) (TupRsingle (Var groundR idx)
         initial
         -- Output
         OutputEnvShared
+        (TupRsingle BaseRsignalResolver `TupRpair` TupRsingle BaseRsignalResolver `TupRpair` TupRsingle (BaseRrefWrite groundR))
   | GroundRscalar tp <- groundR -- Scalar
   = let
       initial = case prjPartial idx env0 of
@@ -1597,8 +1912,12 @@ awhileInputOutput env0 env (TupRsingle uniqueness) (TupRsingle (Var groundR idx)
         initial
         -- Output
         (OutputEnvScalar tp)
+        (TupRsingle BaseRsignalResolver `TupRpair` TupRsingle (BaseRrefWrite groundR))
+awhileInputOutput env0 env uniquenesses vars (LeftHandSideWildcard (TupRsingle groundR))
+  | AwhileInputOutput io k lhs env i outputEnv g <- awhileInputOutput env0 env uniquenesses vars (LeftHandSideSingle groundR)
+  = AwhileInputOutput io k lhs (\k' -> partialEnvTail $ env k') i outputEnv g
 
-data AwhileInputOutput fenv0 fenv genv t where
+data AwhileInputOutput fenv0 fenv genv genv' t where
   AwhileInputOutput
     :: InputOutputR input output
     -- Input
@@ -1608,18 +1927,110 @@ data AwhileInputOutput fenv0 fenv genv t where
     -> BaseVars fenv0 input
     -- Output
     -> OutputEnv t output
-    -> AwhileInputOutput fenv0 fenv genv t
+    -> BasesR output
+    -> AwhileInputOutput fenv0 fenv genv genv' t
 
-
-{-
-
-  Awhile  :: InputOutputR input output
-          -> UniformScheduleFun exe env (input -> Output PrimBool -> ())
-          -> UniformScheduleFun exe env (input -> output -> ())
-          -> BaseVars env input
-          -> UniformSchedule exe env -- Operations after the while loop
-          -> UniformSchedule exe env
--}
+-- Note that the result of the loop (type variable 'result') does not
+-- have to match with the result of an iteration (type variable 'output').
+-- It can happen that a buffer is unique inside the loop, but is returned
+-- as a shared array. This can for instance happen in a program of this
+-- form:
+--
+-- acond ..
+--   a
+--   awhile ...
+-- 
+-- where 'a' is a variable of a shared buffer. The loop may still have
+-- a unique buffer internally, but write its output to a destination for
+-- a shared buffer.
+--
+awhileWriteResult
+  :: OutputEnv t result
+  -> BaseVars fenv result
+  -> InputOutputR input output
+  -> BaseVars fenv input
+  -> [UniformSchedule (Cluster op) fenv]
+awhileWriteResult = \env resVars io vars -> go env resVars io vars []
+  where
+    go :: OutputEnv t result
+       -> BaseVars fenv result
+       -> InputOutputR input output
+       -> BaseVars fenv input
+       -> [UniformSchedule (Cluster op) fenv]
+       -> [UniformSchedule (Cluster op) fenv]
+    go (OutputEnvPair e1 e2) (TupRpair r1 r2) (InputOutputRpair io1 io2) (TupRpair i1 i2) = go e1 r1 io1 i1 . go e2 r2 io2 i2
+    go (OutputEnvPair _ _)   _                _                          _                = internalError "Expected pair"
+    go OutputEnvUnique (TupRsingle resSignal `TupRpair` TupRsingle resReadAccess `TupRpair` TupRsingle resWriteAccess `TupRpair` TupRsingle resRef) io input
+    -- Internally unique buffer to unique buffer in result
+      | InputOutputRpair (InputOutputRpair (InputOutputRpair InputOutputRsignal InputOutputRsignal) InputOutputRsignal) InputOutputRref <- io
+      , TupRsingle signal `TupRpair` TupRsingle readAccess `TupRpair` TupRsingle writeAccess `TupRpair` TupRsingle ref <- input
+      , ground' <- case varType ref of
+          BaseRref t -> t
+          BaseRground (GroundRscalar _) -> internalError "Reference impossible"
+      , Just Refl <- matchGroundR ground ground'
+      = (:)
+      $ Effect (SignalAwait [varIdx signal])
+      $ Alet (LeftHandSideSingle $ BaseRground ground) (RefRead ref)
+      $ Effect (RefWrite (weaken k resRef) $ Var (BaseRground ground) ZeroIdx)
+      $ Effect (SignalResolve [weaken k $ varIdx resSignal])
+      $ Effect (SignalAwait [weaken k $ varIdx readAccess])
+      $ Effect (SignalResolve [weaken k $ varIdx resReadAccess])
+      $ Effect (SignalAwait [weaken k $ varIdx writeAccess])
+      $ Effect (SignalResolve [weaken k $ varIdx resWriteAccess])
+      $ Return
+      | otherwise = internalError "Mismatch with unique buffer"
+      where
+        k = weakenSucc $ weakenId
+        ground = case varType resRef of
+                   BaseRrefWrite t -> t
+                   BaseRground (GroundRscalar _) -> internalError "Reference impossible"
+    go OutputEnvShared outputVars@(TupRsingle resSignal `TupRpair` TupRsingle resReadAccess `TupRpair` TupRsingle resRef) io input
+    -- Internally shared buffer to shared buffer in result
+      | InputOutputRpair (InputOutputRpair InputOutputRsignal InputOutputRsignal) InputOutputRref <- io
+      , TupRsingle signal `TupRpair` TupRsingle readAccess `TupRpair` TupRsingle ref <- input
+      , ground' <- case varType ref of
+          BaseRref t -> t
+          BaseRground (GroundRscalar _) -> internalError "Reference impossible"
+      , Just Refl <- matchGroundR ground ground'
+      = (:)
+      $ Effect (SignalAwait [varIdx signal])
+      $ Alet (LeftHandSideSingle $ BaseRground ground) (RefRead ref)
+      $ Effect (RefWrite (weaken k resRef) $ Var (BaseRground ground) ZeroIdx)
+      $ Effect (SignalResolve [weaken k $ varIdx resSignal])
+      $ Effect (SignalAwait [weaken k $ varIdx readAccess])
+      $ Effect (SignalResolve [weaken k $ varIdx resReadAccess])
+      $ Return
+    -- Internally unique buffer to shared buffer in result
+      | InputOutputRpair (InputOutputRpair (InputOutputRpair InputOutputRsignal InputOutputRsignal) InputOutputRsignal) InputOutputRref <- io
+      , TupRsingle signal `TupRpair` TupRsingle readAccess `TupRpair` TupRsingle writeAccess `TupRpair` TupRsingle ref <- input
+      = go
+          OutputEnvShared
+          outputVars
+          (InputOutputRpair (InputOutputRpair InputOutputRsignal InputOutputRsignal) InputOutputRref)
+          (TupRsingle signal `TupRpair` TupRsingle readAccess `TupRpair` TupRsingle ref)
+      | otherwise = internalError "Mismatch with unique buffer"
+      where
+        k = weakenSucc $ weakenId
+        ground = case varType resRef of
+                   BaseRrefWrite t -> t
+                   BaseRground (GroundRscalar _) -> internalError "Reference impossible"
+    go (OutputEnvScalar tp) outputVars@(TupRsingle resSignal `TupRpair` TupRsingle resRef) io input
+    -- Internally shared buffer to shared buffer in result
+      | InputOutputRpair InputOutputRsignal InputOutputRref <- io
+      , TupRsingle signal `TupRpair` TupRsingle ref <- input
+      , ground <- case varType ref of
+          BaseRref t -> t
+          BaseRground (GroundRscalar _) -> internalError "Reference impossible"
+      , Just Refl <- matchGroundR (GroundRscalar tp) ground
+      = (:)
+      $ Effect (SignalAwait [varIdx signal])
+      $ Alet (LeftHandSideSingle $ BaseRground ground) (RefRead ref)
+      $ Effect (RefWrite (weaken k resRef) $ Var (BaseRground ground) ZeroIdx)
+      $ Effect (SignalResolve [weaken k $ varIdx resSignal])
+      $ Return
+      where
+        k = weakenSucc $ weakenId
+    go _ _ _ _ = internalError "OutputEnv and InputOutputR don't match"
 
 matchOutputEnvWithEnv :: OutputEnv t r -> PartialDoOutput fenv fenv' t r' -> Maybe (r :~: r')
 matchOutputEnvWithEnv (OutputEnvPair v1 v2) (PartialDoOutputPair e1 e2)
@@ -1795,7 +2206,6 @@ declareOutput grounds
             let k'' = k' .> k
             in TupRsingle (weaken k'' signal)
                 `TupRpair` TupRsingle (weaken k'' ref)
-
 
 data DeclareBinding op fenv genv' t where
   DeclareBinding :: fenv :> fenv'
@@ -2019,3 +2429,48 @@ reindexBinding' k = \case
 
 (<.>) :: Applicative f => (b -> c) -> (a -> f b) -> a -> f c
 (<.>) g h a = g <$> h a
+
+unionLeftHandSides :: LeftHandSide s t env env1' -> LeftHandSide s t env env2' -> Exists (LeftHandSide s t env)
+unionLeftHandSides = unionLeftHandSides'
+
+unionLeftHandSides' :: LeftHandSide s t env1 env1' -> LeftHandSide s t env2 env2' -> Exists (LeftHandSide s t env3)
+unionLeftHandSides' (LeftHandSideSingle tp)  _                        = Exists $ LeftHandSideSingle tp
+unionLeftHandSides' _                        (LeftHandSideSingle tp)  = Exists $ LeftHandSideSingle tp
+unionLeftHandSides' (LeftHandSideWildcard _) l                        = rebuildLHS l
+unionLeftHandSides' l                        (LeftHandSideWildcard _) = rebuildLHS l
+unionLeftHandSides' (LeftHandSidePair a1 a2) (LeftHandSidePair b1 b2)
+  | Exists a <- unionLeftHandSides' a1 b1
+  , Exists b <- unionLeftHandSides' a2 b2 = Exists $ LeftHandSidePair a b
+
+-- The second LHS should be a sub environment of the first, i.e. it may only contain bindings which are also present in the second.
+environmentForSubLHS :: PartialEnv f env1 -> LeftHandSide s t env env1 -> LeftHandSide s t env env2 -> PartialEnv f env2
+environmentForSubLHS = \env lhs1 lhs2 -> go id lhs1 lhs2 env
+  where
+    go :: (PartialEnv f env1 -> PartialEnv f env2) -> LeftHandSide s t env1 env1' -> LeftHandSide s t env2 env2' -> PartialEnv f env1' -> PartialEnv f env2'
+    go g (LeftHandSidePair a1 a2) (LeftHandSidePair b1 b2) = g2
+      where
+        g1 = go g  a1 b1
+        g2 = go g1 a2 b2
+    go g (LeftHandSideSingle _) (LeftHandSideSingle _) = \case
+      PEnd        -> PEnd
+      PPush env a -> PPush (g env) a
+      PNone env   -> PNone (g env)
+    go g lhs (LeftHandSideWildcard _) = g . remove lhs
+    go _ _ _ = internalError "Second LHS is not a sub environment of the first LHS"
+
+    remove :: LeftHandSide s t env env' -> PartialEnv f env' -> PartialEnv f env
+    remove (LeftHandSideWildcard _) env = env
+    remove (LeftHandSideSingle _)   env = partialEnvTail env
+    remove (LeftHandSidePair l1 l2) env = remove l1 $ remove l2 env
+
+-- TODO: Move matchGround(s)R to Analysis.Match (and refactor other things to prevent circular dependency)
+{-# INLINEABLE matchGroundsR #-}
+matchGroundsR :: GroundsR s -> GroundsR t -> Maybe (s :~: t)
+matchGroundsR = matchTupR matchGroundR
+
+{-# INLINEABLE matchGroundR #-}
+matchGroundR :: GroundR s -> GroundR t -> Maybe (s :~: t)
+matchGroundR (GroundRscalar s) (GroundRscalar t) = matchScalarType s t
+matchGroundR (GroundRbuffer s) (GroundRbuffer t)
+  | Just Refl <- matchScalarType s t             = Just Refl
+matchGroundR _                 _                 = Nothing

@@ -76,7 +76,7 @@ data UniformSchedule exe env where
   -- proceed. If true, then the other output values should also be filled, possibly at
   -- a later point in time. If it is false, then no other output values may be filled.
   Awhile  :: InputOutputR input output
-          -> UniformScheduleFun exe env (input -> (Output PrimBool, output) -> ())
+          -> UniformScheduleFun exe env (input -> Output PrimBool -> output -> ())
           -> BaseVars env input
           -> UniformSchedule exe env -- Operations after the while loop
           -> UniformSchedule exe env
