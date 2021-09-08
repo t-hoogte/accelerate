@@ -17,7 +17,7 @@
 {-# LANGUAGE ViewPatterns         #-}
 
 -- |
--- Module      : Data.Array.Accelerate.Schedule
+-- Module      : Data.Array.Accelerate.AST.Schedule
 -- Copyright   : [2012..2020] The Accelerate Team
 -- License     : BSD3
 --
@@ -29,7 +29,7 @@
 -- in other modules.
 --
 
-module Data.Array.Accelerate.Schedule (
+module Data.Array.Accelerate.AST.Schedule (
   IsSchedule(..),
   convertSchedule,
   Scheduled,

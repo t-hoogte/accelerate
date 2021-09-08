@@ -341,12 +341,15 @@ library
         -- For backend development (hidden)
         Data.Array.Accelerate.AST
         Data.Array.Accelerate.AST.Environment
+        Data.Array.Accelerate.AST.Execute
         Data.Array.Accelerate.AST.Exp
         Data.Array.Accelerate.AST.Idx
         Data.Array.Accelerate.AST.IdxSet
+        Data.Array.Accelerate.AST.Kernel
         Data.Array.Accelerate.AST.LeftHandSide
         Data.Array.Accelerate.AST.Operation
         Data.Array.Accelerate.AST.Partitioned
+        Data.Array.Accelerate.AST.Schedule
         Data.Array.Accelerate.AST.Schedule.Uniform
         Data.Array.Accelerate.AST.Var
         Data.Array.Accelerate.Analysis.Hash
@@ -371,7 +374,6 @@ library
         Data.Array.Accelerate.Representation.Tag
         Data.Array.Accelerate.Representation.Type
         Data.Array.Accelerate.Representation.Vec
-        Data.Array.Accelerate.Schedule
         Data.Array.Accelerate.Smart
         Data.Array.Accelerate.Sugar.Array
         Data.Array.Accelerate.Sugar.Elt

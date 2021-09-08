@@ -35,6 +35,7 @@ import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.IdxSet (IdxSet)
 import Data.Array.Accelerate.AST.LeftHandSide
+import Data.Array.Accelerate.AST.Schedule
 import Data.Array.Accelerate.AST.Schedule.Uniform
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Array
@@ -44,7 +45,6 @@ import Data.Array.Accelerate.Trafo.Operation.Substitution   (strengthenArrayInst
 import Data.Array.Accelerate.Trafo.Substitution
 import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Type
-import Data.Array.Accelerate.Schedule
 import qualified Data.Array.Accelerate.AST.IdxSet           as IdxSet
 import qualified Data.Array.Accelerate.AST.Operation    as C
 import qualified Data.Array.Accelerate.AST.Partitioned  as C

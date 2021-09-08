@@ -8,7 +8,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_HADDOCK hide #-}
 -- |
--- Module      : Data.Array.Accelerate.Schedule.Uniform
+-- Module      : Data.Array.Accelerate.AST.Schedule.Uniform
 -- Copyright   : [2008..2020] The Accelerate Team
 -- License     : BSD3
 --
