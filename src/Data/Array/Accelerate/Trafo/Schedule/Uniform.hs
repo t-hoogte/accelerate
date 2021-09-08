@@ -89,7 +89,7 @@ instance Sink Binding where
   weaken k (RefRead ref)       = RefRead $ weaken k ref
 
 instance Sink' (Effect exe) where
-  weaken' k (Exec exe args) = Exec exe $ runIdentity $ reindexArgs (weakenReindex k) args
+  weaken' k (Exec op args) = Exec op $ runIdentity $ reindexArgs (weakenReindex k) args
   weaken' k (SignalAwait vars) = SignalAwait $ map (weaken k) vars
   weaken' k (SignalResolve vars) = SignalResolve $ map (weaken k) vars
   weaken' k (RefWrite ref value) = RefWrite (weaken k ref) (weaken k value)
@@ -265,11 +265,11 @@ mapWithRemainder f = go []
 -}
 {-
 
-awaitFuture :: FEnv senv genv -> GroundVars genv t -> (forall senv'. senv :> senv' -> BaseVars senv' t -> UniformSchedule exe senv') -> UniformSchedule exe senv
+awaitFuture :: FEnv senv genv -> GroundVars genv t -> (forall senv'. senv :> senv' -> BaseVars senv' t -> UniformSchedule op senv') -> UniformSchedule op senv
 awaitFuture env1 vars1
   = let (symbols, res) = go env1 vars1
   where
-    go :: FEnv senv genv -> GroundVars genv t -> (forall senv'. senv :> senv' -> BaseVars senv' t -> UniformSchedule exe senv') -> ([Var senv Signal], UniformSchedule exe senv)
+    go :: FEnv senv genv -> GroundVars genv t -> (forall senv'. senv :> senv' -> BaseVars senv' t -> UniformSchedule op senv') -> ([Var senv Signal], UniformSchedule op senv)
     go env TupRunit f = ([], f weakenId TupRunit)
     go env (TupRsingle )
 
@@ -477,13 +477,13 @@ convertEnvRefs env = partialEnvFromList const $ snd $ go weakenId env []
     go k (ConvertEnvAcquire _)         accum = (weakenSucc $ weakenSucc k, accum)
     go k (ConvertEnvFuture (Var tp ix)) accum = (weakenSucc $ weakenSucc k, EnvBinding ix (FutureRef $ Var (BaseRref tp) $ k >:> ZeroIdx) : accum)
 
-data Reads exe genv fenv where
+data Reads op genv fenv where
   Reads :: ReEnv genv fenv'
         -> (fenv :> fenv')
-        -> (UniformSchedule exe fenv' -> UniformSchedule exe fenv)
-        -> Reads exe genv fenv
+        -> (UniformSchedule op fenv' -> UniformSchedule op fenv)
+        -> Reads op genv fenv
 
-readRefs :: PartialEnv (FutureRef fenv) genv -> Reads exe genv fenv
+readRefs :: PartialEnv (FutureRef fenv) genv -> Reads op genv fenv
 readRefs PEnd = Reads ReEnvEnd weakenId id
 readRefs (PPush env (FutureRef (Var tp idx)))
   | Reads r k f <- readRefs env =
@@ -2343,7 +2343,7 @@ data SunkReindexPartialN f env env' where
   ReindexF :: ReindexPartialN f env env' -> SunkReindexPartialN f env env'
 
 
-reindexSchedule :: (Applicative f) => ReindexPartialN f env env' -> UniformSchedule exe env -> f (UniformSchedule exe env')
+reindexSchedule :: (Applicative f) => ReindexPartialN f env env' -> UniformSchedule op env -> f (UniformSchedule op env')
 reindexSchedule k = reindexSchedule' $ ReindexF k
 
 sinkReindexWithLHS :: LeftHandSide s t env1 env1' -> LeftHandSide s t env2 env2' -> SunkReindexPartialN f env1 env2 -> SunkReindexPartialN f env1' env2'
@@ -2363,7 +2363,7 @@ reindex' (Sink k) = \case
     in
       f <$> reindex' k ix
 
-reindexSchedule' :: (Applicative f) => SunkReindexPartialN f env env' -> UniformSchedule exe env -> f (UniformSchedule exe env')
+reindexSchedule' :: (Applicative f) => SunkReindexPartialN f env env' -> UniformSchedule op env -> f (UniformSchedule op env')
 reindexSchedule' k = \case
   Return -> pure Return
   Alet lhs bnd s
@@ -2376,15 +2376,15 @@ reindexSchedule' k = \case
 reindexVarUnsafe :: Applicative f => SunkReindexPartialN f env env' -> Var s env t -> f (Var s env' t)
 reindexVarUnsafe k (Var tp idx) = Var tp . fromNewIdxUnsafe <$> reindex' k idx
 
-reindexScheduleFun' :: (Applicative f) => SunkReindexPartialN f env env' -> UniformScheduleFun exe env t -> f (UniformScheduleFun exe env' t)
+reindexScheduleFun' :: (Applicative f) => SunkReindexPartialN f env env' -> UniformScheduleFun op env t -> f (UniformScheduleFun op env' t)
 reindexScheduleFun' k = \case
   Sbody s -> Sbody <$> reindexSchedule' k s
   Slam lhs f
     | Exists lhs' <- rebuildLHS lhs -> Slam lhs' <$> reindexScheduleFun' (sinkReindexWithLHS lhs lhs' k) f
 
-reindexEffect' :: forall exe f env env'. (Applicative f) => SunkReindexPartialN f env env' -> Effect exe env -> f (Effect exe env')
+reindexEffect' :: forall op f env env'. (Applicative f) => SunkReindexPartialN f env env' -> Effect op env -> f (Effect op env')
 reindexEffect' k = \case
-  Exec exe args -> Exec exe <$> reindexArgs (fromNewIdxUnsafe <.> reindex' k) args
+  Exec op args -> Exec op <$> reindexArgs (fromNewIdxUnsafe <.> reindex' k) args
   SignalAwait signals -> SignalAwait <$> traverse (fromNewIdxSignal <.> reindex' k) signals
   SignalResolve resolvers -> SignalResolve . mapMaybe toMaybe <$> traverse (reindex' k) resolvers
   RefWrite ref value -> RefWrite <$> reindexVar (fromNewIdxOutputRef <.> reindex' k) ref <*> reindexVar (fromNewIdxUnsafe <.> reindex' k) value

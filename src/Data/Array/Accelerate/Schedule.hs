@@ -49,7 +49,7 @@ class IsSchedule sched where
 
   convertScheduleFun :: PartitionedAfun op () t -> sched (Cluster op) (Scheduled sched t)
 
-  mapSchedule :: (forall env'. exe env' -> exe' env') -> sched exe env -> sched exe' env
+  mapSchedule :: (forall env'. op env' -> exe' env') -> sched op env -> sched exe' env
 
 convertSchedule :: forall sched op t. IsSchedule sched => PartitionedAcc op () t -> sched (Cluster op) (ScheduleOutput sched t -> ())
 convertSchedule acc
