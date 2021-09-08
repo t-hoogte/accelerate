@@ -23,7 +23,7 @@ module Data.Array.Accelerate.AST.Environment (
   unionPartialEnv, EnvBinding(..), partialEnvFromList, mapPartialEnv,
   mapMaybePartialEnv, partialEnvValues, diffPartialEnv, diffPartialEnvWith,
   intersectPartialEnv, partialEnvTail, partialEnvLast, partialEnvSkip,
-  partialUpdate, partialEnvToList, partialEnvSingleton,
+  partialUpdate, partialEnvToList, partialEnvSingleton, partialEnvPush,
 
   prjUpdate', prjReplace', update', updates', mapEnv,
   Identity(..), (:>)(..), weakenId, weakenSucc, weakenSucc', weakenEmpty,
@@ -35,7 +35,7 @@ import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Type
-import Data.Array.Accelerate.Analysis.Match         ((:~:)(..))
+import Data.Typeable                                ((:~:)(..))
 import Data.Either
 import Data.List ( sortOn )
 
@@ -126,6 +126,10 @@ partialEnvLast _           = Nothing
 partialEnvSkip :: PartialEnv f env -> PartialEnv f (env, t)
 partialEnvSkip PEnd = PEnd
 partialEnvSkip e = PNone e
+
+partialEnvPush :: PartialEnv f env -> Maybe (f t) -> PartialEnv f (env, t)
+partialEnvPush e Nothing  = PNone e
+partialEnvPush e (Just a) = PPush e a
 
 partialUpdate :: f t -> Idx env t -> PartialEnv f env -> PartialEnv f env
 partialUpdate v ZeroIdx       env         = PPush (partialEnvTail env) v

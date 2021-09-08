@@ -7,7 +7,10 @@ resolver: lts-17.8
 packages:
 - .
 
-# extra-deps:
+extra-deps:
+- MIP-0.1.1.0
+- OptDir-0.0.4
+- bytestring-encoding-0.1.0.0
 
 # Override default flag values for local packages and extra-deps
 # flags: {}

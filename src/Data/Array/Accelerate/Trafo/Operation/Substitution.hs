@@ -50,10 +50,10 @@ data SunkReindexPartial f env env' where
   Sink     :: SunkReindexPartial f env env' -> SunkReindexPartial f (env, s) (env', s)
   ReindexF :: ReindexPartial f env env' -> SunkReindexPartial f env env'
 
-reindexPartial :: (Applicative f) => ReindexPartial f env env' -> PreOpenAcc exe env t -> f (PreOpenAcc exe env' t)
+reindexPartial :: (Applicative f) => ReindexPartial f env env' -> PreOpenAcc op env t -> f (PreOpenAcc op env' t)
 reindexPartial k = reindexA' (ReindexF k)
 
-reindexPartialAfun :: (Applicative f) => ReindexPartial f env env' -> PreOpenAfun exe env t -> f (PreOpenAfun exe env' t)
+reindexPartialAfun :: (Applicative f) => ReindexPartial f env env' -> PreOpenAfun op env t -> f (PreOpenAfun op env' t)
 reindexPartialAfun k = reindexAfun' (ReindexF k)
 
 instance Sink (PreOpenAcc exe) where
@@ -97,7 +97,7 @@ reindexArrayInstr' k (Parameter v) = Parameter <$> reindexVar' k v
 reindexExp' :: (Applicative f, RebuildableExp e) => SunkReindexPartial f benv benv' -> e (ArrayInstr benv) env t -> f (e (ArrayInstr benv') env t)
 reindexExp' k = rebuildArrayInstrPartial (rebuildArrayInstrMap $ reindexArrayInstr' k)
 
-reindexA' :: forall exe f env env' t. (Applicative f) => SunkReindexPartial f env env' -> PreOpenAcc exe env t -> f (PreOpenAcc exe env' t)
+reindexA' :: forall op f env env' t. (Applicative f) => SunkReindexPartial f env env' -> PreOpenAcc op env t -> f (PreOpenAcc op env' t)
 reindexA' k = \case
     Exec op args -> Exec op <$> reindexArgs (reindex' k) args
     Return vars -> Return <$> reindexVars' k vars
@@ -110,22 +110,22 @@ reindexA' k = \case
     Acond c t f -> Acond <$> reindexVar' k c <*> travA t <*> travA f
     Awhile uniqueness c f i -> Awhile uniqueness <$> reindexAfun' k c <*> reindexAfun' k f <*> reindexVars' k i
   where
-    travA :: PreOpenAcc exe env s -> f (PreOpenAcc exe env' s)
+    travA :: PreOpenAcc op env s -> f (PreOpenAcc op env' s)
     travA = reindexA' k
 
-reindexAfun' :: (Applicative f) => SunkReindexPartial f env env' -> PreOpenAfun exe env t -> f (PreOpenAfun exe env' t)
+reindexAfun' :: (Applicative f) => SunkReindexPartial f env env' -> PreOpenAfun op env t -> f (PreOpenAfun op env' t)
 reindexAfun' k (Alam lhs f)
   | Exists lhs' <- rebuildLHS lhs = Alam lhs' <$> reindexAfun' (sinkReindexWithLHS lhs lhs' k) f
 reindexAfun' k (Abody a) = Abody <$> reindexA' k a
 
-pair :: forall exe env a b. PreOpenAcc exe env a -> PreOpenAcc exe env b -> PreOpenAcc exe env (a, b)
+pair :: forall op env a b. PreOpenAcc op env a -> PreOpenAcc op env b -> PreOpenAcc op env (a, b)
 pair a b = goA weakenId a
   where
     -- Traverse 'a' and look for a return. We can jump over let bindings
     -- If we don't find a 'return', we must first bind the value in a let,
     -- and then use the newly defined variables instead.
     --
-    goA :: env :> env' -> PreOpenAcc exe env' a -> PreOpenAcc exe env' (a, b)
+    goA :: env :> env' -> PreOpenAcc op env' a -> PreOpenAcc op env' (a, b)
     goA k (Alet lhs uniqueness bnd x) 
                            = Alet lhs uniqueness bnd $ goA (weakenWithLHS lhs .> k) x
     goA k (Return vars)    = goB vars $ weaken k b
@@ -133,7 +133,7 @@ pair a b = goA weakenId a
       | DeclareVars lhs k' value <- declareVars $ groundsR acc
                            = Alet lhs (shared $ groundsR acc) acc $ goB (value weakenId) $ weaken (k' .> k) b
 
-    goB :: GroundVars env' a -> PreOpenAcc exe env' b -> PreOpenAcc exe env' (a, b)
+    goB :: GroundVars env' a -> PreOpenAcc op env' b -> PreOpenAcc op env' (a, b)
     goB varsA (Alet lhs uniqueness bnd x)
                                = Alet lhs uniqueness bnd $ goB (weakenVars (weakenWithLHS lhs) varsA) x
     goB varsA (Return varsB)   = Return (TupRpair varsA varsB)
@@ -141,7 +141,7 @@ pair a b = goA weakenId a
       | DeclareVars lhs k value <- declareVars $ groundsR b
                                = Alet lhs (shared $ groundsR b) acc $ Return (TupRpair (weakenVars k varsA) (value weakenId))
 
-alet :: GLeftHandSide t env env' -> PreOpenAcc exe env t -> PreOpenAcc exe env' s -> PreOpenAcc exe env s
+alet :: GLeftHandSide t env env' -> PreOpenAcc op env t -> PreOpenAcc op env' s -> PreOpenAcc op env s
 alet lhs1 (Alet lhs2 uniqueness a1 a2) a3
   | Exists lhs1' <- rebuildLHS lhs1 = Alet lhs2 uniqueness a1 $ alet lhs1' a2 $ weaken (sinkWithLHS lhs1 lhs1' $ weakenWithLHS lhs2) a3
 alet     (LeftHandSideWildcard TupRunit) (Return TupRunit) a = a

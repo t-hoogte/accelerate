@@ -266,7 +266,7 @@ type OperationAfun op = PreOpenAfun op
 class HasGroundsR f where
   groundsR :: f a -> GroundsR a
 
-instance HasGroundsR (PreOpenAcc exe env) where
+instance HasGroundsR (PreOpenAcc op env) where
   groundsR (Exec _ _)          = TupRunit
   groundsR (Return vars)     = groundsR vars
   groundsR (Compute e)       = groundsR e

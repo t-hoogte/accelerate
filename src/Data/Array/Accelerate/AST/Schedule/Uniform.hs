@@ -55,47 +55,47 @@ import Data.Typeable                                                ( (:~:)(..) 
 -- The schedule will exploit task parallelism.
 
 -- The schedule consists of bindings, effects and (parallel) control flow
-data UniformSchedule exe env where
-  Return  :: UniformSchedule exe env
+data UniformSchedule op env where
+  Return  :: UniformSchedule op env
 
   Alet    :: BLeftHandSide t env env'
           -> Binding env t
-          -> UniformSchedule exe env'
-          -> UniformSchedule exe env
+          -> UniformSchedule op env'
+          -> UniformSchedule op env
 
-  Effect  :: Effect exe env
-          -> UniformSchedule exe env
-          -> UniformSchedule exe env
+  Effect  :: Effect op env
+          -> UniformSchedule op env
+          -> UniformSchedule op env
 
   Acond   :: ExpVar env PrimBool
-          -> UniformSchedule exe env -- True branch
-          -> UniformSchedule exe env -- False branch
-          -> UniformSchedule exe env -- Operations after the if-then-else
-          -> UniformSchedule exe env
+          -> UniformSchedule op env -- True branch
+          -> UniformSchedule op env -- False branch
+          -> UniformSchedule op env -- Operations after the if-then-else
+          -> UniformSchedule op env
 
   -- The step function of the loop outputs a bool to denote whether the loop should
   -- proceed. If true, then the other output values should also be filled, possibly at
   -- a later point in time. If it is false, then no other output values may be filled.
   Awhile  :: InputOutputR input output
-          -> UniformScheduleFun exe env (input -> (Output PrimBool, output) -> ())
+          -> UniformScheduleFun op env (input -> Output PrimBool -> output -> ())
           -> BaseVars env input
-          -> UniformSchedule exe env -- Operations after the while loop
-          -> UniformSchedule exe env
+          -> UniformSchedule op env -- Operations after the while loop
+          -> UniformSchedule op env
 
   -- Whereas Fork is symmetric, we generate programs in a way in which it is usually better
   -- to execute the first branch first. A fork should thus be evaluated by delegating the second branch
   -- (eg by putting the second branch in a queue) and continueing with the first branch
-  Fork    :: UniformSchedule exe env
-          -> UniformSchedule exe env
-          -> UniformSchedule exe env
+  Fork    :: UniformSchedule op env
+          -> UniformSchedule op env
+          -> UniformSchedule op env
 
-data UniformScheduleFun exe env t where
+data UniformScheduleFun op env t where
   Slam  :: BLeftHandSide s env env'
-        -> UniformScheduleFun exe env' t
-        -> UniformScheduleFun exe env  (s -> t)
+        -> UniformScheduleFun op env' t
+        -> UniformScheduleFun op env  (s -> t)
 
-  Sbody :: UniformSchedule    exe env
-        -> UniformScheduleFun exe env ()
+  Sbody :: UniformSchedule    op env
+        -> UniformScheduleFun op env ()
 
 type family Input t where
   Input ()         = ()
@@ -212,16 +212,16 @@ data Binding env t where
   RefRead       :: BaseVar env (Ref t) -> Binding env t
 
 -- Effects do not have a return value.
-data Effect exe env where
-  Exec          :: exe args
+data Effect op env where
+  Exec          :: op args
                 -> Args env args
-                -> Effect exe env
+                -> Effect op env
 
-  SignalAwait   :: [Idx env Signal] -> Effect exe env
+  SignalAwait   :: [Idx env Signal] -> Effect op env
 
-  SignalResolve :: [Idx env SignalResolver] -> Effect exe env
+  SignalResolve :: [Idx env SignalResolver] -> Effect op env
 
-  RefWrite      :: BaseVar env (OutputRef t) -> BaseVar env t -> Effect exe env
+  RefWrite      :: BaseVar env (OutputRef t) -> BaseVar env t -> Effect op env
 
 -- A base value in the schedule is a scalar, buffer, a signal (resolver)
 -- or a (possibly mutable) reference
@@ -248,15 +248,15 @@ newtype SignalResolver = SignalResolver (MVar ())
 newtype Ref t  = Ref (IORef t)
 newtype OutputRef t = OutputRef (IORef t)
 
-await :: [Idx env Signal] -> UniformSchedule exe env -> UniformSchedule exe env
+await :: [Idx env Signal] -> UniformSchedule op env -> UniformSchedule op env
 await [] = id
 await signals = Effect (SignalAwait signals)
 
-resolve :: [Idx env SignalResolver] -> UniformSchedule exe env -> UniformSchedule exe env
+resolve :: [Idx env SignalResolver] -> UniformSchedule op env -> UniformSchedule op env
 resolve [] = id
 resolve signals = Effect (SignalResolve signals)
 
-freeVars :: UniformSchedule exe env -> IdxSet env
+freeVars :: UniformSchedule op env -> IdxSet env
 freeVars Return = IdxSet.empty
 freeVars (Alet lhs bnd s) = bindingFreeVars bnd `IdxSet.union` IdxSet.drop' lhs (freeVars s)
 freeVars (Effect effect s) = effectFreeVars effect `IdxSet.union` freeVars s
@@ -271,7 +271,7 @@ freeVars (Awhile _ step ini continuation)
   $ freeVars continuation
 freeVars (Fork s1 s2) = freeVars s1 `IdxSet.union` freeVars s2
 
-funFreeVars :: UniformScheduleFun exe env t -> IdxSet env
+funFreeVars :: UniformScheduleFun op env t -> IdxSet env
 funFreeVars (Sbody s)    = freeVars s
 funFreeVars (Slam lhs f) = IdxSet.drop' lhs $ funFreeVars f
 
@@ -288,7 +288,7 @@ bindingFreeVars (Compute e)    = IdxSet.fromList $ map f $ arrayInstrs e
     f (Exists (Index (Var _ idx)))     = Exists idx
     f (Exists (Parameter (Var _ idx))) = Exists idx
 
-effectFreeVars :: Effect exe env -> IdxSet env
+effectFreeVars :: Effect op env -> IdxSet env
 effectFreeVars (Exec _ args)           = IdxSet.fromVarList $ argsVars args
 effectFreeVars (SignalAwait signals)     = IdxSet.fromList $ map Exists $ signals
 effectFreeVars (SignalResolve resolvers) = IdxSet.fromList $ map Exists resolvers
