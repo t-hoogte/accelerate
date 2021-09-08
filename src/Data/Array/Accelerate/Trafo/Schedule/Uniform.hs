@@ -65,27 +65,6 @@ scheduleAfun :: C.PartitionedAfun op () t -> (UniformScheduleFun (Cluster op) ()
 scheduleAfun afun
   | (partial, _) <- partialScheduleFun afun = fromPartialFun PEnd partial
 
-
-{-
-partialSchedule :: forall op genv1 t1. C.PartitionedAcc op genv1 t1 -> (PartialSchedule op genv1 t1, IdxSet genv1)
-
-
-partialScheduleFun :: C.PartitionedAfun op genv t -> (PartialScheduleFun op genv t, IdxSet genv)
-partialScheduleFun (C.Alam lhs f) = (Plam lhs f', IdxSet.drop' lhs used)
-  where
-    (f', used) = partialScheduleFun f
-partialScheduleFun (C.Abody b)    = (Pbody b', used)
-  where
-    (b', used) = partialSchedule b
-
-fromPartialFun
-  :: forall op fenv genv t r.
-     HasCallStack
-  => FutureEnv fenv genv
-  -> PartialScheduleFun op genv t
-  -> UniformScheduleFun (Cluster op) fenv (ScheduleFunction t)
--}
-
 instance Sink' (UniformSchedule exe) where
   weaken' _ Return                        = Return
   weaken' k (Alet lhs b s)                
@@ -446,14 +425,6 @@ defineOutput (TupRpair t1 t2) us
   where
     (u1, u2) = pairUniqueness us
 defineOutput TupRunit         _                     = DefineOutput PartialDoOutputUnit weakenId (const TupRunit)
-
--- writeOutput :: OutputEnv fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule (C.Cluster op) fenv''
--- writeOutput outputEnv outputVars valueVars = go outputEnv outputVars valueVars Return
---   where
---     go :: OutputEnv fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule (C.Cluster op) fenv'' -> UniformSchedule (C.Cluster op) fenv''
---     go OutputEnvUnit _ _ = id
---     go (OutputEnvPair o1 o2) (TupRpair r1 r2) (TupRpair v1 v2) = go o1 r1 v1 . go o2 r2 v2
---     go (OutputEnvShared _ _) (TupRpair (TupRsingle signal) (TupRsingle ref)) (TupRsingle v)
 
 writeOutput :: PartialDoOutput fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule (Cluster op) fenv''
 writeOutput doOutput outputVars valueVars = go doOutput outputVars valueVars Return
@@ -927,43 +898,13 @@ pairUniqueness :: Uniquenesses (s, t) -> (Uniquenesses s, Uniquenesses t)
 pairUniqueness (TupRpair u1 u2)    = (u1, u2)
 pairUniqueness (TupRsingle Shared) = (TupRsingle Shared, TupRsingle Shared)
 
-{-
--- Combines two sync values from two subterms, where the first subterm uses
--- the buffers first. At this location we must introduce new signals to
--- synchronize that.
--- Returns:
---   * Number of signals to grant write access (ie one per read operation,
---     indicating that the read has finished and the data can be overriden.)
---   * Number of signals to grant read access (ie one per write operation)
---     Note that one has to wait on both the read access signals and the
---     write access signals to get write access.
---   * A merged Sync value
---
-combineSync :: Sync t -> Sync t -> (Int, Int, Sync t)
-combineSync (SyncRead  r)   (SyncRead  r')    = (0, 0, SyncRead (r + r'))
-combineSync (SyncRead  r)   (SyncWrite r' w') = (r, 0, SyncWrite r' w')
-combineSync (SyncWrite r w) (SyncWrite r' w') = (r, w, SyncWrite r' w')
-combineSync (SyncWrite r w) (SyncRead  r')    = (0, 0, SyncWrite (r + r') w)
-
-combineSync' :: Sync t -> Sync t -> Sync t
-combineSync' a b = c
-  where (_, _, c) = combineSync a b
--}
 weakenSyncEnv :: GLeftHandSide t env env' -> SyncEnv env' -> SyncEnv env
 weakenSyncEnv _                        PEnd          = PEnd
 weakenSyncEnv (LeftHandSideWildcard _) env           = env
 weakenSyncEnv (LeftHandSideSingle _)   (PPush env _) = env
 weakenSyncEnv (LeftHandSideSingle _)   (PNone env)   = env
 weakenSyncEnv (LeftHandSidePair l1 l2) env           = weakenSyncEnv l1 $ weakenSyncEnv l2 env
-{-
-maxSync :: Sync t -> Sync t -> Sync t
-maxSync (SyncRead r)    (SyncRead r')     = SyncRead (max r r')
-maxSync (SyncRead r)    (SyncWrite w' r') = SyncWrite w' (max r r')
-maxSync (SyncWrite w r) (SyncRead r')     = SyncWrite w (max r r')
-maxSync (SyncWrite w r) (SyncWrite w' r') = SyncWrite (max w w') (max r r') 
--}
 
--- TODO: Better name
 data Lock fenv
   = Borrow (Idx fenv Signal) (Idx fenv SignalResolver)
   | Move (Idx fenv Signal)
