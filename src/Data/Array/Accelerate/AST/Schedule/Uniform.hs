@@ -27,6 +27,7 @@ module Data.Array.Accelerate.AST.Schedule.Uniform (
   module Partitioned,
   await, resolve,
   signalResolverImpossible, scalarSignalResolverImpossible,
+  rnfBaseR,
 
   -- ** Free variables
   freeVars, funFreeVars, effectFreeVars, bindingFreeVars,
@@ -273,3 +274,10 @@ signalResolverImpossible (TupRsingle (GroundRscalar tp)) = scalarSignalResolverI
 scalarSignalResolverImpossible :: ScalarType SignalResolver -> a
 scalarSignalResolverImpossible (SingleScalarType (NumSingleType (IntegralNumType tp))) = case tp of {}
 scalarSignalResolverImpossible (SingleScalarType (NumSingleType (FloatingNumType tp))) = case tp of {}
+
+rnfBaseR :: BaseR t -> ()
+rnfBaseR (BaseRground ground)   = rnfGroundR ground
+rnfBaseR BaseRsignal            = ()
+rnfBaseR BaseRsignalResolver    = ()
+rnfBaseR (BaseRref ground)      = rnfGroundR ground
+rnfBaseR (BaseRrefWrite ground) = rnfGroundR ground

@@ -24,7 +24,6 @@ module Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph where
 import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Operation hiding ( Var )
-import Data.Array.Accelerate.Trafo.Desugar (DesugarAcc)
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
 import Data.Array.Accelerate.Type
@@ -118,9 +117,7 @@ fused :: Label -> Label -> Expression op
 fused x y = let x' :-> y' = x -?> y 
             in c $ Fused x' y'
 
--- There is no strict reason for DesugarAcc to be a superclass of MakesILP, other than
--- that the input of MakesILP is the output of DesugarAcc.
-class (Eq (BackendVar op), Ord (BackendVar op), Show (BackendVar op), Read (BackendVar op), DesugarAcc op) => MakesILP op where
+class (Eq (BackendVar op), Ord (BackendVar op), Show (BackendVar op), Read (BackendVar op)) => MakesILP op where
   -- Vars needed to express backend-specific fusion rules.
   type BackendVar op
 

@@ -368,6 +368,7 @@ library
         Data.Array.Accelerate.Pretty
         Data.Array.Accelerate.Representation.Array
         Data.Array.Accelerate.Representation.Elt
+        Data.Array.Accelerate.Representation.Ground
         Data.Array.Accelerate.Representation.Shape
         Data.Array.Accelerate.Representation.Slice
         Data.Array.Accelerate.Representation.Stencil

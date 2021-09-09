@@ -42,11 +42,12 @@ import Data.Array.Accelerate.Representation.Type
 import Data.Typeable                                                ( (:~:)(..) )
 import Data.Array.Accelerate.AST.Operation
 
-
 class IsSchedule sched where
   -- 'a' is a ground type (ie, can be represented using GroundR)
   type ScheduleInput  sched a
   type ScheduleOutput sched a
+
+  rnfSchedule :: NFData' op => sched op env t -> ()
 
   convertScheduleFun :: PartitionedAfun op () t -> sched (Cluster op) () (Scheduled sched t)
 

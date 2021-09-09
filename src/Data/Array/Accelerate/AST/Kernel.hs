@@ -22,9 +22,9 @@ import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.AST.Schedule
 import Data.Kind
 
-class IsKernel kernel where
-  type Operation kernel :: Type -> Type
-  compileKernel :: Cluster (Operation kernel) args -> kernel args
+class NFData' kernel => IsKernel kernel where
+  type KernelOperation kernel :: Type -> Type
+  compileKernel :: Cluster (KernelOperation kernel) args -> kernel args
 
-compileKernels :: (IsSchedule sched, IsKernel kernel) => sched (Cluster (Operation kernel)) env t -> sched kernel env t
+compileKernels :: (IsSchedule sched, IsKernel kernel) => sched (Cluster (KernelOperation kernel)) env t -> sched kernel env t
 compileKernels = mapSchedule compileKernel

@@ -62,6 +62,7 @@ import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.Analysis.Hash.Exp
 import Data.Array.Accelerate.Representation.Array
+import Data.Array.Accelerate.Representation.Ground
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Trafo.Exp.Substitution
@@ -165,16 +166,6 @@ data PreOpenAfun op env t where
   Abody ::                             PreOpenAcc  op env  t -> PreOpenAfun op env t
   Alam  :: GLeftHandSide a env env' -> PreOpenAfun op env' t -> PreOpenAfun op env (a -> t)
 
-
--- | Ground values are buffers or scalars.
---
-data GroundR a where
-  GroundRbuffer :: ScalarType e -> GroundR (Buffer e)
-  GroundRscalar :: ScalarType e -> GroundR e
-
--- | Tuples of ground values
---
-type GroundsR = TupR GroundR
 
 -- | Types for local bindings
 --
@@ -339,13 +330,6 @@ encodeGroundVar (Var repr ix) = encodeGroundR repr <> encodeIdx ix
 
 encodeGroundVars :: GroundVars env t -> Builder
 encodeGroundVars = encodeTupR encodeGroundVar
-
-rnfGroundR :: GroundR t -> ()
-rnfGroundR (GroundRscalar tp) = rnfScalarType tp
-rnfGroundR (GroundRbuffer tp) = rnfScalarType tp
-
-rnfGroundsR :: GroundsR t -> ()
-rnfGroundsR = rnfTupR rnfGroundR
 
 rnfGroundVar :: GroundVar env t -> ()
 rnfGroundVar = rnfVar rnfGroundR

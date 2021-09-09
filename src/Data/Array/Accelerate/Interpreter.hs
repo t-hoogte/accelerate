@@ -40,6 +40,7 @@ import Data.Array.Accelerate.Trafo.Desugar
 import qualified Data.Array.Accelerate.Debug.Internal as Debug
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Error
+import Data.Array.Accelerate.Representation.Ground
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Slice
@@ -69,6 +70,9 @@ import qualified Data.Array.Accelerate.AST.Environment as Env
 import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.AST.Var (varsType)
 import Data.Type.Equality
+
+import Data.Array.Accelerate.Trafo.Schedule.Uniform
+import Data.Array.Accelerate.Backend
 
 -- Conceptually, this computes the body of the fused loop
 -- It only deals with scalar values - wrap it in a loop!

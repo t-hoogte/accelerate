@@ -1,4 +1,6 @@
-{-# LANGUAGE CPP #-}
+{-# LANGUAGE CPP              #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE RankNTypes       #-}
 {-# OPTIONS_HADDOCK hide #-}
 -- |
 -- Module      : Data.Array.Accelerate.Trafo
@@ -36,6 +38,8 @@ import Data.Array.Accelerate.Trafo.Config
 -- import Data.Array.Accelerate.Trafo.Delayed
 import Data.Array.Accelerate.Trafo.Sharing                ( Afunction, ArraysFunctionR, Function, EltFunctionR )
 import qualified Data.Array.Accelerate.AST                as AST
+import Data.Array.Accelerate.AST.Kernel
+import Data.Array.Accelerate.AST.Schedule
 -- import qualified Data.Array.Accelerate.Trafo.Fusion       as Fusion
 import qualified Data.Array.Accelerate.Trafo.LetSplit     as LetSplit
 import qualified Data.Array.Accelerate.Trafo.Exp.Simplify as Rewrite
@@ -43,8 +47,10 @@ import qualified Data.Array.Accelerate.Trafo.Sharing      as Sharing
 -- import qualified Data.Array.Accelerate.Trafo.Vectorise    as Vectorise
 
 import Control.DeepSeq
-import Data.Array.Accelerate.AST.Partitioned (PartitionedAcc, PartitionedAfun)
-import Data.Array.Accelerate.Trafo.Desugar (DesugarAcc, desugar, DesugaredArrays, desugarAfun, DesugaredAfun)
+import Data.Array.Accelerate.AST.Partitioned (PartitionedAfun)
+import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Partitioning
+import Data.Array.Accelerate.Representation.Ground (DesugaredArrays, DesugaredAfun)
+import Data.Array.Accelerate.Trafo.Desugar (DesugarAcc, desugar, desugarAfun)
 import qualified Data.Array.Accelerate.Trafo.NewNewFusion as NewNewFusion
 
 #ifdef ACCELERATE_DEBUG
@@ -61,16 +67,25 @@ import Data.Array.Accelerate.Debug.Internal.Timed
 -- | Convert a closed array expression to de Bruijn form while also
 --   incorporating sharing observation and array fusion.
 --
-convertAcc :: DesugarAcc op => Acc arrs -> PartitionedAcc op () (DesugaredArrays (ArraysR arrs))
+convertAcc
+  :: forall sched kernel arrs. (DesugarAcc (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
+  => Acc arrs
+  -> sched kernel () (ScheduleOutput sched (DesugaredArrays (ArraysR arrs)) -> ())
 convertAcc = convertAccWith defaultOptions
 
-convertAccWith :: DesugarAcc op => Config -> Acc arrs -> PartitionedAcc op () (DesugaredArrays (ArraysR arrs))
+convertAccWith
+  :: forall sched kernel arrs. (DesugarAcc (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
+  => Config
+  -> Acc arrs
+  -> sched kernel () (ScheduleOutput sched (DesugaredArrays (ArraysR arrs)) -> ())
 convertAccWith config
-  = phase "array-fusion"           (NewNewFusion.convertAccWith config)
-  . phase "desugar"                 desugar
-  . phase "array-split-lets"       LetSplit.convertAcc
+  = phase' "compile-kernels" (const ()) compileKernels
+  . phase' "schedule"        (const ()) convertSchedule
+  . phase  "array-fusion"           (NewNewFusion.convertAccWith config)
+  . phase  "desugar"                 desugar
+  . phase  "array-split-lets"       LetSplit.convertAcc
   -- phase "vectorise-sequences"    Vectorise.vectoriseSeqAcc `when` vectoriseSequences
-  . phase "sharing-recovery"       (Sharing.convertAccWith config)
+  . phase  "sharing-recovery"       (Sharing.convertAccWith config)
 
 
 -- | Convert a unary function over array computations, incorporating sharing
@@ -133,13 +148,20 @@ convertSeqWith Phase{..} s
 -- statistics.
 --
 phase :: NFData b => String -> (a -> b) -> a -> b
+phase n = phase' n rnf
+
+-- Execute a phase of the compiler and (possibly) print some timing/gc
+-- statistics.
+--
+phase' :: String -> (b -> ()) -> (a -> b) -> a -> b
 #ifdef ACCELERATE_DEBUG
-phase n f x = unsafePerformIO $ do
+phase' n rnf'' f x = unsafePerformIO $ do
   enabled <- getFlag dump_phases
   if enabled
-    then timed dump_phases (\wall cpu -> printf "phase %s: %s" n (elapsed wall cpu)) (return $!! f x)
+    then timed dump_phases (\wall cpu -> printf "phase %s: %s" n (elapsed wall cpu)) (let y = f x in rnf'' y `seq` return y)
     else return (f x)
 #else
-phase _ f = f
+phase' _ _ f = f
 #endif
+
 

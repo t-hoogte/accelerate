@@ -33,6 +33,7 @@ module Data.Array.Accelerate.AST.Idx (
 ) where
 
 import Language.Haskell.TH ( Q, TExp )
+import Control.DeepSeq
 
 #ifndef ACCELERATE_INTERNAL_CHECKS
 import Data.Type.Equality ((:~:)(Refl))
@@ -118,6 +119,9 @@ idxToInt = unsafeRunIdx
 
 rnfIdx :: Idx env t -> ()
 rnfIdx !_ = ()
+
+instance NFData (Idx env t) where
+  rnf = rnfIdx
 
 liftIdx :: Idx env t -> Q (TExp (Idx env t))
 liftIdx (UnsafeIdxConstructor i) = [|| UnsafeIdxConstructor i ||]

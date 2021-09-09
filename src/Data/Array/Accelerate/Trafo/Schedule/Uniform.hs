@@ -37,8 +37,10 @@ import Data.Array.Accelerate.AST.IdxSet (IdxSet)
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.AST.Schedule
 import Data.Array.Accelerate.AST.Schedule.Uniform
+import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Array
+import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Data.Array.Accelerate.Trafo.Operation.Substitution   (strengthenArrayInstr)
@@ -54,6 +56,7 @@ import Data.List
     ( groupBy, nubBy, sort, group )
 import Prelude hiding (id, (.), read)
 import Control.Category
+import Control.DeepSeq
 import qualified Data.Array.Accelerate.AST.Environment as Env
 
 instance IsSchedule UniformScheduleFun where
@@ -65,6 +68,10 @@ instance IsSchedule UniformScheduleFun where
 
   mapSchedule f (Slam lhs s) = Slam lhs $ mapSchedule f s
   mapSchedule f (Sbody s) = Sbody $ mapSchedule' f s
+
+  rnfSchedule (Slam lhs s) = rnfLeftHandSide rnfBaseR lhs `seq` rnfSchedule s
+  rnfSchedule (Sbody s) = rnfSchedule' s
+  -- TODO: rnfSchedule!
 
 mapSchedule' :: forall op op' env. (forall s. op s -> op' s) -> UniformSchedule op env -> UniformSchedule op' env
 mapSchedule' f = \case
@@ -84,6 +91,46 @@ mapSchedule' f = \case
       SignalResolve signals -> SignalResolve signals
       RefWrite ref value    -> RefWrite ref value
 
+rnfSchedule' :: NFData' op => UniformSchedule op env -> ()
+rnfSchedule' Return                        = ()
+rnfSchedule' (Alet lhs bnd body)           = rnfLeftHandSide rnfBaseR lhs `seq` rnfBinding bnd `seq` rnfSchedule' body
+rnfSchedule' (Effect eff next)             = rnfEffect eff `seq` rnfSchedule' next
+rnfSchedule' (Acond c true false next)     = rnfExpVar c `seq` rnfSchedule' true `seq` rnfSchedule' false `seq` rnfSchedule' next
+rnfSchedule' (Awhile io body initial next) = rnfInputOutputR io `seq` rnfSchedule body `seq` rnfTupR rnfBaseVar initial `seq` rnfSchedule' next
+rnfSchedule' (Fork a b)                    = rnfSchedule' a `seq` rnfSchedule' b
+
+rnfBinding :: Binding env t -> ()
+rnfBinding (Compute e)       = rnfOpenExp e
+rnfBinding NewSignal         = ()
+rnfBinding (NewRef r)        = rnfGroundR r
+rnfBinding (Alloc shr tp sz) = rnfShapeR shr `seq` rnfScalarType tp `seq` rnfTupR rnfExpVar sz
+rnfBinding (Use tp buffer)   = buffer `seq` rnfScalarType tp
+rnfBinding (Unit var)        = rnfExpVar var
+rnfBinding (RefRead r)       = rnfBaseVar r
+
+rnfEffect :: NFData' op => Effect op env -> ()
+rnfEffect (Exec op args)          = rnf' op `seq` rnfArgs args
+rnfEffect (SignalAwait signals)   = rnf signals
+rnfEffect (SignalResolve signals) = rnf signals
+rnfEffect (RefWrite ref value)    = rnfBaseVar ref `seq` rnfBaseVar value
+
+rnfBaseVar :: BaseVar env t -> ()
+rnfBaseVar = rnfVar rnfBaseR
+
+rnfArgs :: Args env args -> ()
+rnfArgs ArgsNil = ()
+rnfArgs (arg :>: args) = rnfArg arg `seq` rnfArgs args
+
+rnfArg :: Arg env t -> ()
+rnfArg (ArgVar vars)                   = rnfTupR rnfExpVar vars
+rnfArg (ArgExp expr)                   = rnfOpenExp expr
+rnfArg (ArgFun fn)                     = rnfOpenFun fn
+rnfArg (ArgArray mod' repr sh buffers) = mod' `seq` rnfArrayR repr `seq` rnfGroundVars sh `seq` rnfGroundVars buffers
+
+rnfInputOutputR :: InputOutputR input output -> ()
+rnfInputOutputR (InputOutputRpair io1 io2) = rnfInputOutputR io1 `seq` rnfInputOutputR io2
+rnfInputOutputR _ = ()
+
 instance Sink' (UniformSchedule op) where
   weaken' _ Return                        = Return
   weaken' k (Alet lhs b s)                
@@ -99,13 +146,13 @@ instance Sink (UniformScheduleFun op) where
   weaken k (Sbody s)    = Sbody $ weaken' k s
 
 instance Sink Binding where
-  weaken k (Compute e)         = Compute $ mapArrayInstr (weaken k) e
-  weaken _ (NewSignal)         = NewSignal
-  weaken _ (NewRef r)          = NewRef r
-  weaken k (Alloc shr tp size) = Alloc shr tp $ mapTupR (weaken k) size
-  weaken _ (Use tp buffer)     = Use tp buffer
-  weaken k (Unit var)          = Unit $ weaken k var
-  weaken k (RefRead ref)       = RefRead $ weaken k ref
+  weaken k (Compute e)       = Compute $ mapArrayInstr (weaken k) e
+  weaken _ NewSignal         = NewSignal
+  weaken _ (NewRef r)        = NewRef r
+  weaken k (Alloc shr tp sz) = Alloc shr tp $ mapTupR (weaken k) sz
+  weaken _ (Use tp buffer)   = Use tp buffer
+  weaken k (Unit var)        = Unit $ weaken k var
+  weaken k (RefRead ref)     = RefRead $ weaken k ref
 
 instance Sink' (Effect op) where
   weaken' k (Exec op args) = Exec op $ runIdentity $ reindexArgs (weakenReindex k) args
