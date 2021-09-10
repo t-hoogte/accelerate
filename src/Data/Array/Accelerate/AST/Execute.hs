@@ -25,16 +25,13 @@ module Data.Array.Accelerate.AST.Execute (
 
 import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.AST.Schedule
+import Data.Array.Accelerate.Representation.Ground
 import Data.Type.Equality
 
 class Execute sched kernel where
-  executeAfun :: GFunctionR t -> sched kernel () (Scheduled sched t) -> IO t
+  executeAfun :: GFunctionR t -> sched kernel () (Scheduled sched t) -> t
 
-executeAcc :: forall sched kernel t. Execute sched kernel => GroundsR t -> sched kernel () (ScheduleOutput sched t -> ()) -> IO t
+executeAcc :: forall sched kernel t. Execute sched kernel => GroundsR t -> sched kernel () (ScheduleOutput sched t -> ()) -> t
 executeAcc repr sched
   | Refl <- reprIsBody @sched repr
   = executeAfun (GFunctionRbody repr) sched
-
-data GFunctionR t where
-  GFunctionRlam  :: GroundsR t -> GFunctionR s -> GFunctionR (t -> s)
-  GFunctionRbody :: GroundsR t                 -> GFunctionR t

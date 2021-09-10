@@ -68,19 +68,21 @@ import Data.Array.Accelerate.Debug.Internal.Timed
 --   incorporating sharing observation and array fusion.
 --
 convertAcc
-  :: forall sched kernel arrs. (DesugarAcc (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
+  :: forall sched kernel arrs.
+     (DesugarAcc (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
   => Acc arrs
   -> sched kernel () (ScheduleOutput sched (DesugaredArrays (ArraysR arrs)) -> ())
 convertAcc = convertAccWith defaultOptions
 
 convertAccWith
-  :: forall sched kernel arrs. (DesugarAcc (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
+  :: forall sched kernel arrs.
+     (DesugarAcc (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
   => Config
   -> Acc arrs
   -> sched kernel () (ScheduleOutput sched (DesugaredArrays (ArraysR arrs)) -> ())
 convertAccWith config
-  = phase' "compile-kernels" (const ()) compileKernels
-  . phase' "schedule"        (const ()) convertSchedule
+  = phase' "compile-kernels" rnfSchedule compileKernels
+  . phase' "schedule"        rnfSchedule convertSchedule
   . phase  "array-fusion"           (NewNewFusion.convertAccWith config)
   . phase  "desugar"                 desugar
   . phase  "array-split-lets"       LetSplit.convertAcc
@@ -91,16 +93,27 @@ convertAccWith config
 -- | Convert a unary function over array computations, incorporating sharing
 --   observation and array fusion
 --
-convertAfun :: (Afunction f, DesugarAcc op) => f -> PartitionedAfun op () (DesugaredAfun (ArraysFunctionR f))
+convertAfun
+  :: forall sched kernel f.
+     (Afunction f, DesugarAcc (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
+  => f
+  -> sched kernel () (Scheduled sched (DesugaredAfun (ArraysFunctionR f)))
 convertAfun = convertAfunWith defaultOptions
 
-convertAfunWith :: (Afunction f, DesugarAcc op) => Config -> f -> PartitionedAfun op () (DesugaredAfun (ArraysFunctionR f))
+convertAfunWith
+  :: forall sched kernel f.
+     (Afunction f, DesugarAcc (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
+  => Config
+  -> f
+  -> sched kernel () (Scheduled sched (DesugaredAfun (ArraysFunctionR f)))
 convertAfunWith config
-  = phase "array-fusion"           (NewNewFusion.convertAfunWith config)
-  . phase "desugar"                desugarAfun
-  . phase "array-split-lets"       LetSplit.convertAfun
+  = phase' "compile-kernels" rnfSchedule compileKernels
+  . phase' "schedule"        rnfSchedule convertScheduleFun
+  . phase  "array-fusion"           (NewNewFusion.convertAfunWith config)
+  . phase  "desugar"                desugarAfun
+  . phase  "array-split-lets"       LetSplit.convertAfun
   -- phase "vectorise-sequences"    Vectorise.vectoriseSeqAfun  `when` vectoriseSequences
-  . phase "sharing-recovery"       (Sharing.convertAfunWith config)
+  . phase  "sharing-recovery"       (Sharing.convertAfunWith config)
 
 
 -- | Convert a closed scalar expression, incorporating sharing observation and

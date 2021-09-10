@@ -35,7 +35,7 @@ module Data.Array.Accelerate.Trafo.Sharing (
   convertAcc, convertAccWith,
 
   Afunction, AfunctionR, ArraysFunctionR, AfunctionRepr(..), afunctionRepr,
-  convertAfun, convertAfunWith,
+  convertAfun, convertAfunWith, afunctionGroundR,
 
   Function, FunctionR, EltFunctionR, FunctionRepr(..), functionRepr,
   convertExp, convertExpWith,
@@ -55,6 +55,7 @@ import Data.Array.Accelerate.Debug.Internal.Flags                   as Debug
 import Data.Array.Accelerate.Debug.Internal.Trace                   as Debug
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Array                   ( Array, ArraysR, ArrayR(..), showArraysR )
+import Data.Array.Accelerate.Representation.Ground                  ( GFunctionR(..), DesugaredAfun, desugarArraysR, desugaredAfunIsBody )
 import Data.Array.Accelerate.Representation.Shape                   hiding ( zip )
 import Data.Array.Accelerate.Representation.Stencil
 import Data.Array.Accelerate.Representation.Tag
@@ -190,14 +191,16 @@ data AfunctionRepr f ar areprr where
 class Afunction f where
   type AfunctionR f
   type ArraysFunctionR f
-  afunctionRepr   :: HasCallStack => AfunctionRepr f (AfunctionR f) (ArraysFunctionR f)
-  convertOpenAfun :: HasCallStack => Config -> ArrayLayout aenv aenv -> f -> AST.OpenAfun aenv (ArraysFunctionR f)
+  afunctionRepr    :: HasCallStack => AfunctionRepr f (AfunctionR f) (ArraysFunctionR f)
+  afunctionGroundR :: GFunctionR (DesugaredAfun (ArraysFunctionR f))
+  convertOpenAfun  :: HasCallStack => Config -> ArrayLayout aenv aenv -> f -> AST.OpenAfun aenv (ArraysFunctionR f)
 
 instance (Arrays a, Afunction r) => Afunction (Acc a -> r) where
   type AfunctionR      (Acc a -> r) = a -> AfunctionR r
   type ArraysFunctionR (Acc a -> r) = Sugar.ArraysR a -> ArraysFunctionR r
 
   afunctionRepr = AfunctionReprLam $ afunctionRepr @r
+  afunctionGroundR = GFunctionRlam (desugarArraysR $ Sugar.arraysR @a) $ afunctionGroundR @r
   convertOpenAfun config alyt f
     | repr <- Sugar.arraysR @a
     , DeclareVars lhs k value <- declareVars repr
@@ -211,6 +214,9 @@ instance Arrays b => Afunction (Acc b) where
   type AfunctionR      (Acc b) = b
   type ArraysFunctionR (Acc b) = Sugar.ArraysR b
   afunctionRepr = AfunctionReprBody
+  afunctionGroundR
+    | Refl <- desugaredAfunIsBody repr = GFunctionRbody (desugarArraysR repr)
+    where repr = Sugar.arraysR @b
   convertOpenAfun config alyt (Acc body) = Abody $ convertOpenAcc config alyt body
 
 convertSmartAfun1

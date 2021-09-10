@@ -83,3 +83,7 @@ sugarArrays :: ArraysR a -> DesugaredArrays a -> a
 sugarArrays TupRunit              ()            = ()
 sugarArrays (TupRpair r1 r2)      (d1, d2)      = (sugarArrays r1 d1, sugarArrays r2 d2)
 sugarArrays (TupRsingle ArrayR{}) (sh, buffers) = Array sh buffers
+
+data GFunctionR t where
+  GFunctionRlam  :: GroundsR t -> GFunctionR s -> GFunctionR (t -> s)
+  GFunctionRbody :: GroundsR t                 -> GFunctionR t

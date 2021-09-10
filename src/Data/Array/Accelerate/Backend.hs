@@ -26,22 +26,27 @@
 --
 
 module Data.Array.Accelerate.Backend (
-  Backend(..), run
+  Backend(..),
+  run, runWith,
+  run1, run1With,
+  runN, runNWith,
 ) where
 
 import qualified Data.Array.Accelerate.Smart as Smart
-import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.AST.Schedule
 import Data.Array.Accelerate.AST.Kernel
 import Data.Array.Accelerate.AST.Execute
-import Data.Array.Accelerate.Sugar.Array as Sugar
+import qualified Data.Array.Accelerate.Sugar.Array as Sugar
+import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Ground
 import Data.Array.Accelerate.Trafo
+import Data.Array.Accelerate.Trafo.Config
 
+import Data.Array.Accelerate.Trafo.Sharing (Afunction(..), AfunctionRepr(..), afunctionGroundR, afunctionRepr)
 import qualified Data.Array.Accelerate.Trafo.Desugar as Desugar
 import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Partitioning
 import Data.Kind
-import System.IO.Unsafe
+import Data.Type.Equality
 
 class
   ( Desugar.DesugarAcc (Operation backend)
@@ -58,10 +63,58 @@ type Operation backend = KernelOperation (Kernel backend)
 
 -- Backend can be chosen with an explicit type application, for instance:
 --   run @Interpreter acc
-run :: forall backend t. Sugar.Arrays t => Backend backend => Smart.Acc t -> t
-run acc = unsafePerformIO $ do
-  result <- executeAcc (desugarArraysR repr) schedule
-  return $ toArr $ sugarArrays repr result
+run :: forall backend t. (Sugar.Arrays t, Backend backend) => Smart.Acc t -> t
+run = runWith @backend defaultOptions
+
+runWith :: forall backend t. (Sugar.Arrays t, Backend backend) => Config -> Smart.Acc t -> t
+runWith config acc
+  = Sugar.toArr $ sugarArrays repr $ executeAcc (desugarArraysR repr) schedule
   where
     repr = Sugar.arraysR @t
-    schedule = convertAcc @(Schedule backend) @(Kernel backend) acc
+    schedule = convertAccWith @(Schedule backend) @(Kernel backend) config acc
+
+run1
+  :: forall backend s t.
+     (Sugar.Arrays s, Sugar.Arrays t, Backend backend)
+  => (Smart.Acc s -> Smart.Acc t)
+  -> s -> t
+run1 = runN @backend
+
+run1With
+  :: forall backend s t.
+     (Sugar.Arrays s, Sugar.Arrays t, Backend backend)
+  => Config
+  -> (Smart.Acc s -> Smart.Acc t)
+  -> s -> t
+run1With = runNWith @backend
+
+runN
+  :: forall backend f.
+     (Afunction f, Backend backend)
+  => f
+  -> AfunctionR f
+runN = runNWith @backend defaultOptions
+
+runNWith
+  :: forall backend f.
+     (Afunction f, Backend backend)
+  => Config
+  -> f
+  -> AfunctionR f
+runNWith config f = sugarFunction (afunctionRepr @f) $ executeAfun (afunctionGroundR @f) schedule
+  where
+    schedule = convertAfunWith @(Schedule backend) @(Kernel backend) config f
+
+sugarFunction
+  :: forall f.
+     AfunctionRepr f (AfunctionR f) (ArraysFunctionR f)
+  -> DesugaredAfun (ArraysFunctionR f)
+  -> AfunctionR f
+sugarFunction AfunctionReprBody a
+  | Refl <- desugaredAfunIsBody repr = Sugar.toArr $ sugarArrays repr $ a
+  where
+    repr = Sugar.arraysR @(AfunctionR f)
+sugarFunction (AfunctionReprLam r) f = \x -> sugarFunction r $ f $ desugarArrays repr $ Sugar.fromArr x
+  where
+    repr :: forall a b. f ~ (Smart.Acc a -> b) => ArraysR (Sugar.ArraysR a)
+    repr = Sugar.arraysR @a
