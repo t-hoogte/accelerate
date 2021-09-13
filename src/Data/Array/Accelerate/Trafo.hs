@@ -47,7 +47,6 @@ import qualified Data.Array.Accelerate.Trafo.Sharing      as Sharing
 -- import qualified Data.Array.Accelerate.Trafo.Vectorise    as Vectorise
 
 import Control.DeepSeq
-import Data.Array.Accelerate.AST.Partitioned (PartitionedAfun)
 import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Partitioning
 import Data.Array.Accelerate.Representation.Ground (DesugaredArrays, DesugaredAfun)
 import Data.Array.Accelerate.Trafo.Desugar (DesugarAcc, desugar, desugarAfun)

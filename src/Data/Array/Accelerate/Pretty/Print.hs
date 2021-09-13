@@ -91,6 +91,8 @@ ansiKeyword Statement   = colorDull Yellow
 ansiKeyword Conditional = colorDull Yellow
 ansiKeyword Manifest    = color Blue
 ansiKeyword Delayed     = color Green
+ansiKeyword Execute     = color Blue
+ansiKeyword Modifier    = colorDull Blue
 
 -- Configuration for the pretty-printing functions
 data PrettyConfig acc
@@ -278,7 +280,7 @@ prettyAtuple
     -> Val aenv
     -> PreOpenAcc acc aenv arrs
     -> Adoc
-prettyAtuple config ctx prettyAcc extractAcc aenv0 acc = case collect acc of
+prettyAtuple config ctx prettyAcc extractAcc aenv0 acc = case collect acc [] of
     Nothing  -> align $ ppPair acc
     Just tup ->
       case tup of
@@ -290,12 +292,10 @@ prettyAtuple config ctx prettyAcc extractAcc aenv0 acc = case collect acc of
       "(" <> ppPair (extractAcc a1) <> "," <+> prettyAcc config context0 aenv0 a2 <> ")"
     ppPair a             = prettyPreOpenAcc config context0 prettyAcc extractAcc aenv0 a
 
-    collect :: PreOpenAcc acc aenv arrs' -> Maybe [Adoc]
-    collect Anil          = Just []
-    collect (Apair a1 a2)
-      | Just tup <- collect $ extractAcc a1
-                          = Just $ tup ++ [prettyAcc config app aenv0 a2]
-    collect _             = Nothing
+    collect :: PreOpenAcc acc aenv arrs' -> [Adoc] -> Maybe [Adoc]
+    collect Anil          accum = Just accum
+    collect (Apair a1 a2) accum = collect (extractAcc a1) (prettyAcc config app aenv0 a2 : accum)
+    collect _             _     = Nothing
 
 -- TODO: Should we also print the types of the declared variables? And the types of wildcards?
 prettyALhs :: Bool -> Val env -> LeftHandSide s arrs env env' -> (Val env', Adoc)

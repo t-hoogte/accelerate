@@ -946,13 +946,13 @@ shapeInit :: ShapeR (sh, Int) -> ShapeR sh
 shapeInit (ShapeRsnoc shr) = shr
 
 desugarUse :: ArrayR (Array sh e) -> Array sh e -> OperationAcc op benv (DesugaredArrays (Array sh e))
-desugarUse (ArrayR shr tp) (Array sh buffers) = Compute (mkConstant (shapeType shr) sh) `pair` desugarBuffers tp buffers
+desugarUse (ArrayR shr tp) (Array sh buffers) = Compute (mkConstant (shapeType shr) sh) `pair` desugarBuffers tp (size shr sh) buffers
 
-desugarBuffers :: forall e op benv. TypeR e -> Buffers e -> OperationAcc op benv (Buffers e)
-desugarBuffers TupRunit         ()       = Return TupRunit
-desugarBuffers (TupRpair t1 t2) (b1, b2) = desugarBuffers t1 b1 `pair` desugarBuffers t2 b2
-desugarBuffers (TupRsingle tp)  buffer
-  | Refl <- reprIsSingle @ScalarType @e @Buffer tp = Use tp buffer
+desugarBuffers :: forall e op benv. TypeR e -> Int -> Buffers e -> OperationAcc op benv (Buffers e)
+desugarBuffers TupRunit         _ ()       = Return TupRunit
+desugarBuffers (TupRpair t1 t2) n (b1, b2) = desugarBuffers t1 n b1 `pair` desugarBuffers t2 n b2
+desugarBuffers (TupRsingle tp)  n buffer
+  | Refl <- reprIsSingle @ScalarType @e @Buffer tp = Use tp n buffer
 
 desugarBoundaryToFunction :: forall benv sh e. Boundary benv (Array sh e) -> Arg benv (In sh e) -> Fun benv (sh -> e)
 desugarBoundaryToFunction boundary (ArgArray _ repr@(ArrayR shr tp) sh buffers) = case boundary of

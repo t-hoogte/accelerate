@@ -89,7 +89,7 @@ openReconstruct labelenv graph clusterslist subclustersmap construct = makeAST l
       InitFold o (unLabel -> args) -> Exists $ Exec (unfused o args) args
       NotFold con -> case con of
          CExe {}    -> error "should be Fold/InitFold!"
-         CUse se be               -> Exists $ Use se be
+         CUse se  n be             -> Exists $ Use se n be
          CITE env' c t f   -> case (makeAST env (subcluster t) prev, makeAST env (subcluster f) prev) of
             (Exists tacc, Exists facc) -> Exists $ Acond
               (fromJust $ reindexVar (mkReindexPartial env' env) c)

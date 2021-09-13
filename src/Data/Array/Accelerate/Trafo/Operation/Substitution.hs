@@ -105,7 +105,7 @@ reindexA' k = \case
     Alet lhs uniqueness bnd body
       | Exists lhs' <- rebuildLHS lhs -> Alet lhs' uniqueness <$> travA bnd <*> reindexA' (sinkReindexWithLHS lhs lhs' k) body
     Alloc shr tp sh -> Alloc shr tp <$> reindexVars' k sh
-    Use tp buffer -> pure $ Use tp buffer
+    Use tp n buffer -> pure $ Use tp n buffer
     Unit var -> Unit <$> reindexVar' k var
     Acond c t f -> Acond <$> reindexVar' k c <*> travA t <*> travA f
     Awhile uniqueness c f i -> Awhile uniqueness <$> reindexAfun' k c <*> reindexAfun' k f <*> reindexVars' k i

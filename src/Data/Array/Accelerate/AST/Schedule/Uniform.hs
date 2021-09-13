@@ -176,6 +176,7 @@ data Binding env t where
                 -> Binding env (Buffer e)
 
   Use           :: ScalarType e
+                -> Int
                 -> Buffer e
                 -> Binding env (Buffer e)
 
@@ -253,7 +254,7 @@ bindingFreeVars :: Binding env t -> IdxSet env
 bindingFreeVars NewSignal      = IdxSet.empty
 bindingFreeVars (NewRef _)     = IdxSet.empty
 bindingFreeVars (Alloc _ _ sh) = IdxSet.fromVarList $ flattenTupR sh
-bindingFreeVars (Use _ _)      = IdxSet.empty
+bindingFreeVars (Use _ _ _)    = IdxSet.empty
 bindingFreeVars (Unit var)     = IdxSet.singletonVar var
 bindingFreeVars (RefRead var)  = IdxSet.singletonVar var
 bindingFreeVars (Compute e)    = IdxSet.fromList $ map f $ arrayInstrs e

@@ -216,7 +216,7 @@ createLHS (LHSPair l r)   env k =
 -- next iteration might want to use 'dependant-map', to store some type information at type level.
 data Construction (op :: Type -> Type) where
   CExe :: LabelEnv env -> LabelledArgs env args -> op args            -> Construction op
-  CUse ::                 ScalarType e -> Buffer e                    -> Construction op
+  CUse ::                 ScalarType e -> Int -> Buffer e             -> Construction op
   CITE :: LabelEnv env -> ExpVar env PrimBool -> Label -> Label       -> Construction op
   CWhl :: LabelEnv env -> Label -> Label -> GroundVars env a          -> Construction op
   CLHS ::                 MyGLHS a -> Label                           -> Construction op
@@ -288,12 +288,12 @@ mkFullGraph (Unit var)       = mkFullGraphHelper $ \env ->
       , CUnt env var)
 
 
-mkFullGraph (Use sctype buff) = do
+mkFullGraph (Use sctype n buff) = do
   l <- freshL
   return $ mempty
          & info.graphI.graphNodes .~ S.singleton l
          & l_res                  ?~ l
-         & construc               .~ M.singleton l (CUse sctype buff)
+         & construc               .~ M.singleton l (CUse sctype n buff)
 
 mkFullGraph (Acond cond tacc facc) = do
   l_acond <- freshL
@@ -401,7 +401,7 @@ constructExe :: LabelEnv env' -> LabelEnv env
              -> Args env args -> op args
              -> Maybe (PreOpenAcc op env' ())
 constructExe env' env args op = Exec op <$> reindexArgs (mkReindexPartial env env') args
-constructUse :: ScalarType e -> Buffer e
+constructUse :: ScalarType e -> Int -> Buffer e
              -> PreOpenAcc op env (Buffer e)
 constructUse = Use
 constructITE :: LabelEnv env' -> LabelEnv env

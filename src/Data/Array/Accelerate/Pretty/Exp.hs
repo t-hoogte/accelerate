@@ -25,7 +25,8 @@ module Data.Array.Accelerate.Pretty.Exp (
   let_, in_, case_, of_, if_, then_, else_,
   prettyPreOpenFun, prettyPreOpenExp, PrettyArrayInstr,
   parensIf, Operator(..), Associativity, Direction(..),
-  needsParens, prettyLhs, prettyELhs, prettyConst,
+  needsParens, prettyLhs, prettyLhs', prettyELhs, prettyConst,
+  prettyTupR,
   primOperator, isInfix,
   Precedence, Fixity(..),
   Val(..), PrettyEnv(..), sizeEnv, prj,
@@ -54,6 +55,8 @@ data Keyword
   | Conditional   -- if then else
   | Manifest      -- collective operations (kernel functions)
   | Delayed       -- fused operators
+  | Execute
+  | Modifier
   deriving (Eq, Show)
 
 let_, in_ :: Adoc
@@ -295,35 +298,78 @@ parensIf True  = group . parens . align
 parensIf False = id
 
 
-prettyELhs :: Bool -> Val env -> LeftHandSide s arrs env env' -> (Val env', Adoc)
+prettyELhs :: Bool -> Val env -> LeftHandSide s t env env' -> (Val env', Adoc)
 prettyELhs requiresParens = prettyLhs requiresParens 'x'
 
-prettyLhs :: forall s env env' arrs. Bool -> Char -> Val env -> LeftHandSide s arrs env env' -> (Val env', Adoc)
-prettyLhs requiresParens x env0 lhs = case collect lhs of
-  Nothing          -> ppPair lhs
+prettyLhs :: forall s env env' t. Bool -> Char -> Val env -> LeftHandSide s t env env' -> (Val env', Adoc)
+prettyLhs requiresParens x = prettyLhs' push Nothing requiresParens
+  where
+    push :: s t' -> Val env'' -> (Val (env'', t'), Adoc)
+    push _ env = (Push env v, v)
+      where
+        v = pretty x <> pretty (sizeEnv env)
+
+prettyLhs'
+  :: forall val s env env' t.
+     (forall t' env''. s t' -> val env'' -> (val (env'', t'), Adoc))
+  -> (Maybe (Exists s -> Adoc))
+  -> Bool
+  -> val env
+  -> LeftHandSide s t env env'
+  -> (val env', Adoc)
+prettyLhs' push prettyTp requiresParens env0 lhs = case collect lhs of
+  Nothing          -> ppPair requiresParens lhs
   Just (env1, tup) ->
     case tup of
       []  -> (env1, "()")
       _   -> (env1, parensIf requiresParens (pretty 'T' <> pretty (length tup) <+> align (sep tup)))
   where
-    ppPair :: LeftHandSide s arrs' env env'' -> (Val env'', Adoc)
-    ppPair LeftHandSideUnit       = (env0, "()")
-    ppPair LeftHandSideWildcard{} = (env0, "_")
-    ppPair LeftHandSideSingle{}   = (env0 `Push` v, v)
+    ppPair :: Bool -> LeftHandSide s arrs' env env'' -> (val env'', Adoc)
+    ppPair _         LeftHandSideUnit         = (env0, "()")
+    ppPair requiresP (LeftHandSideWildcard t)
+      | Just prettyT <- prettyTp              = (env0, parensIf requiresP $ "_: " <> align (prettyTupR (const $ prettyT . Exists) 0 t))
+      | otherwise                             = (env0, "_")
+    ppPair requiresP (LeftHandSideSingle t)   = (env1, v')
       where
-        v = pretty x <> pretty (sizeEnv env0)
-    ppPair (LeftHandSidePair a b)          = (env2, tupled [doc1, doc2])
+        (env1, v) = push t env0
+        v'
+          | Just prettyT <- prettyTp          = parensIf requiresP $ v <> ": " <> align (prettyT $ Exists t)
+          | otherwise                         = v
+    ppPair _         (LeftHandSidePair a b)   = (env2, tupled [doc1, doc2])
       where
-        (env1, doc1) = ppPair a
-        (env2, doc2) = prettyLhs False x env1 b
+        (env1, doc1) = ppPair False a
+        (env2, doc2) = prettyLhs' push prettyTp False env1 b
 
-    collect :: LeftHandSide s arrs' env env'' -> Maybe (Val env'', [Adoc])
+    collect :: LeftHandSide s arrs' env env'' -> Maybe (val env'', [Adoc])
     collect (LeftHandSidePair l1 l2)
       | Just (env1, tup ) <- collect l1
-      ,      (env2, doc2) <- prettyLhs True x env1 l2 = Just (env2, tup ++ [doc2])
+      ,      (env2, doc2) <- prettyLhs' push prettyTp True env1 l2 = Just (env2, tup ++ [doc2])
     collect (LeftHandSideWildcard TupRunit) = Just (env0, [])
     collect _ = Nothing
 
+prettyTupR :: forall s t. (forall t'. Precedence -> s t' -> Adoc) -> Precedence -> TupR s t -> Adoc
+prettyTupR elt p tupR
+  | TupRunit <- tupR = "()"
+  | TupRsingle e <- tupR = elt p e
+  | Just tuple <- collect tupR []
+    = parensIf (p > 0)
+    $ "T" <> pretty (length tuple) <+> align (sep tuple)
+  | otherwise = ppPair tupR
+  where
+    -- Try to recover the 'tuple-format', i.e. a structure of pairs of the form
+    -- ((( (), a ), b ), c )
+    collect :: TupR s t' -> [Adoc] -> Maybe [Adoc]
+    collect TupRunit                      accum = Just accum
+    collect (TupRpair v1 (TupRsingle v2)) accum = collect v1 (elt 10 v2 : accum)
+    collect _                             _     = Nothing
+
+    -- Prints a pair which is not in the tuple-format.
+    -- We thus do not have to traverse it again to check for this format,
+    -- preventing repeatedly calling 'collect' on the same structure.
+    --
+    ppPair :: TupR s t' -> Adoc
+    ppPair (TupRpair v1 v2) = tupled [ppPair v1, prettyTupR elt 0 v2]
+    ppPair v = prettyTupR elt 0 v
 
 -- Primitive operators
 -- -------------------
@@ -455,6 +501,8 @@ prj :: Idx env t -> Val env -> Adoc
 prj ZeroIdx      (Push _ v)   = v
 prj (SuccIdx ix) (Push env _) = prj ix env
 
+top :: Val (env, t) -> Adoc
+top (Push _ v) = v
 
 -- Utilities
 -- ---------

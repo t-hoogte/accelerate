@@ -104,7 +104,7 @@ rnfBinding (Compute e)       = rnfOpenExp e
 rnfBinding NewSignal         = ()
 rnfBinding (NewRef r)        = rnfGroundR r
 rnfBinding (Alloc shr tp sz) = rnfShapeR shr `seq` rnfScalarType tp `seq` rnfTupR rnfExpVar sz
-rnfBinding (Use tp buffer)   = buffer `seq` rnfScalarType tp
+rnfBinding (Use tp n buffer) = buffer `seq` n `seq` rnfScalarType tp
 rnfBinding (Unit var)        = rnfExpVar var
 rnfBinding (RefRead r)       = rnfBaseVar r
 
@@ -150,7 +150,7 @@ instance Sink Binding where
   weaken _ NewSignal         = NewSignal
   weaken _ (NewRef r)        = NewRef r
   weaken k (Alloc shr tp sz) = Alloc shr tp $ mapTupR (weaken k) sz
-  weaken _ (Use tp buffer)   = Use tp buffer
+  weaken _ (Use tp n buffer) = Use tp n buffer
   weaken k (Unit var)        = Unit $ weaken k var
   weaken k (RefRead ref)     = RefRead $ weaken k ref
 
@@ -858,7 +858,7 @@ partialSchedule = (\(s, used, _) -> (s, used)) . travA (TupRsingle Shared)
         (a', used2, vars) = travA us a
         vars' = weakenMaybeVars lhs vars `removeMaybeVars` used1
     travA _  (C.Alloc shr tp sh) = partialLift1 (TupRsingle $ GroundRbuffer tp) (Alloc shr tp) sh
-    travA _  (C.Use tp buffer) = partialLift1 (TupRsingle $ GroundRbuffer tp) (const $ Use tp buffer) TupRunit
+    travA _  (C.Use tp n buffer) = partialLift1 (TupRsingle $ GroundRbuffer tp) (const $ Use tp n buffer) TupRunit
     travA _  (C.Unit var@(Var tp _)) = partialLift1 (TupRsingle $ GroundRbuffer tp) f (TupRsingle var)
       where
         f (TupRsingle var') = Unit var'
@@ -2482,7 +2482,7 @@ reindexBinding' k = \case
   NewSignal -> pure NewSignal
   NewRef tp -> pure $ NewRef tp
   Alloc shr tp sh -> Alloc shr tp <$> reindexVars (fromNewIdxUnsafe <.> reindex' k) sh
-  Use tp buffer -> pure $ Use tp buffer
+  Use tp n buffer -> pure $ Use tp n buffer
   Unit (Var tp idx) -> Unit . Var tp <$> (fromNewIdxGround (GroundRscalar tp) <.> reindex' k) idx
   RefRead ref -> RefRead <$> reindexVar (fromNewIdxUnsafe <.> reindex' k) ref
 
