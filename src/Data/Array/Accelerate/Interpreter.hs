@@ -82,15 +82,46 @@ import Data.Array.Accelerate.Backend
 
 import Data.Array.Accelerate.Pretty.Operation
 import Data.Text.Prettyprint.Doc
+import Data.Array.Accelerate.Smart (typeR)
+import Data.Array.Accelerate.AST.LeftHandSide (lhsToTupR)
 
-data BackpermutePassed exe args = BP (exe args) (Int -> Int)
 
-backpermutePass :: PreOpenAcc (Cluster op) env a -> PreOpenAcc (BackpermutePassed (Cluster op)) env a
-backpermutePass = mapAccExecutable (\c _ -> BP c (foo c))
+-- TODO: Backpermutes
+-- Plan: Thread the backpermutes through the entire datatype.
+-- Goal: 
+--  For each generate, make an (Int -> Int) function that corresponds to the index it should be generating at
+--    maybe just compose this with its function; that way only the arg changes
+--  For each input, make an (Int -> Int) function that corresponds to the index that each thread should be reading prior to fused execution
+--    store this with each Input argument
 
--- For each thread, compute the index of its input (i.e. compute the Backpermutes)
-foo :: Cluster op args -> Int -> Int
-foo = _
+-- Overly simplistic datatype: We simply ignore all the functions that don't make sense (e.g. for non-array, non-generate args, or non-input args).
+data BackpermutedArg env t = BPA (Arg env t) (Int -> Int)
+type BackpermutedArgs env = PreArgs (BackpermutedArg env)
+type family ToBP env where 
+  ToBP () = ()
+  ToBP (env, x) = (ToBP env, (Int -> Int, x))
+type BackpermutedEnv = Env ((,) (Int -> Int))
+
+-- TODO: This function is only waiting for some helpers that should be generalised beyond this function anyway
+-- Both some 'building blocks' for Cluster (propagating stuff through LHS etc), and a sh<->Int conversion
+makeBackpermuteArg :: Args env args -> Val env -> Cluster InterpretOp args -> BackpermutedArgs env args
+makeBackpermuteArg pa env (Cluster ci ca) = _
+  where
+    fromAST :: ClusterAST InterpretOp i o -> Val i -> BackpermutedEnv i
+    fromAST None Empty = Empty
+    fromAST None (Push' env x) = Push (fromAST None env) (id, x)
+    fromAST (Bind lhs op ast) env = let x = fromAST ast (_ env) in _ x (onOp op _ env)
+
+    onOp :: InterpretOp args -> BackpermutedArgs env args -> Val env -> BackpermutedArgs env args
+    onOp IBackpermute (BPA f@(ArgFun f') _  :>: BPA i _                           :>: BPA o outF :>: ArgsNil) env = 
+                       BPA f             id :>: BPA i (outF . _ (evalFun f' env)) :>: BPA o outF :>: ArgsNil
+    onOp IGenerate    (BPA f _    :>: BPA o outF :>: ArgsNil) _ =
+                       BPA f outF :>: BPA o outF :>: ArgsNil -- pushing the Int->Int into the function is unnatural, store it besides it
+    onOp IMap         (BPA f _  :>: BPA i _ :>: BPA o outF :>: ArgsNil) _ =
+                       BPA f id :>: BPA i outF :>: BPA o outF :>: ArgsNil
+    onOp IPermute args _ = args
+
+
 
 
 -- Conceptually, this computes the body of the fused loop
@@ -102,46 +133,48 @@ foo = _
 --           -> m o               -- output
 -- transform tbody None i = return i
 -- transform tbody (Bind lhs op c) i = tbody op (getIn lhs i) >>= transform tbody c . genOut lhs i
-evalCluster :: Monad m
-            => (forall env body. Int -> op body -> Val env -> FromIn env body -> m (FromOut env body))
-            -> ClusterIO args i o
-            -> ClusterAST op i o
-            -> Args env args
-            -> Val env
-            -> i
-            -> m o
-evalCluster k ci ca args env i = undefined
 
-evalAST :: forall m op env args args'
-         . Monad m
-        => Int
-        -> (forall env body. Int -> op body -> Val env -> FromIn env body -> m (FromOut env body))
-        -> ClusterAST op (FromIn env args) (FromOut env args')
-        -> Args env args
-        -> Val env
-        -> FromIn env args
-        -> m (FromOut env args')
-evalAST _ _ None _ _ i = pure i
-evalAST n k (Bind lhs op ast) args env i = do
-  o <- k n op env _
-  evalLHS lhs args i o $ \args' refl scope -> case refl of
-    (Refl :: scope :~: FromIn env args'') -> (_ :: FromOut env args'' -> FromOut env args') <$> evalAST n k ast args' env scope
+
+-- evalCluster :: Monad m
+--             => (forall env body. Int -> op body -> Val env -> FromIn env body -> m (FromOut env body))
+--             -> ClusterIO args i o
+--             -> ClusterAST op i o
+--             -> Args env args
+--             -> Val env
+--             -> i
+--             -> m o
+-- evalCluster k ci ca args env i = undefined
+
+-- evalAST :: forall m op env args args'
+--          . Monad m
+--         => Int
+--         -> (forall env body. Int -> op body -> Val env -> FromIn env body -> m (FromOut env body))
+--         -> ClusterAST op (FromIn env args) (FromOut env args')
+--         -> Args env args
+--         -> Val env
+--         -> FromIn env args
+--         -> m (FromOut env args')
+-- evalAST _ _ None _ _ i = pure i
+-- evalAST n k (Bind lhs op ast) args env i = do
+--   o <- k n op env _
+--   evalLHS lhs args i o $ \args' refl scope -> case refl of
+--     (Refl :: scope :~: FromIn env args'') -> (_ :: FromOut env args'' -> FromOut env args') <$> evalAST n k ast args' env scope
   
   
   -- _ lhs (k n op env $ _ lhs i) (evalAST n k ast _ env _)
 
 
-evalLHS :: LeftHandSideArgs body (FromIn env args) scope
-        -> Args env args
-        -> FromIn env args
-        -> FromOut env body
-        -> (forall args'
-           . Args env args'
-          -> scope :~: FromIn env args'
-          -> FromIn env args'
-          -> r)
-        -> r
-evalLHS = _
+-- evalLHS :: LeftHandSideArgs body (FromIn env args) scope
+--         -> Args env args
+--         -> FromIn env args
+--         -> FromOut env body
+--         -> (forall args'
+--            . Args env args'
+--           -> scope :~: FromIn env args'
+--           -> FromIn env args'
+--           -> r)
+--         -> r
+-- evalLHS = _
 
 data InterpretOp args where
   IMap         :: InterpretOp (Fun' (s -> t) -> In sh s -> Out sh t -> ())
@@ -219,38 +252,31 @@ fromArgs i env (ArgVar v :>: args) = (fromArgs i env args, v)
 fromArgs i env (ArgExp e :>: args) = (fromArgs i env args, e)
 fromArgs i env (ArgFun f :>: args) = (fromArgs i env args, f)
 fromArgs i env (ArgArray Mut _ sh buf :>: args) = (fromArgs i env args, ArrayDescriptor sh buf)
-fromArgs i env (ArgArray In _ _ buf :>: args) =
+fromArgs i env (ArgArray In arrr _ buf :>: args) =
   let buf' = varsGetVal buf env
-  in (fromArgs i env args, indexBuffers (bufferScalarType $ varsType buf) buf' i)
+  in (fromArgs i env args, indexBuffers (arrayRtype arrr) buf' i)
 fromArgs i env (ArgArray Out ar sh buf :>: args) = (fromArgs i env args, varsGetVal sh env)
 
 
-evalOp :: Int -> InterpretOp args -> Val env -> FromIn env args -> IO (FromOut env args)
-evalOp _ IMap env ((_, x), f) = pure ((), evalFun f env x)
-evalOp _ IBackpermute _ ((_, i), _) = pure ((), i) -- We evaluated the backpermute at the start already
-evalOp i IGenerate env (((), sh), f) = pure ((), evalFun f env $ _ i sh)
-evalOp i IPermute env (((((), e), f), target), comb) =
+evalOp :: Int -> InterpretOp args -> Val env -> ToBP (FromIn env args) -> IO (FromOut env args)
+evalOp _ IMap env ((_, snd -> x), snd -> f) = pure ((), evalFun f env x)
+evalOp _ IBackpermute _ ((_, snd -> i), _) = pure ((), i) -- We evaluated the backpermute at the start already
+evalOp i IGenerate env (((), snd -> sh), (f', f)) = pure ((), evalFun f env $ _ (f' i) sh)
+evalOp i IPermute env (((((), snd -> e :: e), snd -> f), snd -> target), snd -> comb) =
+  let typer = case comb of Lam lhs _ -> lhsToTupR lhs in
   case evalFun f env (undefined i) of
+    -- TODO double check: Is 0 Nothing?
     (0, _) -> pure ((), target)
     (1, ((), sh)) -> case target of
-      ArrayDescriptor _ (bufvars :: GroundVars env (Buffers e)) -> do
+      ArrayDescriptor _ bufvars -> do
         let j = undefined sh
         let buf = varsGetVal bufvars env
-        let buf' = veryUnsafeUnfreezeBuffers @e (bufferScalarType $ varsType bufvars) buf
-        x <- readBuffers @e (bufferScalarType $ varsType bufvars) buf' j
+        let buf' = veryUnsafeUnfreezeBuffers @e typer buf
+        x <- readBuffers @e typer buf' j
         let x' = evalFun comb env x e
-        writeBuffers (bufferScalarType $ varsType bufvars) buf' j x'
+        writeBuffers typer buf' j x'
         return ((), target)
     _ -> error "PrimMaybe's tag was non-zero and non-one"
-
--- TODO fix types, this is ridiculous. @Ivo how `should` such a function work? Is Distribute just an abstraction that hurts more than it helps?
-bufferScalarType :: forall e. TupR GroundR (Buffers e) -> TypeR e
-bufferScalarType TupRunit
-  | Refl :: e :~: () <- unsafeCoerce Refl
-  = TupRunit
-bufferScalarType (TupRpair tr' tr2) = unsafeCoerce $ TupRpair (bufferScalarType (unsafeCoerce tr')) (bufferScalarType (unsafeCoerce tr2))
-bufferScalarType (TupRsingle (GroundRbuffer st)) = unsafeCoerce $ TupRsingle st
-bufferScalarType (TupRsingle (GroundRscalar x)) = case x of {} -- all non-buffer
 
 
 -- Program execution
