@@ -27,6 +27,7 @@ module Data.Array.Accelerate.Pretty (
   prettyPreOpenAfun,
   prettyOpenExp,
   prettyOpenFun,
+  renderForTerminal,
 
   -- ** Graphviz
   Graph,
@@ -40,12 +41,11 @@ import Data.Array.Accelerate.Debug.Internal.Flags
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Pretty.Graphviz
 import Data.Array.Accelerate.Pretty.Print                           hiding ( Keyword(..) )
+import Data.Array.Accelerate.Pretty.Exp                             hiding ( Keyword(..) )
 import Data.Array.Accelerate.Smart                                  ( Acc, Exp )
 import Data.Array.Accelerate.Sugar.Array
 import Data.Array.Accelerate.Sugar.Elt
-import Data.Array.Accelerate.Trafo
 -- import Data.Array.Accelerate.Trafo.Delayed
-import Data.Array.Accelerate.Interpreter (InterpretOp)
 
 import Data.Maybe
 import Data.Text.Prettyprint.Doc
@@ -64,19 +64,6 @@ import Control.DeepSeq
 import Data.Array.Accelerate.Debug.Internal.Stats
 #endif
 
--- Use the Interpreter's fusion rules to show an Accelerate computation
--- We should also add a way to do this with other fusion rules
-instance Arrays arrs => Show (Acc arrs) where
-  show = withSimplStats . show . convertAcc @InterpretOp
-
-instance Afunction (Acc a -> f) => Show (Acc a -> f) where
-  show = withSimplStats . show . convertAfun @_ @InterpretOp
-
-instance Elt e => Show (Exp e) where
-  show = withSimplStats . show . convertExp
-
-instance Function (Exp a -> f) => Show (Exp a -> f) where
-  show = withSimplStats . show . convertFun
 
 -- instance Typeable a => Show (Seq a) where
 --   show = withSimplStats . show . convertSeq

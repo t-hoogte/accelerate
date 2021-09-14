@@ -412,6 +412,7 @@ library
   other-modules:
         Data.Array.Accelerate.Analysis.Hash.TH
         Data.Array.Accelerate.Array.Remote.Nursery
+        Data.Array.Accelerate.Backend
         Data.Array.Accelerate.Classes.Bounded
         Data.Array.Accelerate.Classes.Enum
         Data.Array.Accelerate.Classes.Eq
@@ -443,10 +444,13 @@ library
         Data.Array.Accelerate.Pattern.Ordering
         Data.Array.Accelerate.Pattern.TH
         Data.Array.Accelerate.Prelude
+        Data.Array.Accelerate.Pretty.Exp
         Data.Array.Accelerate.Pretty.Graphviz
         Data.Array.Accelerate.Pretty.Graphviz.Monad
         Data.Array.Accelerate.Pretty.Graphviz.Type
+        Data.Array.Accelerate.Pretty.Operation
         Data.Array.Accelerate.Pretty.Print
+        Data.Array.Accelerate.Pretty.Type
         Data.Array.Accelerate.Trafo.Algebra
         Data.Array.Accelerate.Trafo.Environment
         Data.Array.Accelerate.Trafo.Exp.Simplify

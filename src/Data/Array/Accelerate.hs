@@ -430,6 +430,7 @@ module Data.Array.Accelerate (
   CShort, CUShort, CInt, CUInt, CLong, CULong, CLLong, CULLong,
   CChar, CSChar, CUChar,
 
+  test
 ) where
 
 import Data.Array.Accelerate.Classes.Bounded
@@ -453,6 +454,7 @@ import Data.Array.Accelerate.Language
 import Data.Array.Accelerate.Pattern
 import Data.Array.Accelerate.Pattern.TH
 import Data.Array.Accelerate.Prelude
+import Data.Array.Accelerate.Trafo (test)
 import Data.Array.Accelerate.Pretty                                 () -- show instances
 import Data.Array.Accelerate.Smart
 import Data.Array.Accelerate.Sugar.Array                            ( Array, Arrays, Scalar, Vector, Matrix, Segments, fromFunction, fromFunctionM, toList, fromList )
@@ -525,6 +527,21 @@ arraySize = S.size . S.shape
 arrayReshape :: (Shape sh, Shape sh') => sh -> Array sh' e -> Array sh e
 arrayReshape = S.reshape
 
+{-
+-- Use the Interpreter's fusion rules to show an Accelerate computation
+-- We should also add a way to do this with other fusion rules
+instance Arrays arrs => Show (Acc arrs) where
+  show = withSimplStats . show . convertAcc @InterpretOp
+
+instance Afunction (Acc a -> f) => Show (Acc a -> f) where
+  show = withSimplStats . show . convertAfun @_ @InterpretOp
+
+instance Elt e => Show (Exp e) where
+  show = withSimplStats . show . convertExp
+
+instance Function (Exp a -> f) => Show (Exp a -> f) where
+  show = withSimplStats . show . convertFun
+-}
 
 -- Named documentation chunks
 -- --------------------------
@@ -694,4 +711,3 @@ arrayReshape = S.reshape
 --  * <https://hackage.haskell.org/package/accelerate-io-serialise accelerate-io-serialise>: binary serialisation of arrays using <https://hackage.haskell.org/package/serialise serialise>
 --  * <https://hackage.haskell.org/package/accelerate-io-vector accelerate-io-vector>: efficient boxed and unboxed one-dimensional arrays
 --
-

@@ -24,7 +24,8 @@ module Data.Array.Accelerate.Pretty.Print (
   PrettyAcc, ExtractAcc,
   prettyPreOpenAcc,
   prettyPreOpenAfun,
-  prettyExp', prettyExp, prettyFun,
+  prettyExp', prettyExp, prettyOpenExp,
+  prettyFun, prettyOpenFun,
   prettyArray,
   prettyConst,
   prettyELhs,
@@ -311,8 +312,14 @@ prettyArray aR@(ArrayR _ eR) = parens . fromString . showArray (showsElt eR) aR
 prettyFun :: Val aenv -> Fun aenv f -> Adoc
 prettyFun aenv = prettyPreOpenFun (prettyArrayInstr aenv) Empty
 
+prettyOpenFun :: Val env -> Val aenv -> OpenFun env aenv f -> Adoc
+prettyOpenFun env aenv = prettyPreOpenFun (prettyArrayInstr aenv) env
+
 prettyExp :: Val aenv -> Exp aenv t -> Adoc
 prettyExp aenv = prettyPreOpenExp context0 (prettyArrayInstr aenv) Empty
+
+prettyOpenExp :: Context -> Val env -> Val aenv -> OpenExp env aenv t -> Adoc
+prettyOpenExp ctx env aenv = prettyPreOpenExp ctx (prettyArrayInstr aenv) env
 
 prettyExp' :: Context -> Val aenv -> Exp aenv t -> Adoc
 prettyExp' ctx aenv = prettyPreOpenExp ctx (prettyArrayInstr aenv) Empty

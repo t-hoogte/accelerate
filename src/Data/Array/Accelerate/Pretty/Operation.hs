@@ -60,6 +60,10 @@ prettyOpenAcc env = \case
   Exec op args -> hang 2 $ group $ vsep [annotate Execute "execute", prettyOp op, prettyArgs env args]
   Return vars -> hang 2 $ group $ vsep [annotate Statement "return", prettyVars env 10 vars]
   Compute exp -> hang 2 $ group $ vsep [annotate Statement "compute", prettyExp env exp]
+  Alet (LeftHandSideWildcard TupRunit) _ bnd body
+    -> prettyOpenAcc env bnd
+        <> hardline
+        <> prettyOpenAcc env body
   Alet lhs us bnd body
     | (env', lhs') <- prettyGLhsWithUniquenessTypes env lhs us
       -> hang 2 (group $ vsep [lhs' <+> "=", prettyOpenAcc env bnd])
@@ -70,15 +74,21 @@ prettyOpenAcc env = \case
   Unit var -> hang 2 $ group $ vsep [annotate Statement "unit", prettyVar env var]
   Acond c true false
     -> group $ vsep
-        [ if_ <+> prettyVar env c <+> then_
-        , indent 2 $ prettyOpenAcc env true
-        , else_
-        , indent 2 $ prettyOpenAcc env false
+        [ hang 2 $ group $ vsep
+          [ if_ <+> prettyVar env c <+> then_
+          , prettyOpenAcc env true
+          ]
+        , hang 2 $ group $ vsep
+          [ else_
+          , prettyOpenAcc env false
+          ]
         ]
   Awhile us condition step initial
     -> "awhile" <+> prettyTupR (const $ prettyGroundRWithUniqueness) 10 (groundsRWithUniquenesses (mapTupR varType initial) us)
-        <> hardline <> indent 2 (prettyOpenAfun env condition)
-        <> hardline <> indent 2 (prettyOpenAfun env step)
+        <> hardline <> hang 4 ("  ( " <> prettyOpenAfun env condition)
+        <> hardline <> "  )"
+        <> hardline <> hang 4 ("  ( " <> prettyOpenAfun env step)
+        <> hardline <> "  )"
         <> hardline <> indent 2 (prettyVars env 10 initial)
 
 prettyArgs :: Val' benv -> Args benv f -> Adoc
@@ -159,7 +169,8 @@ prettyVars :: forall env s t. Val' env -> Precedence -> Vars s env t -> Adoc
 prettyVars env = prettyTupR $ const $ prettyVar env
 
 prettyShapeVars :: Val' env -> Vars s env sh -> Adoc
-prettyShapeVars env = encloseSep "Z" "" ":. " . map (\(Exists v) -> prettyVar env v) . flattenTupR
+prettyShapeVars _   TupRunit = "Z"
+prettyShapeVars env vars = encloseSep "Z :. " "" " :. " $ map (\(Exists v) -> prettyVar env v) $ flattenTupR vars
 
 -- Types
 prettyGroundR :: GroundR t -> Adoc

@@ -45,6 +45,7 @@ import Data.Array.Accelerate.Trafo.Config
 import Data.Array.Accelerate.Trafo.Sharing (Afunction(..), AfunctionRepr(..), afunctionGroundR, afunctionRepr)
 import qualified Data.Array.Accelerate.Trafo.Desugar as Desugar
 import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Partitioning
+import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
 import Data.Kind
 import Data.Type.Equality
 
@@ -53,6 +54,7 @@ class
   , Partitioning.MakesILP (Operation backend)
   , IsSchedule (Schedule backend)
   , IsKernel (Kernel backend)
+  , Pretty.PrettyOp (Operation backend)
   , Execute (Schedule backend) (Kernel backend)
   ) => Backend backend where
 

@@ -1,7 +1,9 @@
 {-# LANGUAGE BangPatterns        #-}
+{-# LANGUAGE EmptyCase           #-}
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE GADTs               #-}
 {-# LANGUAGE MagicHash           #-}
+{-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE PatternGuards       #-}
 {-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE RecordWildCards     #-}
@@ -74,6 +76,9 @@ import Data.Type.Equality
 import Data.Array.Accelerate.Trafo.Schedule.Uniform
 import Data.Array.Accelerate.Backend
 
+import Data.Array.Accelerate.Pretty.Operation
+import Data.Text.Prettyprint.Doc
+
 -- Conceptually, this computes the body of the fused loop
 -- It only deals with scalar values - wrap it in a loop!
 -- transform :: Monad m  -- The interpreter will want to use this with `m ~ Identity`, but other backends might not (e.g. `m ~ CodeGen PTX`)
@@ -91,10 +96,9 @@ evalCluster :: Monad m
             -> Val env
             -> i
             -> m o
-evalCluster k ci ca pa env i = _
+evalCluster k ci ca pa env i = undefined
 
 data InterpretOp args where
-  INoop        :: InterpretOp ()
   IMap         :: InterpretOp (Fun' (s -> t) -> In sh s -> Out sh t -> ())
   IBackpermute :: InterpretOp (Fun' (sh' -> sh) -> In sh t -> Out sh' t -> ())
   IGenerate    :: InterpretOp (Fun' (sh -> t) -> Out sh t -> ())
@@ -122,7 +126,6 @@ data OrderV = OrderIn  Label
 instance MakesILP InterpretOp where
   type BackendVar InterpretOp = OrderV
   -- TODO add folds/scans/stencils, and solve problems: in particular, iteration size needs to be uniform
-  mkGraph INoop _ _ = mempty
   mkGraph IBackpermute (_ :>: ((L _ (_, S.toList -> ~[lIn])) :>: _)) l@(Label i _) =
     Info
       mempty
@@ -159,7 +162,11 @@ var = c . BackendSpecific
 instance NFData' InterpretOp where
   rnf' = error "todo"
 
-
+instance PrettyOp InterpretOp where
+  prettyOp IMap         = "map"
+  prettyOp IBackpermute = "backpermute"
+  prettyOp IGenerate    = "generate"
+  prettyOp IPermute     = "permute"
 
 fromArgs :: Int -> Env.Val env -> Args env args -> FromIn env args
 fromArgs i _ ArgsNil = ()
@@ -174,16 +181,15 @@ fromArgs i env (ArgArray Out ar sh buf :>: args) = (fromArgs i env args, varsGet
 
 
 evalOp :: Int -> InterpretOp args -> Val env -> FromIn env args -> IO (FromOut env args)
-evalOp _ INoop _ () = pure ()
 evalOp _ IMap env ((_, x), f) = pure ((), evalFun f env x)
 evalOp _ IBackpermute _ _ = error "Should be filtered out earlier? Or just treat as id here"
 evalOp i IGenerate env args = undefined -- TODO: This is strange: we need the shape to implement, but that is currently part of the output. Should the shape of an output array be an input?
 evalOp i IPermute env (((((), e), f), target), comb) =
-  case evalFun f env (_ i) of
+  case evalFun f env (undefined i) of
     (0, _) -> pure ((), target)
     (1, ((), sh)) -> case target of
       ArrayDescriptor _ (bufvars :: GroundVars env (Buffers e)) -> do
-        let j = _ sh
+        let j = undefined sh
         let buf = varsGetVal bufvars env
         let buf' = veryUnsafeUnfreezeBuffers @e (bufferScalarType $ varsType bufvars) buf
         x <- readBuffers @e (bufferScalarType $ varsType bufvars) buf' j
@@ -210,7 +216,7 @@ run :: forall a. (HasCallStack, Sugar.Arrays a) => Smart.Acc a -> a
 run a = unsafePerformIO execute
   where
     acc :: PartitionedAcc InterpretOp () (DesugaredArrays (Sugar.ArraysR a))
-    !acc    = convertAcc a
+    !acc    = undefined -- convertAcc a
     execute = do
       Debug.dumpGraph $!! acc
       Debug.dumpSimplStats

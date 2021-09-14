@@ -1,6 +1,8 @@
-{-# LANGUAGE CPP              #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE RankNTypes       #-}
+{-# LANGUAGE CPP                 #-}
+{-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE RankNTypes          #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications    #-}
 {-# OPTIONS_HADDOCK hide #-}
 -- |
 -- Module      : Data.Array.Accelerate.Trafo
@@ -29,6 +31,7 @@ module Data.Array.Accelerate.Trafo (
   Function, EltFunctionR,
   convertExp, convertFun,
 
+  test,
 ) where
 
 import Data.Array.Accelerate.Sugar.Array                  ( ArraysR )
@@ -51,6 +54,8 @@ import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Partition
 import Data.Array.Accelerate.Representation.Ground (DesugaredArrays, DesugaredAfun)
 import Data.Array.Accelerate.Trafo.Desugar (DesugarAcc, desugar, desugarAfun)
 import qualified Data.Array.Accelerate.Trafo.NewNewFusion as NewNewFusion
+import qualified Data.Array.Accelerate.Pretty.Operation   as Pretty
+import qualified Data.Array.Accelerate.Pretty             as Pretty
 
 #ifdef ACCELERATE_DEBUG
 import Text.Printf
@@ -58,6 +63,12 @@ import System.IO.Unsafe
 import Data.Array.Accelerate.Debug.Internal.Flags                   hiding ( when )
 import Data.Array.Accelerate.Debug.Internal.Timed
 #endif
+
+test
+  :: forall op f. (Afunction f, DesugarAcc op, Partitioning.MakesILP op, Pretty.PrettyOp op)
+  => f
+  -> op ()
+test = error . ("PartitionedAfun:\n" ++) . Pretty.renderForTerminal . Pretty.prettyAfun @op . desugarAfun . LetSplit.convertAfun . (Sharing.convertAfunWith defaultOptions)
 
 
 -- HOAS -> de Bruijn conversion
@@ -68,14 +79,14 @@ import Data.Array.Accelerate.Debug.Internal.Timed
 --
 convertAcc
   :: forall sched kernel arrs.
-     (DesugarAcc (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
+     (DesugarAcc (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
   => Acc arrs
   -> sched kernel () (ScheduleOutput sched (DesugaredArrays (ArraysR arrs)) -> ())
 convertAcc = convertAccWith defaultOptions
 
 convertAccWith
   :: forall sched kernel arrs.
-     (DesugarAcc (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
+     (DesugarAcc (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
   => Config
   -> Acc arrs
   -> sched kernel () (ScheduleOutput sched (DesugaredArrays (ArraysR arrs)) -> ())
@@ -94,14 +105,14 @@ convertAccWith config
 --
 convertAfun
   :: forall sched kernel f.
-     (Afunction f, DesugarAcc (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
+     (Afunction f, DesugarAcc (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
   => f
   -> sched kernel () (Scheduled sched (DesugaredAfun (ArraysFunctionR f)))
 convertAfun = convertAfunWith defaultOptions
 
 convertAfunWith
   :: forall sched kernel f.
-     (Afunction f, DesugarAcc (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
+     (Afunction f, DesugarAcc (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
   => Config
   -> f
   -> sched kernel () (Scheduled sched (DesugaredAfun (ArraysFunctionR f)))
