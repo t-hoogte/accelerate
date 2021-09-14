@@ -29,7 +29,7 @@ module Data.Array.Accelerate.AST.Operation (
   GroundR(..), GroundsR, GroundVar, GroundVars, GLeftHandSide, Var(..), Vars,
   HasGroundsR(..), groundToExpVar,
 
-  PreArgs(..), Arg(..), Args, Modifier(..), argArrayR, argVarType,
+  PreArgs(..), Arg(..), Args, argsToList, Modifier(..), argArrayR, argVarType,
 
   Var', Exp', Fun', In, Out, Mut,
 
@@ -50,6 +50,8 @@ module Data.Array.Accelerate.AST.Operation (
 
   mapAccExecutable, mapAfunExecutable,
 
+  GroundRWithUniqueness(..), groundsRWithUniquenesses, lhsWithUniquesses,
+
   module Data.Array.Accelerate.AST.Exp,
 
   NFData'(..)
@@ -62,6 +64,7 @@ import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.Analysis.Hash.Exp
 import Data.Array.Accelerate.Representation.Array
+import Data.Array.Accelerate.Representation.Ground
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Trafo.Exp.Substitution
@@ -134,6 +137,7 @@ data PreOpenAcc (op :: Type -> Type) env a where
   -- Triggers (possibly) asynchronous host->device transfer if necessary.
   --
   Use     :: ScalarType e
+          -> Int -- Number of elements
           -> Buffer e
           -> PreOpenAcc op env (Buffer e)
 
@@ -166,16 +170,6 @@ data PreOpenAfun op env t where
   Alam  :: GLeftHandSide a env env' -> PreOpenAfun op env' t -> PreOpenAfun op env (a -> t)
 
 
--- | Ground values are buffers or scalars.
---
-data GroundR a where
-  GroundRbuffer :: ScalarType e -> GroundR (Buffer e)
-  GroundRscalar :: ScalarType e -> GroundR e
-
--- | Tuples of ground values
---
-type GroundsR = TupR GroundR
-
 -- | Types for local bindings
 --
 type GLeftHandSide = LeftHandSide GroundR
@@ -203,6 +197,10 @@ data PreArgs a t where
   ArgsNil :: PreArgs a ()
   (:>:)   :: a s -> PreArgs a t -> PreArgs a (s -> t)
 infixr 7 :>:
+
+argsToList :: PreArgs a t -> [Exists a]
+argsToList ArgsNil = []
+argsToList (a :>: as) = Exists a : argsToList as
 
 -- | A single argument to an operation.
 --
@@ -272,7 +270,7 @@ instance HasGroundsR (PreOpenAcc op env) where
   groundsR (Compute e)       = groundsR e
   groundsR (Alet _ _ _ a)    = groundsR a
   groundsR (Alloc _ tp _)    = TupRsingle $ GroundRbuffer tp
-  groundsR (Use tp _)        = TupRsingle $ GroundRbuffer tp
+  groundsR (Use tp _ _)      = TupRsingle $ GroundRbuffer tp
   groundsR (Unit (Var tp _)) = TupRsingle $ GroundRbuffer tp
   groundsR (Acond _ a _)     = groundsR a
   groundsR (Awhile _ _ _ a)  = groundsR a
@@ -339,13 +337,6 @@ encodeGroundVar (Var repr ix) = encodeGroundR repr <> encodeIdx ix
 
 encodeGroundVars :: GroundVars env t -> Builder
 encodeGroundVars = encodeTupR encodeGroundVar
-
-rnfGroundR :: GroundR t -> ()
-rnfGroundR (GroundRscalar tp) = rnfScalarType tp
-rnfGroundR (GroundRbuffer tp) = rnfScalarType tp
-
-rnfGroundsR :: GroundsR t -> ()
-rnfGroundsR = rnfTupR rnfGroundR
 
 rnfGroundVar :: GroundVar env t -> ()
 rnfGroundVar = rnfVar rnfGroundR
@@ -425,7 +416,7 @@ reindexAcc r (Return tr) = Return <$> reindexVars r tr
 reindexAcc r (Compute poe) = Compute <$> reindexExp r poe
 reindexAcc r (Alet lhs tr poa poa') = reindexLHS r lhs $ \lhs' r' -> Alet lhs' tr <$> reindexAcc r poa <*> reindexAcc r' poa'
 reindexAcc r (Alloc sr st tr) = Alloc sr st <$> reindexVars r tr
-reindexAcc _ (Use st bu) = pure $ Use st bu
+reindexAcc _ (Use st n bu) = pure $ Use st n bu
 reindexAcc r (Unit var) = Unit <$> reindexVar r var
 reindexAcc r (Acond var poa poa') = Acond <$> reindexVar r var <*> reindexAcc r poa <*> reindexAcc r poa'
 reindexAcc r (Awhile tr poa poa' tr') = Awhile tr <$> reindexAfun r poa <*> reindexAfun r poa' <*> reindexVars r tr'
@@ -489,7 +480,7 @@ mapAccExecutable f = \case
   Compute e                     -> Compute e
   Alet lhs uniqueness bnd body  -> Alet lhs uniqueness (mapAccExecutable f bnd) (mapAccExecutable f body)
   Alloc shr tp sh               -> Alloc shr tp sh
-  Use tp buffer                 -> Use tp buffer
+  Use tp n buffer               -> Use tp n buffer
   Unit vars                     -> Unit vars
   Acond var a1 a2               -> Acond var (mapAccExecutable f a1) (mapAccExecutable f a2)
   Awhile uniqueness c g a       -> Awhile uniqueness (mapAfunExecutable f c) (mapAfunExecutable f g) a
@@ -502,7 +493,7 @@ groundToExpVar :: TypeR e -> GroundVars benv e -> ExpVars benv e
 groundToExpVar (TupRsingle t)   (TupRsingle (Var _ ix)) = TupRsingle (Var t ix)
 groundToExpVar (TupRpair t1 t2) (TupRpair v1 v2)        = groundToExpVar t1 v1 `TupRpair` groundToExpVar t2 v2
 groundToExpVar TupRunit         TupRunit                = TupRunit
-groundToExpVar _                _                       = error "Impossible pair"
+groundToExpVar _                _                       = internalError "Impossible pair"
 
 class NFData' f where
   rnf' :: f a -> ()
@@ -511,3 +502,20 @@ instance NFData' op => NFData (OperationAcc op env a) where
   rnf = error "implement NFData on OperationAcc"
 instance NFData' op => NFData (OperationAfun op env a) where
   rnf = error "implement NFData on OperationAfun"
+
+data GroundRWithUniqueness t where
+  GroundRWithUniqueness :: GroundR t -> Uniqueness t -> GroundRWithUniqueness t
+
+groundsRWithUniquenesses :: GroundsR t -> Uniquenesses t -> TupR GroundRWithUniqueness t
+groundsRWithUniquenesses TupRunit         _                = TupRunit
+groundsRWithUniquenesses (TupRpair g1 g2) (TupRpair u1 u2) = groundsRWithUniquenesses g1 u1 `TupRpair` groundsRWithUniquenesses g2 u2
+groundsRWithUniquenesses (TupRpair g1 g2) _                = groundsRWithUniquenesses g1 (TupRsingle Shared) `TupRpair` groundsRWithUniquenesses g2 (TupRsingle Shared)
+groundsRWithUniquenesses (TupRsingle tp)  (TupRsingle u)   = TupRsingle $ GroundRWithUniqueness tp u
+groundsRWithUniquenesses _                _                = internalError "Tuple mismatch"
+
+lhsWithUniquesses :: GLeftHandSide t env env' -> Uniquenesses t -> LeftHandSide GroundRWithUniqueness t env env'
+lhsWithUniquesses (LeftHandSideWildcard g) uniquenesses     = LeftHandSideWildcard $ groundsRWithUniquenesses g uniquenesses
+lhsWithUniquesses (LeftHandSideSingle g)   (TupRsingle u)   = LeftHandSideSingle $ (GroundRWithUniqueness g u)
+lhsWithUniquesses (LeftHandSidePair l1 l2) (TupRpair u1 u2) = LeftHandSidePair (lhsWithUniquesses l1 u1) (lhsWithUniquesses l2 u2)
+lhsWithUniquesses (LeftHandSidePair l1 l2) _                = LeftHandSidePair (lhsWithUniquesses l1 $ TupRsingle Shared) (lhsWithUniquesses l2 $ TupRsingle Shared)
+lhsWithUniquesses _                        _                = internalError "Tuple mismatch"

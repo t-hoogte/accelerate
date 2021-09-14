@@ -28,6 +28,7 @@ import Data.Array.Accelerate.AST.Operation
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.Analysis.Match           ((:~:)(..))
 import Data.Array.Accelerate.Representation.Array
+import Data.Array.Accelerate.Representation.Ground
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Slice
 import Data.Array.Accelerate.Representation.Stencil
@@ -311,20 +312,6 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
                 -> GroundVars env (DesugaredArrays as)
                 -> Maybe (OperationAcc op env (DesugaredArrays bs))
   mkForeign _ _ _ = Nothing
-
-type family DesugaredArrays a where
-  DesugaredArrays ()           = ()
-  DesugaredArrays (a, b)       = (DesugaredArrays a, DesugaredArrays b)
-  DesugaredArrays (Array sh e) = (sh, Buffers e)
-
-type family DesugaredAfun a where
-  DesugaredAfun (a -> b) = DesugaredArrays a -> DesugaredAfun b
-  DesugaredAfun a        = DesugaredArrays a
-
-desugaredAfunIsBody :: ArraysR a -> DesugaredAfun a :~: DesugaredArrays a
-desugaredAfunIsBody (TupRsingle ArrayR{}) = Refl
-desugaredAfunIsBody TupRunit              = Refl
-desugaredAfunIsBody (TupRpair _ _)        = Refl
 
 desugar :: (HasCallStack, DesugarAcc op) => Named.Acc a -> OperationAcc op () (DesugaredArrays a)
 desugar = desugarOpenAcc Empty
@@ -864,21 +851,6 @@ desugarLHS env (LeftHandSideSingle (ArrayR shr tp))
   , DeclareVars lhsBf kBf valueBf <- declareVars $ buffersR tp
   = DesugaredLHS (mapEnv (weakenArrayDescriptor $ kBf .> kSh) env `Push` ArrayDescriptor (valueSh kBf) (valueBf weakenId)) $ LeftHandSidePair lhsSh lhsBf
 
-desugarArraysR :: ArraysR arr -> GroundsR (DesugaredArrays arr)
-desugarArraysR TupRunit          = TupRunit
-desugarArraysR (TupRsingle repr) = desugarArrayR repr
-desugarArraysR (TupRpair r1 r2)  = desugarArraysR r1 `TupRpair` desugarArraysR r2
-
-desugarArrayR :: ArrayR arr -> GroundsR (DesugaredArrays arr)
-desugarArrayR (ArrayR shr tp) = mapTupR GroundRscalar (shapeType shr) `TupRpair` buffersR tp
-
-buffersR :: forall e. TypeR e -> GroundsR (Buffers e)
-buffersR TupRunit           = TupRunit
-buffersR (TupRsingle tp)
-  | Refl <- reprIsSingle @ScalarType @e @Buffer tp = TupRsingle (GroundRbuffer tp)
-buffersR (TupRpair t1 t2)   = buffersR t1 `TupRpair` buffersR t2
-
-
 desugarExp :: HasCallStack
            => BEnv benv aenv
            -> Named.OpenExp env aenv e
@@ -974,13 +946,13 @@ shapeInit :: ShapeR (sh, Int) -> ShapeR sh
 shapeInit (ShapeRsnoc shr) = shr
 
 desugarUse :: ArrayR (Array sh e) -> Array sh e -> OperationAcc op benv (DesugaredArrays (Array sh e))
-desugarUse (ArrayR shr tp) (Array sh buffers) = Compute (mkConstant (shapeType shr) sh) `pair` desugarBuffers tp buffers
+desugarUse (ArrayR shr tp) (Array sh buffers) = Compute (mkConstant (shapeType shr) sh) `pair` desugarBuffers tp (size shr sh) buffers
 
-desugarBuffers :: forall e op benv. TypeR e -> Buffers e -> OperationAcc op benv (Buffers e)
-desugarBuffers TupRunit         ()       = Return TupRunit
-desugarBuffers (TupRpair t1 t2) (b1, b2) = desugarBuffers t1 b1 `pair` desugarBuffers t2 b2
-desugarBuffers (TupRsingle tp)  buffer
-  | Refl <- reprIsSingle @ScalarType @e @Buffer tp = Use tp buffer
+desugarBuffers :: forall e op benv. TypeR e -> Int -> Buffers e -> OperationAcc op benv (Buffers e)
+desugarBuffers TupRunit         _ ()       = Return TupRunit
+desugarBuffers (TupRpair t1 t2) n (b1, b2) = desugarBuffers t1 n b1 `pair` desugarBuffers t2 n b2
+desugarBuffers (TupRsingle tp)  n buffer
+  | Refl <- reprIsSingle @ScalarType @e @Buffer tp = Use tp n buffer
 
 desugarBoundaryToFunction :: forall benv sh e. Boundary benv (Array sh e) -> Arg benv (In sh e) -> Fun benv (sh -> e)
 desugarBoundaryToFunction boundary (ArgArray _ repr@(ArrayR shr tp) sh buffers) = case boundary of

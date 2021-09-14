@@ -5,6 +5,7 @@
 {-# LANGUAGE GADTs               #-}
 {-# LANGUAGE InstanceSigs        #-}
 {-# LANGUAGE MagicHash           #-}
+{-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE PatternGuards       #-}
 {-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE RecordWildCards     #-}
@@ -44,6 +45,7 @@ import Data.Array.Accelerate.Trafo.Desugar
 import qualified Data.Array.Accelerate.Debug.Internal as Debug
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Error
+import Data.Array.Accelerate.Representation.Ground
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Slice
@@ -75,6 +77,11 @@ import Data.Array.Accelerate.AST.Var (varsType)
 import Data.Type.Equality
 import Control.Monad (forM)
 
+import Data.Array.Accelerate.Trafo.Schedule.Uniform
+import Data.Array.Accelerate.Backend
+
+import Data.Array.Accelerate.Pretty.Operation
+import Data.Text.Prettyprint.Doc
 
 data BackpermutePassed exe args = BP (exe args) (Int -> Int)
 
@@ -84,6 +91,7 @@ backpermutePass = mapAccExecutable (\c _ -> BP c (foo c))
 -- For each thread, compute the index of its input (i.e. compute the Backpermutes)
 foo :: Cluster op args -> Int -> Int
 foo = _
+
 
 -- Conceptually, this computes the body of the fused loop
 -- It only deals with scalar values - wrap it in a loop!
@@ -102,7 +110,7 @@ evalCluster :: Monad m
             -> Val env
             -> i
             -> m o
-evalCluster k ci ca args env i = _
+evalCluster k ci ca args env i = undefined
 
 evalAST :: forall m op env args args'
          . Monad m
@@ -136,7 +144,6 @@ evalLHS :: LeftHandSideArgs body (FromIn env args) scope
 evalLHS = _
 
 data InterpretOp args where
-  INoop        :: InterpretOp ()
   IMap         :: InterpretOp (Fun' (s -> t) -> In sh s -> Out sh t -> ())
   IBackpermute :: InterpretOp (Fun' (sh' -> sh) -> In sh t -> Out sh' t -> ())
   IGenerate    :: InterpretOp (Fun' (sh -> t) -> Out sh t -> ())
@@ -164,7 +171,6 @@ data OrderV = OrderIn  Label
 instance MakesILP InterpretOp where
   type BackendVar InterpretOp = OrderV
   -- TODO add folds/scans/stencils, and solve problems: in particular, iteration size needs to be uniform
-  mkGraph INoop _ _ = mempty
   mkGraph IBackpermute (_ :>: ((L _ (_, S.toList -> ~[lIn])) :>: _)) l@(Label i _) =
     Info
       mempty
@@ -201,7 +207,11 @@ var = c . BackendSpecific
 instance NFData' InterpretOp where
   rnf' = error "todo"
 
-
+instance PrettyOp InterpretOp where
+  prettyOp IMap         = "map"
+  prettyOp IBackpermute = "backpermute"
+  prettyOp IGenerate    = "generate"
+  prettyOp IPermute     = "permute"
 
 fromArgs :: Int -> Env.Val env -> Args env args -> FromIn env args
 fromArgs i _ ArgsNil = ()
@@ -216,16 +226,15 @@ fromArgs i env (ArgArray Out ar sh buf :>: args) = (fromArgs i env args, varsGet
 
 
 evalOp :: Int -> InterpretOp args -> Val env -> FromIn env args -> IO (FromOut env args)
-evalOp _ INoop _ () = pure ()
 evalOp _ IMap env ((_, x), f) = pure ((), evalFun f env x)
 evalOp _ IBackpermute _ ((_, i), _) = pure ((), i) -- We evaluated the backpermute at the start already
 evalOp i IGenerate env (((), sh), f) = pure ((), evalFun f env $ _ i sh)
 evalOp i IPermute env (((((), e), f), target), comb) =
-  case evalFun f env (_ i) of
+  case evalFun f env (undefined i) of
     (0, _) -> pure ((), target)
     (1, ((), sh)) -> case target of
       ArrayDescriptor _ (bufvars :: GroundVars env (Buffers e)) -> do
-        let j = _ sh
+        let j = undefined sh
         let buf = varsGetVal bufvars env
         let buf' = veryUnsafeUnfreezeBuffers @e (bufferScalarType $ varsType bufvars) buf
         x <- readBuffers @e (bufferScalarType $ varsType bufvars) buf' j
@@ -253,7 +262,7 @@ run :: forall a. (HasCallStack, Sugar.Arrays a) => Smart.Acc a -> a
 run a = unsafePerformIO execute
   where
     acc :: PartitionedAcc InterpretOp () (DesugaredArrays (Sugar.ArraysR a))
-    !acc    = convertAcc a
+    !acc    = undefined -- convertAcc a
     execute = do
       Debug.dumpGraph $!! acc
       Debug.dumpSimplStats

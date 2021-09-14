@@ -17,7 +17,7 @@
 {-# LANGUAGE ViewPatterns         #-}
 
 -- |
--- Module      : Data.Array.Accelerate.Schedule
+-- Module      : Data.Array.Accelerate.AST.Schedule
 -- Copyright   : [2012..2020] The Accelerate Team
 -- License     : BSD3
 --
@@ -25,10 +25,11 @@
 -- Stability   : experimental
 -- Portability : non-portable (GHC extensions)
 --
--- This module should implement fusion.
+-- This module defines the interface for schedules, to be implemented
+-- in other modules.
 --
 
-module Data.Array.Accelerate.Schedule (
+module Data.Array.Accelerate.AST.Schedule (
   IsSchedule(..),
   convertSchedule,
   Scheduled,
@@ -41,17 +42,18 @@ import Data.Array.Accelerate.Representation.Type
 import Data.Typeable                                                ( (:~:)(..) )
 import Data.Array.Accelerate.AST.Operation
 
-
 class IsSchedule sched where
   -- 'a' is a ground type (ie, can be represented using GroundR)
   type ScheduleInput  sched a
   type ScheduleOutput sched a
 
-  convertScheduleFun :: PartitionedAfun op () t -> sched (Cluster op) (Scheduled sched t)
+  rnfSchedule :: NFData' op => sched op env t -> ()
 
-  mapSchedule :: (forall env'. op env' -> op' env') -> sched op env -> sched op' env
+  convertScheduleFun :: PartitionedAfun op () t -> sched (Cluster op) () (Scheduled sched t)
 
-convertSchedule :: forall sched op t. IsSchedule sched => PartitionedAcc op () t -> sched (Cluster op) (ScheduleOutput sched t -> ())
+  mapSchedule :: (forall s. op s -> op' s) -> sched op env t -> sched op' env t
+
+convertSchedule :: forall sched op t. IsSchedule sched => PartitionedAcc op () t -> sched (Cluster op) () (ScheduleOutput sched t -> ())
 convertSchedule acc
   | Refl <- reprIsBody @sched $ groundsR acc = convertScheduleFun (Abody acc)
 

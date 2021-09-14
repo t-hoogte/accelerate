@@ -24,7 +24,6 @@ module Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph where
 import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Operation hiding ( Var )
-import Data.Array.Accelerate.Trafo.Desugar (DesugarAcc)
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
 import Data.Array.Accelerate.Type
@@ -118,9 +117,7 @@ fused :: Label -> Label -> Expression op
 fused x y = let x' :-> y' = x -?> y 
             in c $ Fused x' y'
 
--- There is no strict reason for DesugarAcc to be a superclass of MakesILP, other than
--- that the input of MakesILP is the output of DesugarAcc.
-class (Eq (BackendVar op), Ord (BackendVar op), Show (BackendVar op), Read (BackendVar op), DesugarAcc op) => MakesILP op where
+class (Eq (BackendVar op), Ord (BackendVar op), Show (BackendVar op), Read (BackendVar op)) => MakesILP op where
   -- Vars needed to express backend-specific fusion rules.
   type BackendVar op
 
@@ -219,7 +216,7 @@ createLHS (LHSPair l r)   env k =
 -- next iteration might want to use 'dependant-map', to store some type information at type level.
 data Construction (op :: Type -> Type) where
   CExe :: LabelEnv env -> LabelledArgs env args -> op args            -> Construction op
-  CUse ::                 ScalarType e -> Buffer e                    -> Construction op
+  CUse ::                 ScalarType e -> Int -> Buffer e             -> Construction op
   CITE :: LabelEnv env -> ExpVar env PrimBool -> Label -> Label       -> Construction op
   CWhl :: LabelEnv env -> Label -> Label -> GroundVars env a          -> Construction op
   CLHS ::                 MyGLHS a -> Label                           -> Construction op
@@ -291,12 +288,12 @@ mkFullGraph (Unit var)       = mkFullGraphHelper $ \env ->
       , CUnt env var)
 
 
-mkFullGraph (Use sctype buff) = do
+mkFullGraph (Use sctype n buff) = do
   l <- freshL
   return $ mempty
          & info.graphI.graphNodes .~ S.singleton l
          & l_res                  ?~ l
-         & construc               .~ M.singleton l (CUse sctype buff)
+         & construc               .~ M.singleton l (CUse sctype n buff)
 
 mkFullGraph (Acond cond tacc facc) = do
   l_acond <- freshL
@@ -404,7 +401,7 @@ constructExe :: LabelEnv env' -> LabelEnv env
              -> Args env args -> op args
              -> Maybe (PreOpenAcc op env' ())
 constructExe env' env args op = Exec op <$> reindexArgs (mkReindexPartial env env') args
-constructUse :: ScalarType e -> Buffer e
+constructUse :: ScalarType e -> Int -> Buffer e
              -> PreOpenAcc op env (Buffer e)
 constructUse = Use
 constructITE :: LabelEnv env' -> LabelEnv env

@@ -8,7 +8,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_HADDOCK hide #-}
 -- |
--- Module      : Data.Array.Accelerate.Schedule.Uniform
+-- Module      : Data.Array.Accelerate.AST.Schedule.Uniform
 -- Copyright   : [2008..2020] The Accelerate Team
 -- License     : BSD3
 --
@@ -20,7 +20,6 @@
 module Data.Array.Accelerate.AST.Schedule.Uniform (
   UniformSchedule(..), UniformScheduleFun(..),
   Input, Output, inputSingle, inputR, outputR, InputOutputR(..),
-  ScheduleFunction, scheduleFunctionIsBody,
   Binding(..), Effect(..),
   BaseR(..), BasesR, BaseVar, BaseVars, BLeftHandSide,
   Signal(..), SignalResolver(..), Ref(..), OutputRef(..),
@@ -28,6 +27,7 @@ module Data.Array.Accelerate.AST.Schedule.Uniform (
   module Partitioned,
   await, resolve,
   signalResolverImpossible, scalarSignalResolverImpossible,
+  rnfBaseR,
 
   -- ** Free variables
   freeVars, funFreeVars, effectFreeVars, bindingFreeVars,
@@ -146,32 +146,6 @@ outputR (TupRsingle ground)
   -- t is not () or (a, b).
   | Refl <- inputSingle ground = TupRsingle BaseRsignalResolver `TupRpair` TupRsingle (BaseRrefWrite ground)
 
-type family ScheduleFunction t where
-  ScheduleFunction (t1 -> t2) = Input t1 -> ScheduleFunction t2
-  ScheduleFunction t          = Output t -> ()
-
--- Pattern match to convince the type checker that t is not a function.
-scheduleFunctionIsBody :: GroundsR t -> ScheduleFunction t :~: (Output t -> ())
-scheduleFunctionIsBody TupRunit = Refl
-scheduleFunctionIsBody TupRpair{} = Refl
-scheduleFunctionIsBody (TupRsingle (GroundRbuffer _)) = Refl
-scheduleFunctionIsBody (TupRsingle (GroundRscalar tp))
-  | VectorScalarType _ <- tp = Refl
-  | SingleScalarType (NumSingleType tp') <- tp = case tp' of
-      IntegralNumType TypeInt    -> Refl
-      IntegralNumType TypeInt8   -> Refl
-      IntegralNumType TypeInt16  -> Refl
-      IntegralNumType TypeInt32  -> Refl
-      IntegralNumType TypeInt64  -> Refl
-      IntegralNumType TypeWord   -> Refl
-      IntegralNumType TypeWord8  -> Refl
-      IntegralNumType TypeWord16 -> Refl
-      IntegralNumType TypeWord32 -> Refl
-      IntegralNumType TypeWord64 -> Refl
-      FloatingNumType TypeHalf   -> Refl
-      FloatingNumType TypeFloat  -> Refl
-      FloatingNumType TypeDouble -> Refl
-
 -- Relation between input and output
 data InputOutputR input output where
   InputOutputRsignal  :: InputOutputR Signal SignalResolver
@@ -202,6 +176,7 @@ data Binding env t where
                 -> Binding env (Buffer e)
 
   Use           :: ScalarType e
+                -> Int
                 -> Buffer e
                 -> Binding env (Buffer e)
 
@@ -279,7 +254,7 @@ bindingFreeVars :: Binding env t -> IdxSet env
 bindingFreeVars NewSignal      = IdxSet.empty
 bindingFreeVars (NewRef _)     = IdxSet.empty
 bindingFreeVars (Alloc _ _ sh) = IdxSet.fromVarList $ flattenTupR sh
-bindingFreeVars (Use _ _)      = IdxSet.empty
+bindingFreeVars (Use _ _ _)    = IdxSet.empty
 bindingFreeVars (Unit var)     = IdxSet.singletonVar var
 bindingFreeVars (RefRead var)  = IdxSet.singletonVar var
 bindingFreeVars (Compute e)    = IdxSet.fromList $ map f $ arrayInstrs e
@@ -300,3 +275,10 @@ signalResolverImpossible (TupRsingle (GroundRscalar tp)) = scalarSignalResolverI
 scalarSignalResolverImpossible :: ScalarType SignalResolver -> a
 scalarSignalResolverImpossible (SingleScalarType (NumSingleType (IntegralNumType tp))) = case tp of {}
 scalarSignalResolverImpossible (SingleScalarType (NumSingleType (FloatingNumType tp))) = case tp of {}
+
+rnfBaseR :: BaseR t -> ()
+rnfBaseR (BaseRground ground)   = rnfGroundR ground
+rnfBaseR BaseRsignal            = ()
+rnfBaseR BaseRsignalResolver    = ()
+rnfBaseR (BaseRref ground)      = rnfGroundR ground
+rnfBaseR (BaseRrefWrite ground) = rnfGroundR ground

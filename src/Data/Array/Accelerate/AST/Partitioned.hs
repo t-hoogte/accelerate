@@ -19,7 +19,10 @@
 -- Stability   : experimental
 -- Portability : non-portable (GHC extensions)
 --
-module Data.Array.Accelerate.AST.Partitioned where
+module Data.Array.Accelerate.AST.Partitioned (
+  module Data.Array.Accelerate.AST.Partitioned,
+  GroundR(..), GroundsR, NFData'(..)
+) where
 
 import Data.Array.Accelerate.AST.Operation
 

@@ -341,12 +341,15 @@ library
         -- For backend development (hidden)
         Data.Array.Accelerate.AST
         Data.Array.Accelerate.AST.Environment
+        Data.Array.Accelerate.AST.Execute
         Data.Array.Accelerate.AST.Exp
         Data.Array.Accelerate.AST.Idx
         Data.Array.Accelerate.AST.IdxSet
+        Data.Array.Accelerate.AST.Kernel
         Data.Array.Accelerate.AST.LeftHandSide
         Data.Array.Accelerate.AST.Operation
         Data.Array.Accelerate.AST.Partitioned
+        Data.Array.Accelerate.AST.Schedule
         Data.Array.Accelerate.AST.Schedule.Uniform
         Data.Array.Accelerate.AST.Var
         Data.Array.Accelerate.Analysis.Hash
@@ -365,13 +368,13 @@ library
         Data.Array.Accelerate.Pretty
         Data.Array.Accelerate.Representation.Array
         Data.Array.Accelerate.Representation.Elt
+        Data.Array.Accelerate.Representation.Ground
         Data.Array.Accelerate.Representation.Shape
         Data.Array.Accelerate.Representation.Slice
         Data.Array.Accelerate.Representation.Stencil
         Data.Array.Accelerate.Representation.Tag
         Data.Array.Accelerate.Representation.Type
         Data.Array.Accelerate.Representation.Vec
-        Data.Array.Accelerate.Schedule
         Data.Array.Accelerate.Smart
         Data.Array.Accelerate.Sugar.Array
         Data.Array.Accelerate.Sugar.Elt
@@ -409,6 +412,7 @@ library
   other-modules:
         Data.Array.Accelerate.Analysis.Hash.TH
         Data.Array.Accelerate.Array.Remote.Nursery
+        Data.Array.Accelerate.Backend
         Data.Array.Accelerate.Classes.Bounded
         Data.Array.Accelerate.Classes.Enum
         Data.Array.Accelerate.Classes.Eq
@@ -440,10 +444,13 @@ library
         Data.Array.Accelerate.Pattern.Ordering
         Data.Array.Accelerate.Pattern.TH
         Data.Array.Accelerate.Prelude
+        Data.Array.Accelerate.Pretty.Exp
         Data.Array.Accelerate.Pretty.Graphviz
         Data.Array.Accelerate.Pretty.Graphviz.Monad
         Data.Array.Accelerate.Pretty.Graphviz.Type
+        Data.Array.Accelerate.Pretty.Operation
         Data.Array.Accelerate.Pretty.Print
+        Data.Array.Accelerate.Pretty.Type
         Data.Array.Accelerate.Trafo.Algebra
         Data.Array.Accelerate.Trafo.Environment
         Data.Array.Accelerate.Trafo.Exp.Simplify

@@ -32,7 +32,7 @@ module Data.Array.Accelerate.Array.Buffer (
   indexBuffers, indexBuffer, readBuffers, readBuffer, writeBuffers, writeBuffer,
   touchBuffers, touchBuffer, touchMutableBuffers, touchMutableBuffer,
   rnfBuffers, rnfBuffer, unsafeFreezeBuffer, unsafeFreezeBuffers, 
-  veryUnsafeUnfreezeBuffers,
+  veryUnsafeUnfreezeBuffers, bufferToList,
 
   -- * Type macros
   HTYPE_INT, HTYPE_WORD, HTYPE_CLONG, HTYPE_CULONG, HTYPE_CCHAR,
@@ -341,6 +341,12 @@ registerForeignPtrAllocator new = do
   traceIO dump_gc "registering new array allocator"
   atomicWriteIORef __mallocForeignPtrBytes new
 
+bufferToList :: ScalarType e -> Int -> Buffer e -> [e]
+bufferToList tp n buffer = go 0
+  where
+    go !i | i >= n    = []
+          | otherwise = indexBuffer tp buffer i : go (i + 1)
+
 {-# NOINLINE __mallocForeignPtrBytes #-}
 __mallocForeignPtrBytes :: IORef (Int -> IO (ForeignPtr Word8))
 __mallocForeignPtrBytes = unsafePerformIO $! newIORef mallocPlainForeignPtrBytesAligned
@@ -401,4 +407,3 @@ runQ [d| type HTYPE_CCHAR = $(
               if isSigned (undefined::CChar)
                 then [t| Int8  |]
                 else [t| Word8 |] ) |]
-
