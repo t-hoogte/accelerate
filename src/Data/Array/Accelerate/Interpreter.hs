@@ -1,19 +1,23 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE BangPatterns        #-}
+{-# LANGUAGE EmptyCase           #-}
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE GADTs               #-}
+{-# LANGUAGE InstanceSigs        #-}
 {-# LANGUAGE MagicHash           #-}
 {-# LANGUAGE PatternGuards       #-}
 {-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections       #-}
 {-# LANGUAGE TypeApplications    #-}
 {-# LANGUAGE TypeFamilies        #-}
 {-# LANGUAGE TypeOperators       #-}
 {-# LANGUAGE ViewPatterns        #-}
+
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 {-# OPTIONS_HADDOCK prune #-}
-{-# LANGUAGE InstanceSigs #-}
-{-# LANGUAGE TupleSections #-}
+{-# OPTIONS_GHC -Wno-incomplete-patterns #-}
 -- |
 -- Module      : Data.Array.Accelerate.Interpreter
 -- Description : Reference backend (interpreted)
@@ -69,6 +73,17 @@ import qualified Data.Array.Accelerate.AST.Environment as Env
 import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.AST.Var (varsType)
 import Data.Type.Equality
+import Control.Monad (forM)
+
+
+data BackpermutePassed exe args = BP (exe args) (Int -> Int)
+
+backpermutePass :: PreOpenAcc (Cluster op) env a -> PreOpenAcc (BackpermutePassed (Cluster op)) env a
+backpermutePass = mapAccExecutable (\c _ -> BP c (foo c))
+
+-- For each thread, compute the index of its input (i.e. compute the Backpermutes)
+foo :: Cluster op args -> Int -> Int
+foo = _
 
 -- Conceptually, this computes the body of the fused loop
 -- It only deals with scalar values - wrap it in a loop!
@@ -80,14 +95,45 @@ import Data.Type.Equality
 -- transform tbody None i = return i
 -- transform tbody (Bind lhs op c) i = tbody op (getIn lhs i) >>= transform tbody c . genOut lhs i
 evalCluster :: Monad m
-            => (forall env body. op body -> FromIn env body -> Val env -> m (FromOut env body))
+            => (forall env body. Int -> op body -> Val env -> FromIn env body -> m (FromOut env body))
             -> ClusterIO args i o
             -> ClusterAST op i o
             -> Args env args
             -> Val env
             -> i
             -> m o
-evalCluster k ci ca pa env i = _
+evalCluster k ci ca args env i = _
+
+evalAST :: forall m op env args args'
+         . Monad m
+        => Int
+        -> (forall env body. Int -> op body -> Val env -> FromIn env body -> m (FromOut env body))
+        -> ClusterAST op (FromIn env args) (FromOut env args')
+        -> Args env args
+        -> Val env
+        -> FromIn env args
+        -> m (FromOut env args')
+evalAST _ _ None _ _ i = pure i
+evalAST n k (Bind lhs op ast) args env i = do
+  o <- k n op env _
+  evalLHS lhs args i o $ \args' refl scope -> case refl of
+    (Refl :: scope :~: FromIn env args'') -> (_ :: FromOut env args'' -> FromOut env args') <$> evalAST n k ast args' env scope
+  
+  
+  -- _ lhs (k n op env $ _ lhs i) (evalAST n k ast _ env _)
+
+
+evalLHS :: LeftHandSideArgs body (FromIn env args) scope
+        -> Args env args
+        -> FromIn env args
+        -> FromOut env body
+        -> (forall args'
+           . Args env args'
+          -> scope :~: FromIn env args'
+          -> FromIn env args'
+          -> r)
+        -> r
+evalLHS = _
 
 data InterpretOp args where
   INoop        :: InterpretOp ()
@@ -172,7 +218,7 @@ fromArgs i env (ArgArray Out ar sh buf :>: args) = (fromArgs i env args, varsGet
 evalOp :: Int -> InterpretOp args -> Val env -> FromIn env args -> IO (FromOut env args)
 evalOp _ INoop _ () = pure ()
 evalOp _ IMap env ((_, x), f) = pure ((), evalFun f env x)
-evalOp _ IBackpermute _ _ = error "Should be filtered out earlier? Or just treat as id here"
+evalOp _ IBackpermute _ ((_, i), _) = pure ((), i) -- We evaluated the backpermute at the start already
 evalOp i IGenerate env (((), sh), f) = pure ((), evalFun f env $ _ i sh)
 evalOp i IPermute env (((((), e), f), target), comb) =
   case evalFun f env (_ i) of
@@ -190,12 +236,13 @@ evalOp i IPermute env (((((), e), f), target), comb) =
 
 -- TODO fix types, this is ridiculous. @Ivo how `should` such a function work? Is Distribute just an abstraction that hurts more than it helps?
 bufferScalarType :: forall e. TupR GroundR (Buffers e) -> TypeR e
-bufferScalarType TupRunit 
-  | Refl :: e :~: () <- unsafeCoerce Refl 
-  = TupRunit 
+bufferScalarType TupRunit
+  | Refl :: e :~: () <- unsafeCoerce Refl
+  = TupRunit
 bufferScalarType (TupRpair tr' tr2) = unsafeCoerce $ TupRpair (bufferScalarType (unsafeCoerce tr')) (bufferScalarType (unsafeCoerce tr2))
 bufferScalarType (TupRsingle (GroundRbuffer st)) = unsafeCoerce $ TupRsingle st
 bufferScalarType (TupRsingle (GroundRscalar x)) = case x of {} -- all non-buffer
+
 
 -- Program execution
 -- -----------------

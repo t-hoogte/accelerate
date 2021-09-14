@@ -6,6 +6,10 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE LambdaCase #-}
+
+-- _Significantly_ speeds up compilation of this file, but at an obvious cost!
+{-# OPTIONS_GHC -Wno-overlapping-patterns -Wno-incomplete-patterns #-}
+
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering where
 
 import Data.Array.Accelerate.AST.LeftHandSide ( Exists(..), LeftHandSide )
