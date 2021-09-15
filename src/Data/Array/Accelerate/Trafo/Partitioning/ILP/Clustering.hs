@@ -322,14 +322,14 @@ fuseInput x (_ :>: as) (Ignr lhs) (ExpPut io) =
   (\(Reqr a b c) -> Reqr (There a) (There b) (Ignr c))
   <$> fuseInput x as lhs io
 
-removeInput :: forall env total e i i' result r
+removeInput :: forall env total e i i' result r sh
              . LabelledArgs  env total
-            -> Take (Value e) i i'
+            -> Take (Value sh e) i i'
             -> ClusterIO total i result
-            -> (forall total' result' sh
+            -> (forall total' result'
                . LabelledArgs env total' 
               -> ClusterIO total' i' result'
-              -> Take (Value e) result result'
+              -> Take (Value sh e) result result'
               -> Take' (In sh e) total total'
               -> LabelledArg env (In sh e)
               -> r)
@@ -354,8 +354,8 @@ removeInput (x :>: xs) (There t) (ExpPut io) k =
 
 restoreInput :: ClusterIO total' i' result' 
              -> Take' (In sh e) total total'
-             -> Take (Value e) i i'
-             -> Take (Value e) result result'
+             -> Take (Value sh e) i i'
+             -> Take (Value sh e) result result'
              -> LabelledArg env (In sh e)
              -> ClusterIO total i result
 restoreInput cio Here' Here Here (ArgArray In  _ _ _ `L` _) = Input cio
@@ -373,8 +373,8 @@ restoreInput _ _ _ _ _ = error "I think this means that the take(')s in restoreI
 addInput  :: ClusterAST op scope result
           -> ClusterIO total i result
           -> (forall result'
-             . ClusterAST op (scope, Value e) result'
-            -> ClusterIO (In sh e -> total) (i, Value e) result'
+             . ClusterAST op (scope, Value sh e) result'
+            -> ClusterIO (In sh e -> total) (i, Value sh e) result'
             -> r)
           -> r
 addInput None io k = k None (Input io)
@@ -403,7 +403,7 @@ fuseOutput :: LabelledArg env (Out sh e)
                . Take' (In sh e) total total'
               -> LeftHandSideArgs (Out sh e -> added)  (i', Sh sh) scope 
               -> ClusterIO        (Out sh e -> total') (i', Sh sh) result
-              -> Take (Value e) i i'
+              -> Take (Value sh e) i i'
               -> r)
            -> Maybe r
 -- Base case, no fusion
@@ -462,7 +462,7 @@ fuseOutput x (_ :>: as) (Adju lhs) (MutPut io) k =
 addOutput :: ClusterAST op scope result
           -> ClusterIO total i result
           -> (forall result'
-              . ClusterAST op (scope, Value e) result'
+              . ClusterAST op (scope, Value sh e) result'
              -> ClusterIO (Out sh e -> total) (i, Sh sh) result'
              -> r)
           -> r

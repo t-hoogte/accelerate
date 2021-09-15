@@ -30,6 +30,8 @@ import Prelude hiding ( take )
 import Data.Bifunctor
 import Data.Array.Accelerate.Trafo.Desugar (ArrayDescriptor(..))
 import Data.Array.Accelerate.Representation.Array (Array)
+import qualified Data.Array.Accelerate.AST.Environment as Env
+import Data.Array.Accelerate.Representation.Shape (ShapeR)
 
 -- In this model, every thread has one input element per input array,
 -- and one output element per output array. That works perfectly for
@@ -74,11 +76,11 @@ data LeftHandSideArgs body env scope where
   -- Because of `Ignr`, we could also give this the type `LeftHandSideArgs () () ()`.
   Base :: LeftHandSideArgs () () ()
   -- The body has an input array
-  Reqr :: Take (Value e) eenv env -> Take (Value e) escope scope
+  Reqr :: Take (Value sh e) eenv env -> Take (Value sh e) escope scope
        -> LeftHandSideArgs              body   env             scope
        -> LeftHandSideArgs (In  sh e -> body) eenv            escope
   -- The body creates an array
-  Make :: Take (Value e) escope scope
+  Make :: Take (Value sh e) escope scope
        -> LeftHandSideArgs              body   env             scope
        -> LeftHandSideArgs (Out sh e -> body) (env, Sh sh)    escope
   -- TODO: duplicate for Var' and Fun'
@@ -95,8 +97,8 @@ data LeftHandSideArgs body env scope where
 data ClusterIO args input output where
   Empty  :: ClusterIO () () output
   Input  :: ClusterIO              args   input      output
-         -> ClusterIO (In  sh e -> args) (input, Value e) (output, Value e)
-  Output :: Take (Value e) eoutput output
+         -> ClusterIO (In  sh e -> args) (input, Value sh e) (output, Value sh e)
+  Output :: Take (Value sh e) eoutput output
          -> ClusterIO              args   input             output
          -> ClusterIO (Out sh e -> args) (input, Sh sh)    eoutput
   MutPut :: ClusterIO              args   input             output
@@ -141,6 +143,14 @@ put :: Take a ab b -> a -> b -> ab
 put Here a b = (b, a)
 put (There t) a (b, c) = (put t a b, c)
 
+take' :: Take a ab b -> Env.Env f ab -> (f a, Env.Env f b)
+take' Here (Env.Push env x) = (x, env)
+take' (There t) (Env.Push env x) = second (`Env.Push` x) $ take' t env
+
+put' :: Take a ab b -> f a -> Env.Env f b -> Env.Env f ab
+put' Here a env = Env.Push env a
+put' (There t) a (Env.Push env c) = Env.Push (put' t a env) c
+
 ttake :: Take x xas as -> Take y xyas xas -> (forall yas. Take x xyas yas -> Take y yas as -> r) -> r
 ttake  tx           Here       k = k (There tx)   Here
 ttake  Here        (There t)   k = k  Here        t
@@ -158,7 +168,7 @@ data Take' x xargs args where
 
 type family InArgs  a where
   InArgs  ()              = ()
-  InArgs  (In sh e  -> x) = (InArgs x, Value e)
+  InArgs  (In sh e  -> x) = (InArgs x, Value sh e)
   InArgs  (Mut sh e -> x) = (InArgs x, Mut sh e)
   InArgs  (Exp'   e -> x) = (InArgs x, Exp' e)
   InArgs  (Fun'   e -> x) = (InArgs x, Fun' e)
@@ -166,7 +176,7 @@ type family InArgs  a where
   InArgs  (Out sh e -> x) = (InArgs x, Sh sh)
 type family OutArgs a where
   OutArgs ()              = ()
-  OutArgs (Out sh e -> x) = (OutArgs x, Value e)
+  OutArgs (Out sh e -> x) = (OutArgs x, Value sh e)
   OutArgs (Mut sh e -> x) = (OutArgs x, Mut sh e)
   OutArgs (_  -> x)       =  OutArgs x
 
@@ -199,15 +209,15 @@ type family FromArgs env a where
   FromArgs env (x, Var'   e) = (FromArgs env x, ExpVars env e)
   FromArgs env (x, Fun'   e) = (FromArgs env x, Fun     env e)
   FromArgs env (x, Mut sh e) = (FromArgs env x, ArrayDescriptor env (Array sh e))
-  FromArgs env (x, Value  e) = (FromArgs env x,             e)
-  FromArgs env (x, Sh    sh) = (FromArgs env x,            sh)
+  FromArgs env (x, Value sh e) = (FromArgs env x,       Value sh    e)
+  FromArgs env (x, Sh    sh) = (FromArgs env x,         Sh sh)
 
 type FromIn  env args = FromArgs env ( InArgs args)
 type FromOut env args = FromArgs env (OutArgs args)
 
 -- helps for type inference and safety: If we instead use 'e', it can match all the other options too. 
-newtype Value e = Value e
-newtype Sh sh   = Shape sh
+data Value sh e = Value e (Sh sh)
+data Sh sh      = Shape (ShapeR sh) sh
 
 -- instance NFData (Cluster op args) where
 --   rnf = _

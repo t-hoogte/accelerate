@@ -38,7 +38,7 @@ module Data.Array.Accelerate.Interpreter
 
 
   where
-import Prelude                                                      hiding ( (!!), sum )
+import Prelude                                                      hiding (take, (!!), sum )
 import Data.Array.Accelerate.AST.Partitioned hiding (Empty)
 import Data.Array.Accelerate.AST.Operation
 import Data.Array.Accelerate.Trafo.Desugar
@@ -84,6 +84,7 @@ import Data.Array.Accelerate.Pretty.Operation
 import Data.Text.Prettyprint.Doc
 import Data.Array.Accelerate.Smart (typeR)
 import Data.Array.Accelerate.AST.LeftHandSide (lhsToTupR)
+import qualified Data.Functor.Const as C
 
 
 -- TODO: Backpermutes
@@ -97,31 +98,44 @@ import Data.Array.Accelerate.AST.LeftHandSide (lhsToTupR)
 -- Overly simplistic datatype: We simply ignore all the functions that don't make sense (e.g. for non-array, non-generate args, or non-input args).
 data BackpermutedArg env t = BPA (Arg env t) (Int -> Int)
 type BackpermutedArgs env = PreArgs (BackpermutedArg env)
-type family ToBP env where 
+type family ToBP env where
   ToBP () = ()
   ToBP (env, x) = (ToBP env, (Int -> Int, x))
-type BackpermutedEnv = Env ((,) (Int -> Int))
+type BackpermutedEnv = Env (C.Const (Int -> Int))
 
--- TODO: This function is only waiting for some helpers that should be generalised beyond this function anyway
--- Both some 'building blocks' for Cluster (propagating stuff through LHS etc), and a sh<->Int conversion
+-- TODO: tie this together somehow
 makeBackpermuteArg :: Args env args -> Val env -> Cluster InterpretOp args -> BackpermutedArgs env args
-makeBackpermuteArg pa env (Cluster ci ca) = _
+makeBackpermuteArg pa env (Cluster ci ca) = undefined
   where
-    fromAST :: ClusterAST InterpretOp i o -> Val i -> BackpermutedEnv i
-    fromAST None Empty = Empty
-    fromAST None (Push' env x) = Push (fromAST None env) (id, x)
-    fromAST (Bind lhs op ast) env = let x = fromAST ast (_ env) in _ x (onOp op _ env)
+    fromAST :: ClusterAST InterpretOp i o -> BackpermutedEnv i
+    fromAST = undefined -- unclear. Can we do something like `Args env args -> CLusterAST InterpretOp (fromIn args) (fromOut args) -> BackpermutedEnv (fromIn args)`?
 
     onOp :: InterpretOp args -> BackpermutedArgs env args -> Val env -> BackpermutedArgs env args
-    onOp IBackpermute (BPA f@(ArgFun f') _  :>: BPA i _                           :>: BPA o outF :>: ArgsNil) env = 
-                       BPA f             id :>: BPA i (outF . _ (evalFun f' env)) :>: BPA o outF :>: ArgsNil
+    onOp IBackpermute (BPA f@(ArgFun f') _  :>: BPA i _                           :>: BPA o outF :>: ArgsNil) env =
+      let ArgArray In  (ArrayR shr  _) (flip varsGetVal env -> sh ) _ = i
+          ArgArray Out (ArrayR shr' _) (flip varsGetVal env -> sh') _ = o in
+                       BPA f             id :>: BPA i (outF . toIndex shr sh . evalFun f' env . fromIndex shr' sh') :>: BPA o outF :>: ArgsNil
     onOp IGenerate    (BPA f _    :>: BPA o outF :>: ArgsNil) _ =
                        BPA f outF :>: BPA o outF :>: ArgsNil -- pushing the Int->Int into the function is unnatural, store it besides it
     onOp IMap         (BPA f _  :>: BPA i _ :>: BPA o outF :>: ArgsNil) _ =
                        BPA f id :>: BPA i outF :>: BPA o outF :>: ArgsNil
     onOp IPermute args _ = args
 
+    fooLHS :: LeftHandSideArgs body env' scope -> Args env body -> BackpermutedEnv scope -> BackpermutedArgs env body
+    fooLHS Base ArgsNil _ = ArgsNil
+    fooLHS (Reqr _ t lhs) (arg :>: args) env = case take' t env of (C.Const f, env') -> BPA arg f :>: fooLHS lhs args env'
+    fooLHS (Make t lhs) (arg :>: args) env = case take' t env of (C.Const f, env') -> BPA arg f :>: fooLHS lhs args env'
+    fooLHS (EArg lhs) (arg :>: args) (Push env (C.Const f)) = BPA arg f :>: fooLHS lhs args env
+    fooLHS (Adju lhs) (arg :>: args) (Push env (C.Const f)) = BPA arg f :>: fooLHS lhs args env
+    fooLHS (Ignr lhs) args (Push env _) = fooLHS lhs args env
 
+    barLHS :: LeftHandSideArgs body env' scope -> BackpermutedEnv scope -> BackpermutedArgs env body -> BackpermutedEnv env'
+    barLHS Base                   env    ArgsNil            = Empty
+    barLHS (Reqr t1 t2 lhs)       env    (BPA _ f :>: args) = case take' t2 env of (_, env') -> put' t1 (C.Const f) (barLHS lhs env' args)
+    barLHS (Make t     lhs)       env    (BPA _ f :>: args) = case take' t  env of (_, env') -> Push (barLHS lhs env' args) (C.Const f)
+    barLHS (EArg       lhs) (Push env _) (BPA _ f :>: args) =                                   Push (barLHS lhs env  args) (C.Const f)
+    barLHS (Adju       lhs) (Push env _) (BPA _ f :>: args) =                                   Push (barLHS lhs env  args) (C.Const f)
+    barLHS (Ignr       lhs) (Push env (C.Const f))    args  =                                   Push (barLHS lhs env  args) (C.Const f)
 
 
 -- Conceptually, this computes the body of the fused loop
@@ -159,8 +173,8 @@ makeBackpermuteArg pa env (Cluster ci ca) = _
 --   o <- k n op env _
 --   evalLHS lhs args i o $ \args' refl scope -> case refl of
 --     (Refl :: scope :~: FromIn env args'') -> (_ :: FromOut env args'' -> FromOut env args') <$> evalAST n k ast args' env scope
-  
-  
+
+
   -- _ lhs (k n op env $ _ lhs i) (evalAST n k ast _ env _)
 
 
@@ -247,36 +261,39 @@ instance PrettyOp InterpretOp where
   prettyOp IPermute     = "permute"
 
 fromArgs :: Int -> Env.Val env -> Args env args -> FromIn env args
-fromArgs i _ ArgsNil = ()
+fromArgs _ _ ArgsNil = ()
 fromArgs i env (ArgVar v :>: args) = (fromArgs i env args, v)
 fromArgs i env (ArgExp e :>: args) = (fromArgs i env args, e)
 fromArgs i env (ArgFun f :>: args) = (fromArgs i env args, f)
-fromArgs i env (ArgArray Mut _ sh buf :>: args) = (fromArgs i env args, ArrayDescriptor sh buf)
-fromArgs i env (ArgArray In arrr _ buf :>: args) =
+fromArgs i env (ArgArray Mut (ArrayR shr _) sh buf :>: args) = (fromArgs i env args, ArrayDescriptor shr sh buf)
+fromArgs i env (ArgArray In (ArrayR shr typer) shv buf :>: args) =
   let buf' = varsGetVal buf env
-  in (fromArgs i env args, indexBuffers (arrayRtype arrr) buf' i)
-fromArgs i env (ArgArray Out ar sh buf :>: args) = (fromArgs i env args, varsGetVal sh env)
+      sh   = varsGetVal shv env
+  in (fromArgs i env args, Value (indexBuffers typer buf' i) (Shape shr sh))
+fromArgs i env (ArgArray Out (ArrayR shr _) sh buf :>: args) = (fromArgs i env args, Shape shr (varsGetVal sh env))
 
 
 evalOp :: Int -> InterpretOp args -> Val env -> ToBP (FromIn env args) -> IO (FromOut env args)
-evalOp _ IMap env ((_, snd -> x), snd -> f) = pure ((), evalFun f env x)
-evalOp _ IBackpermute _ ((_, snd -> i), _) = pure ((), i) -- We evaluated the backpermute at the start already
-evalOp i IGenerate env (((), snd -> sh), (f', f)) = pure ((), evalFun f env $ _ (f' i) sh)
-evalOp i IPermute env (((((), snd -> e :: e), snd -> f), snd -> target), snd -> comb) =
+evalOp _ IMap env ((_, snd -> Value x sh), snd -> f) = pure ((), Value (evalFun f env x) sh)
+evalOp _ IBackpermute _ ((((), snd -> sh), snd -> Value x _), _) = pure ((), Value x sh) -- We evaluated the backpermute at the start already, now simply relabel the shape info
+evalOp i IGenerate env (((), snd -> Shape shr sh), (f', f)) = pure ((), Value (evalFun f env $ fromIndex shr sh (f' i)) (Shape shr sh))
+evalOp i IPermute env (((((), snd -> Value (e :: e) (Shape shr sh)), snd -> f), snd -> target), snd -> comb) =
   let typer = case comb of Lam lhs _ -> lhsToTupR lhs in
-  case evalFun f env (undefined i) of
+  case evalFun f env (fromIndex shr sh i) of
     -- TODO double check: Is 0 Nothing?
     (0, _) -> pure ((), target)
     (1, ((), sh)) -> case target of
-      ArrayDescriptor _ bufvars -> do
-        let j = undefined sh
+      ArrayDescriptor shr shvars bufvars -> do
+        let shsize = varsGetVal shvars env
+        let j = toIndex shr shsize sh
         let buf = varsGetVal bufvars env
         let buf' = veryUnsafeUnfreezeBuffers @e typer buf
         x <- readBuffers @e typer buf' j
         let x' = evalFun comb env x e
         writeBuffers typer buf' j x'
         return ((), target)
-    _ -> error "PrimMaybe's tag was non-zero and non-one"
+    _ -> error "PrimMaybe's tag was non-zero and non-one" -- How do tags work again? If 'e' is a sum type, does the tag get combined, or does it get its own tag?
+
 
 
 -- Program execution
