@@ -19,6 +19,7 @@
 
 module Data.Array.Accelerate.AST.Schedule.Uniform (
   UniformSchedule(..), UniformScheduleFun(..),
+  SArg(..), SArgs,
   Input, Output, inputSingle, inputR, outputR, InputOutputR(..),
   Binding(..), Effect(..),
   BaseR(..), BasesR, BaseVar, BaseVars, BLeftHandSide,
@@ -45,6 +46,7 @@ import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.AST.Operation   as Operation           hiding (PreOpenAcc(..), PreOpenAfun(..))
 import Data.Array.Accelerate.AST.Partitioned as Partitioned         hiding (PartitionedAcc, PartitionedAfun)
+import Data.Array.Accelerate.AST.Kernel
 import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Control.Concurrent.MVar
 import Data.IORef
@@ -55,47 +57,47 @@ import Data.Typeable                                                ( (:~:)(..) 
 -- The schedule will exploit task parallelism.
 
 -- The schedule consists of bindings, effects and (parallel) control flow
-data UniformSchedule op env where
-  Return  :: UniformSchedule op env
+data UniformSchedule kernel env where
+  Return  :: UniformSchedule kernel env
 
   Alet    :: BLeftHandSide t env env'
           -> Binding env t
-          -> UniformSchedule op env'
-          -> UniformSchedule op env
+          -> UniformSchedule kernel env'
+          -> UniformSchedule kernel env
 
-  Effect  :: Effect op env
-          -> UniformSchedule op env
-          -> UniformSchedule op env
+  Effect  :: Effect kernel env
+          -> UniformSchedule kernel env
+          -> UniformSchedule kernel env
 
   Acond   :: ExpVar env PrimBool
-          -> UniformSchedule op env -- True branch
-          -> UniformSchedule op env -- False branch
-          -> UniformSchedule op env -- Operations after the if-then-else
-          -> UniformSchedule op env
+          -> UniformSchedule kernel env -- True branch
+          -> UniformSchedule kernel env -- False branch
+          -> UniformSchedule kernel env -- Operations after the if-then-else
+          -> UniformSchedule kernel env
 
   -- The step function of the loop outputs a bool to denote whether the loop should
   -- proceed. If true, then the other output values should also be filled, possibly at
   -- a later point in time. If it is false, then no other output values may be filled.
   Awhile  :: InputOutputR input output
-          -> UniformScheduleFun op env (input -> Output PrimBool -> output -> ())
+          -> UniformScheduleFun kernel env (input -> Output PrimBool -> output -> ())
           -> BaseVars env input
-          -> UniformSchedule op env -- Operations after the while loop
-          -> UniformSchedule op env
+          -> UniformSchedule kernel env -- Operations after the while loop
+          -> UniformSchedule kernel env
 
   -- Whereas Fork is symmetric, we generate programs in a way in which it is usually better
   -- to execute the first branch first. A fork should thus be evaluated by delegating the second branch
   -- (eg by putting the second branch in a queue) and continueing with the first branch
-  Fork    :: UniformSchedule op env
-          -> UniformSchedule op env
-          -> UniformSchedule op env
+  Fork    :: UniformSchedule kernel env
+          -> UniformSchedule kernel env
+          -> UniformSchedule kernel env
 
-data UniformScheduleFun op env t where
+data UniformScheduleFun kernel env t where
   Slam  :: BLeftHandSide s env env'
-        -> UniformScheduleFun op env' t
-        -> UniformScheduleFun op env  (s -> t)
+        -> UniformScheduleFun kernel env' t
+        -> UniformScheduleFun kernel env  (s -> t)
 
-  Sbody :: UniformSchedule    op env
-        -> UniformScheduleFun op env ()
+  Sbody :: UniformSchedule    kernel env
+        -> UniformScheduleFun kernel env ()
 
 type family Input t where
   Input ()         = ()
@@ -136,6 +138,16 @@ type family Output t where
   Output ()     = ()
   Output (a, b) = (Output a, Output b)
   Output t      = (SignalResolver, OutputRef t)
+
+data SArg env t where
+  SArgScalar :: ExpVar env e
+             -> SArg env (Var' e)
+
+  SArgBuffer :: Modifier m
+             -> GroundVar env e
+             -> SArg env (m DIM1 e)
+
+type SArgs env = PreArgs (SArg env)
 
 outputR :: GroundsR t -> BasesR (Output t)
 outputR TupRunit = TupRunit
@@ -187,16 +199,16 @@ data Binding env t where
   RefRead       :: BaseVar env (Ref t) -> Binding env t
 
 -- Effects do not have a return value.
-data Effect op env where
-  Exec          :: op args
-                -> Args env args
-                -> Effect op env
+data Effect kernel env where
+  Exec          :: KernelFun kernel f
+                -> SArgs env f
+                -> Effect kernel env
 
-  SignalAwait   :: [Idx env Signal] -> Effect op env
+  SignalAwait   :: [Idx env Signal] -> Effect kernel env
 
-  SignalResolve :: [Idx env SignalResolver] -> Effect op env
+  SignalResolve :: [Idx env SignalResolver] -> Effect kernel env
 
-  RefWrite      :: BaseVar env (OutputRef t) -> BaseVar env t -> Effect op env
+  RefWrite      :: BaseVar env (OutputRef t) -> BaseVar env t -> Effect kernel env
 
 -- A base value in the schedule is a scalar, buffer, a signal (resolver)
 -- or a (possibly mutable) reference
@@ -223,15 +235,15 @@ newtype SignalResolver = SignalResolver (MVar ())
 newtype Ref t  = Ref (IORef t)
 newtype OutputRef t = OutputRef (IORef t)
 
-await :: [Idx env Signal] -> UniformSchedule op env -> UniformSchedule op env
+await :: [Idx env Signal] -> UniformSchedule kernel env -> UniformSchedule kernel env
 await [] = id
 await signals = Effect (SignalAwait signals)
 
-resolve :: [Idx env SignalResolver] -> UniformSchedule op env -> UniformSchedule op env
+resolve :: [Idx env SignalResolver] -> UniformSchedule kernel env -> UniformSchedule kernel env
 resolve [] = id
 resolve signals = Effect (SignalResolve signals)
 
-freeVars :: UniformSchedule op env -> IdxSet env
+freeVars :: UniformSchedule kernel env -> IdxSet env
 freeVars Return = IdxSet.empty
 freeVars (Alet lhs bnd s) = bindingFreeVars bnd `IdxSet.union` IdxSet.drop' lhs (freeVars s)
 freeVars (Effect effect s) = effectFreeVars effect `IdxSet.union` freeVars s
@@ -246,7 +258,7 @@ freeVars (Awhile _ step ini continuation)
   $ freeVars continuation
 freeVars (Fork s1 s2) = freeVars s1 `IdxSet.union` freeVars s2
 
-funFreeVars :: UniformScheduleFun op env t -> IdxSet env
+funFreeVars :: UniformScheduleFun kernel env t -> IdxSet env
 funFreeVars (Sbody s)    = freeVars s
 funFreeVars (Slam lhs f) = IdxSet.drop' lhs $ funFreeVars f
 
@@ -263,11 +275,19 @@ bindingFreeVars (Compute e)    = IdxSet.fromList $ map f $ arrayInstrs e
     f (Exists (Index (Var _ idx)))     = Exists idx
     f (Exists (Parameter (Var _ idx))) = Exists idx
 
-effectFreeVars :: Effect op env -> IdxSet env
-effectFreeVars (Exec _ args)           = IdxSet.fromVarList $ argsVars args
+effectFreeVars :: Effect kernel env -> IdxSet env
+effectFreeVars (Exec _ args)             = IdxSet.fromList $ sargVars args
 effectFreeVars (SignalAwait signals)     = IdxSet.fromList $ map Exists $ signals
 effectFreeVars (SignalResolve resolvers) = IdxSet.fromList $ map Exists resolvers
 effectFreeVars (RefWrite ref value)      = IdxSet.insertVar ref $ IdxSet.singletonVar value
+
+sargVar :: SArg env t -> Exists (Idx env)
+sargVar (SArgScalar   v) = Exists $ varIdx v
+sargVar (SArgBuffer _ v) = Exists $ varIdx v
+
+sargVars :: SArgs env t -> [Exists (Idx env)]
+sargVars (a :>: as) = sargVar a : sargVars as
+sargVars ArgsNil    = []
 
 signalResolverImpossible :: GroundsR SignalResolver -> a
 signalResolverImpossible (TupRsingle (GroundRscalar tp)) = scalarSignalResolverImpossible tp

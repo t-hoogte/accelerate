@@ -1,3 +1,4 @@
+{-# LANGUAGE GADTs        #-}
 {-# LANGUAGE TypeFamilies #-}
 
 -- |
@@ -15,16 +16,30 @@
 
 module Data.Array.Accelerate.AST.Kernel (
   IsKernel(..),
-  compileKernels,
+  OpenKernelFun(..), KernelFun
 ) where
 
 import Data.Array.Accelerate.AST.Partitioned
-import Data.Array.Accelerate.AST.Schedule
+import Data.Array.Accelerate.Representation.Ground
 import Data.Kind
 
 class NFData' kernel => IsKernel kernel where
   type KernelOperation kernel :: Type -> Type
-  compileKernel :: Cluster (KernelOperation kernel) args -> kernel args
 
-compileKernels :: (IsSchedule sched, IsKernel kernel) => sched (Cluster (KernelOperation kernel)) env t -> sched kernel env t
-compileKernels = mapSchedule compileKernel
+  compileKernel :: Cluster (KernelOperation kernel) args -> Args env args -> kernel env
+
+type KernelFun kernel = OpenKernelFun kernel ()
+
+data OpenKernelFun kernel env t where
+  KernelFunLam
+    :: GroundR s
+    -> OpenKernelFun kernel (env, s) t
+    -> OpenKernelFun kernel env (s -> t)
+  
+  KernelFunBody
+    :: kernel env
+    -> OpenKernelFun kernel env ()
+
+instance NFData' kernel => NFData' (OpenKernelFun kernel env) where
+  rnf' (KernelFunLam g fun) = rnfGroundR g `seq` rnf' fun
+  rnf' (KernelFunBody kernel) = rnf' kernel

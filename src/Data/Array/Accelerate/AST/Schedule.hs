@@ -37,6 +37,7 @@ module Data.Array.Accelerate.AST.Schedule (
 ) where
 
 import Data.Array.Accelerate.AST.Partitioned
+import Data.Array.Accelerate.AST.Kernel
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Representation.Type
 import Data.Typeable                                                ( (:~:)(..) )
@@ -47,13 +48,17 @@ class IsSchedule sched where
   type ScheduleInput  sched a
   type ScheduleOutput sched a
 
-  rnfSchedule :: NFData' op => sched op env t -> ()
+  rnfSchedule :: NFData' kernel => sched kernel env t -> ()
 
-  convertScheduleFun :: PartitionedAfun op () t -> sched (Cluster op) () (Scheduled sched t)
+  convertScheduleFun
+    :: IsKernel kernel
+    => PartitionedAfun (KernelOperation kernel) () t -> sched kernel () (Scheduled sched t)
 
-  mapSchedule :: (forall s. op s -> op' s) -> sched op env t -> sched op' env t
 
-convertSchedule :: forall sched op t. IsSchedule sched => PartitionedAcc op () t -> sched (Cluster op) () (ScheduleOutput sched t -> ())
+convertSchedule
+  :: forall sched kernel t.
+     (IsSchedule sched, IsKernel kernel)
+  => PartitionedAcc (KernelOperation kernel) () t -> sched kernel () (ScheduleOutput sched t -> ())
 convertSchedule acc
   | Refl <- reprIsBody @sched $ groundsR acc = convertScheduleFun (Abody acc)
 
@@ -80,4 +85,3 @@ reprIsBody (TupRsingle (GroundRscalar (SingleScalarType (NumSingleType t)))) = c
   FloatingNumType TypeHalf   -> Refl
   FloatingNumType TypeFloat  -> Refl
   FloatingNumType TypeDouble -> Refl
-

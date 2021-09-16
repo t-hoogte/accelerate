@@ -91,8 +91,7 @@ convertAccWith
   -> Acc arrs
   -> sched kernel () (ScheduleOutput sched (DesugaredArrays (ArraysR arrs)) -> ())
 convertAccWith config
-  = phase' "compile-kernels" rnfSchedule compileKernels
-  . phase' "schedule"        rnfSchedule convertSchedule
+  = phase' "codegen"     rnfSchedule convertSchedule
   . phase  "array-fusion"           (NewNewFusion.convertAccWith config)
   . phase  "desugar"                 desugar
   . phase  "array-split-lets"       LetSplit.convertAcc
@@ -117,8 +116,7 @@ convertAfunWith
   -> f
   -> sched kernel () (Scheduled sched (DesugaredAfun (ArraysFunctionR f)))
 convertAfunWith config
-  = phase' "compile-kernels" rnfSchedule compileKernels
-  . phase' "schedule"        rnfSchedule convertScheduleFun
+  = phase' "codegen"     rnfSchedule convertScheduleFun
   . phase  "array-fusion"           (NewNewFusion.convertAfunWith config)
   . phase  "desugar"                desugarAfun
   . phase  "array-split-lets"       LetSplit.convertAfun

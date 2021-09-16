@@ -21,7 +21,8 @@
 --
 module Data.Array.Accelerate.AST.Partitioned (
   module Data.Array.Accelerate.AST.Partitioned,
-  GroundR(..), GroundsR, NFData'(..)
+  GroundR(..), GroundsR, NFData'(..), Arg(..),
+  PreArgs(..), Args,
 ) where
 
 import Data.Array.Accelerate.AST.Operation

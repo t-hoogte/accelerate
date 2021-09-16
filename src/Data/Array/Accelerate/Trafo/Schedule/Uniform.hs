@@ -35,6 +35,7 @@ import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.IdxSet (IdxSet)
 import Data.Array.Accelerate.AST.LeftHandSide
+import Data.Array.Accelerate.AST.Kernel
 import Data.Array.Accelerate.AST.Schedule
 import Data.Array.Accelerate.AST.Schedule.Uniform
 import Data.Array.Accelerate.AST.Var
@@ -66,32 +67,10 @@ instance IsSchedule UniformScheduleFun where
   convertScheduleFun afun
     | (partial, _) <- partialScheduleFun afun = fromPartialFun PEnd partial
 
-  mapSchedule f (Slam lhs s) = Slam lhs $ mapSchedule f s
-  mapSchedule f (Sbody s) = Sbody $ mapSchedule' f s
-
   rnfSchedule (Slam lhs s) = rnfLeftHandSide rnfBaseR lhs `seq` rnfSchedule s
   rnfSchedule (Sbody s) = rnfSchedule' s
-  -- TODO: rnfSchedule!
 
-mapSchedule' :: forall op op' env. (forall s. op s -> op' s) -> UniformSchedule op env -> UniformSchedule op' env
-mapSchedule' f = \case
-  Return                      -> Return
-  Alet lhs bnd body           -> Alet lhs bnd $ trav body
-  Effect eff next             -> Effect (travEffect eff) $ trav next
-  Acond c true false next     -> Acond c (trav true) (trav false) (trav next)
-  Awhile io body initial next -> Awhile io (mapSchedule f body) initial $ trav next
-  Fork a b                    -> Fork (trav a) (trav b)
-  where
-    trav :: UniformSchedule op env' -> UniformSchedule op' env'
-    trav = mapSchedule' f
-
-    travEffect = \case
-      Exec op args          -> Exec (f op) args
-      SignalAwait signals   -> SignalAwait signals
-      SignalResolve signals -> SignalResolve signals
-      RefWrite ref value    -> RefWrite ref value
-
-rnfSchedule' :: NFData' op => UniformSchedule op env -> ()
+rnfSchedule' :: NFData' kernel => UniformSchedule kernel env -> ()
 rnfSchedule' Return                        = ()
 rnfSchedule' (Alet lhs bnd body)           = rnfLeftHandSide rnfBaseR lhs `seq` rnfBinding bnd `seq` rnfSchedule' body
 rnfSchedule' (Effect eff next)             = rnfEffect eff `seq` rnfSchedule' next
@@ -108,8 +87,8 @@ rnfBinding (Use tp n buffer) = buffer `seq` n `seq` rnfScalarType tp
 rnfBinding (Unit var)        = rnfExpVar var
 rnfBinding (RefRead r)       = rnfBaseVar r
 
-rnfEffect :: NFData' op => Effect op env -> ()
-rnfEffect (Exec op args)          = rnf' op `seq` rnfArgs args
+rnfEffect :: NFData' kernel => Effect kernel env -> ()
+rnfEffect (Exec kernel args)      = rnf' kernel `seq` rnfSArgs args
 rnfEffect (SignalAwait signals)   = rnf signals
 rnfEffect (SignalResolve signals) = rnf signals
 rnfEffect (RefWrite ref value)    = rnfBaseVar ref `seq` rnfBaseVar value
@@ -117,21 +96,19 @@ rnfEffect (RefWrite ref value)    = rnfBaseVar ref `seq` rnfBaseVar value
 rnfBaseVar :: BaseVar env t -> ()
 rnfBaseVar = rnfVar rnfBaseR
 
-rnfArgs :: Args env args -> ()
-rnfArgs ArgsNil = ()
-rnfArgs (arg :>: args) = rnfArg arg `seq` rnfArgs args
+rnfSArgs :: SArgs env args -> ()
+rnfSArgs ArgsNil = ()
+rnfSArgs (arg :>: args) = rnfSArg arg `seq` rnfSArgs args
 
-rnfArg :: Arg env t -> ()
-rnfArg (ArgVar vars)                   = rnfTupR rnfExpVar vars
-rnfArg (ArgExp expr)                   = rnfOpenExp expr
-rnfArg (ArgFun fn)                     = rnfOpenFun fn
-rnfArg (ArgArray mod' repr sh buffers) = mod' `seq` rnfArrayR repr `seq` rnfGroundVars sh `seq` rnfGroundVars buffers
+rnfSArg :: SArg env t -> ()
+rnfSArg (SArgScalar var)      = rnfExpVar var
+rnfSArg (SArgBuffer mod' var) = mod' `seq` rnfGroundVar var
 
 rnfInputOutputR :: InputOutputR input output -> ()
 rnfInputOutputR (InputOutputRpair io1 io2) = rnfInputOutputR io1 `seq` rnfInputOutputR io2
 rnfInputOutputR _ = ()
 
-instance Sink' (UniformSchedule op) where
+instance Sink' (UniformSchedule kernel) where
   weaken' _ Return                        = Return
   weaken' k (Alet lhs b s)                
     | Exists lhs' <- rebuildLHS lhs   = Alet lhs' (weaken k b) (weaken' (sinkWithLHS lhs lhs' k) s)
@@ -140,7 +117,7 @@ instance Sink' (UniformSchedule op) where
   weaken' k (Awhile io f input s)     = Awhile io (weaken k f) (mapTupR (weaken k) input) (weaken' k s)
   weaken' k (Fork s1 s2)              = Fork (weaken' k s1) (weaken' k s2)
 
-instance Sink (UniformScheduleFun op) where
+instance Sink (UniformScheduleFun kernel) where
   weaken k (Slam lhs f)
     | Exists lhs' <- rebuildLHS lhs = Slam lhs' $ weaken (sinkWithLHS lhs lhs' k) f
   weaken k (Sbody s)    = Sbody $ weaken' k s
@@ -154,8 +131,8 @@ instance Sink Binding where
   weaken k (Unit var)        = Unit $ weaken k var
   weaken k (RefRead ref)     = RefRead $ weaken k ref
 
-instance Sink' (Effect op) where
-  weaken' k (Exec op args) = Exec op $ runIdentity $ reindexArgs (weakenReindex k) args
+instance Sink' (Effect kernel) where
+  weaken' k (Exec kernel args) = Exec kernel $ runIdentity $ reindexSArgs' (ReindexF $ \ix -> NewIdxJust <$> weakenReindex k ix) args
   weaken' k (SignalAwait vars) = SignalAwait $ map (weaken k) vars
   weaken' k (SignalResolve vars) = SignalResolve $ map (weaken k) vars
   weaken' k (RefWrite ref value) = RefWrite (weaken k ref) (weaken k value)
@@ -331,11 +308,11 @@ mapWithRemainder f = go []
 -}
 {-
 
-awaitFuture :: FEnv senv genv -> GroundVars genv t -> (forall senv'. senv :> senv' -> BaseVars senv' t -> UniformSchedule op senv') -> UniformSchedule op senv
+awaitFuture :: FEnv senv genv -> GroundVars genv t -> (forall senv'. senv :> senv' -> BaseVars senv' t -> UniformSchedule kernel senv') -> UniformSchedule kernel senv
 awaitFuture env1 vars1
   = let (symbols, res) = go env1 vars1
   where
-    go :: FEnv senv genv -> GroundVars genv t -> (forall senv'. senv :> senv' -> BaseVars senv' t -> UniformSchedule op senv') -> ([Var senv Signal], UniformSchedule op senv)
+    go :: FEnv senv genv -> GroundVars genv t -> (forall senv'. senv :> senv' -> BaseVars senv' t -> UniformSchedule kernel senv') -> ([Var senv Signal], UniformSchedule kernel senv)
     go env TupRunit f = ([], f weakenId TupRunit)
     go env (TupRsingle )
 
@@ -492,10 +469,10 @@ defineOutput (TupRpair t1 t2) us
     (u1, u2) = pairUniqueness us
 defineOutput TupRunit         _                     = DefineOutput PartialDoOutputUnit weakenId (const TupRunit)
 
-writeOutput :: PartialDoOutput fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule (Cluster op) fenv''
+writeOutput :: PartialDoOutput fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule kernel fenv''
 writeOutput doOutput outputVars valueVars = go doOutput outputVars valueVars Return
   where
-    go :: PartialDoOutput fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule (Cluster op) fenv'' -> UniformSchedule (Cluster op) fenv''
+    go :: PartialDoOutput fenv fenv' t r -> BaseVars fenv'' r -> BaseVars fenv'' t -> UniformSchedule kernel fenv'' -> UniformSchedule kernel fenv''
     go PartialDoOutputUnit _ _ = id
     go (PartialDoOutputPair o1 o2) (TupRpair r1 r2) (TupRpair v1 v2) = go o1 r1 v1 . go o2 r2 v2
     go (PartialDoOutputScalar _) (TupRpair (TupRsingle signal) (TupRsingle ref)) (TupRsingle v)
@@ -520,11 +497,11 @@ reEnvIdx (ReEnvKeep r) (SuccIdx ix) = SuccIdx <$> reEnvIdx r ix
 reEnvIdx (ReEnvSkip r) (SuccIdx ix) = reEnvIdx r ix
 reEnvIdx _             _            = Nothing
 {-
-data ConvertEnvRead op genv fenv1 where
-  ConvertEnvRead :: (UniformSchedule (Cluster op) fenv2 -> UniformSchedule (Cluster op) fenv1)
+data ConvertEnvRead kernel genv fenv1 where
+  ConvertEnvRead :: (UniformSchedule kernel fenv2 -> UniformSchedule kernel fenv1)
                  -> (forall fenv3. ReEnv genv fenv2 fenv3 -> ReEnv genv fenv1 fenv3) -- TODO: This doesn't work. We need to assure that genv and fenv are in the same order
                  -> fenv1 :> fenv2
-                 -> ConvertEnvRead op genv fenv1
+                 -> ConvertEnvRead kernel genv fenv1
 -}
 -- Void data type with orphan type argument.
 -- Used to mark that a variable of the ground environment is used.
@@ -543,13 +520,13 @@ convertEnvRefs env = partialEnvFromList const $ snd $ go weakenId env []
     go k (ConvertEnvAcquire _)         accum = (weakenSucc $ weakenSucc k, accum)
     go k (ConvertEnvFuture (Var tp ix)) accum = (weakenSucc $ weakenSucc k, EnvBinding ix (FutureRef $ Var (BaseRref tp) $ k >:> ZeroIdx) : accum)
 
-data Reads op genv fenv where
+data Reads kernel genv fenv where
   Reads :: ReEnv genv fenv'
         -> (fenv :> fenv')
-        -> (UniformSchedule op fenv' -> UniformSchedule op fenv)
-        -> Reads op genv fenv
+        -> (UniformSchedule kernel fenv' -> UniformSchedule kernel fenv)
+        -> Reads kernel genv fenv
 
-readRefs :: PartialEnv (FutureRef fenv) genv -> Reads op genv fenv
+readRefs :: PartialEnv (FutureRef fenv) genv -> Reads kernel genv fenv
 readRefs PEnd = Reads ReEnvEnd weakenId id
 readRefs (PPush env (FutureRef (Var tp idx)))
   | Reads r k f <- readRefs env =
@@ -648,11 +625,11 @@ data TupleIdx s t where
   TupleIdxRight :: TupleIdx r t -> TupleIdx (l, r) t
   TupleIdxSelf  :: TupleIdx t t
 
-data PartialSchedule op genv t where
+data PartialSchedule kernel genv t where
   PartialDo     :: PartialDoOutput () fenv t r
                 -> ConvertEnv genv fenv fenv'
-                -> UniformSchedule (C.Cluster op) fenv'
-                -> PartialSchedule op genv t
+                -> UniformSchedule kernel fenv'
+                -> PartialSchedule kernel genv t
 
   -- Returns a tuple of variables. Note that (some of) these
   -- variables may already have been resolved, as they may be
@@ -661,7 +638,7 @@ data PartialSchedule op genv t where
   --
   PartialReturn :: Uniquenesses t
                 -> GroundVars genv t
-                -> PartialSchedule op genv t
+                -> PartialSchedule kernel genv t
 
   -- When both branches use the same buffer variables, the first
   -- branch first gets access to it and can release it (using OutputRelease)
@@ -687,59 +664,59 @@ data PartialSchedule op genv t where
                 -> GLeftHandSide bnd genv genv'
                 -> TupR (Destination t) bnd
                 -> Uniquenesses bnd
-                -> PartialSchedule op genv  bnd
-                -> PartialSchedule op genv' t
-                -> PartialSchedule op genv  t
+                -> PartialSchedule kernel genv  bnd
+                -> PartialSchedule kernel genv' t
+                -> PartialSchedule kernel genv  t
 
   PartialAcond  :: SyncEnv genv -- Stored for efficiency reasons to avoid recomputing it.
                 -> ExpVar genv PrimBool
-                -> PartialSchedule op genv t
-                -> PartialSchedule op genv t
-                -> PartialSchedule op genv t
+                -> PartialSchedule kernel genv t
+                -> PartialSchedule kernel genv t
+                -> PartialSchedule kernel genv t
 
   PartialAwhile :: SyncEnv genv
                 -> Uniquenesses t
-                -> PartialScheduleFun op genv (t -> PrimBool)
-                -> PartialScheduleFun op genv (t -> t)
+                -> PartialScheduleFun kernel genv (t -> PrimBool)
+                -> PartialScheduleFun kernel genv (t -> t)
                 -> GroundVars genv t
-                -> PartialSchedule op genv t
+                -> PartialSchedule kernel genv t
 
 partialDeclare  :: GLeftHandSide bnd genv genv'
                 -> TupR (Destination t) bnd
                 -> Uniquenesses bnd
-                -> PartialSchedule op genv  bnd
-                -> PartialSchedule op genv' t
-                -> PartialSchedule op genv  t
+                -> PartialSchedule kernel genv  bnd
+                -> PartialSchedule kernel genv' t
+                -> PartialSchedule kernel genv  t
 partialDeclare lhs dest us bnd sched = PartialDeclare sync lhs dest us bnd sched
   where
     sync = unionPartialEnv max (syncEnv bnd) (weakenSyncEnv lhs $ syncEnv sched)
 
 partialAcond    :: ExpVar genv PrimBool
-                -> PartialSchedule op genv t
-                -> PartialSchedule op genv t
-                -> PartialSchedule op genv t
+                -> PartialSchedule kernel genv t
+                -> PartialSchedule kernel genv t
+                -> PartialSchedule kernel genv t
 partialAcond cond t f = PartialAcond sync cond t f
   where
     sync = unionPartialEnv max (syncEnv t) (syncEnv f)
 
 partialAwhile   :: Uniquenesses t
-                -> PartialScheduleFun op genv (t -> PrimBool)
-                -> PartialScheduleFun op genv (t -> t)
+                -> PartialScheduleFun kernel genv (t -> PrimBool)
+                -> PartialScheduleFun kernel genv (t -> t)
                 -> GroundVars genv t
-                -> PartialSchedule op genv t
+                -> PartialSchedule kernel genv t
 partialAwhile us cond f vars = PartialAwhile sync us cond f vars
   where
     sync = unionPartialEnv max (syncEnvFun cond) $ unionPartialEnv max (syncEnvFun f) $ variablesToSyncEnv us vars
 
-data PartialScheduleFun op genv t where
+data PartialScheduleFun kernel genv t where
   Plam  :: GLeftHandSide s genv genv'
-        -> PartialScheduleFun op genv' t
-        -> PartialScheduleFun op genv (s -> t)
+        -> PartialScheduleFun kernel genv' t
+        -> PartialScheduleFun kernel genv (s -> t)
 
-  Pbody :: PartialSchedule    op genv  t
-        -> PartialScheduleFun op genv  t
+  Pbody :: PartialSchedule    kernel genv  t
+        -> PartialScheduleFun kernel genv  t
 
-instance HasGroundsR (PartialSchedule op genv) where
+instance HasGroundsR (PartialSchedule kernel genv) where
   groundsR (PartialDo doOutput _ _) = partialDoOutputGroundsR doOutput
   groundsR (PartialReturn _ vars) = mapTupR varType vars
   groundsR (PartialDeclare _ _ _ _ _ p) = groundsR p
@@ -803,15 +780,14 @@ joinVars _                _                = TupRsingle NoVars
 data Exists' (a :: (Type -> Type -> Type) -> Type) where
   Exists' :: a m -> Exists' a
 
-partialSchedule :: forall op genv1 t1. C.PartitionedAcc op genv1 t1 -> (PartialSchedule op genv1 t1, IdxSet genv1)
+partialSchedule :: forall kernel genv1 t1. C.PartitionedAcc (KernelOperation kernel) genv1 t1 -> (PartialSchedule kernel genv1 t1, IdxSet genv1)
 partialSchedule = (\(s, used, _) -> (s, used)) . travA (TupRsingle Shared)
   where
-    travA :: forall genv t. Uniquenesses t -> C.PartitionedAcc op genv t -> (PartialSchedule op genv t, IdxSet genv, MaybeVars genv t)
-    travA _  (C.Exec cluster args)
+    travA :: forall genv t. Uniquenesses t -> C.PartitionedAcc (KernelOperation kernel) genv t -> (PartialSchedule kernel genv t, IdxSet genv, MaybeVars genv t)
+    travA _  (C.Exec op args)
       | Exists env <- convertEnvFromList $ map (foldr1 combineMod) $ groupBy (\(Exists v1) (Exists v2) -> isJust $ matchIdx (varIdx v1) (varIdx v2)) $ argsVars args -- TODO: Remove duplicates more efficiently
-    -- travA :: forall genv t. Uniquenesses t -> C.PartitionedAcc op genv t -> (PartialSchedule op genv t, IdxSet genv, MaybeVars genv t)
-    -- travA _  (C.Exec cluster)
-    --   | Exists env <- convertEnvFromList $ map (foldr1 combineMod) $ groupBy (\(Exists v1) (Exists v2) -> isJust $ matchIdx (varIdx v1) (varIdx v2)) $ execVars cluster -- TODO: Remove duplicates more efficiently
+      -- TODO: Convert operation to kernel.
+      -- TODO: Convert Args to SArgs
       , Reads reEnv k inputBindings <- readRefs $ convertEnvRefs env
       , Just args' <- reindexArgs (reEnvIdx reEnv) args
         = let
@@ -821,7 +797,7 @@ partialSchedule = (\(s, used, _) -> (s, used)) . travA (TupRsingle Shared)
             ( PartialDo PartialDoOutputUnit env
                 $ Effect (SignalAwait signals)
                 $ inputBindings
-                $ Effect (Exec cluster args')
+                $ Effect (Exec undefined undefined)
                 $ Effect (SignalResolve resolvers)
                 $ Return
             , IdxSet.fromList $ convertEnvToList env
@@ -874,7 +850,7 @@ partialSchedule = (\(s, used, _) -> (s, used)) . travA (TupRsingle Shared)
         (c', used1) = partialScheduleFun c
         (f', used2) = partialScheduleFun f
 
-partialScheduleFun :: C.PartitionedAfun op genv t -> (PartialScheduleFun op genv t, IdxSet genv)
+partialScheduleFun :: C.PartitionedAfun (KernelOperation kernel) genv t -> (PartialScheduleFun kernel genv t, IdxSet genv)
 partialScheduleFun (C.Alam lhs f) = (Plam lhs f', IdxSet.drop' lhs used)
   where
     (f', used) = partialScheduleFun f
@@ -882,7 +858,7 @@ partialScheduleFun (C.Abody b)    = (Pbody b', used)
   where
     (b', used) = partialSchedule b
 
-partialLift1 :: GroundsR s -> (forall fenv. ExpVars fenv t -> Binding fenv s) -> ExpVars genv t -> (PartialSchedule op genv s, IdxSet genv, MaybeVars genv s)
+partialLift1 :: GroundsR s -> (forall fenv. ExpVars fenv t -> Binding fenv s) -> ExpVars genv t -> (PartialSchedule kernel genv s, IdxSet genv, MaybeVars genv s)
 partialLift1 tp f vars = partialLift tp (\k -> f <$> strengthenVars k vars) (expVarsList vars)
 
 expVarsList :: ExpVars genv t -> [Exists (GroundVar genv)]
@@ -898,7 +874,7 @@ strengthenVars _ TupRunit                = pure TupRunit
 strengthenVars k (TupRsingle (Var t ix)) = TupRsingle . Var t <$> k ix
 strengthenVars k (TupRpair v1 v2)        = TupRpair <$> strengthenVars k v1 <*> strengthenVars k v2
 
-partialLift :: forall op genv s. GroundsR s -> (forall fenv. genv :?> fenv -> Maybe (Binding fenv s)) -> [Exists (GroundVar genv)] -> (PartialSchedule op genv s, IdxSet genv, MaybeVars genv s)
+partialLift :: forall kernel genv s. GroundsR s -> (forall fenv. genv :?> fenv -> Maybe (Binding fenv s)) -> [Exists (GroundVar genv)] -> (PartialSchedule kernel genv s, IdxSet genv, MaybeVars genv s)
 partialLift tp f vars
   | DefineOutput doOutput _ varsOut <- defineOutput @() @s tp (mapTupR uniqueIfBuffer tp)
   , Exists env <- convertEnvReadonlyFromList $ nubBy (\(Exists v1) (Exists v2) -> isJust $ matchVar v1 v2) vars -- TODO: Remove duplicates more efficiently
@@ -925,14 +901,14 @@ uniqueIfBuffer :: GroundR t -> Uniqueness t
 uniqueIfBuffer (GroundRbuffer _) = Unique
 uniqueIfBuffer _                 = Shared
 
-syncEnv :: PartialSchedule op genv t -> SyncEnv genv
+syncEnv :: PartialSchedule kernel genv t -> SyncEnv genv
 syncEnv (PartialDo _ env _)          = convertEnvToSyncEnv env
 syncEnv (PartialReturn u vars)       = variablesToSyncEnv u vars
 syncEnv (PartialDeclare s _ _ _ _ _) = s
 syncEnv (PartialAcond s _ _ _)       = s
 syncEnv (PartialAwhile s _ _ _ _)    = s
 
-syncEnvFun :: PartialScheduleFun op genv t -> SyncEnv genv
+syncEnvFun :: PartialScheduleFun kernel genv t -> SyncEnv genv
 syncEnvFun (Plam lhs f) = weakenSyncEnv lhs $ syncEnvFun f
 syncEnvFun (Pbody s)    = syncEnv s
 
@@ -1033,7 +1009,7 @@ instance Sink Future where
 -- a thread, wait on the signal and resolve the resolver, such that later operations
 -- can get access to the resource.
 --
-subFutureEnvironment :: forall fenv genv op. FutureEnv fenv genv -> SyncEnv genv -> (FutureEnv fenv genv, [UniformSchedule (Cluster op) fenv])
+subFutureEnvironment :: forall fenv genv kernel. FutureEnv fenv genv -> SyncEnv genv -> (FutureEnv fenv genv, [UniformSchedule kernel fenv])
 subFutureEnvironment (PNone fenv) (PNone senv) = (PNone fenv', actions)
   where
     (fenv', actions) = subFutureEnvironment fenv senv
@@ -1083,16 +1059,16 @@ subFutureEnvironment (PPush fenv (FutureBuffer _ _ _ read write)) (PNone senv) =
 subFutureEnvironment PEnd _ = (PEnd, [])
 subFutureEnvironment _ _ = internalError "Keys of SyncEnv are not a subset of the keys of the FutureEnv"
 
-sub :: forall fenv genv op. FutureEnv fenv genv -> SyncEnv genv -> (FutureEnv fenv genv -> UniformSchedule (Cluster op) fenv) -> UniformSchedule (Cluster op) fenv
+sub :: forall fenv genv kernel. FutureEnv fenv genv -> SyncEnv genv -> (FutureEnv fenv genv -> UniformSchedule kernel fenv) -> UniformSchedule kernel fenv
 sub fenv senv body = forks (body fenv' : actions)
   where
     (fenv', actions) = subFutureEnvironment fenv senv
 
 -- Data type for the existentially qualified type variable fenv' used in chainFuture
-data ChainFutureEnv op fenv genv where
-  ChainFutureEnv :: (UniformSchedule (Cluster op) fenv' -> UniformSchedule (Cluster op) fenv) -> fenv :> fenv' -> FutureEnv fenv' genv -> FutureEnv fenv' genv -> ChainFutureEnv op fenv genv
+data ChainFutureEnv kernel fenv genv where
+  ChainFutureEnv :: (UniformSchedule kernel fenv' -> UniformSchedule kernel fenv) -> fenv :> fenv' -> FutureEnv fenv' genv -> FutureEnv fenv' genv -> ChainFutureEnv kernel fenv genv
 
-chainFutureEnvironment :: fenv :> fenv' -> FutureEnv fenv genv -> SyncEnv genv -> SyncEnv genv -> ChainFutureEnv op fenv' genv
+chainFutureEnvironment :: fenv :> fenv' -> FutureEnv fenv genv -> SyncEnv genv -> SyncEnv genv -> ChainFutureEnv kernel fenv' genv
 chainFutureEnvironment _ PEnd PEnd PEnd = ChainFutureEnv id weakenId PEnd PEnd
 chainFutureEnvironment k (PPush fenv f@(FutureScalar _ _ _)) senvLeft senvRight
   | ChainFutureEnv instr k1 fenvLeft fenvRight <- chainFutureEnvironment k fenv (partialEnvTail senvLeft) (partialEnvTail senvRight)
@@ -1121,10 +1097,10 @@ chainFutureEnvironment k (PNone fenv) senvLeft senvRight
 chainFutureEnvironment _ _ _ _ = internalError "Illegal case. The keys of the FutureEnv should be the union of the keys of the two SyncEnvs."
 
 -- Data type for the existentially qualified type variable fenv' used in chainFuture
-data ChainFuture op fenv t where
-  ChainFuture :: (UniformSchedule (Cluster op) fenv' -> UniformSchedule (Cluster op) fenv) -> fenv :> fenv' -> Future fenv' t -> Future fenv' t -> ChainFuture op fenv t
+data ChainFuture kernel fenv t where
+  ChainFuture :: (UniformSchedule kernel fenv' -> UniformSchedule kernel fenv) -> fenv :> fenv' -> Future fenv' t -> Future fenv' t -> ChainFuture kernel fenv t
 
-chainFuture :: Future fenv t -> Sync t -> Sync t -> ChainFuture op fenv t
+chainFuture :: Future fenv t -> Sync t -> Sync t -> ChainFuture kernel fenv t
 chainFuture (FutureScalar tp _ _) SyncRead  _ = bufferImpossible tp
 chainFuture (FutureScalar tp _ _) SyncWrite _ = bufferImpossible tp
 
@@ -1411,32 +1387,32 @@ chainFuture (FutureBuffer tp signal ref read mwrite) SyncWrite SyncWrite
 -- output arguments and in the body in local declarations.
 -- LoopFutureEnv, LoopFutureEnvOutput and LoopFutureEnvBody are similar to
 -- LoopFuture, LoopFutureOutput and LoopFutureBody but contain 
-data LoopFutureEnv op fenv1 genv where
+data LoopFutureEnv kernel fenv1 genv where
   LoopFutureEnv
     :: InputOutputR input output
     -- Input
     -> fenv1 :> fenv2
     -> BLeftHandSide input fenv1 fenv2
     -- Output
-    -> (forall fenv3. fenv2 :> fenv3 -> LoopFutureEnvOutput op fenv3 genv output)
-    -> LoopFutureEnv op fenv1 genv
+    -> (forall fenv3. fenv2 :> fenv3 -> LoopFutureEnvOutput kernel fenv3 genv output)
+    -> LoopFutureEnv kernel fenv1 genv
 
-data LoopFutureEnvOutput op fenv3 genv output where
+data LoopFutureEnvOutput kernel fenv3 genv output where
   LoopFutureEnvOutput
     :: fenv3 :> fenv4
     -> BLeftHandSide output fenv3 fenv4
-    -> (forall fenv5. fenv4 :> fenv5 -> LoopFutureEnvBody op fenv5 genv)
-    -> LoopFutureEnvOutput op fenv3 genv output
+    -> (forall fenv5. fenv4 :> fenv5 -> LoopFutureEnvBody kernel fenv5 genv)
+    -> LoopFutureEnvOutput kernel fenv3 genv output
 
-data LoopFutureEnvBody op fenv5 genv where
+data LoopFutureEnvBody kernel fenv5 genv where
   LoopFutureEnvBody
     -- Instruction to declare new signals
-    :: (UniformSchedule (Cluster op) fenv6 -> UniformSchedule (Cluster op) fenv5)
+    :: (UniformSchedule kernel fenv6 -> UniformSchedule kernel fenv5)
     -> fenv5 :> fenv6
     -> FutureEnv fenv6 genv
     -> FutureEnv fenv6 genv
-    -> (forall fenv7. fenv6 :> fenv7 -> [UniformSchedule (Cluster op) fenv7]) -- Instructions to be called when the loop terminates
-    -> LoopFutureEnvBody op fenv5 genv
+    -> (forall fenv7. fenv6 :> fenv7 -> [UniformSchedule kernel fenv7]) -- Instructions to be called when the loop terminates
+    -> LoopFutureEnvBody kernel fenv5 genv
 
 futureEnvOuter :: GLeftHandSide s genv1 genv2 -> FutureEnv fenv genv2 -> FutureEnvOuter fenv genv1 genv2
 futureEnvOuter (LeftHandSideWildcard _) env           = FutureEnvOuter env  $ flip const
@@ -1454,7 +1430,7 @@ data FutureEnvOuter fenv genv1 genv2 where
     -> (forall fenv'. fenv :> fenv' -> FutureEnv fenv' genv1 -> FutureEnv fenv' genv2)
     -> FutureEnvOuter fenv genv1 genv2
 
-loopFutureEnvironment :: fenv :> fenv1 -> FutureEnv fenv genv -> SyncEnv genv -> SyncEnv genv -> LoopFutureEnv op fenv1 genv
+loopFutureEnvironment :: fenv :> fenv1 -> FutureEnv fenv genv -> SyncEnv genv -> SyncEnv genv -> LoopFutureEnv kernel fenv1 genv
 loopFutureEnvironment _ PEnd _ _
   = LoopFutureEnv
       InputOutputRunit
@@ -1518,34 +1494,34 @@ loopFutureEnvironment k (PNone fenv) senvLeft senvRight
 -- Data type for the existentially qualified type variable fenv' used in loopFuture
 -- This is split in 3 data types, as we must introduce variables in the input arguments,
 -- output arguments and in the body in local declarations.
-data LoopFuture op fenv1 t where
+data LoopFuture kernel fenv1 t where
   LoopFuture
     :: InputOutputR input output
     -- Input
     -> fenv1 :> fenv2
     -> BLeftHandSide input fenv1 fenv2
     -- Output
-    -> (forall fenv3. fenv2 :> fenv3 -> LoopFutureOutput op fenv3 t output)
-    -> LoopFuture op fenv1 t
+    -> (forall fenv3. fenv2 :> fenv3 -> LoopFutureOutput kernel fenv3 t output)
+    -> LoopFuture kernel fenv1 t
 
-data LoopFutureOutput op fenv3 t output where
+data LoopFutureOutput kernel fenv3 t output where
   LoopFutureOutput
     :: fenv3 :> fenv4
     -> BLeftHandSide output fenv3 fenv4
-    -> (forall fenv5. fenv4 :> fenv5 -> LoopFutureBody op fenv5 t)
-    -> LoopFutureOutput op fenv3 t output
+    -> (forall fenv5. fenv4 :> fenv5 -> LoopFutureBody kernel fenv5 t)
+    -> LoopFutureOutput kernel fenv3 t output
 
-data LoopFutureBody op fenv5 t where
+data LoopFutureBody kernel fenv5 t where
   LoopFutureBody
     -- Instruction to declare new signals
-    :: (UniformSchedule (Cluster op) fenv6 -> UniformSchedule (Cluster op) fenv5)
+    :: (UniformSchedule kernel fenv6 -> UniformSchedule kernel fenv5)
     -> fenv5 :> fenv6
     -> Maybe (Future fenv6 t)
     -> Maybe (Future fenv6 t)
-    -> Maybe (UniformSchedule (Cluster op) fenv6) -- Instruction to be called when the loop terminates
-    -> LoopFutureBody op fenv5 t
+    -> Maybe (UniformSchedule kernel fenv6) -- Instruction to be called when the loop terminates
+    -> LoopFutureBody kernel fenv5 t
 
-loopFuture :: Future fenv1 t -> Maybe (Sync t) -> Maybe (Sync t) -> LoopFuture op fenv1 t
+loopFuture :: Future fenv1 t -> Maybe (Sync t) -> Maybe (Sync t) -> LoopFuture kernel fenv1 t
 -- Illegal and impossible cases
 loopFuture (FutureScalar tp _ _) (Just SyncRead)  _ = bufferImpossible tp
 loopFuture (FutureScalar tp _ _) _  (Just SyncRead) = bufferImpossible tp
@@ -1666,22 +1642,22 @@ lhsRef tp = LeftHandSidePair (LeftHandSideSingle $ BaseRref tp) (LeftHandSideSin
 
 -- Similar to 'fromPartial', but also applies the sub-environment rule 
 fromPartialSub
-  :: forall op fenv genv t r.
+  :: forall kernel fenv genv t r.
      HasCallStack
   => OutputEnv t r
   -> BaseVars fenv r
   -> FutureEnv fenv genv
-  -> PartialSchedule op genv t
-  -> UniformSchedule (Cluster op) fenv
+  -> PartialSchedule kernel genv t
+  -> UniformSchedule kernel fenv
 fromPartialSub outputEnv outputVars env partial
   = sub env (syncEnv partial) (\env' -> fromPartial outputEnv outputVars env' partial)
 
 fromPartialFun
-  :: forall op fenv genv t.
+  :: forall kernel fenv genv t.
      HasCallStack
   => FutureEnv fenv genv
-  -> PartialScheduleFun op genv t
-  -> UniformScheduleFun (Cluster op) fenv (Scheduled UniformScheduleFun t)
+  -> PartialScheduleFun kernel genv t
+  -> UniformScheduleFun kernel fenv (Scheduled UniformScheduleFun t)
 fromPartialFun env = \case
   Pbody body
     | grounds <- groundsR body
@@ -1693,15 +1669,15 @@ fromPartialFun env = \case
     -> Slam lhs' $ fromPartialFun (env' weakenId) fun
 
 fromPartial
-  :: forall op fenv genv t r.
+  :: forall kernel fenv genv t r.
      HasCallStack
   => OutputEnv t r
   -> BaseVars fenv r
   -> FutureEnv fenv genv
-  -> PartialSchedule op genv t
-  -> UniformSchedule (Cluster op) fenv
+  -> PartialSchedule kernel genv t
+  -> UniformSchedule kernel fenv
 fromPartial outputEnv outputVars env = \case
-    PartialDo outputEnv' convertEnv (schedule :: UniformSchedule (Cluster op) fenv')
+    PartialDo outputEnv' convertEnv (schedule :: UniformSchedule kernel fenv')
       | Just Refl <- matchOutputEnvWithEnv outputEnv outputEnv' ->
         let
           kEnv = partialDoSubstituteOutput outputEnv' outputVars
@@ -1725,10 +1701,10 @@ fromPartial outputEnv outputVars env = \case
     PartialAcond _ condition true false -> acond condition true false
     PartialAwhile _ uniquenesses condition step initial -> awhile uniquenesses condition step initial
   where
-    travReturn :: GroundVars genv t -> UniformSchedule (Cluster op) fenv
+    travReturn :: GroundVars genv t -> UniformSchedule kernel fenv
     travReturn vars = forks ((\(signals, s) -> await signals s) <$> travReturn' outputEnv outputVars vars [])
 
-    travReturn' :: OutputEnv t' r' -> BaseVars fenv r' -> GroundVars genv t' -> [([Idx fenv Signal], UniformSchedule (Cluster op) fenv)] -> [([Idx fenv Signal], UniformSchedule (Cluster op) fenv)]
+    travReturn' :: OutputEnv t' r' -> BaseVars fenv r' -> GroundVars genv t' -> [([Idx fenv Signal], UniformSchedule kernel fenv)] -> [([Idx fenv Signal], UniformSchedule kernel fenv)]
     travReturn' (OutputEnvPair o1 o2) (TupRpair r1 r2) (TupRpair v1 v2) accum = travReturn' o1 r1 v1 $ travReturn' o2 r2 v2 accum
     travReturn' (OutputEnvScalar tp') (TupRpair (TupRsingle destSignal) (TupRsingle destRef)) (TupRsingle (Var tp ix)) accum = task : accum
       where
@@ -1777,7 +1753,7 @@ fromPartial outputEnv outputVars env = \case
     travReturn' OutputEnvIgnore _ _ accum = accum
     travReturn' _ _ _ _ = internalError "Invalid variables"
 
-    acond :: ExpVar genv PrimBool -> PartialSchedule op genv t -> PartialSchedule op genv t -> UniformSchedule (Cluster op) fenv
+    acond :: ExpVar genv PrimBool -> PartialSchedule kernel genv t -> PartialSchedule kernel genv t -> UniformSchedule kernel fenv
     acond (Var _ condition) true false = case prjPartial condition env of
       Just (FutureScalar _ signal ref) ->
         -- Wait on the signal 
@@ -1796,23 +1772,23 @@ fromPartial outputEnv outputVars env = \case
 
     awhile
       :: Uniquenesses t
-      -> PartialScheduleFun op genv (t -> PrimBool)
-      -> PartialScheduleFun op genv (t -> t)
+      -> PartialScheduleFun kernel genv (t -> PrimBool)
+      -> PartialScheduleFun kernel genv (t -> t)
       -> GroundVars genv t
-      -> UniformSchedule (Cluster op) fenv
+      -> UniformSchedule kernel fenv
     awhile = fromPartialAwhile outputEnv outputVars env
 
 fromPartialAwhile
-  :: forall op fenv genv t r.
+  :: forall kernel fenv genv t r.
      HasCallStack
   => OutputEnv t r
   -> BaseVars fenv r
   -> FutureEnv fenv genv
   -> Uniquenesses t
-  -> PartialScheduleFun op genv (t -> PrimBool)
-  -> PartialScheduleFun op genv (t -> t)
+  -> PartialScheduleFun kernel genv (t -> PrimBool)
+  -> PartialScheduleFun kernel genv (t -> t)
   -> GroundVars genv t
-  -> UniformSchedule (Cluster op) fenv
+  -> UniformSchedule kernel fenv
 fromPartialAwhile outputEnv outputVars env uniquenesses conditionFun@(Plam lhsC (Pbody condition)) stepFun@(Plam lhsS (Pbody step)) initial
   | Exists groundLhs <- unionLeftHandSides lhsC lhsS
   , AwhileInputOutput io k1 lhsInput env' initial' outputEnv' outputRepr <- awhileInputOutput env (\k -> mapPartialEnv (weaken $ weakenSucc $ weakenSucc k) env) uniquenesses initial groundLhs
@@ -2013,15 +1989,15 @@ awhileWriteResult
   -> BaseVars fenv result
   -> InputOutputR input output
   -> BaseVars fenv input
-  -> [UniformSchedule (Cluster op) fenv]
+  -> [UniformSchedule kernel fenv]
 awhileWriteResult = \env resVars io vars -> go env resVars io vars []
   where
     go :: OutputEnv t result
        -> BaseVars fenv result
        -> InputOutputR input output
        -> BaseVars fenv input
-       -> [UniformSchedule (Cluster op) fenv]
-       -> [UniformSchedule (Cluster op) fenv]
+       -> [UniformSchedule kernel fenv]
+       -> [UniformSchedule kernel fenv]
     go (OutputEnvPair e1 e2) (TupRpair r1 r2) (InputOutputRpair io1 io2) (TupRpair i1 i2) = go e1 r1 io1 i1 . go e2 r2 io2 i2
     go (OutputEnvPair _ _)   _                _                          _                = internalError "Expected pair"
     go OutputEnvUnique (TupRsingle resSignal `TupRpair` TupRsingle resReadAccess `TupRpair` TupRsingle resWriteAccess `TupRpair` TupRsingle resRef) io input
@@ -2141,19 +2117,19 @@ partialDoSubstituteConvertEnv (ConvertEnvFuture var) fenv env
       env `Push` NewIdxJust signal `Push` NewIdxJust ref
   | otherwise = internalError "Requested access to a value, but the Future was not found in the environment"
 
-forks :: [UniformSchedule (Cluster op) fenv] -> UniformSchedule (Cluster op) fenv
+forks :: [UniformSchedule kernel fenv] -> UniformSchedule kernel fenv
 forks [] = Return
 forks [u] = u
 forks (u:us) = Fork (forks us) u
 
-serial :: forall op fenv. [UniformSchedule (Cluster op) fenv] -> UniformSchedule (Cluster op) fenv
+serial :: forall kernel fenv. [UniformSchedule kernel fenv] -> UniformSchedule kernel fenv
 serial = go weakenId
   where
-    go :: forall fenv1. fenv :> fenv1 -> [UniformSchedule (Cluster op) fenv] -> UniformSchedule (Cluster op) fenv1
+    go :: forall fenv1. fenv :> fenv1 -> [UniformSchedule kernel fenv] -> UniformSchedule kernel fenv1
     go _  [] = Return
     go k1 (u:us) = trav k1 (weaken' k1 u)
       where
-        trav :: forall fenv'. fenv :> fenv' -> UniformSchedule (Cluster op) fenv' -> UniformSchedule (Cluster op) fenv'
+        trav :: forall fenv'. fenv :> fenv' -> UniformSchedule kernel fenv' -> UniformSchedule kernel fenv'
         trav k = \case
           Return -> go k us
           Alet lhs bnd u' -> Alet lhs bnd $ trav (weakenWithLHS lhs .> k) u'
@@ -2203,32 +2179,32 @@ declareInput = \fenv -> go (\k -> mapPartialEnv (weaken k) fenv)
                         (Move $ (k' >:> (SuccIdx ZeroIdx)))
                         Nothing)
 
-data DeclareOutput op fenv t where
+data DeclareOutput kernel fenv t where
   DeclareOutput :: fenv :> fenv'
                 -> BLeftHandSide (Output t) fenv fenv'
                 -> fenv' :> fenv''
-                -> (UniformSchedule (Cluster op) fenv'' -> UniformSchedule (Cluster op) fenv')
+                -> (UniformSchedule kernel fenv'' -> UniformSchedule kernel fenv')
                 -> OutputEnv t r
                 -> (forall fenv'''. fenv'' :> fenv''' -> BaseVars fenv''' r)
-                -> DeclareOutput op fenv t
+                -> DeclareOutput kernel fenv t
 
-data DeclareOutputInternal op fenv' t where
+data DeclareOutputInternal kernel fenv' t where
   DeclareOutputInternal :: fenv' :> fenv''
-                        -> (UniformSchedule (Cluster op) fenv'' -> UniformSchedule (Cluster op) fenv')
+                        -> (UniformSchedule kernel fenv'' -> UniformSchedule kernel fenv')
                         -> OutputEnv t r
                         -> (forall fenv'''. fenv'' :> fenv''' -> BaseVars fenv''' r)
-                        -> DeclareOutputInternal op fenv' t
+                        -> DeclareOutputInternal kernel fenv' t
 
 declareOutput
-  :: forall op fenv t.
+  :: forall kernel fenv t.
      GroundsR t
-  -> DeclareOutput op fenv t
+  -> DeclareOutput kernel fenv t
 declareOutput grounds
   | DeclareVars lhs k1 value <- declareVars $ outputR grounds
   , DeclareOutputInternal k2 instr outputEnv outputVars <- go weakenId grounds (value weakenId)
   = DeclareOutput k1 lhs k2 instr outputEnv outputVars
   where
-    go :: fenv1 :> fenv2 -> GroundsR s -> BaseVars fenv1 (Output s) -> DeclareOutputInternal op fenv2 s
+    go :: fenv1 :> fenv2 -> GroundsR s -> BaseVars fenv1 (Output s) -> DeclareOutputInternal kernel fenv2 s
     go _ TupRunit TupRunit
       = DeclareOutputInternal
           weakenId
@@ -2266,24 +2242,24 @@ declareOutput grounds
                 `TupRpair` TupRsingle (weaken k'' ref)
     go _ _ _ = internalError "Mismatch between GroundsR and output variables"
 
-data DeclareBinding op fenv genv' t where
+data DeclareBinding kernel fenv genv' t where
   DeclareBinding :: fenv :> fenv'
-                 -> (UniformSchedule (Cluster op) fenv' -> UniformSchedule (Cluster op) fenv)
+                 -> (UniformSchedule kernel fenv' -> UniformSchedule kernel fenv)
                  -> OutputEnv t r
                  -> (forall fenv''. fenv' :> fenv'' -> BaseVars fenv'' r)
                  -> (forall fenv''. fenv' :> fenv'' -> FutureEnv fenv'' genv')
-                 -> DeclareBinding op fenv genv' t
+                 -> DeclareBinding kernel fenv genv' t
 
 declareBinding
-  :: forall op fenv genv genv' bnd ret.
+  :: forall kernel fenv genv genv' bnd ret.
      FutureEnv fenv genv
   -> GLeftHandSide bnd genv genv'
   -> TupR (Destination ret) bnd
   -> TupR Uniqueness bnd
-  -> DeclareBinding op fenv genv' bnd
+  -> DeclareBinding kernel fenv genv' bnd
 declareBinding = \fenv -> go (\k -> mapPartialEnv (weaken k) fenv)
   where
-    go :: forall fenv' genv1 genv2 t. (forall fenv''. fenv' :> fenv'' -> FutureEnv fenv'' genv1) -> GLeftHandSide t genv1 genv2 -> TupR (Destination ret) t -> TupR Uniqueness t -> DeclareBinding op fenv' genv2 t
+    go :: forall fenv' genv1 genv2 t. (forall fenv''. fenv' :> fenv'' -> FutureEnv fenv'' genv1) -> GLeftHandSide t genv1 genv2 -> TupR (Destination ret) t -> TupR Uniqueness t -> DeclareBinding kernel fenv' genv2 t
     go fenv (LeftHandSidePair lhs1 lhs2) (TupRpair dest1 dest2) (TupRpair u1 u2)
       | DeclareBinding k1 instr1 out1 vars1 fenv1 <- go fenv  lhs1 dest1 u1
       , DeclareBinding k2 instr2 out2 vars2 fenv2 <- go fenv1 lhs2 dest2 u2
@@ -2407,7 +2383,7 @@ data SunkReindexPartialN f env env' where
   ReindexF :: ReindexPartialN f env env' -> SunkReindexPartialN f env env'
 
 
-reindexSchedule :: (Applicative f) => ReindexPartialN f env env' -> UniformSchedule op env -> f (UniformSchedule op env')
+reindexSchedule :: (Applicative f) => ReindexPartialN f env env' -> UniformSchedule kernel env -> f (UniformSchedule kernel env')
 reindexSchedule k = reindexSchedule' $ ReindexF k
 
 sinkReindexWithLHS :: LeftHandSide s t env1 env1' -> LeftHandSide s t env2 env2' -> SunkReindexPartialN f env1 env2 -> SunkReindexPartialN f env1' env2'
@@ -2427,7 +2403,7 @@ reindex' (Sink k) = \case
     in
       f <$> reindex' k ix
 
-reindexSchedule' :: (Applicative f) => SunkReindexPartialN f env env' -> UniformSchedule op env -> f (UniformSchedule op env')
+reindexSchedule' :: (Applicative f) => SunkReindexPartialN f env env' -> UniformSchedule kernel env -> f (UniformSchedule kernel env')
 reindexSchedule' k = \case
   Return -> pure Return
   Alet lhs bnd s
@@ -2440,15 +2416,15 @@ reindexSchedule' k = \case
 reindexVarUnsafe :: Applicative f => SunkReindexPartialN f env env' -> Var s env t -> f (Var s env' t)
 reindexVarUnsafe k (Var tp idx) = Var tp . fromNewIdxUnsafe <$> reindex' k idx
 
-reindexScheduleFun' :: (Applicative f) => SunkReindexPartialN f env env' -> UniformScheduleFun op env t -> f (UniformScheduleFun op env' t)
+reindexScheduleFun' :: (Applicative f) => SunkReindexPartialN f env env' -> UniformScheduleFun kernel env t -> f (UniformScheduleFun kernel env' t)
 reindexScheduleFun' k = \case
   Sbody s -> Sbody <$> reindexSchedule' k s
   Slam lhs f
     | Exists lhs' <- rebuildLHS lhs -> Slam lhs' <$> reindexScheduleFun' (sinkReindexWithLHS lhs lhs' k) f
 
-reindexEffect' :: forall op f env env'. (Applicative f) => SunkReindexPartialN f env env' -> Effect op env -> f (Effect op env')
+reindexEffect' :: forall kernel f env env'. (Applicative f) => SunkReindexPartialN f env env' -> Effect kernel env -> f (Effect kernel env')
 reindexEffect' k = \case
-  Exec op args -> Exec op <$> reindexArgs (fromNewIdxUnsafe <.> reindex' k) args
+  Exec kernel args -> Exec kernel <$> reindexSArgs' k args
   SignalAwait signals -> SignalAwait <$> traverse (fromNewIdxSignal <.> reindex' k) signals
   SignalResolve resolvers -> SignalResolve . mapMaybe toMaybe <$> traverse (reindex' k) resolvers
   RefWrite ref value -> RefWrite <$> reindexVar (fromNewIdxOutputRef <.> reindex' k) ref <*> reindexVar (fromNewIdxUnsafe <.> reindex' k) value
@@ -2456,6 +2432,16 @@ reindexEffect' k = \case
     toMaybe :: NewIdx env' a -> Maybe (Idx env' a)
     toMaybe (NewIdxJust idx) = Just idx
     toMaybe _ = Nothing
+
+reindexSArgs' :: Applicative f => SunkReindexPartialN f env env' -> SArgs env t -> f (SArgs env' t)
+reindexSArgs' k = \case
+  a :>: as -> (:>:) <$> reindexSArg' k a <*> reindexSArgs' k as
+  ArgsNil  -> pure ArgsNil
+
+reindexSArg' :: Applicative f => SunkReindexPartialN f env env' -> SArg env t -> f (SArg env' t)
+reindexSArg' k = \case
+  SArgScalar   var -> SArgScalar   <$> reindexVarUnsafe k var
+  SArgBuffer m var -> SArgBuffer m <$> reindexVarUnsafe k var
 
 -- For Exec we cannot have a safe function from the conversion,
 -- as we cannot enforce in the type system that no SignalResolvers
