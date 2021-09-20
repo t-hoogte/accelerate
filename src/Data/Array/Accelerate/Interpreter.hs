@@ -80,6 +80,7 @@ import Data.Array.Accelerate.Pretty.Operation ( PrettyOp(..) )
 import Data.Array.Accelerate.AST.LeftHandSide (lhsToTupR)
 import Data.Functor.Identity ( Identity(Identity) )
 
+import Data.Array.Accelerate.Pretty.Partitioned
 
 
 -- TODO: Backpermutes
@@ -286,10 +287,10 @@ instance NFData' InterpretOp where
   rnf' = error "todo"
 
 instance PrettyOp InterpretOp where
-  prettyOp IMap         = Left "map"
-  prettyOp IBackpermute = Left "backpermute"
-  prettyOp IGenerate    = Left "generate"
-  prettyOp IPermute     = Left "permute"
+  prettyOp IMap         = "map"
+  prettyOp IBackpermute = "backpermute"
+  prettyOp IGenerate    = "generate"
+  prettyOp IPermute     = "permute"
 
 fromArgs :: Int -> Env.Val env -> Args env args -> FromIn env args
 fromArgs _ _ ArgsNil = ()

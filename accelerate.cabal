@@ -449,6 +449,7 @@ library
         Data.Array.Accelerate.Pretty.Graphviz.Monad
         Data.Array.Accelerate.Pretty.Graphviz.Type
         Data.Array.Accelerate.Pretty.Operation
+        Data.Array.Accelerate.Pretty.Partitioned
         Data.Array.Accelerate.Pretty.Print
         Data.Array.Accelerate.Pretty.Type
         Data.Array.Accelerate.Trafo.Algebra

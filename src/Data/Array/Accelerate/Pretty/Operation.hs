@@ -24,7 +24,7 @@ module Data.Array.Accelerate.Pretty.Operation (
   prettyAcc, prettyOpenAcc,
   prettyAfun, prettyOpenAfun,
   prettyGroundR, Val'(..),
-  prettyArg, prettyShapeVars
+  prettyArg, prettyShapeVars, prettyModifier
 ) where
 
 import Data.Array.Accelerate.Pretty.Exp
@@ -42,7 +42,13 @@ import Data.String
 import Prelude hiding (exp)
 
 class PrettyOp op where
-  prettyOp :: op t -> Either Adoc (Args env t -> Adoc)
+  prettyOp :: op t -> Adoc
+  
+  -- Only used in OperationAcc, when printing a PartitionedAcc a cluster is printed using prettyOp.
+  -- The reason is that PrettyOp (Cluster op) instance defines prettyOpWithArgs in terms of prettyOp.
+  --
+  prettyOpWithArgs :: Val' env -> op t -> Args env t -> Adoc
+  prettyOpWithArgs env op args = hang 2 $ group $ vsep [annotate Execute "execute", prettyOp op, prettyArgs env args]
 
 prettyAcc :: PrettyOp op => OperationAcc op () t -> Adoc
 prettyAcc = prettyOpenAcc empty'
@@ -58,9 +64,7 @@ prettyOpenAfun env (Alam lhs f) = "\\" <> lhs' <+> "->" <> hardline <> indent 2 
 
 prettyOpenAcc :: PrettyOp op => Val' benv -> OperationAcc op benv t -> Adoc
 prettyOpenAcc env = \case
-  Exec op args -> case prettyOp op of
-    Left op' -> hang 2 $ group $ vsep [annotate Execute "execute", op', prettyArgs env args]
-    Right op' -> hang 2 $ group $ vsep [annotate Execute "execute", op' args]
+  Exec op args -> prettyOpWithArgs env op args
   Return vars -> hang 2 $ group $ vsep [annotate Statement "return", prettyVars env 10 vars]
   Compute exp -> hang 2 $ group $ vsep [annotate Statement "compute", prettyExp env exp]
   Alet (LeftHandSideWildcard TupRunit) _ bnd body
