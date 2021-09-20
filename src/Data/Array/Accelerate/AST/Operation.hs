@@ -55,7 +55,7 @@ module Data.Array.Accelerate.AST.Operation (
   module Data.Array.Accelerate.AST.Exp,
 
   NFData'(..)
-,reindexAcc) where
+,reindexAcc,toGrounds,fromGrounds) where
 
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Exp
@@ -175,6 +175,23 @@ data PreOpenAfun op env t where
 type GLeftHandSide = LeftHandSide GroundR
 type GroundVar      = Var  GroundR
 type GroundVars env = Vars GroundR env
+
+toGround :: ExpVar env a -> GroundVar env a
+toGround (Var st idx) = Var (GroundRscalar st) idx
+
+toGrounds :: ExpVars env a -> GroundVars env a
+toGrounds TupRunit = TupRunit
+toGrounds (TupRsingle var) = TupRsingle (toGround var)
+toGrounds (TupRpair x y) = TupRpair (toGrounds x) (toGrounds y)
+
+fromGround :: GroundVar env a -> ExpVar env a
+fromGround (Var (GroundRscalar st) idx) = Var st idx
+fromGround (Var (GroundRbuffer _) _) = error "Not a scalar"
+
+fromGrounds :: GroundVars env a -> ExpVars env a
+fromGrounds TupRunit = TupRunit
+fromGrounds (TupRsingle var) = TupRsingle (fromGround var)
+fromGrounds (TupRpair x y) = TupRpair (fromGrounds x) (fromGrounds y)
 
 -- | Uniqueness annotations for buffers
 --

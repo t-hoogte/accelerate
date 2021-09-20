@@ -29,9 +29,9 @@ module Data.Array.Accelerate.Array.Buffer (
   Buffers, Buffer(..), MutableBuffers, MutableBuffer(..), ScalarArrayDataR,
   runBuffers,
   newBuffers, newBuffer,
-  indexBuffers, indexBuffer, readBuffers, readBuffer, writeBuffers, writeBuffer,
+  indexBuffers, indexBuffers', indexBuffer, readBuffers, readBuffer, writeBuffers, writeBuffer,
   touchBuffers, touchBuffer, touchMutableBuffers, touchMutableBuffer,
-  rnfBuffers, rnfBuffer, unsafeFreezeBuffer, unsafeFreezeBuffers, 
+  rnfBuffers, rnfBuffer, unsafeFreezeBuffer, unsafeFreezeBuffers,
   veryUnsafeUnfreezeBuffers, bufferToList,
 
   -- * Type macros
@@ -191,7 +191,10 @@ newBuffer (VectorScalarType v) !size
   = MutableBuffer <$> allocateArray (w * size)
 
 indexBuffers :: TypeR e -> Buffers e -> Int -> e
-indexBuffers tR arr ix = unsafePerformIO $ readBuffers tR (veryUnsafeUnfreezeBuffers tR arr) ix
+indexBuffers tR arr ix = unsafePerformIO $ indexBuffers' tR arr ix
+
+indexBuffers' :: TypeR e -> Buffers e -> Int -> IO e
+indexBuffers' tR arr = readBuffers tR (veryUnsafeUnfreezeBuffers tR arr)
 
 indexBuffer :: ScalarType e -> Buffer e -> Int -> e
 indexBuffer tR (Buffer arr) ix = unsafePerformIO $ readBuffer tR (MutableBuffer arr) ix

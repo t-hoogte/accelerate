@@ -22,7 +22,6 @@
 module Data.Array.Accelerate.Pretty.Type where
 
 import Data.Array.Accelerate.Pretty.Exp
-import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Representation.Type
 
