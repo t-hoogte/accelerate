@@ -7,8 +7,12 @@
 {-# LANGUAGE ScopedTypeVariables   #-}
 {-# LANGUAGE TemplateHaskell       #-}
 {-# LANGUAGE TypeFamilies          #-}
+{-# LANGUAGE TypeFamilyDependencies#-}
 {-# LANGUAGE TypeOperators         #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 -- |
 -- Module      : Data.Array.Accelerate.AST.Partitioned
@@ -29,7 +33,7 @@ import Data.Array.Accelerate.AST.Operation
 import Prelude hiding ( take )
 import Data.Bifunctor
 import Data.Array.Accelerate.Trafo.Desugar (ArrayDescriptor(..))
-import Data.Array.Accelerate.Representation.Array (Array)
+import Data.Array.Accelerate.Representation.Array (Array, ArrayR, Buffers)
 import qualified Data.Array.Accelerate.AST.Environment as Env
 import Data.Array.Accelerate.Representation.Shape (ShapeR)
 
@@ -82,7 +86,7 @@ data LeftHandSideArgs body env scope where
   -- The body creates an array
   Make :: Take (Value sh e) escope scope
        -> LeftHandSideArgs              body   env             scope
-       -> LeftHandSideArgs (Out sh e -> body) (env, Sh sh)    escope
+       -> LeftHandSideArgs (Out sh e -> body) (env, Sh sh e)    escope
   -- TODO: duplicate for Var' and Fun'
   EArg :: LeftHandSideArgs              body   env             scope
        -> LeftHandSideArgs (Exp'   e -> body) (env, Exp' e)   (scope, Exp' e)
@@ -95,17 +99,22 @@ data LeftHandSideArgs body env scope where
 
 -- input ~ InArgs args, and output is a permuted version of OutArgs args
 data ClusterIO args input output where
-  Empty  :: ClusterIO () () output
+  Empty  :: ClusterIO () () ()
+  -- Even when an array is fused away, we'll still need its shape sometimes!
+  Vertical :: ArrayR (Array sh e) 
+           -> ClusterIO args input output 
+           -> ClusterIO (Var' sh -> args) (input, Sh sh e) (output, Value sh e)
   Input  :: ClusterIO              args   input      output
          -> ClusterIO (In  sh e -> args) (input, Value sh e) (output, Value sh e)
   Output :: Take (Value sh e) eoutput output
          -> ClusterIO              args   input             output
-         -> ClusterIO (Out sh e -> args) (input, Sh sh)    eoutput
+         -> ClusterIO (Out sh e -> args) (input, Sh sh e)    eoutput
   MutPut :: ClusterIO              args   input             output
          -> ClusterIO (Mut sh e -> args) (input, Mut sh e) (output, Mut sh e)
   -- TODO: duplicate for Var' and Fun'
   ExpPut :: ClusterIO              args   input             output
          -> ClusterIO (Exp'   e -> args) (input, Exp' e)   (output, Exp' e)
+  
 
 -- | `xargs` is a type-level list which contains `x`. 
 -- Removing `x` from `xargs` yields `args`.
@@ -133,7 +142,11 @@ mkBase (Input    ci) = Ignr (mkBase ci)
 mkBase (Output _ ci) = Ignr (mkBase ci)
 mkBase (MutPut   ci) = Ignr (mkBase ci)
 mkBase (ExpPut   ci) = Ignr (mkBase ci)
+mkBase (Vertical _ ci) = Ignr (mkBase ci)
 
+fromArgsTake :: forall env a ab b. Take a ab b -> Take (FromArg env a) (FromArgs env ab) (FromArgs env b)
+fromArgsTake Here = Here
+fromArgsTake (There t) = There (fromArgsTake @env t)
 
 take :: Take a ab b -> ab -> (a, b)
 take Here (b, a) = (a, b)
@@ -173,12 +186,24 @@ type family InArgs  a where
   InArgs  (Exp'   e -> x) = (InArgs x, Exp' e)
   InArgs  (Fun'   e -> x) = (InArgs x, Fun' e)
   InArgs  (Var'   e -> x) = (InArgs x, Var' e)
-  InArgs  (Out sh e -> x) = (InArgs x, Sh sh)
+  InArgs  (Out sh e -> x) = (InArgs x, Sh sh e)
 type family OutArgs a where
   OutArgs ()              = ()
   OutArgs (Out sh e -> x) = (OutArgs x, Value sh e)
   OutArgs (Mut sh e -> x) = (OutArgs x, Mut sh e)
   OutArgs (_  -> x)       =  OutArgs x
+
+data ToArg env a where
+  ArrArg :: ArrayR (Array sh e)
+         -> GroundVars env sh
+         -> GroundVars env (Buffers e) 
+         -> ToArg env (Value sh e)
+  OutArg :: ArrayR (Array sh e)
+         -> GroundVars env sh
+         -> GroundVars env (Buffers e) 
+         -> ToArg env (Sh sh e)
+  Others :: Arg env a -> ToArg env a
+
 
 getIn :: LeftHandSideArgs body i o -> i -> InArgs body
 getIn Base () = ()
@@ -203,21 +228,32 @@ genOut (EArg lhs)      (i, x) o     =
 genOut (Ignr lhs)      (i, x) o     =
   (genOut lhs i o, x)
 
-type family FromArgs env a where
+type family FromArg env a = b | b -> a where
+  FromArg env (Exp'     e) = Exp     env e
+  FromArg env (Var'     e) = ExpVars env e
+  FromArg env (Fun'     e) = Fun     env e
+  FromArg env (Mut   sh e) = ArrayDescriptor env (Array sh e)
+  FromArg env (Value sh e) = Value sh e
+  FromArg env (Sh    sh e) = Sh sh e
+
+type family FromArgs env a = b | b -> a where
   FromArgs env ()            = ()
-  FromArgs env (x, Exp'   e) = (FromArgs env x, Exp     env e)
-  FromArgs env (x, Var'   e) = (FromArgs env x, ExpVars env e)
-  FromArgs env (x, Fun'   e) = (FromArgs env x, Fun     env e)
-  FromArgs env (x, Mut sh e) = (FromArgs env x, ArrayDescriptor env (Array sh e))
-  FromArgs env (x, Value sh e) = (FromArgs env x,       Value sh    e)
-  FromArgs env (x, Sh    sh) = (FromArgs env x,         Sh sh)
+  FromArgs env (a, x) = (FromArgs env a, FromArg env x)
+  -- FromArgs env (x, Exp'   e) = (FromArgs env x, Exp     env e)
+  -- FromArgs env (x, Var'   e) = (FromArgs env x, ExpVars env e)
+  -- FromArgs env (x, Fun'   e) = (FromArgs env x, Fun     env e)
+  -- FromArgs env (x, Mut sh e) = (FromArgs env x, ArrayDescriptor env (Array sh e))
+  -- FromArgs env (x, Value sh e) = (FromArgs env x,       Value sh    e)
+  -- FromArgs env (x, Sh    sh e) = (FromArgs env x,         Sh sh e)
 
 type FromIn  env args = FromArgs env ( InArgs args)
 type FromOut env args = FromArgs env (OutArgs args)
 
+
 -- helps for type inference and safety: If we instead use 'e', it can match all the other options too. 
-data Value sh e = Value e (Sh sh)
-data Sh sh      = Shape (ShapeR sh) sh
+data Value sh e = Value e (Sh sh e)
+-- e is phantom
+data Sh sh e    = Shape (ShapeR sh) sh
 
 -- instance NFData (Cluster op args) where
 --   rnf = _

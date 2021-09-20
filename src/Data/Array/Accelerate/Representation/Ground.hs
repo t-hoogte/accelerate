@@ -87,3 +87,4 @@ sugarArrays (TupRsingle ArrayR{}) (sh, buffers) = Array sh buffers
 data GFunctionR t where
   GFunctionRlam  :: GroundsR t -> GFunctionR s -> GFunctionR (t -> s)
   GFunctionRbody :: GroundsR t                 -> GFunctionR t
+

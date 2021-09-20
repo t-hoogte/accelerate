@@ -1,5 +1,6 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE BangPatterns        #-}
+{-# LANGUAGE BlockArguments      #-}
 {-# LANGUAGE EmptyCase           #-}
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE GADTs               #-}
@@ -7,18 +8,20 @@
 {-# LANGUAGE MagicHash           #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE PatternGuards       #-}
+{-# LANGUAGE PatternSynonyms     #-}
 {-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections       #-}
 {-# LANGUAGE TypeApplications    #-}
 {-# LANGUAGE TypeFamilies        #-}
+{-# LANGUAGE TypeFamilyDependencies #-}
 {-# LANGUAGE TypeOperators       #-}
+{-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns        #-}
 
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 {-# OPTIONS_HADDOCK prune #-}
-{-# OPTIONS_GHC -Wno-incomplete-patterns #-}
 -- |
 -- Module      : Data.Array.Accelerate.Interpreter
 -- Description : Reference backend (interpreted)
@@ -40,6 +43,7 @@ module Data.Array.Accelerate.Interpreter
   where
 import Prelude                                                      hiding (take, (!!), sum )
 import Data.Array.Accelerate.AST.Partitioned hiding (Empty)
+import qualified Data.Array.Accelerate.AST.Partitioned as P
 import Data.Array.Accelerate.AST.Operation
 import Data.Array.Accelerate.Trafo.Desugar
 import qualified Data.Array.Accelerate.Debug.Internal as Debug
@@ -69,22 +73,13 @@ import Lens.Micro ((.~), (&))
 import qualified Data.Array.Accelerate.Sugar.Array as Sugar
 import qualified Data.Array.Accelerate.Smart as Smart
 import System.IO.Unsafe (unsafePerformIO)
-import Data.Array.Accelerate.Trafo (convertAcc)
 import Control.DeepSeq (($!!))
 import qualified Data.Array.Accelerate.AST.Environment as Env
 import Data.Array.Accelerate.Array.Buffer
-import Data.Array.Accelerate.AST.Var (varsType)
-import Data.Type.Equality
-import Control.Monad (forM)
-
-import Data.Array.Accelerate.Trafo.Schedule.Uniform
-import Data.Array.Accelerate.Backend
-
-import Data.Array.Accelerate.Pretty.Operation
-import Data.Text.Prettyprint.Doc
-import Data.Array.Accelerate.Smart (typeR)
+import Data.Array.Accelerate.Pretty.Operation ( PrettyOp(..) )
 import Data.Array.Accelerate.AST.LeftHandSide (lhsToTupR)
-import qualified Data.Functor.Const as C
+import Data.Functor.Identity ( Identity(Identity) )
+
 
 
 -- TODO: Backpermutes
@@ -98,17 +93,34 @@ import qualified Data.Functor.Const as C
 -- Overly simplistic datatype: We simply ignore all the functions that don't make sense (e.g. for non-array, non-generate args, or non-input args).
 data BackpermutedArg env t = BPA (Arg env t) (Int -> Int)
 type BackpermutedArgs env = PreArgs (BackpermutedArg env)
-type family ToBP env where
-  ToBP () = ()
-  ToBP (env, x) = (ToBP env, (Int -> Int, x))
-type BackpermutedEnv = Env (C.Const (Int -> Int))
+type ToBP' f = Env (BP f)
+type ToBP = ToBP' Identity
+data BP f a = BP (f a) (Int -> Int)
+pattern PushBP :: () => (env' ~ (env, x)) => (Int -> Int) -> x -> ToBP env -> ToBP env'
+pattern PushBP f x env = Push env (BP (Identity x) f)
+{-# COMPLETE Empty, PushBP #-}
+type BPFromArg env = ToBP' (FromArg' env)
+newtype FromArg' env a = FromArg (FromArg env a) 
+pattern PushBPFA :: () => (e' ~ (e, x)) => (Int -> Int) -> FromArg env x -> BPFromArg env e -> BPFromArg env e'
+pattern PushBPFA f x env = Push env (BP (FromArg x) f)
+{-# COMPLETE Empty, PushBPFA #-}
 
--- TODO: tie this together somehow
+pattern PushFA :: () => (e' ~ (e, x)) => FromArg env x -> Env (FromArg' env) e -> Env (FromArg' env) e'
+pattern PushFA x env = Push env (FromArg x)
+{-# COMPLETE Empty, PushFA #-}
+type BackpermutedEnv env = Env (BackpermutedEnvElem env)
+data BackpermutedEnvElem env a = BPE (ToArg env a) (Int -> Int)
+
+
 makeBackpermuteArg :: Args env args -> Val env -> Cluster InterpretOp args -> BackpermutedArgs env args
-makeBackpermuteArg pa env (Cluster ci ca) = undefined
+makeBackpermuteArg args env (Cluster io ast) = let o = getOutputEnv io args
+                                                   i = fromAST ast o env
+                                               in fromInputEnv io i
   where
-    fromAST :: ClusterAST InterpretOp i o -> BackpermutedEnv i
-    fromAST = undefined -- unclear. Can we do something like `Args env args -> CLusterAST InterpretOp (fromIn args) (fromOut args) -> BackpermutedEnv (fromIn args)`?
+    fromAST :: ClusterAST InterpretOp i o -> BackpermutedEnv env o -> Val env -> BackpermutedEnv env i
+    fromAST None o _ = o
+    fromAST (Bind lhs op ast) o env = let o' = fromAST ast o env 
+                                      in lhsArgsEnv lhs o' (onOp op (lhsEnvArgs lhs o') env)
 
     onOp :: InterpretOp args -> BackpermutedArgs env args -> Val env -> BackpermutedArgs env args
     onOp IBackpermute (BPA f@(ArgFun f') _  :>: BPA i _                           :>: BPA o outF :>: ArgsNil) env =
@@ -116,27 +128,46 @@ makeBackpermuteArg pa env (Cluster ci ca) = undefined
           ArgArray Out (ArrayR shr' _) (flip varsGetVal env -> sh') _ = o in
                        BPA f             id :>: BPA i (outF . toIndex shr sh . evalFun f' env . fromIndex shr' sh') :>: BPA o outF :>: ArgsNil
     onOp IGenerate    (BPA f _    :>: BPA o outF :>: ArgsNil) _ =
-                       BPA f outF :>: BPA o outF :>: ArgsNil -- pushing the Int->Int into the function is unnatural, store it besides it
+                       BPA f outF :>: BPA o outF :>: ArgsNil -- important: we store the Int -> Int besides the function argument!
     onOp IMap         (BPA f _  :>: BPA i _ :>: BPA o outF :>: ArgsNil) _ =
                        BPA f id :>: BPA i outF :>: BPA o outF :>: ArgsNil
     onOp IPermute args _ = args
 
-    fooLHS :: LeftHandSideArgs body env' scope -> Args env body -> BackpermutedEnv scope -> BackpermutedArgs env body
-    fooLHS Base ArgsNil _ = ArgsNil
-    fooLHS (Reqr _ t lhs) (arg :>: args) env = case take' t env of (C.Const f, env') -> BPA arg f :>: fooLHS lhs args env'
-    fooLHS (Make t lhs) (arg :>: args) env = case take' t env of (C.Const f, env') -> BPA arg f :>: fooLHS lhs args env'
-    fooLHS (EArg lhs) (arg :>: args) (Push env (C.Const f)) = BPA arg f :>: fooLHS lhs args env
-    fooLHS (Adju lhs) (arg :>: args) (Push env (C.Const f)) = BPA arg f :>: fooLHS lhs args env
-    fooLHS (Ignr lhs) args (Push env _) = fooLHS lhs args env
+    lhsEnvArgs :: LeftHandSideArgs body env' scope -> BackpermutedEnv env scope -> BackpermutedArgs env body
+    lhsEnvArgs Base Empty = ArgsNil
+    lhsEnvArgs (Reqr _ t lhs) env = case take' t env of (BPE (ArrArg r sh buf) f, env') -> BPA (ArgArray In r sh buf) f :>: lhsEnvArgs lhs env'
+                                                        _ -> error "urk"
+    lhsEnvArgs (Make   t lhs) env = case take' t env of (BPE (ArrArg r sh buf) f, env') -> BPA (ArgArray Out r sh buf) f :>: lhsEnvArgs lhs env'
+                                                        _ -> error "urk"
+    lhsEnvArgs (EArg lhs) (Push env (BPE (Others arg) f)) = BPA arg f :>: lhsEnvArgs lhs env
+    lhsEnvArgs (Adju lhs) (Push env (BPE (Others arg) f)) = BPA arg f :>: lhsEnvArgs lhs env
+    lhsEnvArgs (Ignr lhs) (Push env _) = lhsEnvArgs lhs env
 
-    barLHS :: LeftHandSideArgs body env' scope -> BackpermutedEnv scope -> BackpermutedArgs env body -> BackpermutedEnv env'
-    barLHS Base                   env    ArgsNil            = Empty
-    barLHS (Reqr t1 t2 lhs)       env    (BPA _ f :>: args) = case take' t2 env of (_, env') -> put' t1 (C.Const f) (barLHS lhs env' args)
-    barLHS (Make t     lhs)       env    (BPA _ f :>: args) = case take' t  env of (_, env') -> Push (barLHS lhs env' args) (C.Const f)
-    barLHS (EArg       lhs) (Push env _) (BPA _ f :>: args) =                                   Push (barLHS lhs env  args) (C.Const f)
-    barLHS (Adju       lhs) (Push env _) (BPA _ f :>: args) =                                   Push (barLHS lhs env  args) (C.Const f)
-    barLHS (Ignr       lhs) (Push env (C.Const f))    args  =                                   Push (barLHS lhs env  args) (C.Const f)
+    lhsArgsEnv :: LeftHandSideArgs body env' scope -> BackpermutedEnv env scope -> BackpermutedArgs env body -> BackpermutedEnv env env'
+    lhsArgsEnv Base                   _                ArgsNil            = Empty
+    lhsArgsEnv (Reqr t1 t2 lhs)       env              (BPA _ f :>: args) = case take' t2 env of (BPE arg          _, env') -> put' t1 (BPE arg f) (lhsArgsEnv lhs env' args)
+    lhsArgsEnv (Make t     lhs)       env              (BPA _ f :>: args) = case take' t  env of (BPE (ArrArg r sh buf) _, env') -> Push (lhsArgsEnv lhs env' args) (BPE (OutArg r sh buf) f)
+                                                                                                 _ -> error "urk"
+    lhsArgsEnv (EArg       lhs) (Push env (BPE arg _)) (BPA _ f :>: args) = Push (lhsArgsEnv lhs env  args) (BPE arg f)
+    lhsArgsEnv (Adju       lhs) (Push env (BPE arg _)) (BPA _ f :>: args) = Push (lhsArgsEnv lhs env  args) (BPE arg f)
+    lhsArgsEnv (Ignr       lhs) (Push env arg)                      args  = Push (lhsArgsEnv lhs env  args) arg
 
+    getOutputEnv :: ClusterIO args i o -> Args env args -> BackpermutedEnv env o
+    getOutputEnv P.Empty       ArgsNil           = Empty
+    getOutputEnv (Vertical r io) (ArgVar vars :>: args) = Push (getOutputEnv io args) (BPE (ArrArg r (toGrounds vars) (error "accessing a fused away buffer")) id) -- there is no buffer!
+    getOutputEnv (Input      io) (ArgArray In r sh buf :>: args) = Push (getOutputEnv io args) (BPE (ArrArg r sh buf) id)
+    getOutputEnv (Output t   io) (ArgArray Out r sh buf :>: args) = put' t (BPE (ArrArg r sh buf) id) (getOutputEnv io args)
+    getOutputEnv (MutPut     io) (arg :>: args) = Push (getOutputEnv io args) (BPE (Others arg) id)
+    getOutputEnv (ExpPut     io) (arg :>: args) = Push (getOutputEnv io args) (BPE (Others arg) id)
+
+    fromInputEnv :: ClusterIO args input output -> BackpermutedEnv env input -> BackpermutedArgs env args
+    fromInputEnv P.Empty       Empty = ArgsNil
+    fromInputEnv (Vertical _ io) (Push env (BPE (OutArg _ sh _) f)) = BPA (ArgVar (fromGrounds sh)) f :>: fromInputEnv io env
+    fromInputEnv (Input    io) (Push env (BPE (ArrArg r sh buf) f)) = BPA (ArgArray In r sh buf) f :>: fromInputEnv io env
+    fromInputEnv (Output _ io) (Push env (BPE (OutArg r sh buf) f)) = BPA (ArgArray Out r sh buf) f :>: fromInputEnv io env
+    fromInputEnv (MutPut   io) (Push env (BPE (Others arg) f)) = BPA arg f :>: fromInputEnv io env
+    fromInputEnv (ExpPut   io) (Push env (BPE (Others arg) f)) = BPA arg f :>: fromInputEnv io env
+    fromInputEnv _ (Push _ (BPE (Others _) _)) = error "Array argument found in Other"
 
 -- Conceptually, this computes the body of the fused loop
 -- It only deals with scalar values - wrap it in a loop!
@@ -225,13 +256,13 @@ instance MakesILP InterpretOp where
       <> var (OrderIn l) .==. int i) -- enforce that the backpermute follows its own rules
       (inOutBounds l)
   mkGraph IGenerate _ l = Info mempty mempty (lower (-2) (BackendSpecific $ OrderOut l))
-  mkGraph IMap (f :>: L _ (_, S.toList -> ~[lIn]) :>: o :>: ArgsNil) l =
+  mkGraph IMap (_ :>: L _ (_, S.toList -> ~[lIn]) :>: _ :>: ArgsNil) l =
     Info
       mempty
       (  inputDirectionConstraint l lIn
       <> var (OrderIn l) .==. var (OrderOut l))
       (inOutBounds l)
-  mkGraph IPermute (comb :>: L _ (_, S.toList -> ~[lTarget]) :>: f :>: L _ (_, S.toList -> ~[lIn]) :>: ArgsNil) l =
+  mkGraph IPermute (_ :>: L _ (_, S.toList -> ~[lTarget]) :>: _ :>: L _ (_, S.toList -> ~[lIn]) :>: ArgsNil) l =
     Info
       (mempty & infusibleEdges .~ S.singleton (lTarget -?> l)) -- Cannot fuse with the producer of the target array
       (  inputDirectionConstraint l lIn
@@ -270,18 +301,21 @@ fromArgs i env (ArgArray In (ArrayR shr typer) shv buf :>: args) =
   let buf' = varsGetVal buf env
       sh   = varsGetVal shv env
   in (fromArgs i env args, Value (indexBuffers typer buf' i) (Shape shr sh))
-fromArgs i env (ArgArray Out (ArrayR shr _) sh buf :>: args) = (fromArgs i env args, Shape shr (varsGetVal sh env))
+fromArgs i env (ArgArray Out (ArrayR shr _) sh _ :>: args) = (fromArgs i env args, Shape shr (varsGetVal sh env))
 
 
-evalOp :: Int -> InterpretOp args -> Val env -> ToBP (FromIn env args) -> IO (FromOut env args)
-evalOp _ IMap env ((_, snd -> Value x sh), snd -> f) = pure ((), Value (evalFun f env x) sh)
-evalOp _ IBackpermute _ ((((), snd -> sh), snd -> Value x _), _) = pure ((), Value x sh) -- We evaluated the backpermute at the start already, now simply relabel the shape info
-evalOp i IGenerate env (((), snd -> Shape shr sh), (f', f)) = pure ((), Value (evalFun f env $ fromIndex shr sh (f' i)) (Shape shr sh))
-evalOp i IPermute env (((((), snd -> Value (e :: e) (Shape shr sh)), snd -> f), snd -> target), snd -> comb) =
-  let typer = case comb of Lam lhs _ -> lhsToTupR lhs in
+evalOp :: Int -> InterpretOp args -> Val env -> BPFromArg env (InArgs args) -> IO (Env (FromArg' env) (OutArgs args))
+evalOp _ IMap         env (PushBPFA _ f    (PushBPFA _ (Value x (Shape shr sh)) _)) = pure $ PushFA (Value (evalFun f env x) (Shape shr sh)) Empty
+evalOp _ IBackpermute _   (PushBPFA _ _    (PushBPFA _ (Value x _) (PushBPFA _ sh _))) = pure $ PushFA (Value x sh) Empty -- We evaluated the backpermute at the start already, now simply relabel the shape info
+evalOp i IGenerate    env (PushBPFA f' f   (PushBPFA _ (Shape shr sh) _)) = pure $ PushFA (Value (evalFun f env $ fromIndex shr sh (f' i)) (Shape shr sh)) Empty
+evalOp i IPermute     env (PushBPFA _ comb (PushBPFA _ target (PushBPFA _ f (PushBPFA _ (Value (e :: e) (Shape shr sh)) _)))) =
+  let typer = case comb of
+        Lam lhs _ -> lhsToTupR lhs
+        _ -> error "impossible; is a function" 
+  in
   case evalFun f env (fromIndex shr sh i) of
     -- TODO double check: Is 0 Nothing?
-    (0, _) -> pure ((), target)
+    (0, _) -> pure $ PushFA target Empty
     (1, ((), sh)) -> case target of
       ArrayDescriptor shr shvars bufvars -> do
         let shsize = varsGetVal shvars env
@@ -291,8 +325,70 @@ evalOp i IPermute env (((((), snd -> Value (e :: e) (Shape shr sh)), snd -> f), 
         x <- readBuffers @e typer buf' j
         let x' = evalFun comb env x e
         writeBuffers typer buf' j x'
-        return ((), target)
-    _ -> error "PrimMaybe's tag was non-zero and non-one" -- How do tags work again? If 'e' is a sum type, does the tag get combined, or does it get its own tag?
+        return $ PushFA target Empty
+    -- How do tags work again? If 'e' is a sum type, does the tag get combined, or does it get its own tag?
+    _ -> error "PrimMaybe's tag was non-zero and non-one" 
+
+
+evalCluster :: Cluster InterpretOp args -> Args env args -> Val env -> IO (Val env)
+evalCluster c@(Cluster io ast) args env = do
+  let bp = makeBackpermuteArg args env c
+  doNTimes 
+    undefined -- TODO get the total iteration size of this cluster - just looking at one of the arguments should suffice
+    (\n env' -> do i <- evalIO1 n io bp env'
+                   o <- evalAST n ast env' i
+                   evalIO2 n io args env' o)
+    env
+
+doNTimes :: Monad m => Int -> (Int -> a -> m a) -> a -> m a
+doNTimes n f x
+  | n == 0 = pure x
+  | otherwise = f n x >>= doNTimes (n-1) f
+
+evalIO1 :: Int -> ClusterIO args i o -> BackpermutedArgs env args -> Val env -> IO (BPFromArg env i)
+evalIO1 _ P.Empty                                         ArgsNil    _ = pure Empty
+evalIO1 n (Vertical r io) (BPA (ArgVar vars          ) f :>: args) env = PushBPFA f (Shape (arrayRshape r) (varsGetVal vars env)) <$> evalIO1 n io args env
+evalIO1 n (Input      io) (BPA (ArgArray In r sh buf ) f :>: args) env = PushBPFA f <$> value                                     <*> evalIO1 n io args env 
+  where value = Value <$> indexBuffers' (arrayRtype  r) (varsGetVal buf env) n 
+                      <*> pure (Shape   (arrayRshape r) (varsGetVal sh  env))
+evalIO1 n (Output _   io) (BPA (ArgArray Out r sh   _) f :>: args) env = PushBPFA f (Shape (arrayRshape r) (varsGetVal sh env))   <$> evalIO1 n io args env
+evalIO1 n (MutPut     io) (BPA (ArgArray Mut r sh buf) f :>: args) env = PushBPFA f (ArrayDescriptor (arrayRshape r) sh buf)      <$> evalIO1 n io args env
+evalIO1 n (ExpPut     io) (BPA (ArgExp e)              f :>: args) env = PushBPFA f e                                             <$> evalIO1 n io args env
+
+evalIO2 :: Int -> ClusterIO args i o -> Args env args -> Val env -> Env (FromArg' env) o -> IO (Val env)
+evalIO2 _ P.Empty ArgsNil env Empty = pure env
+evalIO2 n (Vertical _ io) (_ :>: args) env (PushFA _ o) = evalIO2 n io args env o
+evalIO2 n (Input      io) (_ :>: args) env (PushFA _ o) = evalIO2 n io args env o
+evalIO2 n (MutPut     io) (_ :>: args) env (PushFA _ o) = evalIO2 n io args env o
+evalIO2 n (ExpPut     io) (_ :>: args) env (PushFA _ o) = evalIO2 n io args env o
+evalIO2 n (Output t   io) (ArgArray Out (arrayRtype -> r) _ buf :>: args) env o = let (FromArg (Value x _), o') = take' t o in writeBuffers r (veryUnsafeUnfreezeBuffers r $ varsGetVal buf env) n x >> evalIO2 n io args env o'
+
+evalAST :: forall i o env. Int -> ClusterAST InterpretOp i o -> Val env -> BPFromArg env i -> IO (Env (FromArg' env) o)
+evalAST _ None _ Empty = pure Empty
+evalAST n None env (PushBPFA _ x i) = flip Push (FromArg x) <$> evalAST n None env i
+evalAST n (Bind lhs op ast) env i = do
+  let i' = evalLHS1 lhs i env
+  o' <- evalOp n op env i'
+  let scope = evalLHS2 lhs i env o'
+  evalAST n ast env scope
+
+evalLHS1 :: forall body i scope env. LeftHandSideArgs body i scope -> BPFromArg env i -> Val env -> BPFromArg env (InArgs body)
+evalLHS1 Base Empty _ = Empty
+evalLHS1 (Reqr t _ lhs) i env = let (BP (FromArg x) f, i') = take' t i in PushBPFA f x (evalLHS1 lhs i' env)
+evalLHS1 (Make _   lhs) (PushBPFA f x i') env = PushBPFA f x (evalLHS1 lhs i' env)
+evalLHS1 (EArg     lhs) (PushBPFA f x i') env = PushBPFA f x (evalLHS1 lhs i' env)
+evalLHS1 (Adju     lhs) (PushBPFA f x i') env = PushBPFA f x (evalLHS1 lhs i' env)
+evalLHS1 (Ignr     lhs) (PushBPFA _ _ i') env =             evalLHS1 lhs i' env
+
+evalLHS2 :: LeftHandSideArgs body i scope -> BPFromArg env i -> Val env -> Env (FromArg' env) (OutArgs body) -> BPFromArg env scope
+evalLHS2 Base Empty _ Empty = Empty
+evalLHS2 (Reqr t1 t2 lhs) i env o = let (x, i') = take' t1 i
+                                    in                    put' t2 x       (evalLHS2 lhs i' env o)
+evalLHS2 (Make t lhs) (PushBPFA f _ i) env (Push o y)   = put' t (BP y f) (evalLHS2 lhs i  env o)
+evalLHS2 (EArg   lhs) (PushBPFA f e i) env           o  = PushBPFA f e    (evalLHS2 lhs i  env o)
+evalLHS2 (Adju   lhs) (PushBPFA f _ i) env (PushFA m o) = PushBPFA f m    (evalLHS2 lhs i  env o)
+evalLHS2 (Ignr   lhs) (PushBPFA f x i) env           o  = PushBPFA f x    (evalLHS2 lhs i  env o)
+
 
 
 
@@ -301,6 +397,7 @@ evalOp i IPermute env (((((), snd -> Value (e :: e) (Shape shr sh)), snd -> f), 
 
 -- | Run a complete embedded array program using the reference interpreter.
 --
+
 run :: forall a. (HasCallStack, Sugar.Arrays a) => Smart.Acc a -> a
 run a = unsafePerformIO execute
   where
@@ -547,8 +644,9 @@ evalOpenExp pexp env aenv =
           | toBool (p x) = go (f x)
           | otherwise    = x
 
-    -- ArrayInstr (Index acc) ix   -> let (TupRsingle repr, a) = evalA acc
-    --                                in (repr, a) ! evalE ix
+    ArrayInstr (Index acc) ix   -> let (TupRsingle repr, a) = undefined acc
+                                   in (repr, a) ! evalE ix
+    ArrayInstr (Parameter x) ix -> undefined x ix
     -- ArrayInstr (LinearIndex acc) i
     --                             -> let (TupRsingle repr, a) = evalA acc
     --                                    ix   = fromIndex (arrayRshape repr) (shape a) (evalE i)

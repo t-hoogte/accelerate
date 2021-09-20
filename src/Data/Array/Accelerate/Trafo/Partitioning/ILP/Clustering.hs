@@ -8,12 +8,13 @@
 {-# LANGUAGE LambdaCase #-}
 
 -- _Significantly_ speeds up compilation of this file, but at an obvious cost!
+-- TODO: test the need of this in a GHC version with Lower Your Guards (starting 9.0.1)
 {-# OPTIONS_GHC -Wno-overlapping-patterns -Wno-incomplete-patterns #-}
 
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering where
 
 import Data.Array.Accelerate.AST.LeftHandSide ( Exists(..), LeftHandSide )
-import Data.Array.Accelerate.AST.Partitioned
+import Data.Array.Accelerate.AST.Partitioned hiding (take')
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
 
@@ -401,8 +402,8 @@ fuseOutput :: LabelledArg env (Out sh e)
            -> ClusterIO total i result
            -> (forall total' i'
                . Take' (In sh e) total total'
-              -> LeftHandSideArgs (Out sh e -> added)  (i', Sh sh) scope 
-              -> ClusterIO        (Out sh e -> total') (i', Sh sh) result
+              -> LeftHandSideArgs (Out sh e -> added)  (i', Sh sh e) scope 
+              -> ClusterIO        (Out sh e -> total') (i', Sh sh e) result
               -> Take (Value sh e) i i'
               -> r)
            -> Maybe r
@@ -463,7 +464,7 @@ addOutput :: ClusterAST op scope result
           -> ClusterIO total i result
           -> (forall result'
               . ClusterAST op (scope, Value sh e) result'
-             -> ClusterIO (Out sh e -> total) (i, Sh sh) result'
+             -> ClusterIO (Out sh e -> total) (i, Sh sh e) result'
              -> r)
           -> r
 addOutput None io k = k None (Output Here io)
