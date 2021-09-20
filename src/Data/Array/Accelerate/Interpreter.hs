@@ -163,10 +163,10 @@ instance NFData' InterpretOp where
   rnf' = error "todo"
 
 instance PrettyOp InterpretOp where
-  prettyOp IMap         = "map"
-  prettyOp IBackpermute = "backpermute"
-  prettyOp IGenerate    = "generate"
-  prettyOp IPermute     = "permute"
+  prettyOp IMap         = Left "map"
+  prettyOp IBackpermute = Left "backpermute"
+  prettyOp IGenerate    = Left "generate"
+  prettyOp IPermute     = Left "permute"
 
 fromArgs :: Int -> Env.Val env -> Args env args -> FromIn env args
 fromArgs i _ ArgsNil = ()

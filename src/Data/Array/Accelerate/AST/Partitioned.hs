@@ -22,9 +22,11 @@
 module Data.Array.Accelerate.AST.Partitioned (
   module Data.Array.Accelerate.AST.Partitioned,
   GroundR(..), GroundsR, NFData'(..), Arg(..),
-  PreArgs(..), Args,
+  PreArgs(..), Args, Modifier(..),
+  Exp', Var', Fun', In, Out, Mut
 ) where
 
+import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Operation
 
 import Prelude hiding ( take )
@@ -113,7 +115,10 @@ data Take x xargs args where
   There :: Take x  xargs      args
         -> Take x (xargs, y) (args, y)
 
-        
+takeIdx :: Take x xargs args -> Idx xargs x
+takeIdx Here      = ZeroIdx
+takeIdx (There t) = SuccIdx $ takeIdx t
+
 -- A cluster from a single node
 unfused :: op args -> Args env args -> Cluster op args
 unfused op args = iolhs args $ \io lhs -> Cluster io (Bind lhs op None)
