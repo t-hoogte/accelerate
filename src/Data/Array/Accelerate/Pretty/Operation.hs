@@ -24,7 +24,8 @@ module Data.Array.Accelerate.Pretty.Operation (
   prettyAcc, prettyOpenAcc,
   prettyAfun, prettyOpenAfun,
   prettyGroundR, Val'(..),
-  prettyArg, prettyShapeVars, prettyModifier
+  prettyArg, prettyShapeVars, prettyModifier, prettyBuffer,
+  prettyFun, prettyExp, prettyExp', prettyArrayInstr
 ) where
 
 import Data.Array.Accelerate.Pretty.Exp
@@ -66,7 +67,7 @@ prettyOpenAcc :: PrettyOp op => Val' benv -> OperationAcc op benv t -> Adoc
 prettyOpenAcc env = \case
   Exec op args -> prettyOpWithArgs env op args
   Return vars -> hang 2 $ group $ vsep [annotate Statement "return", prettyVars env 10 vars]
-  Compute exp -> hang 2 $ group $ vsep [annotate Statement "compute", prettyExp env exp]
+  Compute exp -> hang 2 $ group $ vsep [annotate Statement "compute", prettyExp (val env) exp]
   Alet (LeftHandSideWildcard TupRunit) _ bnd body
     -> prettyOpenAcc env bnd
         <> hardline
@@ -103,8 +104,8 @@ prettyArgs env args = tupled $ map (\(Exists a) -> prettyArg env a) $ argsToList
 
 prettyArg :: Val' benv -> Arg benv t -> Adoc
 prettyArg env (ArgVar vars) = prettyVars env 10 vars
-prettyArg env (ArgExp e) = prettyExp env e
-prettyArg env (ArgFun f) = prettyFun env f
+prettyArg env (ArgExp e) = prettyExp (val env) e
+prettyArg env (ArgFun f) = prettyFun (val env) f
 prettyArg env (ArgArray m _ sh buffers) = group $ vsep [prettyModifier m, "(" <> prettyShapeVars env sh <> ")", prettyVars env 0 buffers]
 
 prettyModifier :: Modifier m -> Adoc
@@ -121,23 +122,23 @@ mapTail f (x:xs) = x : map f xs
 mapTail _ []     = []
 
 -- Expressions
-prettyFun :: Val' env -> Fun env f -> Adoc
+prettyFun :: Val env -> Fun env f -> Adoc
 prettyFun env = prettyPreOpenFun (prettyArrayInstr env) Empty
 
-prettyExp :: Val' env -> Exp env t -> Adoc
+prettyExp :: Val env -> Exp env t -> Adoc
 prettyExp env = prettyPreOpenExp context0 (prettyArrayInstr env) Empty
 
-prettyExp' :: Context -> Val' env -> Exp env t -> Adoc
+prettyExp' :: Context -> Val env -> Exp env t -> Adoc
 prettyExp' ctx env = prettyPreOpenExp ctx (prettyArrayInstr env) Empty
 
-prettyArrayInstr :: Val' env -> PrettyArrayInstr (ArrayInstr env)
+prettyArrayInstr :: Val env -> PrettyArrayInstr (ArrayInstr env)
 prettyArrayInstr env context (Index arr) ix
   = parensIf (ctxPrecedence context < 9)
-  $ sep [ prettyVar env arr
+  $ sep [ prj (varIdx arr) env
         , group (sep ["!!", ix context']) ]
   where
     context' = Context L R 9
-prettyArrayInstr env context (Parameter var) _ = prettyVar env var
+prettyArrayInstr env context (Parameter var) _ = prj (varIdx var) env
 
 -- LHS
 prettyGLhs :: Val' env -> GLeftHandSide t env env' -> (Val' env', Adoc)
@@ -160,13 +161,16 @@ prettyGLhsWithUniquenessTypes env lhs us
 data Val' env = Val' (Val env) Int Int
 
 push :: GroundR t -> Val' env -> (Val' (env, t), Adoc)
-push (GroundRbuffer _) (Val' env b s) = (Val' (Push env d) (b + 1) s, d)
+push (GroundRbuffer _) (Val' env b e) = (Val' (Push env d) (b + 1) e, d)
   where d = "b" <> pretty b
-push (GroundRscalar _) (Val' env b s) = (Val' (Push env d) b (s + 1), d)
-  where d = "s" <> pretty s
+push (GroundRscalar _) (Val' env b e) = (Val' (Push env d) b (e + 1), d)
+  where d = "e" <> pretty e
 
 empty' :: Val' ()
 empty' = Val' Empty 0 0
+
+val :: Val' env -> Val env
+val (Val' env _ _) = env
 
 -- Variables
 prettyVar :: Val' env -> Var s env t -> Adoc

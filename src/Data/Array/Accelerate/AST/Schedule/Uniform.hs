@@ -25,7 +25,7 @@ module Data.Array.Accelerate.AST.Schedule.Uniform (
   BaseR(..), BasesR, BaseVar, BaseVars, BLeftHandSide,
   Signal(..), SignalResolver(..), Ref(..), OutputRef(..),
   module Operation,
-  module Partitioned,
+  Cluster,
   await, resolve,
   signalResolverImpossible, scalarSignalResolverImpossible,
   rnfBaseR,
