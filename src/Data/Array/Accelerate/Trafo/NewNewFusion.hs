@@ -60,11 +60,11 @@ convertAccWith config = convertAcc config
 
 -- | Apply the fusion transformation to a function of array arguments
 --
-convertAfun :: HasCallStack => Config -> OperationAfun op benv f -> PartitionedAfun op benv f
-convertAfun _ = withSimplStats $ mapAfunExecutable dontFuse
+convertAfun :: HasCallStack => OperationAfun op benv f -> PartitionedAfun op benv f
+convertAfun = convertAfunWith undefined
 
 convertAfunWith :: HasCallStack => Config -> OperationAfun op benv f -> PartitionedAfun op benv f
-convertAfunWith config = convertAfun config
+convertAfunWith config = withSimplStats $ mapAfunExecutable dontFuse
 
 withSimplStats :: a -> a
 #ifdef ACCELERATE_DEBUG

@@ -80,16 +80,6 @@ import Data.Array.Accelerate.Pretty.Operation ( PrettyOp(..) )
 import Data.Array.Accelerate.AST.LeftHandSide (lhsToTupR)
 import Data.Functor.Identity ( Identity(Identity) )
 
-import Data.Array.Accelerate.Pretty.Partitioned
-
-
--- TODO: Backpermutes
--- Plan: Thread the backpermutes through the entire datatype.
--- Goal: 
---  For each generate, make an (Int -> Int) function that corresponds to the index it should be generating at
---    maybe just compose this with its function; that way only the arg changes
---  For each input, make an (Int -> Int) function that corresponds to the index that each thread should be reading prior to fused execution
---    store this with each Input argument
 
 -- Overly simplistic datatype: We simply ignore all the functions that don't make sense (e.g. for non-array, non-generate args, or non-input args).
 data BackpermutedArg env t = BPA (Arg env t) (Int -> Int)
