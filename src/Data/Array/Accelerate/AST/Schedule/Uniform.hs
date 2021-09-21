@@ -144,7 +144,7 @@ data SArg env t where
              -> SArg env (Var' e)
 
   SArgBuffer :: Modifier m
-             -> GroundVar env e
+             -> GroundVar env (Buffer e)
              -> SArg env (m DIM1 e)
 
 type SArgs env = PreArgs (SArg env)

@@ -780,24 +780,24 @@ joinVars _                _                = TupRsingle NoVars
 data Exists' (a :: (Type -> Type -> Type) -> Type) where
   Exists' :: a m -> Exists' a
 
-partialSchedule :: forall kernel genv1 t1. C.PartitionedAcc (KernelOperation kernel) genv1 t1 -> (PartialSchedule kernel genv1 t1, IdxSet genv1)
+partialSchedule :: forall kernel genv1 t1. IsKernel kernel => C.PartitionedAcc (KernelOperation kernel) genv1 t1 -> (PartialSchedule kernel genv1 t1, IdxSet genv1)
 partialSchedule = (\(s, used, _) -> (s, used)) . travA (TupRsingle Shared)
   where
     travA :: forall genv t. Uniquenesses t -> C.PartitionedAcc (KernelOperation kernel) genv t -> (PartialSchedule kernel genv t, IdxSet genv, MaybeVars genv t)
     travA _  (C.Exec op args)
-      | Exists env <- convertEnvFromList $ map (foldr1 combineMod) $ groupBy (\(Exists v1) (Exists v2) -> isJust $ matchIdx (varIdx v1) (varIdx v2)) $ argsVars args -- TODO: Remove duplicates more efficiently
-      -- TODO: Convert operation to kernel.
-      -- TODO: Convert Args to SArgs
+      | Exists env <- convertEnvFromList $ map (foldr1 combineMod') $ groupBy (\(Exists v1) (Exists v2) -> isJust $ matchIdx (varIdx v1) (varIdx v2)) $ argsVars args -- TODO: Remove duplicates more efficiently
       , Reads reEnv k inputBindings <- readRefs $ convertEnvRefs env
       , Just args' <- reindexArgs (reEnvIdx reEnv) args
+      , CompiledKernel kernel sargs <- compileKernel' op args'
         = let
             signals = convertEnvSignals env
             resolvers = convertEnvSignalResolvers k env
+            
           in
             ( PartialDo PartialDoOutputUnit env
                 $ Effect (SignalAwait signals)
                 $ inputBindings
-                $ Effect (Exec undefined undefined)
+                $ Effect (Exec kernel sargs)
                 $ Effect (SignalResolve resolvers)
                 $ Return
             , IdxSet.fromList $ convertEnvToList env
@@ -805,16 +805,12 @@ partialSchedule = (\(s, used, _) -> (s, used)) . travA (TupRsingle Shared)
             )
       | otherwise = error "partialSchedule: reindexExecPartial returned Nothing. Probably some variable is missing in 'execVars'"
       where
-        combineMod :: Exists (Var AccessGroundR env) -> Exists (Var AccessGroundR env) -> Exists (Var AccessGroundR env)
-        combineMod (Exists (Var (AccessGroundRbuffer m1 tp) ix)) var@(Exists (Var (AccessGroundRbuffer m2 _) _))
-          | Exists' m <- combineMod' m1 m2 = Exists $ Var (AccessGroundRbuffer m tp) ix
+        combineMod' :: Exists (Var AccessGroundR env) -> Exists (Var AccessGroundR env) -> Exists (Var AccessGroundR env)
+        combineMod' (Exists (Var (AccessGroundRbuffer m1 tp) ix)) var@(Exists (Var (AccessGroundRbuffer m2 _) _))
+          | Exists' m <- combineMod m1 m2 = Exists $ Var (AccessGroundRbuffer m tp) ix
           | otherwise = var
-        combineMod a _ = a -- Nothing has to be done when combining two scalars; they don't have access modifiers
+        combineMod' a _ = a -- Nothing has to be done when combining two scalars; they don't have access modifiers
 
-        combineMod' :: Modifier m -> Modifier m' -> Exists' Modifier
-        combineMod' In  In  = Exists' In
-        combineMod' Out Out = Exists' Out
-        combineMod' _   _   = Exists' Mut
     travA us (C.Return vars)  = (PartialReturn us vars, IdxSet.fromVarList $ flattenTupR vars, mapTupR f vars)
       where
         duplicates = map head $ filter (\g -> length g >= 2) $ group $ sort $ map (\(Exists (Var _ ix)) -> idxToInt ix) $ flattenTupR vars
@@ -850,7 +846,7 @@ partialSchedule = (\(s, used, _) -> (s, used)) . travA (TupRsingle Shared)
         (c', used1) = partialScheduleFun c
         (f', used2) = partialScheduleFun f
 
-partialScheduleFun :: C.PartitionedAfun (KernelOperation kernel) genv t -> (PartialScheduleFun kernel genv t, IdxSet genv)
+partialScheduleFun :: IsKernel kernel => C.PartitionedAfun (KernelOperation kernel) genv t -> (PartialScheduleFun kernel genv t, IdxSet genv)
 partialScheduleFun (C.Alam lhs f) = (Plam lhs f', IdxSet.drop' lhs used)
   where
     (f', used) = partialScheduleFun f
@@ -896,6 +892,61 @@ partialLift tp f vars
       , mapTupR (const NoVars) tp
       )
 partialLift _ _ _ = internalError "PartialLift failed. Was the list of used variables missing some variable?"
+
+combineMod :: Modifier m -> Modifier m' -> Exists' Modifier
+combineMod In  In  = Exists' In
+combineMod Out Out = Exists' Out
+combineMod _   _   = Exists' Mut
+
+combineAccessGroundR :: AccessGroundR t -> AccessGroundR t -> AccessGroundR t
+combineAccessGroundR (AccessGroundRbuffer m1 tp) (AccessGroundRbuffer m2 _)
+  | Exists' m <- combineMod m1 m2 = AccessGroundRbuffer m tp
+combineAccessGroundR a _ = a -- Nothing has to be done when combining two scalars; they don't have access modifiers
+
+data CompiledKernel kenv fenv kernel where
+  CompiledKernel :: OpenKernelFun kernel kenv f
+                 -> SArgs fenv f
+                 -> CompiledKernel kenv fenv kernel
+
+compileKernel'
+  :: forall fenv kernel args.
+     IsKernel kernel
+  => Cluster (KernelOperation kernel) args
+  -> Args fenv args
+  -> CompiledKernel () fenv kernel
+compileKernel' cluster args =
+  go
+    (partialEnvFromList combineAccessGroundR (map (\(Exists (Var tp ix)) -> EnvBinding ix tp) vars))
+    weakenId
+    (flip const)
+  where
+    vars = argsVars args
+
+    go
+      :: forall fenv1 kenv.
+         PartialEnv AccessGroundR fenv1
+      -> (fenv1 :> fenv)
+      -> (forall kenv'. kenv :> kenv' -> PartialEnv (Idx kenv') fenv1 -> PartialEnv (Idx kenv') fenv)
+      -> CompiledKernel kenv fenv kernel
+    go PEnd _  kenv =
+      CompiledKernel
+        (KernelFunBody $ compileKernel cluster args')
+        ArgsNil
+      where
+        kenv' = kenv weakenId PEnd
+        Identity args' = reindexArgs prjIdx args
+        prjIdx :: forall a. Idx fenv a -> Identity (Idx kenv a)
+        prjIdx idx = case prjPartial idx kenv' of
+          Nothing -> internalError "Variable not found in environment. The environment was probably built incorrectly, argsVars may have missed this variable?"
+          Just idx' -> Identity idx'
+    go (PPush env (AccessGroundRscalar tp)) k1 kenvF
+      | CompiledKernel kernel sargs <- go env (weakenSucc k1) (\k2 kenv -> kenvF (weakenSucc k2) $ PPush kenv (k2 >:> ZeroIdx))
+      = CompiledKernel (KernelFunLam (KernelArgRscalar tp) kernel) (SArgScalar (Var tp $ k1 >:> ZeroIdx) :>: sargs)
+    go (PPush env (AccessGroundRbuffer mod' tp)) k1 kenvF
+      | CompiledKernel kernel sargs <- go env (weakenSucc k1) (\k2 kenv -> kenvF (weakenSucc k2) $ PPush kenv (k2 >:> ZeroIdx))
+      = CompiledKernel (KernelFunLam (KernelArgRbuffer mod' tp) kernel) (SArgBuffer mod' (Var (GroundRbuffer tp) $ k1 >:> ZeroIdx) :>: sargs)
+    go (PNone env) k1 kenvF
+      = go env (weakenSucc k1) (\k2 kenv -> kenvF k2 $ PNone kenv)
 
 uniqueIfBuffer :: GroundR t -> Uniqueness t
 uniqueIfBuffer (GroundRbuffer _) = Unique
