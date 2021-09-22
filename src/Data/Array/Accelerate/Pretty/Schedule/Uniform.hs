@@ -146,7 +146,11 @@ prettyUniformSchedule env = \case
           ]
         ])
         <> prettyNext next
-  Awhile io body initial next -> undefined
+  Awhile _ body initial next
+    -> hang 2 (group (vsep [annotate Statement "awhile", prettyVars env 10 initial]))
+        <> hardline <> hang 4 ("  (" <+> prettyUniformScheduleFun env body)
+        <> hardline <> "  )"
+        <> prettyNext next
   Fork next body
     -> annotate Statement "fork" <+> "{"
         <> hardline <> indent 2 (prettyUniformSchedule env body)
@@ -171,17 +175,33 @@ prettyBinding env = \case
 
 prettyEffect :: PrettyKernel kernel => Val' env -> Effect kernel env -> Adoc
 prettyEffect env = \case
-  Exec kernel args      -> prettyKernelFun env Empty kernel args
+  Exec kernel args      -> prettyKernelFun env kernel args
   SignalAwait signals   -> hang 2 $ group $ vsep [annotate Statement "await",   list $ map (prettyIdx env) signals]
   SignalResolve signals -> hang 2 $ group $ vsep [annotate Statement "resolve", list $ map (prettyIdx env) signals]
-  RefWrite ref value    -> hang 2 $ group $ vsep ["*" <> prettyVar env ref, "=", prettyVar env value]
+  RefWrite ref value    -> hang 2 $ group $ vsep ["*" <> prettyVar env ref <+> "=", prettyVar env value]
 
-prettyKernelFun :: PrettyKernel kernel => Val' env -> Val kenv -> OpenKernelFun kernel kenv f -> SArgs env f -> Adoc
-prettyKernelFun _   kenv (KernelFunBody kernel) ArgsNil = prettyKernel kenv kernel
-prettyKernelFun env kenv (KernelFunLam (KernelArgRscalar _) f) (SArgScalar a :>: as)
-  = prettyKernelFun env (Push kenv $ prettyVar env a) f as
-prettyKernelFun env kenv (KernelFunLam (KernelArgRbuffer _ _) f) (SArgBuffer mod' a :>: as)
-  = prettyKernelFun env (Push kenv $ prettyModifier mod' <+> prettyVar env a) f as
+prettyKernelFun :: forall kernel env f. PrettyKernel kernel => Val' env -> KernelFun kernel f -> SArgs env f -> Adoc
+prettyKernelFun env fun args = case prettyKernel of
+  PrettyKernelBody prettyKernelBody ->
+    let
+      go :: Val kenv -> OpenKernelFun kernel kenv t -> SArgs env t -> Adoc
+      go kenv (KernelFunBody kernel) ArgsNil = prettyKernelBody kenv kernel
+      go kenv (KernelFunLam (KernelArgRscalar _) f) (SArgScalar a :>: as)
+        = go (Push kenv $ prettyVar env a) f as
+      go kenv (KernelFunLam (KernelArgRbuffer _ _) f) (SArgBuffer mod' a :>: as)
+        = go (Push kenv $ prettyModifier mod' <+> prettyVar env a) f as
+    in
+      go Empty fun args
+  PrettyKernelFun prettyKernelAsFun ->
+    prettyKernelAsFun fun
+      <> hardline <> indent 2 (prettySArgs env args)
+
+prettySArgs :: Val' benv -> SArgs benv f -> Adoc
+prettySArgs env args = tupled $ map (\(Exists a) -> prettySArg env a) $ argsToList args
+
+prettySArg :: Val' benv -> SArg benv t -> Adoc
+prettySArg env (SArgScalar var)   = prettyVar env var
+prettySArg env (SArgBuffer m var) = prettyModifier m <+> prettyVar env var
 
 -- Variables
 prettyVar :: Val' env -> Var s env t -> Adoc

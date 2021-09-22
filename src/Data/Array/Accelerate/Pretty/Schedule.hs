@@ -1,3 +1,6 @@
+{-# LANGUAGE GADTs      #-}
+{-# LANGUAGE RankNTypes #-}
+
 -- |
 -- Module      : Data.Array.Accelerate.Pretty.Schedule
 -- Copyright   : [2008..2020] The Accelerate Team
@@ -9,7 +12,7 @@
 --
 
 module Data.Array.Accelerate.Pretty.Schedule (
-  PrettySchedule(..), PrettyKernel(..)
+  PrettySchedule(..), PrettyKernel(..), PrettyKernelStyle(..)
 ) where
 
 import Data.Array.Accelerate.AST.Kernel
@@ -19,4 +22,9 @@ class PrettySchedule sched where
   prettySchedule :: PrettyKernel kernel => sched kernel () t -> Adoc
 
 class PrettyKernel kernel where
-  prettyKernel :: Val env -> kernel env -> Adoc
+  prettyKernel :: PrettyKernelStyle kernel
+
+data PrettyKernelStyle kernel where
+  PrettyKernelBody :: (forall env. Val env -> kernel env -> Adoc) -> PrettyKernelStyle kernel
+
+  PrettyKernelFun :: (forall t. KernelFun kernel t -> Adoc) -> PrettyKernelStyle kernel
