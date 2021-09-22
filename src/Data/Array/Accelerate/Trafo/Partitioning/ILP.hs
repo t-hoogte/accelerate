@@ -19,10 +19,11 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.MIP
 
 import System.IO.Unsafe (unsafePerformIO)
 import Data.Maybe (fromJust)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (LabelEnv)
 
 
 cbcFusion, gurobiFusion, cplexFusion, glpsolFusion, lpSolveFusion, scipFusion 
-  :: (MakesILP op) => OperationAcc op () a -> PartitionedAcc op () a
+  :: (MakesILP op) => LabelEnv env -> OperationAcc op env a -> PartitionedAcc op env a
 cbcFusion     = ilpFusion cbc
 gurobiFusion  = ilpFusion gurobiCl
 cplexFusion   = ilpFusion cplex
@@ -31,14 +32,14 @@ lpSolveFusion = ilpFusion lpSolve
 scipFusion    = ilpFusion scip
 
 
-ilpFusion :: (MakesILP op, ILPSolver s op) => s -> OperationAcc op () a -> PartitionedAcc op () a
-ilpFusion s acc = fusedAcc
+ilpFusion :: (MakesILP op, ILPSolver s op) => s -> LabelEnv env -> OperationAcc op env a -> PartitionedAcc op env a
+ilpFusion s initenv acc = fusedAcc
   where
-    (info@(Info graph _ _), constrM) = makeFullGraph acc
+    (info@(Info graph _ _), constrM) = makeFullGraph initenv acc
     ilp                              = makeILP info
     solution                         = solve' ilp
     interpreted                      = interpretSolution solution
     (labelClusters, labelClustersM)  = splitExecs interpreted constrM
-    fusedAcc                         = reconstruct graph labelClusters labelClustersM constrM
+    fusedAcc                         = reconstruct initenv graph labelClusters labelClustersM constrM
     solve' = fromJust . unsafePerformIO . solve s
 

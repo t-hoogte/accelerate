@@ -162,7 +162,11 @@ getLabelsArg (ArgFun fun)                  env = getLabelsFun fun    env
 -- TODO this gets us the singleton label assigned to the buffer, check whether this doesn't make us use/write an array before we know its size
 -- honestly, this just doesn't cut it. Need a better way to both label arguments (for reconstruction later) and track dependencies (for ILP solving),
 -- using this one S.Set for both conflicts (as seen in 'const' vs 'insert')
-getLabelsArg (ArgArray _ _ shVars buVars) env = let Left (NotArr, shLabs) = getLabelsTup shVars env
+
+-- The comment above is outdated, but I'm not sure what is going on here anymore. What are the two types of return arguments from getLabelsTup? Does it make sense that a TupRsingle always gives Right?
+getLabelsArg (ArgArray _ _ shVars buVars) env = let shLabs = case getLabelsTup shVars env of
+                                                              Left (_, x)  -> x
+                                                              Right (_, x) -> x
                                                     Right (Arr x,     buLabs) = getLabelsTup buVars env
                                                 in (Arr x, shLabs <> buLabs)
 

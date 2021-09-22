@@ -1,0 +1,96 @@
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Wed Sep 22 15:54:04 2021
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Wed Sep 22 15:57:18 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Error reading LP format file /tmp/gurobi140835-0.lp at line 2
+Malformed term in expression
+Neighboring tokens: " + Fused (Label {_labelId = -1, _parent = Nothing}) "
+
+
+Error 10012: Unable to read file
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Wed Sep 22 16:04:15 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'BackendSpecific(OrderOut(Label{_labelId=44,_parent=Just(Label{_labelId=32,_parent=Just(Label{_labelId=28,_parent=Nothing})})}))' in bounds section
+Warning: unknown variable 'BackendSpecific(OrderOut(Label{_labelId=24,_parent=Nothing}))' in bounds section
+Warning: unknown variable 'BackendSpecific(OrderOut(Label{_labelId=11,_parent=Nothing}))' in bounds section
+Warning: lp file contains 2 repeated variable(s) in constraints, grouped them, 2 cancellation
+Read LP format model from file /tmp/gurobi141577-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 60 rows, 54 columns, 136 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 60 rows, 54 columns and 136 nonzeros
+Model fingerprint: 0xae674e3a
+Variable types: 34 continuous, 20 integer (8 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 5e+00]
+  Objective range  [1e+00, 1e+00]
+  Bounds range     [1e+00, 5e+00]
+  RHS range        [1e+00, 1e+00]
+Presolve time: 0.00s
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 0
+
+Model is infeasible
+Best objective -, best bound -, gap -
+
+Unable to retrieve attribute 'X'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Wed Sep 22 16:21:57 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'BackendSpecific(OrderOut(Label{_labelId=44,_parent=Just(Label{_labelId=32,_parent=Just(Label{_labelId=28,_parent=Nothing})})}))' in bounds section
+Warning: unknown variable 'BackendSpecific(OrderOut(Label{_labelId=24,_parent=Nothing}))' in bounds section
+Warning: unknown variable 'BackendSpecific(OrderOut(Label{_labelId=11,_parent=Nothing}))' in bounds section
+Warning: lp file contains 2 repeated variable(s) in constraints, grouped them, 2 cancellation
+Read LP format model from file /tmp/gurobi142956-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 60 rows, 54 columns, 136 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 60 rows, 54 columns and 136 nonzeros
+Model fingerprint: 0xae674e3a
+Variable types: 34 continuous, 20 integer (8 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 5e+00]
+  Objective range  [1e+00, 1e+00]
+  Bounds range     [1e+00, 5e+00]
+  RHS range        [1e+00, 1e+00]
+Presolve time: 0.00s
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 0
+
+Model is infeasible
+Best objective -, best bound -, gap -
+
+Unable to retrieve attribute 'X'
+

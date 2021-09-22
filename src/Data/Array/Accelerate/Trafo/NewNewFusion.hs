@@ -37,6 +37,9 @@ import Data.Array.Accelerate.AST.Operation
 import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.Trafo.Config
 import Data.Array.Accelerate.Error
+import Data.Array.Accelerate.Trafo.Partitioning.ILP (gurobiFusion)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP, incr)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (LabelEnv (LabelEnvNil))
 
 
 #ifdef ACCELERATE_DEBUG
@@ -48,23 +51,36 @@ import System.IO.Unsafe -- for debugging
 
 -- | Apply the fusion transformation to a de Bruijn AST
 --
-convertAcc
-    :: HasCallStack
+convertAccWith
+    :: (HasCallStack, MakesILP op)
     => Config
-    -> OperationAcc op benv a
-    -> PartitionedAcc op benv a
-convertAcc _ =  withSimplStats $ mapAccExecutable dontFuse
+    -> OperationAcc op () a
+    -> PartitionedAcc op () a
+convertAccWith config = convertAccWith' config LabelEnvNil
 
-convertAccWith :: HasCallStack => Config -> OperationAcc op benv a -> PartitionedAcc op benv a
-convertAccWith config = convertAcc config
+convertAccWith' 
+    :: (HasCallStack, MakesILP op)
+    => Config
+    -> LabelEnv env
+    -> OperationAcc op env a
+    -> PartitionedAcc op env a
+convertAccWith' _ = withSimplStats gurobiFusion
+
+convertAcc :: (HasCallStack, MakesILP op) => OperationAcc op () a -> PartitionedAcc op () a
+convertAcc = convertAccWith defaultOptions
 
 -- | Apply the fusion transformation to a function of array arguments
 --
-convertAfun :: HasCallStack => OperationAfun op benv f -> PartitionedAfun op benv f
-convertAfun = convertAfunWith undefined
+convertAfun :: (HasCallStack, MakesILP op) => OperationAfun op () f -> PartitionedAfun op () f
+convertAfun = convertAfunWith defaultOptions
 
-convertAfunWith :: HasCallStack => Config -> OperationAfun op benv f -> PartitionedAfun op benv f
-convertAfunWith config = withSimplStats $ mapAfunExecutable dontFuse
+convertAfunWith :: (HasCallStack, MakesILP op) => Config -> OperationAfun op () f -> PartitionedAfun op () f
+convertAfunWith config = go LabelEnvNil
+  where
+    go :: MakesILP op => LabelEnv env -> OperationAfun op env f -> PartitionedAfun op env f
+    go env (Abody acc) = Abody $ convertAccWith' config env acc
+    go env (Alam lhs fun) = Alam lhs $ go (incr lhs env) fun
+
 
 withSimplStats :: a -> a
 #ifdef ACCELERATE_DEBUG

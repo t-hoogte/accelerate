@@ -278,6 +278,7 @@ type OperationAcc op = PreOpenAcc op
 --
 type OperationAfun op = PreOpenAfun op
 
+
 class HasGroundsR f where
   groundsR :: f a -> GroundsR a
 

@@ -50,11 +50,11 @@ Data.Graph (containers) has a nice topological sort.
 -- Note that the return type `a` is not existentially qualified: The caller of this function tells
 -- us what the result type should be (namely, what it was before fusion). We use unsafe tricks to
 -- fulfill this contract: if something goes wrong during fusion or at the caller, bad things happen.
-reconstruct :: forall op a. Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> PreOpenAcc (Cluster op) () a
-reconstruct a b c d = case openReconstruct LabelEnvNil a b c d of
+reconstruct :: forall op env a. LabelEnv env -> Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> PreOpenAcc (Cluster op) env a
+reconstruct a b c d e = case openReconstruct a b c d e of
           -- see [NOTE unsafeCoerce result type]
-          Exists res -> unsafeCoerce @(PartitionedAcc op () _)
-                                     @(PartitionedAcc op () a)
+          Exists res -> unsafeCoerce @(PartitionedAcc op env _)
+                                     @(PartitionedAcc op env a)
                                      res
 
 -- ordered list of labels

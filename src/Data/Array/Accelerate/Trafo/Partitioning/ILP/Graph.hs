@@ -48,7 +48,7 @@ import Data.Kind ( Type )
 import Unsafe.Coerce (unsafeCoerce)
 import Data.Maybe (isJust, fromJust)
 import Data.Array.Accelerate.Representation.Type (TupR)
-import Data.Array.Accelerate.AST.LeftHandSide (LeftHandSide (LeftHandSideSingle, LeftHandSideWildcard, LeftHandSidePair))
+import Data.Array.Accelerate.AST.LeftHandSide (LeftHandSide (LeftHandSideSingle, LeftHandSideWildcard, LeftHandSidePair, LeftHandSideUnit))
 import Data.Array.Accelerate.Representation.Shape (ShapeR)
 
 
@@ -114,7 +114,7 @@ pi :: Label -> Expression op
 pi l      = c $ Pi l
 -- | Safe constructor for Fused variables
 fused :: Label -> Label -> Expression op
-fused x y = let x' :-> y' = x -?> y 
+fused x y = let x' :-> y' = x -?> y
             in c $ Fused x' y'
 
 class (Eq (BackendVar op), Ord (BackendVar op), Show (BackendVar op), Read (BackendVar op)) => MakesILP op where
@@ -195,18 +195,18 @@ stripLHS (LeftHandSideSingle _) (_ :>>: le') = le'
 stripLHS (LeftHandSideWildcard _) le = le
 stripLHS (LeftHandSidePair l r) le = stripLHS l (stripLHS r le)
 
-createLHS :: MyGLHS a 
+createLHS :: MyGLHS a
           -> LabelEnv env
           -> ( forall env'
-             . LabelEnv env' 
-            -> GLeftHandSide a env env' 
-            -> r) 
+             . LabelEnv env'
+            -> GLeftHandSide a env env'
+            -> r)
           -> r
 createLHS (LHSSingle g e) env k = k (e :>>: env) (LeftHandSideSingle g)
 createLHS (LHSWildcard t) env k = k env (LeftHandSideWildcard t)
-createLHS (LHSPair l r)   env k = 
+createLHS (LHSPair l r)   env k =
   createLHS   l env  $ \env'  l' ->
-    createLHS r env' $ \env'' r' -> 
+    createLHS r env' $ \env'' r' ->
       k env'' (LeftHandSidePair l' r')
 
 
@@ -236,10 +236,20 @@ makeLenses ''Information
 
 
 makeFullGraph :: (MakesILP op)
-              => PreOpenAcc op () a
+              => LabelEnv env
+              -> PreOpenAcc op env a
               -> (Information op, Map Label (Construction op))
-makeFullGraph acc = (i, constrM)
-  where (FGRes i _ constrM, _) = runState (mkFullGraph acc) (FGState LabelEnvNil (Label 0 Nothing) 0)
+makeFullGraph initenv acc = (i, constrM)
+  where (FGRes i _ constrM, _) = runState (mkFullGraph acc) (FGState initenv (Label 0 Nothing) (getTopELabelInit initenv)) -- TODO generate initial environment
+
+getTopELabelInit :: LabelEnv env -> ELabel -- only applicable on construction of initial env!
+getTopELabelInit LabelEnvNil = 0
+getTopELabelInit ((e, _) :>>: _) = e
+
+incr :: GLeftHandSide a env env' -> LabelEnv env -> LabelEnv env'
+incr (LeftHandSideSingle _) env = (getTopELabelInit env + 1, S.singleton $ Label 0 Nothing) :>>: env
+incr (LeftHandSideWildcard _) env = env
+incr (LeftHandSidePair lhs1 lhs2) env = incr lhs2 $ incr lhs1 env
 
 mkFullGraph :: forall op env a. (MakesILP op)
             => PreOpenAcc op env a
@@ -258,17 +268,28 @@ mkFullGraph (Exec op args) = do
                  (M.singleton l $ CExe env labelledArgs op)
 
 -- TODO Alet LeftHandSideUnit case
+mkFullGraph (Alet LeftHandSideUnit _ bnd scp) = do
+  res1 <- mkFullGraph bnd
+  res2 <- mkFullGraph scp
+  return $ (res1 <> res2)
+         & l_res .~ (res2 ^. l_res)
 
 -- We throw away the uniquenessess information here, in the future we will add uniqueness variables to the ILP
 mkFullGraph (Alet (lhs :: GLeftHandSide bnd env env') _ bnd scp) = do
   l <- freshL
   bndRes <- mkFullGraph bnd
   (scpRes, mylhs) <- zoomState lhs l (mkFullGraph scp)
-  return $ (bndRes <> scpRes)
-         & info.graphI.infusibleEdges <>~ S.fromList [ fromJust (bndRes ^. l_res) -?> l
-                                                     ,                          l -?> fromJust (scpRes ^. l_res)]
-         & construc                    %~ M.insert l (CLHS mylhs (fromJust $ bndRes ^. l_res))
-         & l_res                       .~ (scpRes ^. l_res)
+  case scpRes ^. l_res of
+    Just scpResL -> return  $ (bndRes <> scpRes)
+                            & info.graphI.infusibleEdges <>~ S.fromList [ fromJust (bndRes ^. l_res) -?> l
+                                                                        ,                          l -?> scpResL]
+                            & construc                    %~ M.insert l (CLHS mylhs (fromJust $ bndRes ^. l_res))
+                            & l_res                       ?~ scpResL
+    -- The right-hand side of this let-binding had no result (e.g. an Execute)
+    Nothing -> return $ (bndRes <> scpRes)
+                      & info.graphI.infusibleEdges <>~ S.singleton (fromJust (bndRes ^. l_res) -?> l)
+                      & construc                    %~ M.insert l (CLHS mylhs (fromJust $ bndRes ^. l_res))
+                      & l_res ?~ l
 
 
 mkFullGraph (Return vars)    = mkFullGraphHelper $ \env ->

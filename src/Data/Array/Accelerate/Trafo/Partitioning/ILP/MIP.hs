@@ -28,12 +28,18 @@ import Data.Bifunctor (bimap)
 
 import Numeric.Optimization.MIP.Solver
     ( cbc, cplex, glpsol, gurobiCl, lpSolve, scip )
+import Data.Char (isSpace)
+import GHC.IO (unsafePerformIO)
 
 instance (MakesILP op, MIP.IsSolver s IO) => ILPSolver s op where
-  solve s (ILP dir obj constr bnds n) = makeSolution <$> MIP.solve s options problem
+  solve s ilp@(ILP dir obj constr bnds n) = unsafePerformIO $ do
+    putStrLn "ILP:"
+    print ilp
+    putStrLn ""
+    return $ makeSolution <$> MIP.solve s options problem
     where
       options = MIP.SolveOptions{ MIP.solveTimeLimit   = Nothing
-                                , MIP.solveLogger      = putStrLn . ("AccILPSolver says: " ++)
+                                , MIP.solveLogger      = putStrLn . ("AccILPSolver: "      ++)
                                 , MIP.solveErrorLogger = putStrLn . ("AccILPSolverError: " ++) }
 
       problem = Problem (Just "AccelerateILP") (mkFun dir $ expr n obj) (cons n constr) [] [] vartypes (bounds bnds)
@@ -78,7 +84,7 @@ allIntegers NoBounds = mempty
 
 -- For MIP, variables are Text-based. This is why Var and BackendVar have Show and Read instances.
 var   :: MakesILP op => Graph.Var op -> MIP.Var
-var   = toVar . show
+var   = toVar . filter (not . isSpace) . show
 unvar :: MakesILP op => MIP.Var -> Graph.Var op
 unvar = read . fromVar
 

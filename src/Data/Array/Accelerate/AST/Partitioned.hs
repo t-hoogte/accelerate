@@ -129,13 +129,16 @@ data ClusterIO args input output where
          -> ClusterIO (Fun'   e -> args) (input, Fun' e)   (output, Fun' e)
 
 
-pattern ExpArg :: LeftHandSideArgs args body scope -> LeftHandSideArgs (e -> args) (body, e) (scope, e)
-pattern ExpArg lhs <- (unExpArg -> Just lhs)
+pattern ExpArg :: () 
+                => forall e args body scope. (args' ~ (e -> args), body' ~ (body, e), scope' ~ (scope, e)) 
+                => LeftHandSideArgs args body scope 
+                -> LeftHandSideArgs args' body' scope'
+pattern ExpArg lhs <- (unExpArg -> Just (lhs, Refl))
 {-# COMPLETE Base, Reqr, Make, Adju, Ignr, ExpArg #-}
-unExpArg :: LeftHandSideArgs (e -> args) (body, e) (scope, e) -> Maybe (LeftHandSideArgs args body scope)
-unExpArg (EArg lhs) = Just lhs
-unExpArg (VArg lhs) = Just lhs
-unExpArg (FArg lhs) = Just lhs
+unExpArg :: LeftHandSideArgs args' i' o' -> Maybe (LeftHandSideArgs args i o, (args', i', o') :~: (e -> args, (i, e), (o, e)))
+unExpArg (EArg lhs) = Just (unsafeCoerce lhs, unsafeCoerce Refl)
+unExpArg (VArg lhs) = Just (unsafeCoerce lhs, unsafeCoerce Refl)
+unExpArg (FArg lhs) = Just (unsafeCoerce lhs, unsafeCoerce Refl)
 unExpArg _ = Nothing
 
 pattern ExpPut' :: () 
@@ -174,7 +177,8 @@ iolhs (ArgArray In  _ _ _ :>: as) f = iolhs as $ \io lhs -> f (Input       io) (
 iolhs (ArgArray Out _ _ _ :>: as) f = iolhs as $ \io lhs -> f (Output Here io) (Make Here lhs)
 iolhs (ArgArray Mut _ _ _ :>: as) f = iolhs as $ \io lhs -> f (MutPut io) (Adju lhs)
 iolhs (ArgExp _           :>: as) f = iolhs as $ \io lhs -> f (ExpPut      io) (EArg lhs)
-iolhs _ _ = undefined -- TODO Var', Fun'
+iolhs (ArgVar _           :>: as) f = iolhs as $ \io lhs -> f (VarPut      io) (VArg lhs)
+iolhs (ArgFun _           :>: as) f = iolhs as $ \io lhs -> f (FunPut      io) (FArg lhs)
 
 mkBase :: ClusterIO args i o -> LeftHandSideArgs () i i
 mkBase Empty = Base
@@ -250,8 +254,10 @@ getIn Base () = ()
 getIn (Reqr t1 _ lhs) i = let (x, i') = take t1 i in (getIn lhs i', x)
 getIn (Make _ lhs) (i, sh) = (getIn lhs i, sh)
 getIn (Adju lhs)   (i, x)  = (getIn lhs i, x)
-getIn (EArg lhs)   (i, x)  = (getIn lhs i, x)
 getIn (Ignr lhs)   (i, _)  =  getIn lhs i
+getIn (EArg lhs)   (i, x)  = (getIn lhs i, x)
+getIn (VArg lhs)   (i, x)  = (getIn lhs i, x)
+getIn (FArg lhs)   (i, x)  = (getIn lhs i, x)
 
 genOut :: LeftHandSideArgs body i o -> i -> OutArgs body -> o
 genOut Base             ()    _     = 
@@ -263,9 +269,13 @@ genOut (Make t lhs)    (i, _) (o, x) =
   put t x (genOut lhs i o)
 genOut (Adju lhs) (i, _)    (o, x) = 
   (genOut lhs i o, x)
+genOut (Ignr lhs)      (i, x) o     =
+  (genOut lhs i o, x)
 genOut (EArg lhs)      (i, x) o     =
   (genOut lhs i o, x)
-genOut (Ignr lhs)      (i, x) o     =
+genOut (VArg lhs)      (i, x) o     =
+  (genOut lhs i o, x)
+genOut (FArg lhs)      (i, x) o     =
   (genOut lhs i o, x)
 
 type family FromArg env a = b | b -> a where
