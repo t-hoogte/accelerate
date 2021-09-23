@@ -1438,15 +1438,16 @@ chainFuture (FutureBuffer tp signal ref read mwrite) SyncWrite SyncWrite
 -- output arguments and in the body in local declarations.
 -- LoopFutureEnv, LoopFutureEnvOutput and LoopFutureEnvBody are similar to
 -- LoopFuture, LoopFutureOutput and LoopFutureBody but contain 
-data LoopFutureEnv kernel fenv1 genv where
+data LoopFutureEnv kernel fenv0 fenv1 genv where
   LoopFutureEnv
     :: InputOutputR input output
     -- Input
     -> fenv1 :> fenv2
     -> BLeftHandSide input fenv1 fenv2
+    -> BaseVars fenv0 input -- Initial state
     -- Output
     -> (forall fenv3. fenv2 :> fenv3 -> LoopFutureEnvOutput kernel fenv3 genv output)
-    -> LoopFutureEnv kernel fenv1 genv
+    -> LoopFutureEnv kernel fenv0 fenv1 genv
 
 data LoopFutureEnvOutput kernel fenv3 genv output where
   LoopFutureEnvOutput
@@ -1481,12 +1482,13 @@ data FutureEnvOuter fenv genv1 genv2 where
     -> (forall fenv'. fenv :> fenv' -> FutureEnv fenv' genv1 -> FutureEnv fenv' genv2)
     -> FutureEnvOuter fenv genv1 genv2
 
-loopFutureEnvironment :: fenv :> fenv1 -> FutureEnv fenv genv -> SyncEnv genv -> SyncEnv genv -> LoopFutureEnv kernel fenv1 genv
-loopFutureEnvironment _ PEnd _ _
+loopFutureEnvironment :: Idx fenv Signal -> fenv :> fenv1 -> FutureEnv fenv genv -> SyncEnv genv -> SyncEnv genv -> LoopFutureEnv kernel fenv fenv1 genv
+loopFutureEnvironment _ _ PEnd _ _
   = LoopFutureEnv
       InputOutputRunit
       weakenId
       (LeftHandSideWildcard TupRunit)
+      TupRunit
       $ \_ ->
         LoopFutureEnvOutput
           weakenId
@@ -1498,13 +1500,14 @@ loopFutureEnvironment _ PEnd _ _
               PEnd
               PEnd
               $ const []
-loopFutureEnvironment k (PPush fenv f) senvLeft senvRight
-  | LoopFuture    ioA k12A lhsInputA outputA <- loopFuture (weaken k f) (partialEnvLast senvLeft) (partialEnvLast senvRight)
-  , LoopFutureEnv ioB k12B lhsInputB outputB <- loopFutureEnvironment (k12A .> k) fenv (partialEnvTail senvLeft) (partialEnvTail senvRight)
+loopFutureEnvironment resolved k (PPush fenv f) senvLeft senvRight
+  | LoopFuture    ioA k12A lhsInputA initialA outputA <- loopFuture resolved k f (partialEnvLast senvLeft) (partialEnvLast senvRight)
+  , LoopFutureEnv ioB k12B lhsInputB initialB outputB <- loopFutureEnvironment resolved (k12A .> k) fenv (partialEnvTail senvLeft) (partialEnvTail senvRight)
   = LoopFutureEnv
       (InputOutputRpair ioA ioB)
       (k12B .> k12A)
       (LeftHandSidePair lhsInputA lhsInputB)
+      (TupRpair initialA initialB)
       $ \k23 ->
         if -- This is a 'multi-way' (or actually a single-way) if, to pattern match on LoopFuture{Env}Output
           | LoopFutureOutput    k34A lhsOutputA bodyA <- outputA (k23 .> k12B)
@@ -1521,16 +1524,16 @@ loopFutureEnvironment k (PPush fenv f) senvLeft senvRight
                       (k56B .> k56A)
                       (partialEnvPush fenvLeft  (weaken k56B <$> futureLeft))
                       (partialEnvPush fenvRight (weaken k56B <$> futureRight))
-                      $ maybe
-                        releaseB
-                        (\r k67 -> weaken' (k67 .> k56B) r : releaseB k67)
-                        releaseA
-loopFutureEnvironment k (PNone fenv) senvLeft senvRight
-  | LoopFutureEnv io k12 lhsInput output <- loopFutureEnvironment k fenv (partialEnvTail senvLeft) (partialEnvTail senvRight)
+                      $ \k67 ->
+                          map (weaken' (k67 .> k56B)) releaseA
+                          ++ releaseB k67
+loopFutureEnvironment resolved k (PNone fenv) senvLeft senvRight
+  | LoopFutureEnv io k12 lhsInput initial output <- loopFutureEnvironment resolved k fenv (partialEnvTail senvLeft) (partialEnvTail senvRight)
   = LoopFutureEnv
       io
       k12
       lhsInput
+      initial
       $ \k23 ->
         if -- Again a multi-way if with only one alternative to pattern match on LoopFutureOutput
           | LoopFutureEnvOutput k34 lhsOutput body <- output k23
@@ -1545,15 +1548,16 @@ loopFutureEnvironment k (PNone fenv) senvLeft senvRight
 -- Data type for the existentially qualified type variable fenv' used in loopFuture
 -- This is split in 3 data types, as we must introduce variables in the input arguments,
 -- output arguments and in the body in local declarations.
-data LoopFuture kernel fenv1 t where
+data LoopFuture kernel fenv0 fenv1 t where
   LoopFuture
     :: InputOutputR input output
     -- Input
     -> fenv1 :> fenv2
     -> BLeftHandSide input fenv1 fenv2
+    -> BaseVars fenv0 input
     -- Output
     -> (forall fenv3. fenv2 :> fenv3 -> LoopFutureOutput kernel fenv3 t output)
-    -> LoopFuture kernel fenv1 t
+    -> LoopFuture kernel fenv0 fenv1 t
 
 data LoopFutureOutput kernel fenv3 t output where
   LoopFutureOutput
@@ -1569,17 +1573,55 @@ data LoopFutureBody kernel fenv5 t where
     -> fenv5 :> fenv6
     -> Maybe (Future fenv6 t)
     -> Maybe (Future fenv6 t)
-    -> Maybe (UniformSchedule kernel fenv6) -- Instruction to be called when the loop terminates
+    -> [UniformSchedule kernel fenv6] -- Instruction to be called when the loop terminates
     -> LoopFutureBody kernel fenv5 t
 
-loopFuture :: Future fenv1 t -> Maybe (Sync t) -> Maybe (Sync t) -> LoopFuture kernel fenv1 t
+loopFuture :: Idx fenv0 Signal -> fenv0 :> fenv1 -> Future fenv0 t -> Maybe (Sync t) -> Maybe (Sync t) -> LoopFuture kernel fenv0 fenv1 t
 -- Illegal and impossible cases
-loopFuture (FutureScalar tp _ _) (Just SyncRead)  _ = bufferImpossible tp
-loopFuture (FutureScalar tp _ _) _  (Just SyncRead) = bufferImpossible tp
-loopFuture _ (Just SyncWrite) _ = internalError "A loop illegally requested write permissions on a variable from the environment."
-loopFuture _ _ (Just SyncWrite) = internalError "A loop illegally requested write permissions on a variable from the environment."
-loopFuture (FutureBuffer _ _ _ _ (Just _)) _ _ = internalError "Write permissions cannot be used in a loop. The sub-environment rule might be missing."
-loopFuture (FutureBuffer tp signal ref (Borrow acquireRead releaseRead) Nothing) (Just SyncRead) (Just SyncRead)
+loopFuture _ _ (FutureScalar tp _ _) (Just SyncRead)  _ = bufferImpossible tp
+loopFuture _ _ (FutureScalar tp _ _) (Just SyncWrite) _ = bufferImpossible tp
+loopFuture _ _ (FutureScalar tp _ _) _  (Just SyncRead) = bufferImpossible tp
+loopFuture _ _ (FutureScalar tp _ _) _ (Just SyncWrite) = bufferImpossible tp
+
+-- Cases with write permissions
+loopFuture _ _ (FutureBuffer tp signal ref readLock (Just writeLock)) (Just SyncWrite) (Just SyncWrite) = undefined
+loopFuture _ _ (FutureBuffer tp signal ref readLock (Just writeLock)) (Just SyncWrite) (Just SyncRead) = undefined
+loopFuture _ _ (FutureBuffer tp signal ref readLock (Just writeLock)) (Just SyncRead) (Just SyncWrite) = undefined
+loopFuture _ k01 (FutureBuffer tp signal ref readLock (Just writeLock)) Nothing (Just SyncWrite)
+  -- A buffer used in only the step of the loop
+  -- We need to declare two signals (and accompanying signal resolvers)
+  -- to synchronize read and write access.
+  = LoopFuture
+      (InputOutputRpair InputOutputRsignal InputOutputRsignal)
+      (weakenSucc $ weakenSucc weakenId)
+      (LeftHandSideSingle BaseRsignal `LeftHandSidePair` LeftHandSideSingle BaseRsignal)
+      (TupRsingle (Var BaseRsignal $ lockSignal readLock) `TupRpair` TupRsingle (Var BaseRsignal $ lockSignal writeLock))
+      $ \k23 ->
+        LoopFutureOutput
+          (weakenSucc $ weakenSucc weakenId)
+          (LeftHandSideSingle BaseRsignalResolver `LeftHandSidePair` LeftHandSideSingle BaseRsignalResolver)
+          $ \k45 ->
+            let
+              k25 = k45 .> weakenSucc (weakenSucc weakenId) .> k23
+              k = k25 .> weakenSucc (weakenSucc weakenId) .> k01
+              releaseRead = case readLock of
+                Borrow _ resolver ->
+                  [Effect (SignalAwait [k25 >:> SuccIdx ZeroIdx]) $ Effect (SignalResolve [k >:> resolver]) Return]
+                _ -> []
+              releaseWrite = case writeLock of
+                Borrow _ resolver ->
+                  [Effect (SignalAwait [k25 >:> ZeroIdx]) $ Effect (SignalResolve [k >:> resolver]) Return]
+                _ -> []
+            in
+              LoopFutureBody
+                id
+                weakenId
+                Nothing
+                (Just $ FutureBuffer tp (weaken k signal) (weaken k ref) (weaken' k readLock) (Just $ weaken' k writeLock))
+                (releaseRead ++ releaseWrite)
+
+-- Cases with only read permissions
+loopFuture resolved k01 (FutureBuffer tp signal ref (Borrow acquireRead releaseRead) Nothing) (Just SyncRead) (Just SyncRead)
   -- A borrowed buffer, used in both the condition and the body.
   -- We need one signal in the state of the loop, to denote that the previous
   -- iterations have finished working with the array.  The accompanying signal
@@ -1594,6 +1636,7 @@ loopFuture (FutureBuffer tp signal ref (Borrow acquireRead releaseRead) Nothing)
       InputOutputRsignal
       (weakenSucc weakenId)
       (LeftHandSideSingle BaseRsignal)
+      (TupRsingle $ Var BaseRsignal resolved)
       $ \k23 ->
         LoopFutureOutput
           (weakenSucc weakenId)
@@ -1610,15 +1653,15 @@ loopFuture (FutureBuffer tp signal ref (Borrow acquireRead releaseRead) Nothing)
               k56 = weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId
               k46 = k56 .> k45
               k26 = k46 .> weakenSucc weakenId .> k23
-              k = k26 .> weakenSucc weakenId
+              k = k26 .> weakenSucc weakenId .> k01
             in
               LoopFutureBody
                 instr
                 k56
                 (Just $ FutureBuffer tp (weaken k signal) (weaken k ref) (Borrow (weaken k acquireRead) $ SuccIdx $ SuccIdx ZeroIdx) Nothing)
                 (Just $ FutureBuffer tp (weaken k signal) (weaken k ref) (Borrow (weaken k acquireRead) ZeroIdx) Nothing)
-                (Just release)
-loopFuture (FutureBuffer tp signal ref (Borrow acquireRead releaseRead) Nothing) mleft mright
+                [release]
+loopFuture resolved k01 (FutureBuffer tp signal ref (Borrow acquireRead releaseRead) Nothing) mleft mright
   | left || right
   -- A borrowed buffer, used in only one subterm of the loop (condition or step).
   -- This is similar to the previous case, but slightly simpler. We only need
@@ -1627,6 +1670,7 @@ loopFuture (FutureBuffer tp signal ref (Borrow acquireRead releaseRead) Nothing)
       InputOutputRsignal
       (weakenSucc weakenId)
       (LeftHandSideSingle BaseRsignal)
+      (TupRsingle $ Var BaseRsignal resolved)
       $ \k23 ->
         LoopFutureOutput
           (weakenSucc weakenId)
@@ -1653,37 +1697,42 @@ loopFuture (FutureBuffer tp signal ref (Borrow acquireRead releaseRead) Nothing)
               k56 = weakenSucc $ weakenSucc $ weakenId
               k46 = k56 .> k45
               k26 = k46 .> weakenSucc weakenId .> k23
-              k = k26 .> weakenSucc weakenId
+              k = k26 .> weakenSucc weakenId .> k01
             in
               LoopFutureBody
                 instr
                 k56
                 (fmap (const future') mleft)
                 (fmap (const future') mright)
-                (Just release)
+                [release]
   where
     left = isJust mleft
     right = isJust mright
-loopFuture future left right
-  -- A buffer with Move lock or a scalar, no further synchronisation needed
+loopFuture _ k01 future left right
+  -- A buffer with Move read lock or a scalar, no further synchronisation needed
   = LoopFuture
       InputOutputRunit
       weakenId
       (LeftHandSideWildcard TupRunit)
+      TupRunit
       $ \k23 ->
         LoopFutureOutput
           weakenId
           (LeftHandSideWildcard TupRunit)
           $ \k45 ->
           let
-            future' = weaken (k45 .> k23) future
+            future' = weaken (k45 .> k23 .> k01) future
           in
             LoopFutureBody
               id
               weakenId
-              (fmap (const future') left)
-              (fmap (const future') right)
-              Nothing
+              (if isScalar || isJust left  then Just future' else Nothing)
+              (if isScalar || isJust right then Just future' else Nothing)
+              []
+  where
+    isScalar
+      | FutureScalar{} <- future = True
+      | otherwise = False
 
 lhsSignal :: LeftHandSide BaseR (Signal, SignalResolver) fenv ((fenv, Signal), SignalResolver)
 lhsSignal = LeftHandSidePair (LeftHandSideSingle BaseRsignal) (LeftHandSideSingle BaseRsignalResolver)
@@ -1841,65 +1890,179 @@ fromPartialAwhile
   -> GroundVars genv t
   -> UniformSchedule kernel fenv
 fromPartialAwhile outputEnv outputVars env uniquenesses conditionFun@(Plam lhsC (Pbody condition)) stepFun@(Plam lhsS (Pbody step)) initial
-  | Exists groundLhs <- unionLeftHandSides lhsC lhsS
-  , AwhileInputOutput io k1 lhsInput env' initial' outputEnv' outputRepr <- awhileInputOutput env (\k -> mapPartialEnv (weaken $ weakenSucc $ weakenSucc k) env) uniquenesses initial groundLhs
-  , FutureEnvOuter envOuter envLambdaInput <- futureEnvOuter groundLhs (env' weakenId)
-  , LoopFutureEnv syncLoopIo k2 lhsSyncLoopInput syncLoopOutput <- loopFutureEnvironment weakenId envOuter (syncEnvFun conditionFun) (syncEnvFun stepFun)
+  -- Split environment for initial vars and body
+  | ChainFutureEnv instrSplit k0 envInitial envLoop <- chainFutureEnvironment (weakenSucc $ weakenSucc weakenId) env (variablesToSyncEnv uniquenesses initial) (unionPartialEnv max (syncEnvFun conditionFun) (syncEnvFun stepFun))
+  -- Create a LHS which brings variables in scope for both the condition and
+  -- the step function. This is needed as they may have wildcards at different
+  -- locations
+  , Exists groundLhs <- unionLeftHandSides lhsC lhsS
+  -- Create the input and output representations for the loop
+  , AwhileInputOutput io k1 lhsInput envLoop' initial' outputEnv' outputRepr <- awhileInputOutput envInitial (\k -> mapPartialEnv (weaken k) envLoop) uniquenesses initial groundLhs
+  -- We still need to manipulate the environment for proper synchronisation of
+  -- free variables. Hence we can only use the variables bound in 'groundLhs'
+  -- from this environment. We extract that part of the environment in
+  -- envLambdaInput.
+  , FutureEnvOuter _ envLambdaInput <- futureEnvOuter groundLhs (envLoop' weakenId)
+  -- In the loop, we must synchronize access to free buffer variables. This is
+  -- especially difficult as loops can be executed asynchronously: different
+  -- parts of different loops can be executed at the same time, if the
+  -- dependencies allow that. For readonly buffers, we must release the buffer
+  -- when all iterations have finished working with that buffer. We introduce
+  -- a signal in the state of the loop to denote that all iterations up to that
+  -- iteration have finished working with the buffer. For writeable buffers
+  -- we must add two signals, one to denote that the previous iteration has
+  -- finished reading and one to denote that the previous iteration has
+  -- finished writing. Note that this now only regards the previous iteration,
+  -- as the desire to write already adds more barriers and hence the
+  -- synchronisation is "more local".
+  , LoopFutureEnv syncLoopIo k2 lhsSyncLoopInput loopSyncInitial syncLoopOutput <- loopFutureEnvironment (k0 >:> defaultSignal) k1 envLoop (syncEnvFun conditionFun) (syncEnvFun stepFun)
+  -- The body of the loop is a function which outputs a boolean to denote
+  -- whether the loop should continue ...
   , lhsOutputBool <- LeftHandSideSingle BaseRsignalResolver `LeftHandSidePair` LeftHandSideSingle (BaseRrefWrite $ GroundRscalar scalarType)
+  -- ... and outputs the next state of the loop.
   , DeclareVars lhsOutput k3 outputVars' <- declareVars outputRepr
+  -- The synchronisation of free buffer variables introduces new signals for
+  -- the state of the loop. In thus also introduces new output variables.
+  -- Because of the typed environment, we can only now really construct those.
   , LoopFutureEnvOutput k4 lhsSyncLoopOutput syncLoopBody <- syncLoopOutput (weakenSucc $ weakenSucc k3)
+  -- The synchronisation may also need to introduce new local signals in the
+  -- body of the loop. For instance, for a free readonly borrowed buffer
+  -- variable, we must introduce a signal to denote that the current iteration,
+  -- say i, has finished working with the buffer. We can then resolve the signal
+  -- which denotes that iterations up to and including i are done with the
+  -- buffer (i.e. the output signal resolver of this iteration) if that local
+  -- signal and the input signal from the state (i.e. the signal that denotes
+  -- that iterations up to i are done with the buffer) are resolved.
+  -- Adding new local signals is handled by 'syncLoopInstr' and 'k5'.
+  --
+  -- We also construct environments with the free variables for the condition
+  -- and step functions, respectively envC' and envS'.
+  --
+  -- When the loop is finished, we must release the free buffers variables that
+  -- we used. This is handled by 'syncLoopRelease'.
   , LoopFutureEnvBody syncLoopInstr k5 envC' envS' syncLoopRelease <- syncLoopBody weakenId
+  -- envC' and envS' only contain bindings for the free buffer variables. We
+  -- must now add the variables for the bound variables from the state of the
+  -- loop, handled by envLambdaInput (originating from futureEnvOuter).
+  -- Then we must create a sub-environment, only containing the part of the
+  -- loop state which is actually used: it might be that lhsC and lhsS
+  -- do not bind all variables and have wildcards at different locations.
   , envC <- environmentForSubLHS (envLambdaInput (k5 .> k4 .> k3 .> weakenSucc' (weakenSucc' k2)) envC') groundLhs lhsC
   , envS <- environmentForSubLHS (envLambdaInput (k5 .> k4 .> k3 .> weakenSucc' (weakenSucc' k2)) envS') groundLhs lhsS 
   = let
-      initial'' = mapTupR (weaken $ weakenSucc $ weakenSucc weakenId) initial'
-      loopSyncInitial = mapTupR defaultSignal $ lhsToTupR lhsSyncLoopInput
-
-      defaultSignal :: BaseR s -> BaseVar ((fenv, Signal), SignalResolver) s
-      defaultSignal BaseRsignal = Var BaseRsignal $ SuccIdx ZeroIdx
-      defaultSignal _           = internalError "Expected signal"
-
+      -- Create the loop function:
+      -- Accept arguments for the input state (and additional signals in the
+      -- state for synchronization of free buffer variables).
       f = Slam (LeftHandSidePair lhsInput lhsSyncLoopInput)
+        -- Accept an output argument (destination) for the condition
         $ Slam lhsOutputBool
+        -- and the next state (only used if condition is True), including
+        -- additional signal resolvers for synchronization.
         $ Slam (LeftHandSidePair lhsOutput lhsSyncLoopOutput)
         $ Sbody
+        -- Add additional local signals for synchronizing free buffer variables
+        -- if needed. This may also introduce forks to perform synchronization,
+        -- e.g. wait on some signals and then resolve some other signal.
         $ syncLoopInstr
+        -- Create a signal to be filled when the condition is executed.
         $ Alet lhsSignal NewSignal
+        -- We first bind the condition locally before writing the reference
+        -- from the output argument. This is needed to check whether we should
+        -- perform another iteration in the loop.
         $ Alet (lhsRef $ GroundRscalar scalarType) (NewRef $ GroundRscalar scalarType)
+        -- Execute the condition and then, if needed, another iteration of the
+        -- loop. Note that 'serial' tries to execute the two schedules serially
+        -- but does not guarantee that. Hence we still need the synchronisation
+        -- with the signal.
         $ serial
           [ fromPartial
               (OutputEnvScalar scalarType)
+              -- Write output to the locally defined signal resolver and
+              -- reference
               (TupRsingle (Var BaseRsignalResolver $ SuccIdx $ SuccIdx ZeroIdx) `TupRpair` TupRsingle (Var (BaseRrefWrite $ GroundRscalar scalarType) ZeroIdx))
+              -- Use the previously constructed environment for the condition
+              -- (envC) and weaken it as we introduced a signal and reference
+              -- (2 * 2 variables).
               (mapPartialEnv (weaken $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId) envC)
               condition
           , -- Wait on signal of condition
             Effect (SignalAwait [SuccIdx $ SuccIdx $ SuccIdx ZeroIdx])
             -- Read condition
             $ Alet (LeftHandSideSingle $ BaseRground $ GroundRscalar scalarType) (RefRead $ Var (BaseRref $ GroundRscalar scalarType) $ SuccIdx ZeroIdx)
-            -- Write to output variable for condition
+            -- Write to output variable for condition.
+            -- Note that you can see that the reference (the first Var passed
+            -- to RefWrite) originates from 'lhsOutputBool' as it was weakened
+            -- by k5, k4 and k3 and lhsOutputBool was introduced just before
+            -- k3.
             $ Effect (RefWrite (Var (BaseRrefWrite $ GroundRscalar scalarType) ((weakenSucc' $ weakenSucc' $ weakenSucc' $ weakenSucc' $ weakenSucc' $ k5 .> k4 .> k3) >:> ZeroIdx)) (Var (BaseRground $ GroundRscalar scalarType) ZeroIdx))
+            -- Resolve the condition-signal to inform the loop that the
+            -- reference can be read. Similar to the previous comment,
+            -- the signal variable originates from 'lhsOutputBool'.
+            $ Effect (SignalResolve [(weakenSucc' $ weakenSucc' $ weakenSucc' $ weakenSucc' $ weakenSucc' $ k5 .> k4 .> k3) >:> SuccIdx ZeroIdx])
+            -- Branch on the condition
             $ Acond (Var scalarType ZeroIdx)
               ( -- Condition is true, perform next iteration
                 fromPartial
                   outputEnv'
+                  -- Write to the destinations passed in the output argument
+                  -- (lhsOutput).
                   (outputVars' $ weakenSucc' $ weakenSucc' $ weakenSucc' $ weakenSucc' $ weakenSucc' $ k5 .> k4)
+                  -- Use the previously constructed environment for the step
+                  -- function and weaken it as we introduced a signal and
+                  -- reference for the condition, and a variable to store
+                  -- the value from the reference to the condition.
                   (mapPartialEnv (weaken $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId) envS)
                   step
               )
-              ( -- Condition is false, write output
+              ( -- Condition is false. The loop should not continue. We must
+                -- write the output to the output / destination variables of
+                -- the loop. This is handled by 'awhileWriteResult'. Note that
+                -- we don't always have a 1-1 mapping between the state of the
+                -- loop and the destination of the loop. It can happen that a
+                -- buffer is unique inside the loop, but is returned as a
+                -- shared array. This can for instance happen in a program of
+                -- this form:
+                --
+                -- acond ..
+                --   a
+                --   awhile ...
+                -- 
+                -- where 'a' is a variable of a shared buffer. The loop may
+                -- still have a unique buffer internally, but write its output
+                -- to a destination for a shared buffer.
+                --
+                -- We must also release free buffer variables. This is handled
+                -- by 'syncLoopRelease'. 
                 forks $ syncLoopRelease (weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId)
                   ++ awhileWriteResult
                       outputEnv
-                      (mapTupR (weaken $ weakenSucc' $ weakenSucc' $ weakenSucc' $ weakenSucc' $ weakenSucc' k5 .> k4 .> k3 .> weakenSucc' (weakenSucc' k2) .> weakenSucc (weakenSucc k1)) outputVars)
+                      (mapTupR (weaken $ weakenSucc' $ weakenSucc' $ weakenSucc' $ weakenSucc' $ weakenSucc' k5 .> k4 .> k3 .> weakenSucc' (weakenSucc' k2) .> k1 .> weakenSucc (weakenSucc k0)) outputVars)
                       io
                       (mapTupR (weaken $ weakenSucc' $ weakenSucc' $ weakenSucc' $ weakenSucc' $ weakenSucc' k5 .> k4 .> k3 .> weakenSucc' (weakenSucc' k2)) $ fromMaybe (internalError "Expected a complete LHS") $ lhsFullVars lhsInput)
               )
               Return
           ]
     in
+      -- Create a directly resolved signal. For synchronizing free buffer
+      -- variables we need signals to denote that iterations up to the
+      -- current one are done with the buffer in the state of the loop.
+      -- We need to initialize this with a signal to denote that all
+      -- iterations before the first iteration are done (i.e., no
+      -- iteration at all). We thus need a signal which is already
+      -- resolved and introduce that here.
       Alet lhsSignal NewSignal
       $ Effect (SignalResolve [ZeroIdx])
-      $ Awhile (InputOutputRpair io syncLoopIo) f (TupRpair initial'' loopSyncInitial) Return
+      -- Instructions to split the environment into an environment for the
+      -- initial state of the loop (envInitial, which constructs initial')
+      -- and an environment for the body of the loop (envLoop, which we
+      -- later split into separate environments for the condition and step
+      -- function).
+      $ instrSplit
+      -- And finally, the actual loop!
+      $ Awhile (InputOutputRpair io syncLoopIo) f (TupRpair initial' loopSyncInitial) Return
+  where
+    defaultSignal :: Idx ((fenv, Signal), SignalResolver) Signal
+    defaultSignal = SuccIdx ZeroIdx
 fromPartialAwhile _ _ _ _ _ _ _ = internalError "Function impossible"
 
 awhileInputOutput :: FutureEnv fenv0 genv0 -> (forall fenv''. fenv :> fenv'' -> FutureEnv fenv'' genv) -> Uniquenesses t -> GroundVars genv0 t -> GLeftHandSide t genv genv' -> AwhileInputOutput fenv0 fenv genv genv' t
