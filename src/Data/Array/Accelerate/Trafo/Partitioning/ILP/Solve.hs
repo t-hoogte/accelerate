@@ -2,6 +2,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE ViewPatterns #-}
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve where
 
 
@@ -24,6 +25,7 @@ import Data.Function ( on )
 import Lens.Micro ((^.),  _1 )
 import Lens.Micro.Extras ( view )
 import Data.Maybe (fromJust,  mapMaybe )
+import qualified Debug.Trace
 
 
 
@@ -89,7 +91,7 @@ makeILP (Info
 
 -- Extract the fusion information (ordered list of clusters of Labels) (head is the first cluster).
 -- Output has the top-level clusters in fst, and the rest in snd.
-interpretSolution :: Solution op -> ([Labels], M.Map Label [Labels])
+interpretSolution :: MakesILP op => Solution op -> ([Labels], M.Map Label [Labels])
 interpretSolution =
     (\(x:xs) -> 
       ( x
@@ -119,7 +121,9 @@ interpretSolution =
     partition f = groupBy ((==) `on` f) . sortOn f
 
 data ClusterLs = Execs Labels | NonExec Label
-  deriving Eq
+  deriving (Eq, Show)
+
+
 
 -- I think that only `let`s can still be in the same cluster as `exec`s, 
 -- and their bodies should all be in earlier clusters already.

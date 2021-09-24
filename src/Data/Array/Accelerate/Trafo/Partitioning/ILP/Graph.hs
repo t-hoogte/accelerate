@@ -16,6 +16,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph where
 
@@ -47,7 +48,7 @@ import Control.Monad.State
 import Data.Kind ( Type )
 import Unsafe.Coerce (unsafeCoerce)
 import Data.Maybe (isJust, fromJust)
-import Data.Array.Accelerate.Representation.Type (TupR)
+import Data.Array.Accelerate.Representation.Type (TupR, liftTypeQ)
 import Data.Array.Accelerate.AST.LeftHandSide (LeftHandSide (LeftHandSideSingle, LeftHandSideWildcard, LeftHandSidePair, LeftHandSideUnit))
 import Data.Array.Accelerate.Representation.Shape (ShapeR)
 
@@ -55,7 +56,7 @@ import Data.Array.Accelerate.Representation.Shape (ShapeR)
 -- | Directed edge (a :-> b): `b` depends on `a`.
 -- We only ever want to have these edges if a and b have the same parent, see `-?>` for a safe constructor.
 data Edge = Label :-> Label
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Show)
 
 -- | Safe constructor for edges: finds the lowest pairs of ancestors that are in the same subcomputation, and adds the constraint there.
 -- Useful if `y` uses some result of `x`, and there is no clear guarantee that they have the same origin. Always gives a legal edge,
@@ -72,7 +73,7 @@ data Graph = Graph
   { _graphNodes     :: Set Label
   , _fusibleEdges   :: Set Edge  -- Can   be fused over, otherwise `a` before `b`.
   , _infusibleEdges :: Set Edge  -- Can't be fused over: always    `a` before `b`.
-  }
+  } deriving Show
 instance Semigroup Graph where
   Graph n f i <> Graph n' f' i' = Graph (n <> n') (f <> f') (i <> i')
 instance Monoid Graph where
@@ -172,7 +173,7 @@ data FullGraphResult op = FGRes
   }
 -- Unlawful instances, but useful shorthand
 instance Semigroup (FullGraphResult op) where
-  FGRes x _ z <> FGRes x' _ z' = FGRes (x <> x') Nothing (z <> z')
+  FGRes x _ z <> FGRes x' _ z' = FGRes (x <> x') Nothing (M.unionWith (error "constrconflict") z z')
 instance Monoid (FullGraphResult op) where
   mempty = FGRes mempty Nothing mempty
 
@@ -226,7 +227,18 @@ data Construction (op :: Type -> Type) where
   CCmp :: LabelEnv env -> Exp env a                                   -> Construction op
   CAlc :: LabelEnv env -> ShapeR sh -> ScalarType e -> ExpVars env sh -> Construction op
   CUnt :: LabelEnv env -> ExpVar env e                                -> Construction op
-
+instance Show (Construction op) where
+  show CExe{} = "CExe{}"
+  show CUse{} = "CUse{}"
+  show CITE{} = "CITE{}"
+  show CWhl{} = "CWhl{}"
+  show CLHS{} = "CLHS{}"
+  show CFun{} = "CFun{}"
+  show CBod{} = "CBod{}"
+  show CRet{} = "CRet{}"
+  show CCmp{} = "CCmp{}"
+  show CAlc{} = "CAlc{}"
+  show CUnt{} = "CUnt{}"
 
 -- strips underscores
 makeLenses ''FullGraphState
@@ -236,20 +248,18 @@ makeLenses ''Information
 
 
 makeFullGraph :: (MakesILP op)
-              => LabelEnv env
-              -> PreOpenAcc op env a
+              => PreOpenAcc op () a
               -> (Information op, Map Label (Construction op))
-makeFullGraph initenv acc = (i, constrM)
-  where (FGRes i _ constrM, _) = runState (mkFullGraph acc) (FGState initenv (Label 0 Nothing) (getTopELabelInit initenv)) -- TODO generate initial environment
+makeFullGraph acc = (i, constrM)
+  where 
+    (FGRes i _ constrM, _) = runState (mkFullGraph acc) (FGState LabelEnvNil (Label 0 Nothing) 0)
 
-getTopELabelInit :: LabelEnv env -> ELabel -- only applicable on construction of initial env!
-getTopELabelInit LabelEnvNil = 0
-getTopELabelInit ((e, _) :>>: _) = e
-
-incr :: GLeftHandSide a env env' -> LabelEnv env -> LabelEnv env'
-incr (LeftHandSideSingle _) env = (getTopELabelInit env + 1, S.singleton $ Label 0 Nothing) :>>: env
-incr (LeftHandSideWildcard _) env = env
-incr (LeftHandSidePair lhs1 lhs2) env = incr lhs2 $ incr lhs1 env
+makeFullGraphF :: (MakesILP op)
+               => PreOpenAfun op () a
+               -> (Information op, Map Label (Construction op))
+makeFullGraphF fun = (i, constrM)
+  where
+    (FGRes i _ constrM, _) = runState (mkFullGraphF fun) (FGState LabelEnvNil (Label 0 Nothing) 0)
 
 mkFullGraph :: forall op env a. (MakesILP op)
             => PreOpenAcc op env a
@@ -262,7 +272,7 @@ mkFullGraph (Exec op args) = do
   let fuseedges = S.map (-?> l) $ getInputArgLabels args env -- add fusible edges to all inputs
   let backInfo = mkGraph op labelledArgs l -- query the backend for its fusion information - we add l and fuseedges next line
   return $ FGRes (backInfo
-                    & graphI.graphNodes   <>~ S.singleton l
+                    & graphI.graphNodes    %~ S.insert l
                     & graphI.fusibleEdges <>~ fuseedges)
                  Nothing
                  (M.singleton l $ CExe env labelledArgs op)
@@ -281,12 +291,14 @@ mkFullGraph (Alet (lhs :: GLeftHandSide bnd env env') _ bnd scp) = do
   (scpRes, mylhs) <- zoomState lhs l (mkFullGraph scp)
   case scpRes ^. l_res of
     Just scpResL -> return  $ (bndRes <> scpRes)
+                            & info.graphI.graphNodes %~ S.insert l
                             & info.graphI.infusibleEdges <>~ S.fromList [ fromJust (bndRes ^. l_res) -?> l
                                                                         ,                          l -?> scpResL]
                             & construc                    %~ M.insert l (CLHS mylhs (fromJust $ bndRes ^. l_res))
                             & l_res                       ?~ scpResL
     -- The right-hand side of this let-binding had no result (e.g. an Execute)
     Nothing -> return $ (bndRes <> scpRes)
+                      & info.graphI.graphNodes %~ S.insert l
                       & info.graphI.infusibleEdges <>~ S.singleton (fromJust (bndRes ^. l_res) -?> l)
                       & construc                    %~ M.insert l (CLHS mylhs (fromJust $ bndRes ^. l_res))
                       & l_res ?~ l
@@ -335,6 +347,7 @@ mkFullGraph (Acond cond tacc facc) = do
   currL.parent .= l_acond ^. parent
   return $ (tRes <> fRes)
          & l_res    ?~ l_acond
+         & info.graphI.graphNodes <>~ S.fromList [l_acond, l_true, l_false]
          & construc %~ M.insert l_acond (CITE env cond l_true l_false)
 
 -- like Acond. The biggest difference is that 'cond' is a function instead of an expression here.
@@ -355,6 +368,7 @@ mkFullGraph (Awhile _ cond bdy startvars) = do
   currL.parent .= l_while ^. parent
   return $ (cRes <> bRes)
          & l_res    ?~ l_while
+         & info.graphI.graphNodes <>~ S.fromList [l_while, l_cond, l_body]
          & construc %~ M.insert l_while (CWhl env l_cond l_body startvars)
 
 
@@ -364,9 +378,11 @@ mkFullGraphF :: (MakesILP op)
              -> State (FullGraphState env) (FullGraphResult op)
 mkFullGraphF (Abody acc) = do
   l <- freshL
+  currL.parent .= Just l
   res <- mkFullGraph acc
   return $ res
          & l_res    ?~ l
+         & info.graphI.graphNodes %~ S.insert l
          & construc %~ M.insert l (CBod (fromJust $ res ^. l_res))
 
 mkFullGraphF (Alam lhs f) = do
@@ -376,7 +392,8 @@ mkFullGraphF (Alam lhs f) = do
   currL.parent .= l ^. parent
   return $ res
          & l_res    ?~ l
-         & construc %~ M.insert (fromJust $ l^.parent) (CFun mylhs l)
+         & info.graphI.graphNodes %~ S.insert l
+         & construc %~ M.insert l (CFun mylhs $ fromJust $ res ^. l_res)
 
 -- for the simple cases
 mkFullGraphHelper :: (LabelEnv env -> (Labels, Construction op)) -> State (FullGraphState env) (FullGraphResult op)
@@ -386,6 +403,7 @@ mkFullGraphHelper f = do
   let (labels, con) = f env
   let nonfuse = S.map (-?> l) labels -- TODO add outgoing infusible edges too
   return $ mempty
+         & info.graphI.graphNodes %~ S.insert l
          & info.graphI.infusibleEdges .~ nonfuse
          & l_res                      ?~ l
          & construc                   .~ M.singleton l con

@@ -29,14 +29,9 @@ import Data.Bifunctor (bimap)
 import Numeric.Optimization.MIP.Solver
     ( cbc, cplex, glpsol, gurobiCl, lpSolve, scip )
 import Data.Char (isSpace)
-import GHC.IO (unsafePerformIO)
 
 instance (MakesILP op, MIP.IsSolver s IO) => ILPSolver s op where
-  solve s ilp@(ILP dir obj constr bnds n) = unsafePerformIO $ do
-    putStrLn "ILP:"
-    print ilp
-    putStrLn ""
-    return $ makeSolution <$> MIP.solve s options problem
+  solve s ilp@(ILP dir obj constr bnds n) = makeSolution <$> MIP.solve s options problem
     where
       options = MIP.SolveOptions{ MIP.solveTimeLimit   = Nothing
                                 , MIP.solveLogger      = putStrLn . ("AccILPSolver: "      ++)
@@ -70,7 +65,7 @@ bounds (Binary v) = M.singleton (var v) (Finite 0, Finite 1)
 bounds (Lower      l v  ) = M.singleton (var v) (Finite (fromIntegral l), PosInf)
 bounds (     Upper   v u) = M.singleton (var v) (NegInf                 , Finite (fromIntegral u))
 bounds (LowerUpper l v u) = M.singleton (var v) (Finite (fromIntegral l), Finite (fromIntegral u))
-bounds (x :<> y) = bounds x <> bounds y
+bounds (x :<> y) = M.unionWith (\(l1, u1) (l2, u2) -> (max l1 l2, min u1 u2)) (bounds x) (bounds y)
 bounds NoBounds = mempty
 
 -- make all variables that occur in the bounds have integer type.

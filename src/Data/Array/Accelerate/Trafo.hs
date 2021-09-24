@@ -56,7 +56,8 @@ import Data.Array.Accelerate.Trafo.Desugar (DesugarAcc, desugar, desugarAfun)
 import qualified Data.Array.Accelerate.Trafo.NewNewFusion as NewNewFusion
 import qualified Data.Array.Accelerate.Pretty             as Pretty
 import qualified Data.Array.Accelerate.Pretty.Operation   as Pretty
-import qualified Data.Array.Accelerate.Pretty.Partitioned as Pretty
+import Data.Array.Accelerate.Pretty.Partitioned ()
+import qualified Debug.Trace
 
 #ifdef ACCELERATE_DEBUG
 import Text.Printf
@@ -69,7 +70,14 @@ test
   :: forall op f. (Afunction f, DesugarAcc op, Partitioning.MakesILP op, Pretty.PrettyOp op)
   => f
   -> op ()
-test = error . ("PartitionedAfun:\n" ++) . Pretty.renderForTerminal . Pretty.prettyAfun . NewNewFusion.convertAfun . desugarAfun @op . LetSplit.convertAfun . Sharing.convertAfunWith defaultOptions
+test = error 
+     . ("PartitionedAfun:\n" ++) 
+     . Pretty.renderForTerminal . Pretty.prettyAfun 
+     . NewNewFusion.convertAfun 
+     . (\x -> Debug.Trace.trace (Pretty.renderForTerminal $ Pretty.prettyAfun x) x)
+     . desugarAfun @op 
+     . LetSplit.convertAfun 
+     . Sharing.convertAfunWith defaultOptions
 
 
 -- HOAS -> de Bruijn conversion

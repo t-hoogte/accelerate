@@ -37,9 +37,10 @@ import Data.Array.Accelerate.AST.Operation
 import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.Trafo.Config
 import Data.Array.Accelerate.Error
-import Data.Array.Accelerate.Trafo.Partitioning.ILP (gurobiFusion)
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP, incr)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP (gurobiFusion, gurobiFusionF)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP, makeFullGraphF)
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (LabelEnv (LabelEnvNil))
+import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
 
 
 #ifdef ACCELERATE_DEBUG
@@ -52,34 +53,22 @@ import System.IO.Unsafe -- for debugging
 -- | Apply the fusion transformation to a de Bruijn AST
 --
 convertAccWith
-    :: (HasCallStack, MakesILP op)
+    :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op))
     => Config
     -> OperationAcc op () a
     -> PartitionedAcc op () a
-convertAccWith config = convertAccWith' config LabelEnvNil
+convertAccWith _ = withSimplStats gurobiFusion
 
-convertAccWith' 
-    :: (HasCallStack, MakesILP op)
-    => Config
-    -> LabelEnv env
-    -> OperationAcc op env a
-    -> PartitionedAcc op env a
-convertAccWith' _ = withSimplStats gurobiFusion
-
-convertAcc :: (HasCallStack, MakesILP op) => OperationAcc op () a -> PartitionedAcc op () a
+convertAcc :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => OperationAcc op () a -> PartitionedAcc op () a
 convertAcc = convertAccWith defaultOptions
 
 -- | Apply the fusion transformation to a function of array arguments
 --
-convertAfun :: (HasCallStack, MakesILP op) => OperationAfun op () f -> PartitionedAfun op () f
+convertAfun :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => OperationAfun op () f -> PartitionedAfun op () f
 convertAfun = convertAfunWith defaultOptions
 
-convertAfunWith :: (HasCallStack, MakesILP op) => Config -> OperationAfun op () f -> PartitionedAfun op () f
-convertAfunWith config = go LabelEnvNil
-  where
-    go :: MakesILP op => LabelEnv env -> OperationAfun op env f -> PartitionedAfun op env f
-    go env (Abody acc) = Abody $ convertAccWith' config env acc
-    go env (Alam lhs fun) = Alam lhs $ go (incr lhs env) fun
+convertAfunWith :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => Config -> OperationAfun op () f -> PartitionedAfun op () f
+convertAfunWith _ = withSimplStats gurobiFusionF
 
 
 withSimplStats :: a -> a

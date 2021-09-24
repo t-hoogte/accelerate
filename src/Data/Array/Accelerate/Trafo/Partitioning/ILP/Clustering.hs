@@ -9,7 +9,12 @@
 
 -- _Significantly_ speeds up compilation of this file, but at an obvious cost!
 -- TODO: test the need of this in a GHC version with Lower Your Guards (starting 9.0.1)
-{-# OPTIONS_GHC -Wno-overlapping-patterns -Wno-incomplete-patterns #-}
+{-# OPTIONS_GHC 
+  -Wno-overlapping-patterns 
+  -Wno-incomplete-patterns 
+#-}
+{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering where
 
@@ -30,6 +35,12 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (ClusterLs (Execs, Non
 import Data.Array.Accelerate.AST.Environment (Identity(runIdentity), weakenWithLHS)
 
 import Prelude hiding ( take )
+import qualified Debug.Trace
+import Lens.Micro ((%~), _1, _3, (^.))
+import Lens.Micro.Extras (view)
+import Data.Bifunctor (first)
+import qualified Data.Array.Accelerate.Pretty as Pretty
+import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
 
 -- "open research question"
 -- -- Each set of ints corresponds to a set of Constructions, which themselves contain a set of ints (the things they depend on).
@@ -50,15 +61,24 @@ Data.Graph (containers) has a nice topological sort.
 -- Note that the return type `a` is not existentially qualified: The caller of this function tells
 -- us what the result type should be (namely, what it was before fusion). We use unsafe tricks to
 -- fulfill this contract: if something goes wrong during fusion or at the caller, bad things happen.
-reconstruct :: forall op env a. LabelEnv env -> Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> PreOpenAcc (Cluster op) env a
-reconstruct a b c d e = case openReconstruct a b c d e of
+reconstruct :: forall op a. Pretty.PrettyOp (Cluster op) =>Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> PreOpenAcc (Cluster op) () a
+reconstruct a b c d = case openReconstruct LabelEnvNil a b c d of
           -- see [NOTE unsafeCoerce result type]
-          Exists res -> unsafeCoerce @(PartitionedAcc op env _)
-                                     @(PartitionedAcc op env a)
+          Exists res -> unsafeCoerce @(PartitionedAcc op () _)
+                                     @(PartitionedAcc op () a)
                                      res
+
+reconstructF :: forall op a. Pretty.PrettyOp (Cluster op) =>Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> PreOpenAfun (Cluster op) () a
+reconstructF a b c d = case openReconstructF LabelEnvNil a b (Label 1 Nothing) c d of
+          -- see [NOTE unsafeCoerce result type]
+          Exists res -> unsafeCoerce @(PartitionedAfun op () _)
+                                     @(PartitionedAfun op () a)
+                                     res
+
 
 -- ordered list of labels
 data ClusterL = ExecL [Label] | NonExecL Label
+  deriving Show
 
 foldC :: (Label -> b -> b) -> b -> ClusterL -> b
 foldC f x (ExecL ls) = foldr f x ls
@@ -67,19 +87,39 @@ foldC f x (NonExecL l) = f l x
 topSort :: Graph -> Labels -> ClusterL
 topSort (Graph _ fedges _) cluster = ExecL topsorted
   where
-    cluster' = S.map _labelId cluster
-    getLabels = labelMap cluster
-    graph :: G.Graph
-    graph = G.buildG (minimum cluster', maximum cluster')
+    -- cluster' = S.map _labelId cluster
+    -- getLabels = labelMap cluster
+    (graph, getAdj, _) =
+          G.graphFromEdges
+          . uncurry (foldr (\(_,y) acc -> fromMaybe ((y, y, []):acc) (tryUpdateList ((==y) . view _1) id acc)))
+          . first (foldr (\(x, y) acc -> fromMaybe ((x,x,[y]):acc) $ tryUpdateList ((==x) . view _1) (_3 %~ (y:)) acc) [])
+          . (\x -> (x,x))
           . S.toList
-          . S.filter (uncurry ((&&) `on` (`elem` cluster'))) -- filter edges on 'both vertices are in the cluster'
-          . S.map (\(Label x _ :-> Label y _) -> (x, y))
+          . S.filter (uncurry ((&&) `on` (`elem` cluster))) -- filter edges on 'both vertices are in this cluster'
+          . S.map (\(x :-> y) -> (x, y))
           $ fedges
-    topsorted = map (getLabels M.!) $ G.topSort graph
+    topsorted = map (view _1 . getAdj) $ reverse $ G.topSort graph -- containers>=0.6.4 contains 'G.reverseTopSort'
 
+openReconstruct   :: Pretty.PrettyOp (Cluster op) =>LabelEnv aenv
+                  -> Graph
+                  -> [ClusterLs]
+                  -> M.Map Label [ClusterLs]
+                  -> M.Map Label (Construction op)
+                  -> Exists (PreOpenAcc (Cluster op) aenv)
+openReconstruct  a b c d e = (\(Left x) -> x) $ openReconstruct' a b c Nothing d e
+openReconstructF  :: Pretty.PrettyOp (Cluster op) =>LabelEnv aenv
+                  -> Graph
+                  -> [ClusterLs]
+                  -> Label
+                  -> M.Map Label [ClusterLs]
+                  -> M.Map Label (Construction op)
+                  -> Exists (PreOpenAfun (Cluster op) aenv)
+openReconstructF a b c l d e= (\(Right x) -> x) $ openReconstruct' a b c (Just l) d e
 
-openReconstruct :: forall op aenv. LabelEnv aenv -> Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> Exists (PreOpenAcc (Cluster op) aenv)
-openReconstruct labelenv graph clusterslist subclustersmap construct = makeAST labelenv clusters mempty
+openReconstruct' :: forall op aenv. Pretty.PrettyOp (Cluster op) => LabelEnv aenv -> Graph -> [ClusterLs] -> Maybe Label -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> Either (Exists (PreOpenAcc (Cluster op) aenv)) (Exists (PreOpenAfun (Cluster op) aenv))
+openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = case mlab of
+  Just l  -> Right $ makeASTF labelenv l mempty
+  Nothing -> Left $ makeAST labelenv clusters mempty
   where
     -- Make a tree of let bindings
 
@@ -140,7 +180,7 @@ openReconstruct labelenv graph clusterslist subclustersmap construct = makeAST l
 
     makeASTF :: forall env. LabelEnv env -> Label -> M.Map Label (Exists (PreOpenAcc (Cluster op) env)) -> Exists (PreOpenAfun (Cluster op) env)
     makeASTF env l prev = case makeCluster env (NonExecL l) of
-      NotFold (CBod l') -> case makeAST env (subcluster l') prev of
+      NotFold (CBod l') -> case makeAST env (subcluster $ fromJust $ l' ^. parent) prev of
         Exists acc -> Exists $ Abody acc
       NotFold (CFun lhs l') -> createLHS lhs env $ \env' lhs' -> case makeASTF env' l' (M.map (\(Exists acc) -> Exists $ weakenAcc lhs' acc) prev) of
         Exists fun -> Exists $ Alam lhs' fun
@@ -154,10 +194,11 @@ openReconstruct labelenv graph clusterslist subclustersmap construct = makeAST l
     subclusters = M.map (map ( \case
                       Execs ls -> topSort graph ls
                       NonExec l -> NonExecL l)) subclustersmap
-    subcluster l = subclusters M.! l
+    subcluster !l = subclusters M.! l
 
     makeCluster :: LabelEnv env -> ClusterL -> FoldType op env
-    makeCluster env (ExecL ls) = foldr1 fuseCluster
+    makeCluster env (ExecL ls) = (\x@(Fold c a) -> Debug.Trace.trace (Pretty.renderForTerminal $ Pretty.prettyOp c) x)
+       $ foldr1 (flip fuseCluster)
                     $ map ( \l -> case construct M.! l of
                               -- At first thought, this `fromJust` might error if we fuse an array away.
                               -- It does not: The array will still be in the environment, but after we finish
@@ -242,10 +283,14 @@ consCluster largs lextra (Cluster cIO cAST) op k =
             -- note that we prepend 'a': The fused cluster only outputs this arg
             consCluster' (a :>: foo take' ltot) r toAdd ast lhs' io')
       -- non-array arguments
-      L (ArgExp _) _ -> addExp ast io $ \ast' io' ->
+      L (ArgExp _) _ -> addExp ast io ExpPut $ \ast' io' ->
         consCluster' (a :>: ltot) r toAdd ast' (EArg lhs) io'
-      L (ArgArray Mut _ _ _) _ -> undefined
-      _ -> undefined -- TODO Var', Fun'
+      L (ArgVar _) _ -> addExp ast io VarPut $ \ast' io' ->
+        consCluster' (a :>: ltot) r toAdd ast' (VArg lhs) io'
+      L (ArgFun _) _ -> addExp ast io FunPut $ \ast' io' ->
+        consCluster' (a :>: ltot) r toAdd ast' (FArg lhs) io'
+      L (ArgArray Mut _ _ _) _ -> addExp ast io MutPut $ \ast' io' ->
+        consCluster' (a :>: ltot) r toAdd ast' (Adju lhs) io'
 
 foo :: Take' (x sh e) total total' -> LabelledArgs env total -> PreArgs (LabelledArg env) total'
 foo Here' (_ :>: as) = as
@@ -297,20 +342,22 @@ fuseInput
   | Just Refl <- matchALabel a1 a2 =
     Just $ Reqr Here Here lhs
 -- The rest are recursive cases
-fuseInput x (_ :>: as) (Make t lhs) (Output _ io) = 
+fuseInput x (_ :>: as) (Make t lhs) (Output _ io) =
   (\(Reqr a b c) -> ttake b t $ \b' t' -> Reqr (There a) b' (Make t' c))
   <$> fuseInput x as lhs io
 fuseInput x as (Reqr t t2 lhs) io =
   removeInput as t io $ \as' io' _ _ _ ->
-    (\(Reqr a b c) -> 
-      ttake b t2 $ \b' t2' -> 
-        ttake a t $ \a' t'' -> 
-          Reqr a' b' $ Reqr t'' t2' c) 
+    (\(Reqr a b c) ->
+      ttake b t2 $ \b' t2' ->
+        ttake a t $ \a' t'' ->
+          Reqr a' b' $ Reqr t'' t2' c)
     <$> fuseInput x as' lhs io'
 fuseInput x (_ :>: as) (Adju lhs) (MutPut io) = (\(Reqr a b c) -> Reqr (There a) (There b) $ Adju c) <$> fuseInput x as lhs io
-fuseInput x (_ :>: as) (EArg lhs) (ExpPut io) = (\(Reqr a b c) -> Reqr (There a) (There b) $ EArg c) <$> fuseInput x as lhs io
+fuseInput x (_ :>: as) (EArg lhs) (ExpPut' io) = (\(Reqr a b c) -> Reqr (There a) (There b) $ EArg c) <$> fuseInput x as lhs io
+fuseInput x (_ :>: as) (VArg lhs) (ExpPut' io) = (\(Reqr a b c) -> Reqr (There a) (There b) $ VArg c) <$> fuseInput x as lhs io
+fuseInput x (_ :>: as) (FArg lhs) (ExpPut' io) = (\(Reqr a b c) -> Reqr (There a) (There b) $ FArg c) <$> fuseInput x as lhs io
 -- Ignore cases that don't get fused
-fuseInput x (_ :>: as) (Ignr lhs) (Output _ io) = 
+fuseInput x (_ :>: as) (Ignr lhs) (Output _ io) =
   (\(Reqr a b c) -> Reqr (There a) (There b) (Ignr c))
   <$> fuseInput x as lhs io
 fuseInput x (_ :>: as) (Ignr lhs) (Input io) =
@@ -319,7 +366,13 @@ fuseInput x (_ :>: as) (Ignr lhs) (Input io) =
 fuseInput x (_ :>: as) (Ignr lhs) (MutPut io) =
   (\(Reqr a b c) -> Reqr (There a) (There b) (Ignr c))
   <$> fuseInput x as lhs io
-fuseInput x (_ :>: as) (Ignr lhs) (ExpPut io) = 
+fuseInput x (_ :>: as) (Ignr lhs) (ExpPut' io) =
+  (\(Reqr a b c) -> Reqr (There a) (There b) (Ignr c))
+  <$> fuseInput x as lhs io
+fuseInput x (_ :>: as) (Make t lhs) (Vertical _ io) =
+  (\(Reqr a b c) -> ttake b t $ \b' t' -> Reqr (There a) b' (Make t' c))
+  <$> fuseInput x as lhs io
+fuseInput x (_ :>: as) (Ignr lhs) (Vertical _ io) = 
   (\(Reqr a b c) -> Reqr (There a) (There b) (Ignr c))
   <$> fuseInput x as lhs io
 
@@ -328,44 +381,52 @@ removeInput :: forall env total e i i' result r sh
             -> Take (Value sh e) i i'
             -> ClusterIO total i result
             -> (forall total' result'
-               . LabelledArgs env total' 
+               . LabelledArgs env total'
               -> ClusterIO total' i' result'
               -> Take (Value sh e) result result'
               -> Take' (In sh e) total total'
               -> LabelledArg env (In sh e)
               -> r)
             -> r
-removeInput (a :>: xs) Here (Input io) k = 
+removeInput (a :>: xs) Here (Input io) k =
   k xs io Here Here' a
 removeInput (x :>: xs) (There t) (Input io) k =
   removeInput xs t io $ \xs' io' t' t'' a ->
     k (x :>: xs') (Input io') (There t') (There' t'') a
 removeInput (x :>: xs) (There t) (Output t1 io) k =
-  removeInput xs t io $ \xs' io' t' t'' -> 
-    ttake t' t1 $ \t2 t3 -> 
-      k (x :>: xs') (Output t3 io') t2 (There' t'')
+  removeInput xs t io $ \xs' io' t' t'' a ->
+    ttake t' t1 $ \t2 t3 ->
+      k (x :>: xs') (Output t3 io') t2 (There' t'') a
 removeInput (x :>: xs) (There t) (MutPut io) k =
   removeInput xs t io $ \xs' io' t' t'' a ->
     k (x :>: xs') (MutPut io') (There t') (There' t'') a
-removeInput (x :>: xs) (There t) (ExpPut io) k = 
-  removeInput xs t io $ \xs' io' t' t'' a -> 
+removeInput (x :>: xs) (There t) (ExpPut io) k =
+  removeInput xs t io $ \xs' io' t' t'' a ->
     k (x :>: xs') (ExpPut io') (There t') (There' t'') a
+removeInput (x :>: xs) (There t) (VarPut io) k =
+  removeInput xs t io $ \xs' io' t' t'' a ->
+    k (x :>: xs') (VarPut io') (There t') (There' t'') a
+removeInput (x :>: xs) (There t) (FunPut io) k =
+  removeInput xs t io $ \xs' io' t' t'' a ->
+    k (x :>: xs') (FunPut io') (There t') (There' t'') a
+removeInput (x :>: xs) (There t) (Vertical r io) k =
+  removeInput xs t io $ \xs' io' t' t'' a ->
+    k (x :>: xs') (Vertical r io') (There t') (There' t'') a
 
 
-
-restoreInput :: ClusterIO total' i' result' 
+restoreInput :: ClusterIO total' i' result'
              -> Take' (In sh e) total total'
              -> Take (Value sh e) i i'
              -> Take (Value sh e) result result'
              -> LabelledArg env (In sh e)
              -> ClusterIO total i result
 restoreInput cio Here' Here Here (ArgArray In  _ _ _ `L` _) = Input cio
-restoreInput (Input    cio) (There' tt) (There ti) (There tr) x = 
+restoreInput (Input    cio) (There' tt) (There ti) (There tr) x =
   Input     $ restoreInput cio tt ti tr x
-restoreInput (ExpPut   cio) (There' tt) (There ti) (There tr) x = 
+restoreInput (ExpPut   cio) (There' tt) (There ti) (There tr) x =
   ExpPut    $ restoreInput cio tt ti tr x
-restoreInput (Output t cio) (There' tt) (There ti)        tr  x = 
-  ttake t tr $ \t' tr' -> 
+restoreInput (Output t cio) (There' tt) (There ti)        tr  x =
+  ttake t tr $ \t' tr' ->
     Output t' $ restoreInput cio tt ti tr' x
 restoreInput (MutPut   cio) (There' tt) (There ti) (There tr) x =
   MutPut    $ restoreInput cio tt ti tr x
@@ -383,16 +444,18 @@ addInput (Bind lhs op ast) io k =
   addInput ast io $ \ast' io' ->
     k (Bind (Ignr lhs) op ast') io'
 
-addExp :: ClusterAST op scope result
-          -> ClusterIO total i result
-          -> (forall result'
-               . ClusterAST op (scope, Exp' e) result'
-              -> ClusterIO (Exp' e -> total) (i, Exp' e) result'
-              -> r)
-          -> r
-addExp None io k = k None (ExpPut io)
-addExp (Bind lhs op ast) io k =
-  addExp ast io $ \ast' io' ->
+-- use one of the IO constructors (ExpPut, VarPut, FunPut) as third argument
+addExp  :: ClusterAST op scope result
+        -> ClusterIO total i result
+        -> (forall total' i' result'. ClusterIO total' i' result' -> ClusterIO (e -> total') (i', e) (result', e))
+        -> (forall result'
+              . ClusterAST op (scope, e) result'
+            -> ClusterIO (e -> total) (i, e) result'
+            -> r)
+        -> r
+addExp None io constructor k = k None (constructor io)
+addExp (Bind lhs op ast) io constructor k =
+  addExp ast io constructor $ \ast' io' ->
     k (Bind (Ignr lhs) op ast') io'
 
 -- Takes care of fusion where we add an output that is later used as input: vertical and diagonal fusion
@@ -402,7 +465,7 @@ fuseOutput :: LabelledArg env (Out sh e)
            -> ClusterIO total i result
            -> (forall total' i'
                . Take' (In sh e) total total'
-              -> LeftHandSideArgs (Out sh e -> added)  (i', Sh sh e) scope 
+              -> LeftHandSideArgs (Out sh e -> added)  (i', Sh sh e) scope
               -> ClusterIO        (Out sh e -> total') (i', Sh sh e) result
               -> Take (Value sh e) i i'
               -> r)
@@ -424,7 +487,11 @@ fuseOutput x (_ :>: as) (Make t1 lhs) (Output t2 io) k =
   fuseOutput x as lhs io $ \t' (Make t3 lhs') (Output t4 io') t ->
     ttake t3 t1 $ \t3' t1' ->
       ttake t4 t2 $ \t4' t2' ->
-        k (There' t') (Make t3' (Make t1' lhs')) (Output t4' $ Output t2' io') (There t)
+        k (There' t') (Make t3' $ Make t1' lhs') (Output t4' $ Output t2' io') (There t)
+fuseOutput x (_ :>: as) (Make t1 lhs) (Vertical r io) k =
+  fuseOutput x as lhs io $ \t' (Make t3 lhs') (Output t4 io') t ->
+    ttake t3 t1 $ \t3' t1' ->
+        k (There' t') (Make t3' $ Make t1' lhs') (Output (There t4) $ Vertical r io') (There t)
 -- The Reqr case is difficult: we use `removeInput` to recurse past the `Reqr`, but
 -- (other than in fuseInput) we have to pass the result of recursing through
 -- `restoreInput` to reassemble the CIO. More elegant (no error cases) would be to
@@ -438,27 +505,43 @@ fuseOutput x as (Reqr t1 t2 lhs) io k =
             ttake' take'' take' $ \take1' take2' ->
               k take1' (Make t4' $ Reqr t1' t2' lhs') (Output t5' $ restoreInput io'' take2' t1' t3' removed) t'
 -- Ignr cases, note that we can ignore empty list, Base and Output
-fuseOutput x (_ :>: as) (Ignr lhs) (Input io) k = 
+fuseOutput x (_ :>: as) (Ignr lhs) (Input io) k =
   fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
     k (There' t') (Make (There t1) $ Ignr lhs') (Output (There t2) $ Input io') (There t)
-fuseOutput x (_ :>: as) (Ignr lhs) (MutPut io) k = 
+fuseOutput x (_ :>: as) (Ignr lhs) (Vertical r io) k =
+  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
+    k (There' t') (Make (There t1) $ Ignr lhs') (Output (There t2) $ Vertical r io') (There t)
+fuseOutput x (_ :>: as) (Ignr lhs) (MutPut io) k =
   fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
     k (There' t') (Make (There t1) $ Ignr lhs') (Output (There t2) $ MutPut io') (There t)
-fuseOutput x (_ :>: as) (Ignr lhs) (ExpPut io) k = 
+fuseOutput x (_ :>: as) (Ignr lhs) (ExpPut io) k =
   fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
     k (There' t') (Make (There t1) $ Ignr lhs') (Output (There t2) $ ExpPut io') (There t)
+fuseOutput x (_ :>: as) (Ignr lhs) (VarPut io) k =
+  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
+    k (There' t') (Make (There t1) $ Ignr lhs') (Output (There t2) $ VarPut io') (There t)
+fuseOutput x (_ :>: as) (Ignr lhs) (FunPut io) k =
+  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
+    k (There' t') (Make (There t1) $ Ignr lhs') (Output (There t2) $ FunPut io') (There t)
 fuseOutput x (_ :>: as) (Ignr lhs) (Output t1 io) k =
   fuseOutput x as lhs io $ \t' (Make t2 lhs') (Output t3 io') t ->
     ttake t3 t1 $ \t3' t1' ->
       k (There' t') (Make (There t2) $ Ignr lhs') (Output t3' (Output t1' io')) (There t)
 -- EArg goes just like Ignr
-fuseOutput x (_ :>: as) (EArg lhs) (ExpPut io) k = 
+fuseOutput x (_ :>: as) (EArg lhs) (ExpPut io) k =
   fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
     k (There' t') (Make (There t1) $ EArg lhs') (Output (There t2) $ ExpPut io') (There t)
+fuseOutput x (_ :>: as) (VArg lhs) (VarPut io) k =
+  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
+    k (There' t') (Make (There t1) $ VArg lhs') (Output (There t2) $ VarPut io') (There t)
+fuseOutput x (_ :>: as) (FArg lhs) (FunPut io) k =
+  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
+    k (There' t') (Make (There t1) $ FArg lhs') (Output (There t2) $ FunPut io') (There t)
 -- Adju is like EArg
-fuseOutput x (_ :>: as) (Adju lhs) (MutPut io) k = 
+fuseOutput x (_ :>: as) (Adju lhs) (MutPut io) k =
   fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
     k (There' t') (Make (There t1) $ Adju lhs') (Output (There t2) $ MutPut io') (There t)
+
 
 addOutput :: ClusterAST op scope result
           -> ClusterIO total i result
@@ -483,3 +566,9 @@ addOutput (Bind lhs op ast) io k =
   as they are tricky to get right and we really want GHC to check our work.
 
 -}
+
+tryUpdateList :: (a -> Bool) -> (a -> a) -> [a] -> Maybe [a]
+tryUpdateList _ _ [] = Nothing
+tryUpdateList p f (x : xs)
+  | p x = Just $ f x : xs
+  | otherwise = tryUpdateList p f xs
