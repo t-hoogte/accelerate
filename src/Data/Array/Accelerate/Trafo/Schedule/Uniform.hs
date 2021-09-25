@@ -1587,10 +1587,21 @@ loopFuture _ _ (FutureScalar tp _ _) _ (Just SyncWrite) = bufferImpossible tp
 loopFuture _ _ (FutureBuffer tp signal ref readLock (Just writeLock)) (Just SyncWrite) (Just SyncWrite) = undefined
 loopFuture _ _ (FutureBuffer tp signal ref readLock (Just writeLock)) (Just SyncWrite) (Just SyncRead) = undefined
 loopFuture _ _ (FutureBuffer tp signal ref readLock (Just writeLock)) (Just SyncRead) (Just SyncWrite) = undefined
-loopFuture _ k01 (FutureBuffer tp signal ref readLock (Just writeLock)) Nothing (Just SyncWrite)
-  -- A buffer used in only the step of the loop
-  -- We need to declare two signals (and accompanying signal resolvers)
-  -- to synchronize read and write access.
+loopFuture _ k01 (FutureBuffer tp signal ref readLock (Just writeLock)) mleft mright
+  | left || right
+  -- A writeable buffer used in only one subterm of the loop (condition or
+  -- step).
+  -- We need to add two signals (and accompanying signal resolvers) to the
+  -- state of the loop to synchronize read and write access.
+  -- Furthermore, we need to declare two declare two local signals
+  -- in the body of the loop. The compiled code for the condition
+  -- or step will resolve those local signals. When that signal is resolved, we
+  -- also resolve the signal from the state. We release the buffer from the
+  -- the loop (if condition was false and readLock and/or writeLock are Borrow)
+  -- Note that we can only grant the next iteration write access
+  -- when this iteration has finished reading *and* writing. This is similar to
+  -- 'chainFuture (FutureBuffer tp signal ref read mwrite) SyncWrite SyncWrite'
+  -- for non-looping context splits.
   = LoopFuture
       (InputOutputRpair InputOutputRsignal InputOutputRsignal)
       (weakenSucc $ weakenSucc weakenId)
@@ -1602,23 +1613,46 @@ loopFuture _ k01 (FutureBuffer tp signal ref readLock (Just writeLock)) Nothing 
           (LeftHandSideSingle BaseRsignalResolver `LeftHandSidePair` LeftHandSideSingle BaseRsignalResolver)
           $ \k45 ->
             let
-              k25 = k45 .> weakenSucc (weakenSucc weakenId) .> k23
-              k = k25 .> weakenSucc (weakenSucc weakenId) .> k01
+              awaitRead = [SuccIdx $ SuccIdx $ SuccIdx ZeroIdx]
+              -- To grant write access, previous reads *and* writes should be finished.
+              awaitWrite = [SuccIdx $ SuccIdx $ SuccIdx ZeroIdx, SuccIdx ZeroIdx]
+              instr = \i ->
+                Alet lhsSignal NewSignal
+                $ Alet lhsSignal NewSignal
+                $ Fork i
+                $ Fork (Effect (SignalAwait awaitRead) $ Effect (SignalResolve [k46 >:> SuccIdx ZeroIdx]) Return)
+                $ Effect (SignalAwait awaitWrite) $ Effect (SignalResolve [k46 >:> ZeroIdx]) Return
+              k56 = weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId
+              k46 = k56 .> k45
+              k26 = k46 .> weakenSucc (weakenSucc weakenId) .> k23
+              k = k26 .> weakenSucc (weakenSucc weakenId) .> k01
               releaseRead = case readLock of
                 Borrow _ resolver ->
-                  [Effect (SignalAwait [k25 >:> SuccIdx ZeroIdx]) $ Effect (SignalResolve [k >:> resolver]) Return]
+                  -- If this buffer was only used in the condition (left
+                  -- subterm) then we should verify that the condition
+                  -- is finished working with the array.
+                  -- If the buffer was only used in the step (right),
+                  -- then we need to wait on the previous iteration
+                  -- to be finished.
+                  [Effect (SignalAwait $ if left then awaitRead else [k26 >:> SuccIdx ZeroIdx]) $ Effect (SignalResolve [k >:> resolver]) Return]
                 _ -> []
               releaseWrite = case writeLock of
                 Borrow _ resolver ->
-                  [Effect (SignalAwait [k25 >:> ZeroIdx]) $ Effect (SignalResolve [k >:> resolver]) Return]
+                  [Effect (SignalAwait $ if left then awaitWrite else [k26 >:> ZeroIdx]) $ Effect (SignalResolve [k >:> resolver]) Return]
                 _ -> []
+              future' = FutureBuffer tp (weaken k signal) (weaken k ref)
+                (Borrow (k26 >:> SuccIdx ZeroIdx) (SuccIdx $ SuccIdx ZeroIdx))
+                (Just $ Borrow (k26 >:> ZeroIdx) ZeroIdx)
             in
               LoopFutureBody
-                id
-                weakenId
-                Nothing
-                (Just $ FutureBuffer tp (weaken k signal) (weaken k ref) (weaken' k readLock) (Just $ weaken' k writeLock))
+                instr
+                k56
+                (fmap (const future') mleft)
+                (fmap (const future') mright)
                 (releaseRead ++ releaseWrite)
+  where
+    left  = mleft  == Just SyncWrite
+    right = mright == Just SyncWrite
 
 -- Cases with only read permissions
 loopFuture resolved k01 (FutureBuffer tp signal ref (Borrow acquireRead releaseRead) Nothing) (Just SyncRead) (Just SyncRead)
