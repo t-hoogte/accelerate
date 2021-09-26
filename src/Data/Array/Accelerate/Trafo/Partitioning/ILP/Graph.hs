@@ -16,6 +16,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph where
 
@@ -47,15 +48,15 @@ import Control.Monad.State
 import Data.Kind ( Type )
 import Unsafe.Coerce (unsafeCoerce)
 import Data.Maybe (isJust, fromJust)
-import Data.Array.Accelerate.Representation.Type (TupR)
-import Data.Array.Accelerate.AST.LeftHandSide (LeftHandSide (LeftHandSideSingle, LeftHandSideWildcard, LeftHandSidePair))
+import Data.Array.Accelerate.Representation.Type (TupR, liftTypeQ)
+import Data.Array.Accelerate.AST.LeftHandSide (LeftHandSide (LeftHandSideSingle, LeftHandSideWildcard, LeftHandSidePair, LeftHandSideUnit))
 import Data.Array.Accelerate.Representation.Shape (ShapeR)
 
 
 -- | Directed edge (a :-> b): `b` depends on `a`.
 -- We only ever want to have these edges if a and b have the same parent, see `-?>` for a safe constructor.
 data Edge = Label :-> Label
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Show)
 
 -- | Safe constructor for edges: finds the lowest pairs of ancestors that are in the same subcomputation, and adds the constraint there.
 -- Useful if `y` uses some result of `x`, and there is no clear guarantee that they have the same origin. Always gives a legal edge,
@@ -72,7 +73,7 @@ data Graph = Graph
   { _graphNodes     :: Set Label
   , _fusibleEdges   :: Set Edge  -- Can   be fused over, otherwise `a` before `b`.
   , _infusibleEdges :: Set Edge  -- Can't be fused over: always    `a` before `b`.
-  }
+  } deriving Show
 instance Semigroup Graph where
   Graph n f i <> Graph n' f' i' = Graph (n <> n') (f <> f') (i <> i')
 instance Monoid Graph where
@@ -114,7 +115,7 @@ pi :: Label -> Expression op
 pi l      = c $ Pi l
 -- | Safe constructor for Fused variables
 fused :: Label -> Label -> Expression op
-fused x y = let x' :-> y' = x -?> y 
+fused x y = let x' :-> y' = x -?> y
             in c $ Fused x' y'
 
 class (Eq (BackendVar op), Ord (BackendVar op), Show (BackendVar op), Read (BackendVar op)) => MakesILP op where
@@ -172,7 +173,7 @@ data FullGraphResult op = FGRes
   }
 -- Unlawful instances, but useful shorthand
 instance Semigroup (FullGraphResult op) where
-  FGRes x _ z <> FGRes x' _ z' = FGRes (x <> x') Nothing (z <> z')
+  FGRes x _ z <> FGRes x' _ z' = FGRes (x <> x') Nothing (M.unionWith (error "constrconflict") z z')
 instance Monoid (FullGraphResult op) where
   mempty = FGRes mempty Nothing mempty
 
@@ -195,18 +196,18 @@ stripLHS (LeftHandSideSingle _) (_ :>>: le') = le'
 stripLHS (LeftHandSideWildcard _) le = le
 stripLHS (LeftHandSidePair l r) le = stripLHS l (stripLHS r le)
 
-createLHS :: MyGLHS a 
+createLHS :: MyGLHS a
           -> LabelEnv env
           -> ( forall env'
-             . LabelEnv env' 
-            -> GLeftHandSide a env env' 
-            -> r) 
+             . LabelEnv env'
+            -> GLeftHandSide a env env'
+            -> r)
           -> r
 createLHS (LHSSingle g e) env k = k (e :>>: env) (LeftHandSideSingle g)
 createLHS (LHSWildcard t) env k = k env (LeftHandSideWildcard t)
-createLHS (LHSPair l r)   env k = 
+createLHS (LHSPair l r)   env k =
   createLHS   l env  $ \env'  l' ->
-    createLHS r env' $ \env'' r' -> 
+    createLHS r env' $ \env'' r' ->
       k env'' (LeftHandSidePair l' r')
 
 
@@ -226,7 +227,18 @@ data Construction (op :: Type -> Type) where
   CCmp :: LabelEnv env -> Exp env a                                   -> Construction op
   CAlc :: LabelEnv env -> ShapeR sh -> ScalarType e -> ExpVars env sh -> Construction op
   CUnt :: LabelEnv env -> ExpVar env e                                -> Construction op
-
+instance Show (Construction op) where
+  show CExe{} = "CExe{}"
+  show CUse{} = "CUse{}"
+  show CITE{} = "CITE{}"
+  show CWhl{} = "CWhl{}"
+  show CLHS{} = "CLHS{}"
+  show CFun{} = "CFun{}"
+  show CBod{} = "CBod{}"
+  show CRet{} = "CRet{}"
+  show CCmp{} = "CCmp{}"
+  show CAlc{} = "CAlc{}"
+  show CUnt{} = "CUnt{}"
 
 -- strips underscores
 makeLenses ''FullGraphState
@@ -239,7 +251,15 @@ makeFullGraph :: (MakesILP op)
               => PreOpenAcc op () a
               -> (Information op, Map Label (Construction op))
 makeFullGraph acc = (i, constrM)
-  where (FGRes i _ constrM, _) = runState (mkFullGraph acc) (FGState LabelEnvNil (Label 0 Nothing) 0)
+  where 
+    (FGRes i _ constrM, _) = runState (mkFullGraph acc) (FGState LabelEnvNil (Label 0 Nothing) 0)
+
+makeFullGraphF :: (MakesILP op)
+               => PreOpenAfun op () a
+               -> (Information op, Map Label (Construction op))
+makeFullGraphF fun = (i, constrM)
+  where
+    (FGRes i _ constrM, _) = runState (mkFullGraphF fun) (FGState LabelEnvNil (Label 0 Nothing) 0)
 
 mkFullGraph :: forall op env a. (MakesILP op)
             => PreOpenAcc op env a
@@ -252,23 +272,36 @@ mkFullGraph (Exec op args) = do
   let fuseedges = S.map (-?> l) $ getInputArgLabels args env -- add fusible edges to all inputs
   let backInfo = mkGraph op labelledArgs l -- query the backend for its fusion information - we add l and fuseedges next line
   return $ FGRes (backInfo
-                    & graphI.graphNodes   <>~ S.singleton l
+                    & graphI.graphNodes    %~ S.insert l
                     & graphI.fusibleEdges <>~ fuseedges)
                  Nothing
                  (M.singleton l $ CExe env labelledArgs op)
 
 -- TODO Alet LeftHandSideUnit case
+mkFullGraph (Alet LeftHandSideUnit _ bnd scp) = do
+  res1 <- mkFullGraph bnd
+  res2 <- mkFullGraph scp
+  return $ (res1 <> res2)
+         & l_res .~ (res2 ^. l_res)
 
 -- We throw away the uniquenessess information here, in the future we will add uniqueness variables to the ILP
 mkFullGraph (Alet (lhs :: GLeftHandSide bnd env env') _ bnd scp) = do
   l <- freshL
   bndRes <- mkFullGraph bnd
   (scpRes, mylhs) <- zoomState lhs l (mkFullGraph scp)
-  return $ (bndRes <> scpRes)
-         & info.graphI.infusibleEdges <>~ S.fromList [ fromJust (bndRes ^. l_res) -?> l
-                                                     ,                          l -?> fromJust (scpRes ^. l_res)]
-         & construc                    %~ M.insert l (CLHS mylhs (fromJust $ bndRes ^. l_res))
-         & l_res                       .~ (scpRes ^. l_res)
+  case scpRes ^. l_res of
+    Just scpResL -> return  $ (bndRes <> scpRes)
+                            & info.graphI.graphNodes %~ S.insert l
+                            & info.graphI.infusibleEdges <>~ S.fromList [ fromJust (bndRes ^. l_res) -?> l
+                                                                        ,                          l -?> scpResL]
+                            & construc                    %~ M.insert l (CLHS mylhs (fromJust $ bndRes ^. l_res))
+                            & l_res                       ?~ scpResL
+    -- The right-hand side of this let-binding had no result (e.g. an Execute)
+    Nothing -> return $ (bndRes <> scpRes)
+                      & info.graphI.graphNodes %~ S.insert l
+                      & info.graphI.infusibleEdges <>~ S.singleton (fromJust (bndRes ^. l_res) -?> l)
+                      & construc                    %~ M.insert l (CLHS mylhs (fromJust $ bndRes ^. l_res))
+                      & l_res ?~ l
 
 
 mkFullGraph (Return vars)    = mkFullGraphHelper $ \env ->
@@ -314,6 +347,7 @@ mkFullGraph (Acond cond tacc facc) = do
   currL.parent .= l_acond ^. parent
   return $ (tRes <> fRes)
          & l_res    ?~ l_acond
+         & info.graphI.graphNodes <>~ S.fromList [l_acond, l_true, l_false]
          & construc %~ M.insert l_acond (CITE env cond l_true l_false)
 
 -- like Acond. The biggest difference is that 'cond' is a function instead of an expression here.
@@ -334,6 +368,7 @@ mkFullGraph (Awhile _ cond bdy startvars) = do
   currL.parent .= l_while ^. parent
   return $ (cRes <> bRes)
          & l_res    ?~ l_while
+         & info.graphI.graphNodes <>~ S.fromList [l_while, l_cond, l_body]
          & construc %~ M.insert l_while (CWhl env l_cond l_body startvars)
 
 
@@ -343,9 +378,11 @@ mkFullGraphF :: (MakesILP op)
              -> State (FullGraphState env) (FullGraphResult op)
 mkFullGraphF (Abody acc) = do
   l <- freshL
+  currL.parent .= Just l
   res <- mkFullGraph acc
   return $ res
          & l_res    ?~ l
+         & info.graphI.graphNodes %~ S.insert l
          & construc %~ M.insert l (CBod (fromJust $ res ^. l_res))
 
 mkFullGraphF (Alam lhs f) = do
@@ -355,7 +392,8 @@ mkFullGraphF (Alam lhs f) = do
   currL.parent .= l ^. parent
   return $ res
          & l_res    ?~ l
-         & construc %~ M.insert (fromJust $ l^.parent) (CFun mylhs l)
+         & info.graphI.graphNodes %~ S.insert l
+         & construc %~ M.insert l (CFun mylhs $ fromJust $ res ^. l_res)
 
 -- for the simple cases
 mkFullGraphHelper :: (LabelEnv env -> (Labels, Construction op)) -> State (FullGraphState env) (FullGraphResult op)
@@ -365,6 +403,7 @@ mkFullGraphHelper f = do
   let (labels, con) = f env
   let nonfuse = S.map (-?> l) labels -- TODO add outgoing infusible edges too
   return $ mempty
+         & info.graphI.graphNodes %~ S.insert l
          & info.graphI.infusibleEdges .~ nonfuse
          & l_res                      ?~ l
          & construc                   .~ M.singleton l con

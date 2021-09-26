@@ -8,16 +8,35 @@
 -- Portability : non-portable (GHC extensions)
 --
 
+-- module Main where
+
+-- import Build_doctests                           ( flags, pkgs, module_sources )
+-- import Data.Foldable                            ( traverse_ )
+-- import Test.DocTest
+
+-- main :: IO ()
+-- main = do
+--   traverse_ putStrLn args
+--   doctest args
+--   where
+--     args = flags ++ pkgs ++ module_sources
+
+{-# language FlexibleInstances #-}
+{-# language FlexibleContexts #-}
+{-# language ScopedTypeVariables #-}
+{-# language TemplateHaskell #-}
+{-# language TypeApplications #-}
+{-# language TypeOperators #-}
 module Main where
 
-import Build_doctests                           ( flags, pkgs, module_sources )
-import Data.Foldable                            ( traverse_ )
-import Test.DocTest
+import qualified Data.Array.Accelerate as A
+import qualified Data.Array.Accelerate.Interpreter as A
 
 main :: IO ()
-main = do
-  traverse_ putStrLn args
-  doctest args
-  where
-    args = flags ++ pkgs ++ module_sources
+main = A.test @A.InterpretOp twoMaps `seq` return ()
 
+dotp :: A.Acc (A.Vector Int) -> A.Acc (A.Vector Int) -> A.Acc (A.Scalar Int)
+dotp a b = A.fold (+) 0 $ A.zipWith (*) (A.map (+1) a) (A.map (`div` 2) b)
+
+twoMaps :: A.Acc (A.Vector Int)
+twoMaps = A.map (+1) . A.map (*2) . A.use $ A.fromList (A.Z A.:. 10) [1..]

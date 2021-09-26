@@ -37,6 +37,10 @@ import Data.Array.Accelerate.AST.Operation
 import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.Trafo.Config
 import Data.Array.Accelerate.Error
+import Data.Array.Accelerate.Trafo.Partitioning.ILP (gurobiFusion, gurobiFusionF)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP, makeFullGraphF)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (LabelEnv (LabelEnvNil))
+import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
 
 
 #ifdef ACCELERATE_DEBUG
@@ -48,23 +52,24 @@ import System.IO.Unsafe -- for debugging
 
 -- | Apply the fusion transformation to a de Bruijn AST
 --
-convertAcc
-    :: HasCallStack
+convertAccWith
+    :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op))
     => Config
-    -> OperationAcc op benv a
-    -> PartitionedAcc op benv a
-convertAcc _ =  withSimplStats $ mapAccExecutable dontFuse
+    -> OperationAcc op () a
+    -> PartitionedAcc op () a
+convertAccWith _ = withSimplStats gurobiFusion
 
-convertAccWith :: HasCallStack => Config -> OperationAcc op benv a -> PartitionedAcc op benv a
-convertAccWith config = convertAcc config
+convertAcc :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => OperationAcc op () a -> PartitionedAcc op () a
+convertAcc = convertAccWith defaultOptions
 
 -- | Apply the fusion transformation to a function of array arguments
 --
-convertAfun :: HasCallStack => Config -> OperationAfun op benv f -> PartitionedAfun op benv f
-convertAfun _ = withSimplStats $ mapAfunExecutable dontFuse
+convertAfun :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => OperationAfun op () f -> PartitionedAfun op () f
+convertAfun = convertAfunWith defaultOptions
 
-convertAfunWith :: HasCallStack => Config -> OperationAfun op benv f -> PartitionedAfun op benv f
-convertAfunWith config = convertAfun config
+convertAfunWith :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => Config -> OperationAfun op () f -> PartitionedAfun op () f
+convertAfunWith _ = withSimplStats gurobiFusionF
+
 
 withSimplStats :: a -> a
 #ifdef ACCELERATE_DEBUG

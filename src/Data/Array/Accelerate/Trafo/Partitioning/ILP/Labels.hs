@@ -38,9 +38,10 @@ import Unsafe.Coerce (unsafeCoerce)
 Label is for each AST node: every exec, every let, every branch of control flow, etc has a unique label.
 Edge is a dependency between Labels
 
-ELabel is for Environments: the environment consists of array-level and expression-level values (right?),
+ELabel is for Environments: the environment consists of array-level and expression-level values,
 we give each value a unique ELabel. This helps to re-index AST nodes and expressions and args into the new environment,
-provided that we have a LabelEnv with matching ELabels...
+provided that we have a LabelEnv with matching ELabels. We accomplish this by storing 'MyLHS's that contain ELabels, inside of Construction.
+
 LabelEnv also has a S.Set Label for each value, denoting the current outgoing edges from that value: This is volatile information, while all the rest is static.
 
 LabelArgs is the same as LabelEnv, except it is bound to Args. The ELabels in here point to the ELabels in Env
@@ -66,10 +67,9 @@ level (Label _ (Just l)) = 1 + level l
 type Labels = S.Set Label
 type ELabels = (ELabel, Labels)
 data ALabel t where
-  Arr :: ELabel -- buffer
-     -- -> ELabel -- shape
+  Arr :: ELabel -- elabel of buffer
       -> ALabel (m sh e) -- only matches on arrays, but supports In, Out and Mut
-  NotArr :: ALabel (t e) -- matches on `Var' e`, `Exp' e` and `Fun' e` (matches but doesn't belong with arrays)
+  NotArr :: ALabel (t e) -- matches on `Var' e`, `Exp' e` and `Fun' e` (is typecorrect on arrays, but wish it wasn't)
 
 matchALabel :: ALabel (m sh s) -> ALabel (m' sh' t) -> Maybe ((sh,s) :~: (sh',t))
 matchALabel (Arr e1) (Arr e2)
@@ -81,7 +81,8 @@ type ALabels t = (ALabel t, Labels) -- An ELabel if it corresponds to an array, 
 
 -- Map identifiers to labels
 labelMap :: S.Set Label -> M.Map Int Label
-labelMap = M.fromDistinctAscList . map (\l -> (l^.labelId, l)) . S.toAscList
+  -- TODO once it works, test M.fromDistinctAscList
+labelMap = M.fromList . map (\l -> (l^.labelId, l)) . S.toAscList
 
 -- identifies elements of the environment with unique Ints.
 newtype ELabel = ELabel { runELabel :: Int }
@@ -91,11 +92,12 @@ newtype ELabel = ELabel { runELabel :: Int }
 data LabelledArg  env a = L (Arg env a) (ALabels a)
 type LabelledArgs env = PreArgs (LabelledArg env)
 
-instance Semigroup (LabelledArgs env args) where
-  ArgsNil <> ArgsNil = ArgsNil
-  (arg `L` (NotArr,l1)):>:largs1 <> (_ `L` (larg,   l2)):>:largs2 = arg `L` (larg, l1<>l2) :>: (largs1 <> largs2)
-  (arg `L` (larg,  l1)):>:largs1 <> (_ `L` (NotArr, l2)):>:largs2 = arg `L` (larg, l1<>l2) :>: (largs1 <> largs2)
-  _ <> _ = error "mappend for LabelArgs found two Arr labels"
+-- instance Semigroup (LabelledArgs env args) where
+--   ArgsNil <> ArgsNil = ArgsNil
+--   -- TODO why am I perfectly fine with <> on an Arr with a NotArr?
+--   (arg `L` (NotArr,l1)):>:largs1 <> (_ `L` (larg,   l2)):>:largs2 = arg `L` (larg, l1<>l2) :>: (largs1 <> largs2)
+--   (arg `L` (larg,  l1)):>:largs1 <> (_ `L` (NotArr, l2)):>:largs2 = arg `L` (larg, l1<>l2) :>: (largs1 <> largs2)
+--   _ <> _ = error "mappend for LabelArgs found two Arr labels"
 
 unLabel :: LabelledArgs env args -> Args env args
 unLabel ArgsNil              = ArgsNil
@@ -131,7 +133,7 @@ freshE' = id <%= (+1)
 
 
 -- | Note that this throws some info away: Pair (Wildcard, Single) and Pair (Single, Wildcard) give identical results.
--- Use sites need to store the LHS itself too.
+-- Use sites need to store a LHS too.
 addLhs :: LeftHandSide s v env env' -> Labels -> LabelEnv env -> State ELabel (LabelEnv env')
 addLhs LeftHandSideWildcard{} _ = pure
 addLhs LeftHandSideSingle{}   l = \lenv -> freshE' >>= \e -> pure ((e, l) :>>: lenv)
@@ -162,9 +164,14 @@ getLabelsArg (ArgFun fun)                  env = getLabelsFun fun    env
 -- TODO this gets us the singleton label assigned to the buffer, check whether this doesn't make us use/write an array before we know its size
 -- honestly, this just doesn't cut it. Need a better way to both label arguments (for reconstruction later) and track dependencies (for ILP solving),
 -- using this one S.Set for both conflicts (as seen in 'const' vs 'insert')
-getLabelsArg (ArgArray _ _ shVars buVars) env = let Left (NotArr, shLabs) = getLabelsTup shVars env
+
+-- The comment above is outdated, but I'm not sure what is going on here anymore. What are the two types of return arguments from getLabelsTup? Does it make sense that a TupRsingle always gives Right?
+getLabelsArg (ArgArray _ _ shVars buVars) env = let
+                                                    -- shLabs = case getLabelsTup shVars env of
+                                                    --           Left (_, x)  -> x
+                                                    --           Right (_, x) -> x
                                                     Right (Arr x,     buLabs) = getLabelsTup buVars env
-                                                in (Arr x, shLabs <> buLabs)
+                                                in (Arr x, buLabs)
 
 getLabelsTup :: TupR (Var a env) b -> LabelEnv env -> Either (ALabels (Var' b)) (ALabels (m sh b))
 getLabelsTup TupRunit         _   = Left (NotArr, mempty)

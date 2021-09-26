@@ -15,6 +15,11 @@
 --
 
 module Data.Array.Accelerate.AST.LeftHandSide
+  (
+    Exists(..),
+    LeftHandSide(.., LeftHandSideUnit),
+    lhsToTupR,
+    rnfLeftHandSide, liftLeftHandSide, mapLeftHandSide, flattenTupR)
   where
 
 import Data.Array.Accelerate.Representation.Type

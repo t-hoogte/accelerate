@@ -68,12 +68,14 @@ prettyOpenAcc env = \case
   Exec op args -> prettyOpWithArgs env op args
   Return vars -> hang 2 $ group $ vsep [annotate Statement "return", prettyVars env 10 vars]
   Compute exp -> hang 2 $ group $ vsep [annotate Statement "compute", prettyExp (val env) exp]
-  Alet (LeftHandSideWildcard TupRunit) _ bnd body
+  Alet LeftHandSideUnit _ bnd body
     -> prettyOpenAcc env bnd
         <> hardline
         <> prettyOpenAcc env body
   Alet lhs us bnd body
-    | (env', lhs') <- prettyGLhsWithUniquenessTypes env lhs us
+    -- TODO FIX I want to prettyprint but the uniquenesses don't work yet :)
+    --  | (env', lhs') <- prettyGLhsWithUniquenessTypes env lhs us
+    | (env', lhs') <- prettyGLhs env lhs
       -> hang 2 (group $ vsep [lhs' <+> "=", prettyOpenAcc env bnd])
          <> hardline
          <> prettyOpenAcc env' body

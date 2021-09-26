@@ -8,6 +8,8 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE UndecidableInstances #-}
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver where
 
 import qualified Data.Map as M
@@ -20,18 +22,23 @@ import {-# SOURCE #-} Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph ( Var, 
 
 
 data OptDir = Maximise | Minimise
+  deriving Show
 
 data ILP op = ILP OptDir (Expression op) (Constraint op) (Bounds op) Int
+deriving instance Show (Var op) => Show (ILP op)
 
 type Solution op = M.Map (Var op) Int
 
 -- given `n` (for the number of nodes in the ILP), make an Int
 newtype Number = Number (Int -> Int)
+instance Show Number where
+  show (Number f) = "Number {" ++ show (f 1) ++ "}"
 
 data Expression op where
   Constant :: Number -> Expression op
   (:+)  :: Expression op -> Expression op -> Expression op
   (:*)  :: Number -> Var op -> Expression op 
+deriving instance Show (Var op) => Show (Expression op)
 
 data Constraint op where
   (:>=) :: Expression op -> Expression op -> Constraint op
@@ -40,6 +47,7 @@ data Constraint op where
 
   (:&&) :: Constraint op -> Constraint op -> Constraint op
   TrueConstraint :: Constraint op
+deriving instance Show (Var op) => Show (Constraint op)
 
 instance Semigroup (Constraint op) where (<>) = (:&&)
 instance Monoid    (Constraint op) where mempty = TrueConstraint
@@ -52,6 +60,7 @@ data Bounds op where
   Upper :: Var op -> Int -> Bounds op
   (:<>) :: Bounds op -> Bounds op -> Bounds op
   NoBounds :: Bounds op
+deriving instance Show (Var op) => Show (Bounds op)
 
 instance Semigroup (Bounds op) where (<>) = (:<>)
 instance Monoid    (Bounds op) where mempty = NoBounds

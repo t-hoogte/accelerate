@@ -13,6 +13,8 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ViewPatterns #-}
 
 -- |
 -- Module      : Data.Array.Accelerate.AST.Partitioned
@@ -39,6 +41,8 @@ import Data.Array.Accelerate.Trafo.Desugar (ArrayDescriptor(..))
 import Data.Array.Accelerate.Representation.Array (Array, ArrayR, Buffers)
 import qualified Data.Array.Accelerate.AST.Environment as Env
 import Data.Array.Accelerate.Representation.Shape (ShapeR)
+import Data.Type.Equality
+import Unsafe.Coerce (unsafeCoerce)
 
 -- In this model, every thread has one input element per input array,
 -- and one output element per output array. That works perfectly for
@@ -90,15 +94,18 @@ data LeftHandSideArgs body env scope where
   Make :: Take (Value sh e) escope scope
        -> LeftHandSideArgs              body   env             scope
        -> LeftHandSideArgs (Out sh e -> body) (env, Sh sh e)    escope
-  -- TODO: duplicate for Var' and Fun'
-  EArg :: LeftHandSideArgs              body   env             scope
-       -> LeftHandSideArgs (Exp'   e -> body) (env, Exp' e)   (scope, Exp' e)
   -- Used for Permute: Each 'thread' gets atomic update acess to all values. Behaves like Exp', Var' and Fun'.
   Adju :: LeftHandSideArgs              body   env             scope
        -> LeftHandSideArgs (Mut sh e -> body) (env, Mut sh e) (scope, Mut sh e)
   -- Does nothing to this part of the environment
   Ignr :: LeftHandSideArgs              body   env             scope
        -> LeftHandSideArgs              body  (env, e)        (scope, e)
+  EArg :: LeftHandSideArgs              body   env             scope
+       -> LeftHandSideArgs (Exp'   e -> body) (env, Exp' e)   (scope, Exp' e)
+  VArg :: LeftHandSideArgs              body   env             scope
+       -> LeftHandSideArgs (Var'   e -> body) (env, Var' e)   (scope, Var' e)
+  FArg :: LeftHandSideArgs              body   env             scope
+       -> LeftHandSideArgs (Fun'   e -> body) (env, Fun' e)   (scope, Fun' e)
 
 -- input ~ InArgs args, and output is a permuted version of OutArgs args
 data ClusterIO args input output where
@@ -114,10 +121,40 @@ data ClusterIO args input output where
          -> ClusterIO (Out sh e -> args) (input, Sh sh e)    eoutput
   MutPut :: ClusterIO              args   input             output
          -> ClusterIO (Mut sh e -> args) (input, Mut sh e) (output, Mut sh e)
-  -- TODO: duplicate for Var' and Fun'
   ExpPut :: ClusterIO              args   input             output
          -> ClusterIO (Exp'   e -> args) (input, Exp' e)   (output, Exp' e)
-  
+  VarPut :: ClusterIO              args   input             output
+         -> ClusterIO (Var'   e -> args) (input, Var' e)   (output, Var' e)
+  FunPut :: ClusterIO              args   input             output
+         -> ClusterIO (Fun'   e -> args) (input, Fun' e)   (output, Fun' e)
+
+
+pattern ExpArg :: () 
+                => forall e args body scope. (args' ~ (e -> args), body' ~ (body, e), scope' ~ (scope, e)) 
+                => LeftHandSideArgs args body scope 
+                -> LeftHandSideArgs args' body' scope'
+pattern ExpArg lhs <- (unExpArg -> Just (lhs, Refl))
+{-# COMPLETE Base, Reqr, Make, Adju, Ignr, ExpArg #-}
+unExpArg :: LeftHandSideArgs args' i' o' -> Maybe (LeftHandSideArgs args i o, (args', i', o') :~: (e -> args, (i, e), (o, e)))
+unExpArg (EArg lhs) = Just (unsafeCoerce lhs, unsafeCoerce Refl)
+unExpArg (VArg lhs) = Just (unsafeCoerce lhs, unsafeCoerce Refl)
+unExpArg (FArg lhs) = Just (unsafeCoerce lhs, unsafeCoerce Refl)
+unExpArg _ = Nothing
+
+pattern ExpPut' :: () 
+                => forall e args i o. (args' ~ (e -> args), i' ~ (i, e), o' ~ (o, e)) 
+                => ClusterIO args  i  o 
+                -> ClusterIO args' i' o'
+pattern ExpPut' io <- (unExpPut' -> Just (io, Refl))
+{-# COMPLETE Empty, Vertical, Input, Output, MutPut, ExpPut' #-}
+unExpPut' :: ClusterIO args' i' o' -> Maybe (ClusterIO args i o, (args', i', o') :~: (e -> args, (i, e), (o, e)))
+unExpPut' (ExpPut io) = Just (unsafeCoerce io, unsafeCoerce Refl)
+unExpPut' (VarPut io) = Just (unsafeCoerce io, unsafeCoerce Refl)
+unExpPut' (FunPut io) = Just (unsafeCoerce io, unsafeCoerce Refl)
+unExpPut' _ = Nothing
+
+
+
 
 -- | `xargs` is a type-level list which contains `x`. 
 -- Removing `x` from `xargs` yields `args`.
@@ -140,14 +177,15 @@ iolhs (ArgArray In  _ _ _ :>: as) f = iolhs as $ \io lhs -> f (Input       io) (
 iolhs (ArgArray Out _ _ _ :>: as) f = iolhs as $ \io lhs -> f (Output Here io) (Make Here lhs)
 iolhs (ArgArray Mut _ _ _ :>: as) f = iolhs as $ \io lhs -> f (MutPut io) (Adju lhs)
 iolhs (ArgExp _           :>: as) f = iolhs as $ \io lhs -> f (ExpPut      io) (EArg lhs)
-iolhs _ _ = undefined -- TODO Var', Fun'
+iolhs (ArgVar _           :>: as) f = iolhs as $ \io lhs -> f (VarPut      io) (VArg lhs)
+iolhs (ArgFun _           :>: as) f = iolhs as $ \io lhs -> f (FunPut      io) (FArg lhs)
 
 mkBase :: ClusterIO args i o -> LeftHandSideArgs () i i
 mkBase Empty = Base
 mkBase (Input    ci) = Ignr (mkBase ci)
 mkBase (Output _ ci) = Ignr (mkBase ci)
 mkBase (MutPut   ci) = Ignr (mkBase ci)
-mkBase (ExpPut   ci) = Ignr (mkBase ci)
+mkBase (ExpPut'   ci) = Ignr (mkBase ci)
 mkBase (Vertical _ ci) = Ignr (mkBase ci)
 
 fromArgsTake :: forall env a ab b. Take a ab b -> Take (FromArg env a) (FromArgs env ab) (FromArgs env b)
@@ -216,8 +254,10 @@ getIn Base () = ()
 getIn (Reqr t1 _ lhs) i = let (x, i') = take t1 i in (getIn lhs i', x)
 getIn (Make _ lhs) (i, sh) = (getIn lhs i, sh)
 getIn (Adju lhs)   (i, x)  = (getIn lhs i, x)
-getIn (EArg lhs)   (i, x)  = (getIn lhs i, x)
 getIn (Ignr lhs)   (i, _)  =  getIn lhs i
+getIn (EArg lhs)   (i, x)  = (getIn lhs i, x)
+getIn (VArg lhs)   (i, x)  = (getIn lhs i, x)
+getIn (FArg lhs)   (i, x)  = (getIn lhs i, x)
 
 genOut :: LeftHandSideArgs body i o -> i -> OutArgs body -> o
 genOut Base             ()    _     = 
@@ -229,9 +269,13 @@ genOut (Make t lhs)    (i, _) (o, x) =
   put t x (genOut lhs i o)
 genOut (Adju lhs) (i, _)    (o, x) = 
   (genOut lhs i o, x)
+genOut (Ignr lhs)      (i, x) o     =
+  (genOut lhs i o, x)
 genOut (EArg lhs)      (i, x) o     =
   (genOut lhs i o, x)
-genOut (Ignr lhs)      (i, x) o     =
+genOut (VArg lhs)      (i, x) o     =
+  (genOut lhs i o, x)
+genOut (FArg lhs)      (i, x) o     =
   (genOut lhs i o, x)
 
 type family FromArg env a = b | b -> a where

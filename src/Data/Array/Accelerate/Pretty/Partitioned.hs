@@ -65,7 +65,7 @@ clusterEnv env = \cio args -> (input cio args, output cio args)
       = Pretty.Push (input cio as) (prettyShapeVars env sh)
     input (MutPut cio) (a :>: as)
       = Pretty.Push (input cio as) (prettyArg env a)
-    input (ExpPut cio) (a :>: as)
+    input (ExpPut' cio) (a :>: as)
       = Pretty.Push (input cio as) (prettyArg env a)
 
     output :: ClusterIO t input' output' -> Args env t -> PartialVal output'
@@ -79,7 +79,7 @@ clusterEnv env = \cio args -> (input cio args, output cio args)
       = pInsertAt t (prettyArg env a) (output cio as)
     output (MutPut cio) (a :>: as)
       = PPush (output cio as) (prettyArg env a)
-    output (ExpPut cio) (a :>: as)
+    output (ExpPut' cio) (a :>: as)
       = PPush (output cio as) (prettyArg env a)
 
 -- The pretty printer gets an environment with Adocs of input variables (Val env, from clusterEnv)
@@ -128,7 +128,7 @@ forward (Make t lhs)     fresh (Pretty.Push env sh) out =
       Just a ->  (a, a, fresh)
       Nothing -> (intermediate Out fresh sh, intermediate In fresh sh, fresh + 1)
     (fresh'', env', args) = forward lhs fresh' env (pRemoveAt t out)
-forward (EArg lhs)       fresh env out = forwardSingle lhs fresh env out
+forward (ExpArg lhs)     fresh env out = forwardSingle lhs fresh env out
 forward (Adju lhs)       fresh env out = forwardSingle lhs fresh env out
 forward (Ignr lhs)       fresh env out = forwardSingle lhs fresh env out
 
@@ -144,7 +144,7 @@ backward :: LeftHandSideArgs body env scope -> PartialVal scope -> PartialVal en
 backward _ PEnd = PEnd
 backward (Reqr t1 t2 lhs) env = pWriteAt t1 (pTakeAt t2 env) $ backward lhs $ pRemoveAt t2 env
 backward (Make t lhs) env = PSkip $ backward lhs $ pRemoveAt t env
-backward (EArg lhs) env = backwardSingle lhs env
+backward (ExpArg lhs) env = backwardSingle lhs env
 backward (Adju lhs) env = backwardSingle lhs env
 backward (Ignr lhs) env = backwardSingle lhs env
 
