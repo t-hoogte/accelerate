@@ -1,3 +1,4 @@
+{-# LANGUAGE AllowAmbiguousTypes                 #-}
 {-# LANGUAGE CPP                 #-}
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE RankNTypes          #-}
@@ -69,9 +70,9 @@ import Data.Array.Accelerate.Debug.Internal.Timed
 test
   :: forall op f. (Afunction f, DesugarAcc op, Partitioning.MakesILP op, Pretty.PrettyOp op)
   => f
-  -> op ()
-test = error 
-     . ("PartitionedAfun:\n" ++) 
+  -> String
+test = ("PartitionedAfun:\n" ++) 
+     . (\x -> rnf x `seq` x)
      . Pretty.renderForTerminal . Pretty.prettyAfun 
      . NewNewFusion.convertAfun 
      . (\x -> Debug.Trace.trace (Pretty.renderForTerminal $ Pretty.prettyAfun x) x)
