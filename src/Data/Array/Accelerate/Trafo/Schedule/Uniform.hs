@@ -60,12 +60,14 @@ import Control.Category
 import Control.DeepSeq
 import qualified Data.Array.Accelerate.AST.Environment as Env
 
+import Data.Array.Accelerate.Pretty.Operation
+
 instance IsSchedule UniformScheduleFun where
   type ScheduleInput  UniformScheduleFun a = Input a
   type ScheduleOutput UniformScheduleFun a = Output a
 
   convertScheduleFun afun
-    | (partial, _) <- partialScheduleFun afun = fromPartialFun PEnd partial
+    | (partial, _) <- partialScheduleFun afun = fromPartialFun PEnd (ReusedVars IdxSet.empty) partial
 
   rnfSchedule (Slam lhs s) = rnfLeftHandSide rnfBaseR lhs `seq` rnfSchedule s
   rnfSchedule (Sbody s) = rnfSchedule' s
@@ -375,27 +377,27 @@ data ConvertEnv genv fenv fenv' where
 
 data PartialDoOutput fenv fenv' t r where
   PartialDoOutputPair     :: PartialDoOutput fenv1 fenv2 t  r
-                    -> PartialDoOutput fenv2 fenv3 t' r'
-                    -> PartialDoOutput fenv1 fenv3 (t, t') (r, r')
+                          -> PartialDoOutput fenv2 fenv3 t' r'
+                          -> PartialDoOutput fenv1 fenv3 (t, t') (r, r')
 
   -- First SignalResolver grants access to the ref, the second grants read access and the
   -- third guarantees that all reads have been finished.
   -- Together they thus grant write access.
   --
   PartialDoOutputUnique   :: fenv' ~ ((((fenv, OutputRef (Buffer t)), SignalResolver), SignalResolver), SignalResolver)
-                    => ScalarType t
-                    -> PartialDoOutput fenv  fenv' (Buffer t) (((SignalResolver, SignalResolver), SignalResolver), OutputRef (Buffer t))
+                          => ScalarType t
+                          -> PartialDoOutput fenv  fenv' (Buffer t) (((SignalResolver, SignalResolver), SignalResolver), OutputRef (Buffer t))
 
   -- First SignalResolver grants access to the ref, the second grants read access.
   --
   PartialDoOutputShared   :: fenv' ~ (((fenv, OutputRef (Buffer t)), SignalResolver), SignalResolver)
-                    => ScalarType t
-                    -> PartialDoOutput fenv  fenv' (Buffer t) ((SignalResolver, SignalResolver), OutputRef (Buffer t))
+                          => ScalarType t
+                          -> PartialDoOutput fenv  fenv' (Buffer t) ((SignalResolver, SignalResolver), OutputRef (Buffer t))
 
   -- Scalar values or shared buffers
   PartialDoOutputScalar   :: fenv' ~ ((fenv, OutputRef t), SignalResolver)
-                    => ScalarType t
-                    -> PartialDoOutput fenv  fenv' t (SignalResolver, OutputRef t)
+                          => ScalarType t
+                          -> PartialDoOutput fenv  fenv' t (SignalResolver, OutputRef t)
 
   PartialDoOutputUnit     :: PartialDoOutput fenv  fenv () ()
 
@@ -795,10 +797,10 @@ partialSchedule = (\(s, used, _) -> (s, used)) . travA (TupRsingle Shared)
             
           in
             ( PartialDo PartialDoOutputUnit env
-                $ Effect (SignalAwait signals)
+                $ await signals
                 $ inputBindings
                 $ Effect (Exec kernel sargs)
-                $ Effect (SignalResolve resolvers)
+                $ resolve resolvers
                 $ Return
             , IdxSet.fromList $ convertEnvToList env
             , TupRunit
@@ -823,12 +825,13 @@ partialSchedule = (\(s, used, _) -> (s, used)) . travA (TupRsingle Shared)
       where
         f :: genv :?> fenv -> Maybe (Binding fenv t)
         f k = Compute <$> strengthenArrayInstr k e
-    travA us (C.Alet lhs us' bnd a) = (partialDeclare lhs dest us' bnd' a', used1 `IdxSet.union` IdxSet.drop' lhs used2, vars')
+    travA us (C.Alet lhs us' bnd a) = (partialDeclare lhs dest us' bnd' a', used, vars')
       where
         dest = lhsDestination lhs vars
+        used = used1 `IdxSet.union` IdxSet.drop' lhs used2
         (bnd', used1, _) = travA us' bnd
         (a', used2, vars) = travA us a
-        vars' = weakenMaybeVars lhs vars `removeMaybeVars` used1
+        vars' = weakenMaybeVars lhs vars `removeMaybeVars` used
     travA _  (C.Alloc shr tp sh) = partialLift1 (TupRsingle $ GroundRbuffer tp) (Alloc shr tp) sh
     travA _  (C.Use tp n buffer) = partialLift1 (TupRsingle $ GroundRbuffer tp) (const $ Use tp n buffer) TupRunit
     travA _  (C.Unit var@(Var tp _)) = partialLift1 (TupRsingle $ GroundRbuffer tp) f (TupRsingle var)
@@ -883,10 +886,10 @@ partialLift tp f vars
       resolvers = convertEnvSignalResolvers (k' .> k) env
     in
       ( PartialDo doOutput env
-          $ Effect (SignalAwait signals)
+          $ await signals
           $ inputBindings
           $ Alet lhs binding
-          $ Effect (SignalResolve resolvers)
+          $ resolve resolvers
           $ writeOutput doOutput (varsOut (k' .> k .> convertEnvWeaken env)) (value weakenId)
       , IdxSet.fromList $ convertEnvToList env
       , mapTupR (const NoVars) tp
@@ -1064,6 +1067,13 @@ subFutureEnvironment :: forall fenv genv kernel. FutureEnv fenv genv -> SyncEnv 
 subFutureEnvironment (PNone fenv) (PNone senv) = (PNone fenv', actions)
   where
     (fenv', actions) = subFutureEnvironment fenv senv
+subFutureEnvironment (PNone fenv) PEnd = (PNone fenv', actions)
+  where
+    (fenv', actions) = subFutureEnvironment fenv PEnd
+subFutureEnvironment PEnd (PNone senv) = (PNone fenv', actions)
+  where
+    (fenv', actions) = subFutureEnvironment PEnd senv
+subFutureEnvironment PEnd _ = (PEnd, [])
 subFutureEnvironment (PPush fenv f@(FutureScalar _ _ _)) senv = (PPush fenv' f, actions)
   where
     (fenv', actions) = subFutureEnvironment fenv $ partialEnvTail senv
@@ -1107,8 +1117,8 @@ subFutureEnvironment (PPush fenv (FutureBuffer _ _ _ read write)) (PNone senv) =
         = return
         $ Effect (SignalResolve [rr]) Return
       | otherwise = []
-subFutureEnvironment PEnd _ = (PEnd, [])
-subFutureEnvironment _ _ = internalError "Keys of SyncEnv are not a subset of the keys of the FutureEnv"
+subFutureEnvironment _ (PPush _ _) = internalError "Keys of SyncEnv are not a subset of the keys of the FutureEnv"
+subFutureEnvironment fenv@(PPush _ _) PEnd = subFutureEnvironment fenv (PNone PEnd)
 
 sub :: forall fenv genv kernel. FutureEnv fenv genv -> SyncEnv genv -> (FutureEnv fenv genv -> UniformSchedule kernel fenv) -> UniformSchedule kernel fenv
 sub fenv senv body = forks (body fenv' : actions)
@@ -1979,6 +1989,38 @@ lhsSignal = LeftHandSidePair (LeftHandSideSingle BaseRsignal) (LeftHandSideSingl
 lhsRef :: GroundR tp -> LeftHandSide BaseR (Ref tp, OutputRef tp) fenv ((fenv, Ref tp), OutputRef tp)
 lhsRef tp = LeftHandSidePair (LeftHandSideSingle $ BaseRref tp) (LeftHandSideSingle $ BaseRrefWrite tp)
 
+-- Set of identifiers which are reused as a destination and thus do not need to 
+-- be passed in the FutureEnv. For instance, in this program:
+--
+-- x = ..
+-- ..code..
+-- return (x, y)
+--
+-- where 'code' doesn't use x, we do not create new signals and references to
+-- store the result for x. We can directly write the result of x to the output
+-- destination of this program. Hence x shouldn't be present in the FutureEnv
+-- when compiling 'code'. We store x in ReusedVars to handle this.
+--
+newtype ReusedVars genv = ReusedVars { reusedVarsSet :: (IdxSet genv) }
+
+removeReusedVars :: ReusedVars genv -> SyncEnv genv -> SyncEnv genv
+removeReusedVars (ReusedVars (IdxSet.IdxSet reused)) env = diffPartialEnv env reused
+
+syncEnv' :: ReusedVars genv -> PartialSchedule kernel genv t -> SyncEnv genv
+syncEnv' reused = removeReusedVars reused . syncEnv
+
+syncEnvFun' :: ReusedVars genv -> PartialScheduleFun kernel genv t -> SyncEnv genv
+syncEnvFun' reused = removeReusedVars reused . syncEnvFun
+
+lhsReusedVars :: GLeftHandSide t genv genv' -> TupR (Destination r) t -> ReusedVars genv -> ReusedVars genv'
+lhsReusedVars (LeftHandSideWildcard _) _ reused = reused
+lhsReusedVars (LeftHandSideSingle _)   (TupRsingle DestinationNew)     (ReusedVars vars) = ReusedVars $ IdxSet.skip vars
+lhsReusedVars (LeftHandSideSingle _)   (TupRsingle DestinationReuse{}) (ReusedVars vars) = ReusedVars $ IdxSet.push vars
+lhsReusedVars (LeftHandSidePair l1 l2) (TupRpair d1 d2)                reused            = lhsReusedVars l2 d2 $ lhsReusedVars l1 d1 reused
+lhsReusedVars (LeftHandSidePair l1 l2) (TupRsingle DestinationNew)     reused
+  = lhsReusedVars (LeftHandSidePair l1 l2) (TupRsingle DestinationNew `TupRpair` TupRsingle DestinationNew) reused
+lhsReusedVars _ _ _ = internalError "Impossible case"
+
 -- Similar to 'fromPartial', but also applies the sub-environment rule 
 fromPartialSub
   :: forall kernel fenv genv t r.
@@ -1986,26 +2028,28 @@ fromPartialSub
   => OutputEnv t r
   -> BaseVars fenv r
   -> FutureEnv fenv genv
+  -> ReusedVars genv
   -> PartialSchedule kernel genv t
   -> UniformSchedule kernel fenv
-fromPartialSub outputEnv outputVars env partial
-  = sub env (syncEnv partial) (\env' -> fromPartial outputEnv outputVars env' partial)
+fromPartialSub outputEnv outputVars env reused partial
+  = sub env (syncEnv' reused partial) (\env' -> fromPartial outputEnv outputVars env' reused partial)
 
 fromPartialFun
   :: forall kernel fenv genv t.
      HasCallStack
   => FutureEnv fenv genv
+  -> ReusedVars genv
   -> PartialScheduleFun kernel genv t
   -> UniformScheduleFun kernel fenv (Scheduled UniformScheduleFun t)
-fromPartialFun env = \case
+fromPartialFun env reused = \case
   Pbody body
     | grounds <- groundsR body
     , Refl <- reprIsBody @UniformScheduleFun $ grounds
     , DeclareOutput k1 lhs k2 instr outputEnv outputVars <- declareOutput grounds
-    -> Slam lhs $ Sbody $ instr $ fromPartial outputEnv (outputVars weakenId) (mapPartialEnv (weaken (k2 .> k1)) env) body
+    -> Slam lhs $ Sbody $ instr $ fromPartial outputEnv (outputVars weakenId) (mapPartialEnv (weaken (k2 .> k1)) env) reused body
   Plam lhs fun
     | DeclareInput _ lhs' env' <- declareInput env lhs
-    -> Slam lhs' $ fromPartialFun (env' weakenId) fun
+    -> Slam lhs' $ fromPartialFun (env' weakenId) (ReusedVars $ IdxSet.skip' lhs $ reusedVarsSet reused) fun
 
 fromPartial
   :: forall kernel fenv genv t r.
@@ -2013,30 +2057,30 @@ fromPartial
   => OutputEnv t r
   -> BaseVars fenv r
   -> FutureEnv fenv genv
+  -> ReusedVars genv
   -> PartialSchedule kernel genv t
   -> UniformSchedule kernel fenv
-fromPartial outputEnv outputVars env = \case
-    PartialDo outputEnv' convertEnv (schedule :: UniformSchedule kernel fenv')
-      | Just Refl <- matchOutputEnvWithEnv outputEnv outputEnv' ->
-        let
-          kEnv = partialDoSubstituteOutput outputEnv' outputVars
-          kEnv' :: Env (NewIdx fenv) fenv'
-          kEnv' = partialDoSubstituteConvertEnv convertEnv env kEnv
+fromPartial outputEnv outputVars env reused = \case
+    PartialDo outputEnv' convertEnv (schedule :: UniformSchedule kernel fenv') ->
+      let
+        kEnv = partialDoSubstituteOutput outputEnv' outputEnv outputVars
+        kEnv' :: Env (NewIdx fenv) fenv'
+        kEnv' = partialDoSubstituteConvertEnv convertEnv env kEnv
 
-          k :: ReindexPartialN Identity fenv' fenv
-          k idx = Identity $ prj' idx kEnv'
-        in
-          runIdentity $ reindexSchedule k schedule -- Something with a substitution
-      | otherwise -> internalError "OutputEnv and PartialDoOutput do not match"
+        k :: ReindexPartialN Identity fenv' fenv
+        k idx = Identity $ prj' idx kEnv'
+      in
+        runIdentity $ reindexSchedule k schedule -- Something with a substitution
     PartialReturn _ vars -> travReturn vars 
     PartialDeclare _ lhs dest uniquenesses bnd body
-      | ChainFutureEnv splitInstr k1 envBnd envBody <- chainFutureEnvironment weakenId env (syncEnv bnd) (environmentDropLHS (syncEnv body) lhs)
-      , DeclareBinding k2 instr outputEnvBnd outputVarsBnd envBody' <- declareBinding envBody lhs dest uniquenesses ->
+      | reused' <- lhsReusedVars lhs dest reused
+      , ChainFutureEnv splitInstr k1 envBnd envBody <- chainFutureEnvironment weakenId env (syncEnv' reused bnd) (environmentDropLHS (syncEnv' reused' body) lhs)
+      , DeclareBinding k2 instr outputEnvBnd outputVarsBnd envBody' <- declareBinding outputEnv (mapTupR (weaken k1) outputVars) envBody lhs dest uniquenesses ->
         splitInstr
         $ instr
-        $ Fork
-          (fromPartial outputEnvBnd (outputVarsBnd weakenId) (mapPartialEnv (weaken $ k2) envBnd) bnd)
-          (fromPartial outputEnv (mapTupR (weaken $ k2 .> k1) outputVars) (envBody' weakenId) body)
+        $ fork
+          (fromPartial outputEnvBnd (outputVarsBnd weakenId) (mapPartialEnv (weaken k2) envBnd) reused bnd)
+          (fromPartialSub outputEnv (mapTupR (weaken $ k2 .> k1) outputVars) (envBody' weakenId) reused' body)
     PartialAcond _ condition true false -> acond condition true false
     PartialAwhile _ uniquenesses condition step initial -> awhile uniquenesses condition step initial
   where
@@ -2048,7 +2092,7 @@ fromPartial outputEnv outputVars env = \case
     travReturn' (OutputEnvScalar tp') (TupRpair (TupRsingle destSignal) (TupRsingle destRef)) (TupRsingle (Var tp ix)) accum = task : accum
       where
         task = case prjPartial ix env of
-          Nothing -> internalError "Variable not present in environment"
+          Nothing -> ( [], Return ) -- No need to copy, as output was already written at the declaration of the variable using destination-passing-style
           Just (FutureScalar _ signal ref) ->
             ( [signal]
             , Alet (LeftHandSideSingle $ BaseRground tp) (RefRead $ Var (BaseRref tp) ref)
@@ -2060,7 +2104,7 @@ fromPartial outputEnv outputVars env = \case
     travReturn' OutputEnvShared (TupRpair (TupRsingle destSignalRef `TupRpair` TupRsingle destSignalRead) (TupRsingle destRef)) (TupRsingle (Var tp ix)) accum = task : accum
       where
         task = case prjPartial ix env of
-          Nothing -> internalError "Variable not present in environment"
+          Nothing -> ( [], Return ) -- No need to copy, as output was already written at the declaration of the variable using destination-passing-style
           Just (FutureScalar tp' _ _) -> bufferImpossible tp'
           Just (FutureBuffer _ signal ref readAccess _) ->
             ( [signal]
@@ -2074,7 +2118,7 @@ fromPartial outputEnv outputVars env = \case
     travReturn' OutputEnvUnique (TupRpair (TupRpair (TupRsingle destSignalRef `TupRpair` TupRsingle destSignalRead) (TupRsingle destSignalWrite)) (TupRsingle destRef)) (TupRsingle (Var tp ix)) accum = task : accum
       where
         task = case prjPartial ix env of
-          Nothing -> internalError "Variale not present in environment"
+          Nothing -> ( [], Return ) -- No need to copy, as output was already written at the declaration of the variable using destination-passing-style
           Just (FutureScalar tp' _ _) -> bufferImpossible tp'
           Just (FutureBuffer _ _ _ _ Nothing) -> internalError "Expected FutureBuffer with write access"
           Just (FutureBuffer _ signal ref readAccess (Just writeAccess)) ->
@@ -2101,8 +2145,8 @@ fromPartial outputEnv outputVars env = \case
           $ Alet (LeftHandSideSingle $ BaseRground $ GroundRscalar scalarType) (RefRead $ Var (BaseRref $ GroundRscalar scalarType) ref)
           $ Acond
             (Var scalarType ZeroIdx)
-            (fromPartialSub outputEnv outputVars' env' true)
-            (fromPartialSub outputEnv outputVars' env' false)
+            (fromPartialSub outputEnv outputVars' env' reused true)
+            (fromPartialSub outputEnv outputVars' env' reused false)
             Return
       Nothing -> internalError "Variable not found"
       where
@@ -2115,7 +2159,7 @@ fromPartial outputEnv outputVars env = \case
       -> PartialScheduleFun kernel genv (t -> t)
       -> GroundVars genv t
       -> UniformSchedule kernel fenv
-    awhile = fromPartialAwhile outputEnv outputVars env
+    awhile = fromPartialAwhile outputEnv outputVars env reused
 
 fromPartialAwhile
   :: forall kernel fenv genv t r.
@@ -2123,14 +2167,15 @@ fromPartialAwhile
   => OutputEnv t r
   -> BaseVars fenv r
   -> FutureEnv fenv genv
+  -> ReusedVars genv
   -> Uniquenesses t
   -> PartialScheduleFun kernel genv (t -> PrimBool)
   -> PartialScheduleFun kernel genv (t -> t)
   -> GroundVars genv t
   -> UniformSchedule kernel fenv
-fromPartialAwhile outputEnv outputVars env uniquenesses conditionFun@(Plam lhsC (Pbody condition)) stepFun@(Plam lhsS (Pbody step)) initial
+fromPartialAwhile outputEnv outputVars env reused uniquenesses conditionFun@(Plam lhsC (Pbody condition)) stepFun@(Plam lhsS (Pbody step)) initial
   -- Split environment for initial vars and body
-  | ChainFutureEnv instrSplit k0 envInitial envLoop <- chainFutureEnvironment (weakenSucc $ weakenSucc weakenId) env (variablesToSyncEnv uniquenesses initial) (unionPartialEnv max (syncEnvFun conditionFun) (syncEnvFun stepFun))
+  | ChainFutureEnv instrSplit k0 envInitial envLoop <- chainFutureEnvironment (weakenSucc $ weakenSucc weakenId) env (variablesToSyncEnv uniquenesses initial) (unionPartialEnv max (syncEnvFun' reused conditionFun) (syncEnvFun' reused stepFun))
   -- Create a LHS which brings variables in scope for both the condition and
   -- the step function. This is needed as they may have wildcards at different
   -- locations
@@ -2154,7 +2199,7 @@ fromPartialAwhile outputEnv outputVars env uniquenesses conditionFun@(Plam lhsC 
   -- finished writing. Note that this now only regards the previous iteration,
   -- as the desire to write already adds more barriers and hence the
   -- synchronisation is "more local".
-  , LoopFutureEnv syncLoopIo k2 lhsSyncLoopInput loopSyncInitial syncLoopOutput <- loopFutureEnvironment (k0 >:> defaultSignal) k1 envLoop (syncEnvFun conditionFun) (syncEnvFun stepFun)
+  , LoopFutureEnv syncLoopIo k2 lhsSyncLoopInput loopSyncInitial syncLoopOutput <- loopFutureEnvironment (k0 >:> defaultSignal) k1 envLoop (syncEnvFun' reused conditionFun) (syncEnvFun' reused stepFun)
   -- The body of the loop is a function which outputs a boolean to denote
   -- whether the loop should continue ...
   , lhsOutputBool <- LeftHandSideSingle BaseRsignalResolver `LeftHandSidePair` LeftHandSideSingle (BaseRrefWrite $ GroundRscalar scalarType)
@@ -2223,6 +2268,7 @@ fromPartialAwhile outputEnv outputVars env uniquenesses conditionFun@(Plam lhsC 
               -- (envC) and weaken it as we introduced a signal and reference
               -- (2 * 2 variables).
               (mapPartialEnv (weaken $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId) envC)
+              (ReusedVars $ IdxSet.skip' lhsC $ reusedVarsSet reused)
               condition
           , -- Wait on signal of condition
             Effect (SignalAwait [SuccIdx $ SuccIdx $ SuccIdx ZeroIdx])
@@ -2251,6 +2297,7 @@ fromPartialAwhile outputEnv outputVars env uniquenesses conditionFun@(Plam lhsC 
                   -- reference for the condition, and a variable to store
                   -- the value from the reference to the condition.
                   (mapPartialEnv (weaken $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId) envS)
+                  (ReusedVars $ IdxSet.skip' lhsS $ reusedVarsSet reused)
                   step
               )
               ( -- Condition is false. The loop should not continue. We must
@@ -2302,7 +2349,7 @@ fromPartialAwhile outputEnv outputVars env uniquenesses conditionFun@(Plam lhsC 
   where
     defaultSignal :: Idx ((fenv, Signal), SignalResolver) Signal
     defaultSignal = SuccIdx ZeroIdx
-fromPartialAwhile _ _ _ _ _ _ _ = internalError "Function impossible"
+fromPartialAwhile _ _ _ _ _ _ _ _ = internalError "Function impossible"
 
 awhileInputOutput :: FutureEnv fenv0 genv0 -> (forall fenv''. fenv :> fenv'' -> FutureEnv fenv'' genv) -> Uniquenesses t -> GroundVars genv0 t -> GLeftHandSide t genv genv' -> AwhileInputOutput fenv0 fenv genv genv' t
 awhileInputOutput env0 env (TupRpair u1 u2) (TupRpair v1 v2) (LeftHandSidePair lhs1 lhs2)
@@ -2522,27 +2569,41 @@ awhileWriteResult = \env resVars io vars -> go env resVars io vars []
 matchOutputEnvWithEnv :: OutputEnv t r -> PartialDoOutput fenv fenv' t r' -> Maybe (r :~: r')
 matchOutputEnvWithEnv (OutputEnvPair v1 v2) (PartialDoOutputPair e1 e2)
   | Just Refl <- matchOutputEnvWithEnv v1 e1
-  , Just Refl <- matchOutputEnvWithEnv v2 e2               = Just Refl
+  , Just Refl <- matchOutputEnvWithEnv v2 e2                    = Just Refl
+matchOutputEnvWithEnv OutputEnvScalar{} PartialDoOutputScalar{} = Just Refl
 matchOutputEnvWithEnv OutputEnvShared{} PartialDoOutputShared{} = Just Refl
 matchOutputEnvWithEnv OutputEnvUnique{} PartialDoOutputUnique{} = Just Refl
 matchOutputEnvWithEnv OutputEnvIgnore   PartialDoOutputUnit     = Just Refl
-matchOutputEnvWithEnv _                  _                 = Nothing
+matchOutputEnvWithEnv OutputEnvShared   PartialDoOutputUnique{} = error "shared/unique mismatch"
+matchOutputEnvWithEnv OutputEnvUnique   PartialDoOutputShared{} = error "unique/shared mismatch"
+matchOutputEnvWithEnv OutputEnvIgnore   PartialDoOutputScalar{} = error "ignore scalar"
+matchOutputEnvWithEnv OutputEnvIgnore   PartialDoOutputScalar{} = error "ignore scalar"
+matchOutputEnvWithEnv OutputEnvIgnore   PartialDoOutputShared{} = error "ignore shared buffer"
+matchOutputEnvWithEnv OutputEnvIgnore   PartialDoOutputUnique{} = error "ignore unique buffer"
+matchOutputEnvWithEnv OutputEnvIgnore   PartialDoOutputPair{}   = error "ignore pair"
+matchOutputEnvWithEnv _                 _                       = Nothing
 
-partialDoSubstituteOutput :: forall fenv fenv' t r. PartialDoOutput () fenv t r -> BaseVars fenv' r -> Env (NewIdx fenv') fenv
+partialDoSubstituteOutput :: forall fenv fenv' t r ro. PartialDoOutput () fenv t r -> OutputEnv t ro -> BaseVars fenv' ro -> Env (NewIdx fenv') fenv
 partialDoSubstituteOutput = go Env.Empty
   where
-    go :: Env (NewIdx fenv') fenv1 -> PartialDoOutput fenv1 fenv2 t' r' -> BaseVars fenv' r' -> Env (NewIdx fenv') fenv2
-    go env (PartialDoOutputPair o1 o2) (TupRpair v1 v2)
-      = go (go env o1 v1) o2 v2
-    go env PartialDoOutputUnit TupRunit
+    go :: Env (NewIdx fenv') fenv1 -> PartialDoOutput fenv1 fenv2 t' r' -> OutputEnv t' ro' -> BaseVars fenv' ro' -> Env (NewIdx fenv') fenv2
+    go env (PartialDoOutputPair o1 o2) (OutputEnvPair e1 e2) (TupRpair v1 v2)
+      = go (go env o1 e1 v1) o2 e2 v2
+    go env PartialDoOutputUnit OutputEnvIgnore TupRunit
       = env
-    go env (PartialDoOutputScalar _) (TupRpair (TupRsingle v1) (TupRsingle v2))
+    go env (PartialDoOutputScalar _) (OutputEnvScalar _) (TupRpair (TupRsingle v1) (TupRsingle v2))
       = env `Push` NewIdxJust (varIdx v2) `Push` NewIdxJust (varIdx v1)
-    go env (PartialDoOutputShared _) (TupRpair (TupRpair (TupRsingle v1) (TupRsingle v2)) (TupRsingle v3))
+    go env (PartialDoOutputShared _) OutputEnvShared (TupRpair (TupRpair (TupRsingle v1) (TupRsingle v2)) (TupRsingle v3))
       = env `Push` NewIdxJust (varIdx v3) `Push` NewIdxJust (varIdx v2) `Push` NewIdxJust (varIdx v1)
-    go env (PartialDoOutputUnique _) (TupRpair (TupRpair (TupRpair (TupRsingle v1) (TupRsingle v2)) (TupRsingle v3)) (TupRsingle v4))
+    go env (PartialDoOutputUnique _) OutputEnvUnique (TupRpair (TupRpair (TupRpair (TupRsingle v1) (TupRsingle v2)) (TupRsingle v3)) (TupRsingle v4))
       = env `Push` NewIdxJust (varIdx v4) `Push` NewIdxJust (varIdx v3) `Push` NewIdxJust (varIdx v2) `Push` NewIdxJust (varIdx v1)
-    go _ _ _ = internalError "Impossible BaseVars"
+    -- Unique buffer written to shared buffer destination
+    go env (PartialDoOutputUnique _) OutputEnvShared (TupRpair (TupRpair (TupRsingle v1) (TupRsingle v2)) (TupRsingle v3))
+      = env `Push` NewIdxJust (varIdx v3) `Push` NewIdxJust (varIdx v2) `Push` NewIdxJust (varIdx v1) `Push` NewIdxNoResolver
+    -- Shared buffer written to unique buffer destination
+    go env (PartialDoOutputShared _) OutputEnvUnique _
+      = internalError "Cannot write shared buffer to unique buffer destination"
+    go _ _ _ _ = internalError "Mismatch in PartialDoOutput and OutputEnv"
 
 partialDoSubstituteConvertEnv :: forall genv fenv1 fenv2 fenv'. ConvertEnv genv fenv1 fenv2 -> FutureEnv fenv' genv -> Env (NewIdx fenv') fenv1 -> Env (NewIdx fenv') fenv2
 partialDoSubstituteConvertEnv ConvertEnvNil _ env = env
@@ -2568,12 +2629,23 @@ partialDoSubstituteConvertEnv (ConvertEnvFuture var) fenv env
         | FutureBuffer _ s r _ _ <- future = (s, r)
     in
       env `Push` NewIdxJust signal `Push` NewIdxJust ref
-  | otherwise = internalError "Requested access to a value, but the Future was not found in the environment"
+  | otherwise = internalError $ "Requested access to a variable " ++ (show $ idxToInt $ varIdx var) ++ " of type " ++ show (prettyGroundR $ varType var) ++ ", but the Future was not found in the environment"
+
+fork :: UniformSchedule kernel fenv -> UniformSchedule kernel fenv -> UniformSchedule kernel fenv
+fork Return s      = s
+fork s      Return = s
+fork s1     s2     = Fork s1 s2
 
 forks :: [UniformSchedule kernel fenv] -> UniformSchedule kernel fenv
-forks [] = Return
-forks [u] = u
-forks (u:us) = Fork (forks us) u
+forks = forks' . filter notReturn
+  where
+    notReturn Return = False
+    notReturn _ = True
+
+forks' :: [UniformSchedule kernel fenv] -> UniformSchedule kernel fenv
+forks' [] = Return
+forks' [u] = u
+forks' (u:us) = Fork (forks' us) u
 
 serial :: forall kernel fenv. [UniformSchedule kernel fenv] -> UniformSchedule kernel fenv
 serial = go weakenId
@@ -2704,34 +2776,37 @@ data DeclareBinding kernel fenv genv' t where
                  -> DeclareBinding kernel fenv genv' t
 
 declareBinding
-  :: forall kernel fenv genv genv' bnd ret.
-     FutureEnv fenv genv
+  :: forall kernel fenv genv genv' bnd ret retR.
+     OutputEnv ret retR
+  -> BaseVars fenv retR
+  -> FutureEnv fenv genv
   -> GLeftHandSide bnd genv genv'
   -> TupR (Destination ret) bnd
   -> TupR Uniqueness bnd
   -> DeclareBinding kernel fenv genv' bnd
-declareBinding = \fenv -> go (\k -> mapPartialEnv (weaken k) fenv)
+declareBinding retOutputEnv retOutputVars = \fenv -> go weakenId (\k -> mapPartialEnv (weaken k) fenv)
   where
-    go :: forall fenv' genv1 genv2 t. (forall fenv''. fenv' :> fenv'' -> FutureEnv fenv'' genv1) -> GLeftHandSide t genv1 genv2 -> TupR (Destination ret) t -> TupR Uniqueness t -> DeclareBinding kernel fenv' genv2 t
-    go fenv (LeftHandSidePair lhs1 lhs2) (TupRpair dest1 dest2) (TupRpair u1 u2)
-      | DeclareBinding k1 instr1 out1 vars1 fenv1 <- go fenv  lhs1 dest1 u1
-      , DeclareBinding k2 instr2 out2 vars2 fenv2 <- go fenv1 lhs2 dest2 u2
+    go :: forall fenv' genv1 genv2 t. (fenv :> fenv') -> (forall fenv''. fenv' :> fenv'' -> FutureEnv fenv'' genv1) -> GLeftHandSide t genv1 genv2 -> TupR (Destination ret) t -> TupR Uniqueness t -> DeclareBinding kernel fenv' genv2 t
+    go k fenv (LeftHandSidePair lhs1 lhs2) (TupRpair dest1 dest2) (TupRpair u1 u2)
+      | DeclareBinding k1 instr1 out1 vars1 fenv1 <- go k fenv  lhs1 dest1 u1
+      , DeclareBinding k2 instr2 out2 vars2 fenv2 <- go (k1 .> k) fenv1 lhs2 dest2 u2
       = DeclareBinding (k2 .> k1) (instr1 . instr2) (OutputEnvPair out1 out2) (\k' -> TupRpair (vars1 $ k' .> k2) (vars2 k')) fenv2
-    go fenv (LeftHandSideWildcard _) _ _
+    go _ fenv (LeftHandSideWildcard _) _ _
       = DeclareBinding
           weakenId
           id
           OutputEnvIgnore
           (const TupRunit)
           fenv
-    go fenv (LeftHandSideSingle _) (TupRsingle (DestinationReuse _)) _
+    go k fenv (LeftHandSideSingle _) (TupRsingle (DestinationReuse idx)) _
+      | OutputEnvAndVars outputEnv outputVars <- prjDest retOutputEnv retOutputVars idx
       = DeclareBinding
           weakenId
           id
-          OutputEnvIgnore
-          (const TupRunit)
+          outputEnv
+          (\k' -> mapTupR (weaken (k' .> k)) outputVars)
           (\k' -> PNone $ fenv k')
-    go fenv (LeftHandSideSingle (GroundRscalar tp)) _ _
+    go _ fenv (LeftHandSideSingle (GroundRscalar tp)) _ _
       = DeclareBinding
           (weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId)
           instr
@@ -2753,7 +2828,7 @@ declareBinding = \fenv -> go (\k -> mapPartialEnv (weaken k) fenv)
         idx1 = SuccIdx ZeroIdx
         idx2 = SuccIdx $ SuccIdx ZeroIdx
         idx3 = SuccIdx $ SuccIdx $ SuccIdx ZeroIdx
-    go fenv (LeftHandSideSingle (GroundRbuffer tp)) _ (TupRsingle Unique)
+    go _ fenv (LeftHandSideSingle (GroundRbuffer tp)) _ (TupRsingle Unique)
       = DeclareBinding
           (weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId)
           instr
@@ -2789,7 +2864,7 @@ declareBinding = \fenv -> go (\k -> mapPartialEnv (weaken k) fenv)
         idx5 = SuccIdx $ SuccIdx $ SuccIdx $ SuccIdx $ SuccIdx ZeroIdx
         idx6 = SuccIdx $ SuccIdx $ SuccIdx $ SuccIdx $ SuccIdx $ SuccIdx ZeroIdx
         idx7 = SuccIdx $ SuccIdx $ SuccIdx $ SuccIdx $ SuccIdx $ SuccIdx $ SuccIdx ZeroIdx
-    go fenv (LeftHandSideSingle (GroundRbuffer tp)) _ (TupRsingle Shared)
+    go _ fenv (LeftHandSideSingle (GroundRbuffer tp)) _ (TupRsingle Shared)
       = DeclareBinding
           (weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId)
           instr
@@ -2819,11 +2894,20 @@ declareBinding = \fenv -> go (\k -> mapPartialEnv (weaken k) fenv)
         idx3 = SuccIdx $ SuccIdx $ SuccIdx ZeroIdx
         idx4 = SuccIdx $ SuccIdx $ SuccIdx $ SuccIdx ZeroIdx
         idx5 = SuccIdx $ SuccIdx $ SuccIdx $ SuccIdx $ SuccIdx ZeroIdx
-    go fenv lhs@LeftHandSidePair{} (TupRsingle DestinationNew) uniquenesses
-      = go fenv lhs (TupRsingle DestinationNew `TupRpair` TupRsingle DestinationNew) uniquenesses
-    go fenv lhs@LeftHandSidePair{} destinations (TupRsingle Shared)
-      = go fenv lhs destinations (TupRsingle Shared `TupRpair` TupRsingle Shared)
-    go _    LeftHandSidePair{} (TupRsingle DestinationReuse{}) _ = internalError "Pair impossible"
+    go k fenv lhs@LeftHandSidePair{} (TupRsingle DestinationNew) uniquenesses
+      = go k fenv lhs (TupRsingle DestinationNew `TupRpair` TupRsingle DestinationNew) uniquenesses
+    go k fenv lhs@LeftHandSidePair{} destinations (TupRsingle Shared)
+      = go k fenv lhs destinations (TupRsingle Shared `TupRpair` TupRsingle Shared)
+    go _ _    LeftHandSidePair{} (TupRsingle DestinationReuse{}) _ = internalError "Pair impossible"
+
+    prjDest :: OutputEnv ret' retR' -> BaseVars fenv retR' -> TupleIdx ret' t -> OutputEnvAndVars fenv t
+    prjDest outputEnv outputVars TupleIdxSelf = OutputEnvAndVars outputEnv outputVars
+    prjDest (OutputEnvPair o _) (TupRpair v _) (TupleIdxLeft  idx) = prjDest o v idx
+    prjDest (OutputEnvPair _ o) (TupRpair _ v) (TupleIdxRight idx) = prjDest o v idx
+    prjDest _ _ _ = internalError "Pair impossible"
+
+data OutputEnvAndVars fenv t where
+  OutputEnvAndVars :: OutputEnv t r -> BaseVars fenv r -> OutputEnvAndVars fenv t
 
 type ReindexPartialN f env env' = forall a. Idx env a -> f (NewIdx env' a)
 

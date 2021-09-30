@@ -18,8 +18,9 @@
 
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering where
 
-import Data.Array.Accelerate.AST.LeftHandSide ( Exists(..), LeftHandSide )
+import Data.Array.Accelerate.AST.LeftHandSide ( Exists(..), LeftHandSide, lhsToTupR )
 import Data.Array.Accelerate.AST.Partitioned hiding (take')
+import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
 
@@ -147,7 +148,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
                             facc)
          CWhl env' c b i  -> case (makeASTF env c prev, makeASTF env b prev) of
             (Exists cfun, Exists bfun) -> Exists $ Awhile
-              (error "ask Ivo")
+              (mapTupR (const Shared) i)
               -- [See NOTE unsafeCoerce result type]
               (unsafeCoerce @(PreOpenAfun (Cluster op) env _)
                             @(PreOpenAfun (Cluster op) env (_ -> PrimBool))
@@ -169,7 +170,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
           Exists bnd -> createLHS mylhs env $ \env' lhs ->
             case makeAST env' ctail (M.map (\(Exists acc) -> Exists $ weakenAcc lhs acc) prev) of
               Exists scp -> Exists $ Alet lhs
-                                          (error "ask Ivo")
+                                          (mapTupR (const Shared) $ lhsToTupR lhs)
                                           -- [See NOTE unsafeCoerce result type]
                                           (unsafeCoerce @(PreOpenAcc (Cluster op) env _)
                                                         @(PreOpenAcc (Cluster op) env a)

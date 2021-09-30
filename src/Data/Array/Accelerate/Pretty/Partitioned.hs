@@ -51,7 +51,7 @@ instance PrettyOp op => PrettyOp (Cluster op) where
       ops = opsF 0 inputEnv
       separator = flatAlt "" "; "
 
-clusterEnv :: forall env f input output. Val' env -> ClusterIO f input output -> Args env f -> (Pretty.Val input, PartialVal output)
+clusterEnv :: forall env f input output. Pretty.Val env -> ClusterIO f input output -> Args env f -> (Pretty.Val input, PartialVal output)
 clusterEnv env = \cio args -> (input cio args, output cio args)
   where
     input :: ClusterIO t input' output' -> Args env t -> Pretty.Val input'

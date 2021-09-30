@@ -17,8 +17,8 @@
 --
 
 module Data.Array.Accelerate.AST.IdxSet (
-  IdxSet,
-  member, varMember, intersect, union, insert, insertVar, skip,
+  IdxSet(..),
+  member, varMember, intersect, union, insert, insertVar, skip, skip',
   push, empty, drop, drop', fromList, fromVarList,
   singleton, singletonVar,
 toList) where
@@ -56,6 +56,11 @@ insertVar (Var _ idx) = insert idx
 skip :: IdxSet env -> IdxSet (env, t)
 skip = IdxSet . PNone . unIdxSet
 
+skip' :: LeftHandSide s t env env' -> IdxSet env -> IdxSet env'
+skip' (LeftHandSideSingle _)   = skip
+skip' (LeftHandSideWildcard _) = id
+skip' (LeftHandSidePair l1 l2) = skip' l2 . skip' l1
+
 push :: IdxSet env -> IdxSet (env, t)
 push = IdxSet . flip PPush Present . unIdxSet
 
@@ -84,3 +89,6 @@ singleton idx = IdxSet $ partialEnvSingleton idx Present
 
 singletonVar :: Var s env t -> IdxSet env
 singletonVar (Var _ idx) = singleton idx
+
+instance Show (IdxSet env) where
+  showsPrec p = showsPrec p . map (\(Exists idx) -> idxToInt idx) . toList
