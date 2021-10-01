@@ -10,6 +10,7 @@
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE StandaloneDeriving #-}
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels where
 
 
@@ -70,6 +71,7 @@ data ALabel t where
   Arr :: ELabel -- elabel of buffer
       -> ALabel (m sh e) -- only matches on arrays, but supports In, Out and Mut
   NotArr :: ALabel (t e) -- matches on `Var' e`, `Exp' e` and `Fun' e` (is typecorrect on arrays, but wish it wasn't)
+deriving instance Show (ALabel t)
 
 matchALabel :: ALabel (m sh s) -> ALabel (m' sh' t) -> Maybe ((sh,s) :~: (sh',t))
 matchALabel (Arr e1) (Arr e2)
@@ -91,6 +93,16 @@ newtype ELabel = ELabel { runELabel :: Int }
 -- | Keeps track of which argument belongs to which labels
 data LabelledArg  env a = L (Arg env a) (ALabels a)
 type LabelledArgs env = PreArgs (LabelledArg env)
+
+instance Show (LabelledArgs env args) where 
+  show ArgsNil = "ArgsNil"
+  show (L arg a :>: args) = "L " ++ x ++ " " ++ show a ++ " :>: " ++ show args
+    where x = case arg of
+            ArgVar tr -> "Var"
+            ArgExp poe -> "Exp"
+            ArgFun pof -> "Fun"
+            ArgArray mod ar tr tr' -> "Arr"
+
 
 -- instance Semigroup (LabelledArgs env args) where
 --   ArgsNil <> ArgsNil = ArgsNil
@@ -122,6 +134,11 @@ instance Semigroup (LabelEnv env) where
   (e1,l1):>>:lenv1 <> (e2,l2):>>:lenv2
     | e1 == e2 = (e1, l1<>l2) :>>: (lenv1 <> lenv2)
     | otherwise = error "mappend for LabelEnv found two different labels"
+
+instance Show (LabelEnv env) where
+  show LabelEnvNil = "LabelEnvNil"
+  show (e :>>: env) = show e ++ " :>>: " ++ show env
+
 
 freshE' :: State ELabel ELabel
 freshE' = id <%= (+1)
@@ -277,6 +294,13 @@ getInputArgLabels ArgsNil _ = mempty
 getInputArgLabels (arg :>: args) lenv = getInputArgLabels args lenv <> case arg of
   ArgArray Out _ _ _ -> mempty
   _ -> snd $ getLabelsArg arg lenv
+
+getOutputArgLabels :: Args env args -> LabelEnv env -> Labels
+getOutputArgLabels ArgsNil _ = mempty
+getOutputArgLabels (arg :>: args) lenv = getOutputArgLabels args lenv <> case arg of
+  ArgArray In _ _ _ -> mempty
+  _ -> snd $ getLabelsArg arg lenv
+
 
 body :: ALabel (Exp' e) -> ALabel (Fun' e)
 body NotArr = NotArr

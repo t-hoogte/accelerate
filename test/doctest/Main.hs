@@ -38,5 +38,5 @@ main = A.test @A.InterpretOp twoMaps `seq` return ()
 dotp :: A.Acc (A.Vector Int) -> A.Acc (A.Vector Int) -> A.Acc (A.Scalar Int)
 dotp a b = A.fold (+) 0 $ A.zipWith (*) (A.map (+1) a) (A.map (`div` 2) b)
 
-twoMaps :: A.Acc (A.Vector Int)
+twoMaps :: A.Acc (A.Vector Int)-- -> A.Acc (A.Vector Int)
 twoMaps = A.map (+1) . A.map (*2) . A.use $ A.fromList (A.Z A.:. 10) [1..]
