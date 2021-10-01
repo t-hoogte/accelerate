@@ -130,7 +130,7 @@ forward (Make t lhs)     fresh (Pretty.Push env sh) out =
     (fresh'', env', args) = forward lhs fresh' env (pRemoveAt t out)
 forward (ExpArg lhs)     fresh env out = forwardSingle lhs fresh env out
 forward (Adju lhs)       fresh env out = forwardSingle lhs fresh env out
-forward (Ignr lhs)       fresh env out = forwardSingle lhs fresh env out
+forward (Ignr lhs)       fresh (Pretty.Push env x) out = (\(a, b, c) -> (a, Pretty.Push b x, c)) (forward lhs fresh env (pEnvTail out))
 
 intermediate :: Modifier m -> Int -> Adoc -> Adoc
 intermediate m idx sh = group $ vsep [prettyModifier m, "(" <> sh <> ")", "%" <> pretty idx]

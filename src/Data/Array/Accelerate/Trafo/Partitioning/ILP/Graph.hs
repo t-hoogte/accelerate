@@ -17,6 +17,8 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph where
 
@@ -51,6 +53,7 @@ import Data.Maybe (isJust, fromJust)
 import Data.Array.Accelerate.Representation.Type (TupR, liftTypeQ)
 import Data.Array.Accelerate.AST.LeftHandSide (LeftHandSide (LeftHandSideSingle, LeftHandSideWildcard, LeftHandSidePair, LeftHandSideUnit))
 import Data.Array.Accelerate.Representation.Shape (ShapeR)
+import qualified Debug.Trace
 
 
 -- | Directed edge (a :-> b): `b` depends on `a`.
@@ -186,6 +189,13 @@ data MyLHS s v where
 
 type MyGLHS = MyLHS GroundR
 
+instance Show (MyGLHS v) where
+  show (LHSSingle gr x0) = "LHSSingle " <> show x0
+  show (LHSWildcard tr) = "LHSWild"
+  show (LHSPair ml ml') = "LHSPair (" <> show ml <> ") (" <> show ml' <> ")"
+
+
+
 unEnvLHS :: LeftHandSide s v env env' -> LabelEnv env' -> MyLHS s v
 unEnvLHS (LeftHandSideSingle sv) (l :>>: _) = LHSSingle sv l
 unEnvLHS (LeftHandSideWildcard tr) _ = LHSWildcard tr
@@ -268,17 +278,20 @@ mkFullGraph (Exec op args) = do
   l <- freshL
   env <- use lenv
   lenv %= flip (updateLabelEnv args) l -- replace the labels of the output arrays with l
-  let labelledArgs = getLabelArgs args env -- uses the old env! Notably, in the case of Permute, gets the _previous_ writer
-  let fuseedges = S.map (-?> l) $ getInputArgLabels args env -- add fusible edges to all inputs
+  let labelledArgs = getLabelArgs args env -- uses the old env! Notably, gets the Alloc (or its lhs?) for empty arrays, and the previous writer for Permute
+  let    fuseedges = S.map (-?> l) $ getInputArgLabels args env -- add fusible edges to all inputs
+  let nonfuseedges = S.map (-?> l) $ getOutputArgLabels args env
   let backInfo = mkGraph op labelledArgs l -- query the backend for its fusion information - we add l and fuseedges next line
   return $ FGRes (backInfo
                     & graphI.graphNodes    %~ S.insert l
-                    & graphI.fusibleEdges <>~ fuseedges)
+                    & graphI.fusibleEdges <>~ fuseedges
+                    & graphI.infusibleEdges <>~ nonfuseedges)
                  Nothing
                  (M.singleton l $ CExe env labelledArgs op)
 
--- TODO Alet LeftHandSideUnit case
 mkFullGraph (Alet LeftHandSideUnit _ bnd scp) = do
+  -- Note that this does not store any LeftHandSides. Instead, in the reconstruction, we will manually insert a LeftHandSideUnit on top of Executes.
+  -- This is safe, because Exec is the only ()-returning operation that we cannot ignore on the left side of an Alet.
   res1 <- mkFullGraph bnd
   res2 <- mkFullGraph scp
   return $ (res1 <> res2)
@@ -293,7 +306,8 @@ mkFullGraph (Alet (lhs :: GLeftHandSide bnd env env') _ bnd scp) = do
     Just scpResL -> return  $ (bndRes <> scpRes)
                             & info.graphI.graphNodes %~ S.insert l
                             & info.graphI.infusibleEdges <>~ S.fromList [ fromJust (bndRes ^. l_res) -?> l
-                                                                        ,                          l -?> scpResL]
+                                                                        ,                          l -?> scpResL
+                                                                        ]
                             & construc                    %~ M.insert l (CLHS mylhs (fromJust $ bndRes ^. l_res))
                             & l_res                       ?~ scpResL
     -- The right-hand side of this let-binding had no result (e.g. an Execute)
@@ -380,6 +394,7 @@ mkFullGraphF (Abody acc) = do
   l <- freshL
   currL.parent .= Just l
   res <- mkFullGraph acc
+  currL.parent .= l ^. parent
   return $ res
          & l_res    ?~ l
          & info.graphI.graphNodes %~ S.insert l
@@ -421,7 +436,7 @@ zoomState :: forall env env' a x. GLeftHandSide x env env' -> Label -> State (Fu
 zoomState lhs l f = do
     env <- use lenv
     env' <- zoom currE (addLhs lhs (S.singleton l) env)
-    let mylhs = unEnvLHS lhs env'
+    let mylhs = Debug.Trace.traceShowId $ unEnvLHS lhs env'
     (, mylhs) <$> zoom (zoomStateLens env') f
   where
     -- | This lens allows us to `zoom` into a state computation with a bigger environment,

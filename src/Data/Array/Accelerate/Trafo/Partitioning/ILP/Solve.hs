@@ -28,6 +28,8 @@ import Data.Maybe (fromJust,  mapMaybe )
 import qualified Debug.Trace
 
 
+trimIds :: S.Set Edge -> S.Set Edge
+trimIds = S.filter (\(x:->y) -> x /= y)
 
 -- Makes the ILP. Note that this function 'appears' to ignore the Label levels completely!
 -- We could add some assertions, but if all the input is well-formed (no labels, constraints, etc
@@ -35,7 +37,7 @@ import qualified Debug.Trace
 -- with parents `Nothing` as a different cluster than 'cluster 3' with parents `Just 5`.
 makeILP :: forall op. MakesILP op => Information op -> ILP op
 makeILP (Info
-          (Graph nodes fuseEdges' nofuseEdges)
+          (Graph nodes (trimIds -> fuseEdges') (trimIds -> nofuseEdges))
           backendconstraints
           backendbounds
         ) = combine graphILP
@@ -129,7 +131,11 @@ data ClusterLs = Execs Labels | NonExec Label
 -- and their bodies should all be in earlier clusters already.
 -- Simply make one cluster per let, before the cluster with execs.
 splitExecs :: ([Labels], M.Map Label [Labels]) -> M.Map Label (Construction op) -> ([ClusterLs], M.Map Label [ClusterLs])
-splitExecs (xs, xM) constrM = (f xs, M.map f xM)
+splitExecs (xs, xM) constrM = let xs' = map (map (constrM M.!) . S.toList) xs 
+                                  xM' = map (map (map (constrM M.!) . S.toList)) $ M.elems xM in xs' `seq` xM' `seq` 
+  Debug.Trace.trace "splitExecs:" $ 
+    Debug.Trace.traceShow xs' $ 
+      Debug.Trace.traceShow xM' $ (f xs, M.map f xM)
   where
     f :: [Labels] -> [ClusterLs]
     f = concatMap (\ls -> filter (/= Execs mempty) $ map NonExec (S.toList $ S.filter isNonExec ls) ++ [Execs (S.filter isExec ls)])

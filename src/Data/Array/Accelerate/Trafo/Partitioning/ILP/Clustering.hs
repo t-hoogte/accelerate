@@ -18,7 +18,7 @@
 
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering where
 
-import Data.Array.Accelerate.AST.LeftHandSide ( Exists(..), LeftHandSide )
+import Data.Array.Accelerate.AST.LeftHandSide ( Exists(..), LeftHandSide (LeftHandSideUnit) )
 import Data.Array.Accelerate.AST.Partitioned hiding (take')
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
@@ -41,6 +41,7 @@ import Lens.Micro.Extras (view)
 import Data.Bifunctor (first)
 import qualified Data.Array.Accelerate.Pretty as Pretty
 import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
+import Data.Array.Accelerate.Representation.Type (TupR(TupRunit))
 
 -- "open research question"
 -- -- Each set of ints corresponds to a set of Constructions, which themselves contain a set of ints (the things they depend on).
@@ -85,6 +86,7 @@ foldC f x (ExecL ls) = foldr f x ls
 foldC f x (NonExecL l) = f l x
 
 topSort :: Graph -> Labels -> ClusterL
+topSort _ (S.toList -> [l]) = ExecL [l]
 topSort (Graph _ fedges _) cluster = ExecL topsorted
   where
     -- cluster' = S.map _labelId cluster
@@ -98,7 +100,7 @@ topSort (Graph _ fedges _) cluster = ExecL topsorted
           . S.filter (uncurry ((&&) `on` (`elem` cluster))) -- filter edges on 'both vertices are in this cluster'
           . S.map (\(x :-> y) -> (x, y))
           $ fedges
-    topsorted = map (view _1 . getAdj) $ reverse $ G.topSort graph -- containers>=0.6.4 contains 'G.reverseTopSort'
+    topsorted = map (view _1 . getAdj) $ G.topSort graph 
 
 openReconstruct   :: Pretty.PrettyOp (Cluster op) =>LabelEnv aenv
                   -> Graph
@@ -118,8 +120,8 @@ openReconstructF a b c l d e= (\(Right x) -> x) $ openReconstruct' a b c (Just l
 
 openReconstruct' :: forall op aenv. Pretty.PrettyOp (Cluster op) => LabelEnv aenv -> Graph -> [ClusterLs] -> Maybe Label -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> Either (Exists (PreOpenAcc (Cluster op) aenv)) (Exists (PreOpenAfun (Cluster op) aenv))
 openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = case mlab of
-  Just l  -> Right $ makeASTF labelenv l mempty
-  Nothing -> Left $ makeAST labelenv clusters mempty
+  Just l  -> Debug.Trace.traceShow "hello" $ Debug.Trace.traceShow (clusters, construct) $ Debug.Trace.trace "bye" $ Right $ makeASTF labelenv l mempty
+  Nothing -> Debug.Trace.traceShow "hello" $ Debug.Trace.traceShow (clusters, construct) $ Debug.Trace.trace "hi" $ Left $ makeAST labelenv clusters mempty
   where
     -- Make a tree of let bindings
 
@@ -163,10 +165,13 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
          CCmp env' expr     -> Exists $ Compute     (fromJust $ reindexExp  (mkReindexPartial env' env) expr)
          CAlc env' shr e sh -> Exists $ Alloc shr e (fromJust $ reindexVars (mkReindexPartial env' env) sh)
          CUnt env' evar     -> Exists $ Unit        (fromJust $ reindexVar  (mkReindexPartial env' env) evar)
-    makeAST env (cluster:ctail) prev = case makeCluster env cluster of
+    makeAST env (cluster:ctail) prev = -- This is probably the culprit: The 'prev' map does not really work. Instead, we need to enforce that
+    -- each lhs comes before its body! Otherwise reindexing fails when using the bound variables.
+
+      case makeCluster env cluster of
       NotFold con -> case con of
-        CLHS (mylhs :: MyGLHS a) b -> case prev M.! b of
-          Exists bnd -> createLHS mylhs env $ \env' lhs ->
+        CLHS (mylhs :: MyGLHS a) b -> Debug.Trace.traceShow mylhs $ case prev M.! b of
+          Exists bnd -> Debug.Trace.trace "hello!!" $ createLHS mylhs env $ \env' lhs ->
             case makeAST env' ctail (M.map (\(Exists acc) -> Exists $ weakenAcc lhs acc) prev) of
               Exists scp -> Exists $ Alet lhs
                                           (error "ask Ivo")
@@ -175,14 +180,23 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
                                                         @(PreOpenAcc (Cluster op) env a)
                                                         bnd)
                                           scp
-        _ -> makeAST env ctail $ foldC (`M.insert` makeAST env [cluster] prev) prev cluster
-      _   -> makeAST env ctail $ foldC (`M.insert` makeAST env [cluster] prev) prev cluster
+        _ -> let res = makeAST env [cluster] prev in case cluster of
+                ExecL _ -> case (res, makeAST env ctail prev) of
+                  (Exists exec@Exec{}, Exists scp) -> Exists $ Alet LeftHandSideUnit (shared TupRunit) exec scp
+                NonExecL _ -> makeAST env ctail $ foldC (`M.insert` res) prev cluster
+      _   -> let res = makeAST env [cluster] prev in case cluster of
+                ExecL _ -> case (res, makeAST env ctail prev) of
+                  (Exists exec@Exec{}, Exists scp) -> Exists $ Alet LeftHandSideUnit (shared TupRunit) exec scp
+                NonExecL _ -> makeAST env ctail $ foldC (`M.insert` res) prev cluster
+
+
 
     makeASTF :: forall env. LabelEnv env -> Label -> M.Map Label (Exists (PreOpenAcc (Cluster op) env)) -> Exists (PreOpenAfun (Cluster op) env)
     makeASTF env l prev = case makeCluster env (NonExecL l) of
-      NotFold (CBod l') -> case makeAST env (subcluster $ fromJust $ l' ^. parent) prev of
+      NotFold (CBod l') -> case makeAST env (subcluster l ) prev of 
+        --  fromJust $ l' ^. parent) prev of 
         Exists acc -> Exists $ Abody acc
-      NotFold (CFun lhs l') -> createLHS lhs env $ \env' lhs' -> case makeASTF env' l' (M.map (\(Exists acc) -> Exists $ weakenAcc lhs' acc) prev) of
+      NotFold (CFun lhs l') -> Debug.Trace.traceShow lhs $ createLHS lhs env $ \env' lhs' -> case makeASTF env' l' (M.map (\(Exists acc) -> Exists $ weakenAcc lhs' acc) prev) of
         Exists fun -> Exists $ Alam lhs' fun
       NotFold {} -> error "wrong type: acc"
       _ -> error "not a notfold"
@@ -197,8 +211,8 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
     subcluster !l = subclusters M.! l
 
     makeCluster :: LabelEnv env -> ClusterL -> FoldType op env
-    makeCluster env (ExecL ls) = (\x@(Fold c a) -> Debug.Trace.trace (Pretty.renderForTerminal $ Pretty.prettyOp c) x)
-       $ foldr1 (flip fuseCluster)
+    makeCluster (Debug.Trace.traceShowId . Debug.Trace.trace "v env"-> env) (ExecL (Debug.Trace.traceShowId . Debug.Trace.trace "v ls" -> ls)) =
+       foldr1 (flip fuseCluster)
                     $ map ( \l -> case construct M.! l of
                               -- At first thought, this `fromJust` might error if we fuse an array away.
                               -- It does not: The array will still be in the environment, but after we finish
@@ -206,7 +220,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
                               -- If the array is never read from in later clusters (vertical instead of diagonal fusion),
                               -- we will need to clean it up afterwards with a separate dead-array removal pass,
                               -- which should also delete the corresponding allocation. TODO
-                              CExe env' args op -> InitFold op $ fromJust $ reindexLabelledArgs (mkReindexPartial env' env) args --labelled env env' args
+                              CExe (Debug.Trace.traceShowId . Debug.Trace.trace "v env'" -> env') ((Debug.Trace.traceShowId . Debug.Trace.trace "v args" -> args)) op -> InitFold op $ fromJust $ reindexLabelledArgs (mkReindexPartial env' env) args --labelled env env' args
                               _                 -> error "avoid this next refactor" -- c -> NotFold c
                           ) ls
     makeCluster _ (NonExecL l) = NotFold $ construct M.! l
@@ -372,7 +386,7 @@ fuseInput x (_ :>: as) (Ignr lhs) (ExpPut' io) =
 fuseInput x (_ :>: as) (Make t lhs) (Vertical _ io) =
   (\(Reqr a b c) -> ttake b t $ \b' t' -> Reqr (There a) b' (Make t' c))
   <$> fuseInput x as lhs io
-fuseInput x (_ :>: as) (Ignr lhs) (Vertical _ io) = 
+fuseInput x (_ :>: as) (Ignr lhs) (Vertical _ io) =
   (\(Reqr a b c) -> Reqr (There a) (There b) (Ignr c))
   <$> fuseInput x as lhs io
 

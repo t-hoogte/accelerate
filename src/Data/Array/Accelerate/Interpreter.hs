@@ -235,7 +235,7 @@ instance DesugarAcc InterpretOp where
 -- We restrict all the Inputs to (-2, PosInf).
 data OrderV = OrderIn  Label
             | OrderOut Label
-  deriving (Eq, Ord, Read, Show)
+  deriving (Eq, Ord, Show, Read)
 
 instance MakesILP InterpretOp where
   type BackendVar InterpretOp = OrderV
