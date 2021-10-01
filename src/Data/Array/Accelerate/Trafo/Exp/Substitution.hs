@@ -35,7 +35,7 @@ module Data.Array.Accelerate.Trafo.Exp.Substitution (
   (:>), SinkExp(..), weakenVars,
 
   -- ** Strengthening
-  (:?>), strengthenE,
+  (:?>), strengthenE, strengthenWithLHS,
 
   -- ** Rebuilding terms
   RebuildableExp(..), rebuildLHS,

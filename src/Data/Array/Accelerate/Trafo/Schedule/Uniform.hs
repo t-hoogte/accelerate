@@ -54,7 +54,8 @@ import qualified Data.Array.Accelerate.AST.Partitioned  as C
 import Data.Kind
 import Data.Maybe
 import Data.List
-    ( groupBy, nubBy, sort, group )
+    ( groupBy, nub, nubBy, sort, group, isSubsequenceOf, (\\) )
+import qualified Data.List as List
 import Prelude hiding (id, (.), read)
 import Control.Category
 import Control.DeepSeq
@@ -2075,12 +2076,13 @@ fromPartial outputEnv outputVars env reused = \case
     PartialDeclare _ lhs dest uniquenesses bnd body
       | reused' <- lhsReusedVars lhs dest reused
       , ChainFutureEnv splitInstr k1 envBnd envBody <- chainFutureEnvironment weakenId env (syncEnv' reused bnd) (environmentDropLHS (syncEnv' reused' body) lhs)
-      , DeclareBinding k2 instr outputEnvBnd outputVarsBnd envBody' <- declareBinding outputEnv (mapTupR (weaken k1) outputVars) envBody lhs dest uniquenesses ->
+      , DeclareBinding k2 instr outputEnvBnd outputVarsBnd envBody' bndSignals <- declareBinding outputEnv (mapTupR (weaken k1) outputVars) envBody lhs dest uniquenesses ->
         splitInstr
         $ instr
-        $ fork
+        $ forkUnless
           (fromPartial outputEnvBnd (outputVarsBnd weakenId) (mapPartialEnv (weaken k2) envBnd) reused bnd)
           (fromPartialSub outputEnv (mapTupR (weaken $ k2 .> k1) outputVars) (envBody' weakenId) reused' body)
+          (bndSignals weakenId)
     PartialAcond _ condition true false -> acond condition true false
     PartialAwhile _ uniquenesses condition step initial -> awhile uniquenesses condition step initial
   where
@@ -2631,10 +2633,32 @@ partialDoSubstituteConvertEnv (ConvertEnvFuture var) fenv env
       env `Push` NewIdxJust signal `Push` NewIdxJust ref
   | otherwise = internalError $ "Requested access to a variable " ++ (show $ idxToInt $ varIdx var) ++ " of type " ++ show (prettyGroundR $ varType var) ++ ", but the Future was not found in the environment"
 
+-- Forks the two schedules, unless the second schedule directly awaits on all the signals in the given list.
+-- In such case, we try to execute them serial.
+forkUnless :: UniformSchedule kernel fenv -> UniformSchedule kernel fenv -> Maybe [Idx fenv Signal] -> UniformSchedule kernel fenv
+forkUnless Return s      _      = s
+forkUnless s      Return _      = s
+forkUnless s1     s2     awaits
+  | Just awaits' <- awaits
+  , sort awaits' `isSubsequenceOf` sort signals2''
+    = await intersection $ serial [await signals1'' s1', await signals2'' s2']
+  | trivialSchedule s1'
+    = await intersection $ serial [await signals1'' s1', await signals2'' s2']
+  | trivialSchedule s2'
+    = await intersection $ serial [await signals1'' s2', await signals2'' s1']
+  | otherwise
+    = await intersection $ Fork (await signals1'' s1') (await signals2'' s2')
+  where
+    (signals1, s1') = directlyAwaits $ reorder s1
+    signals1' = nub signals1
+    signals1'' = signals1' \\ intersection
+    (signals2, s2') = directlyAwaits $ reorder s2
+    signals2' = nub signals2
+    signals2'' = signals2' \\ intersection
+    intersection = List.intersect signals1' signals2'
+
 fork :: UniformSchedule kernel fenv -> UniformSchedule kernel fenv -> UniformSchedule kernel fenv
-fork Return s      = s
-fork s      Return = s
-fork s1     s2     = Fork s1 s2
+fork s1 s2 = forkUnless s1 s2 Nothing
 
 forks :: [UniformSchedule kernel fenv] -> UniformSchedule kernel fenv
 forks = forks' . filter notReturn
@@ -2773,6 +2797,12 @@ data DeclareBinding kernel fenv genv' t where
                  -> OutputEnv t r
                  -> (forall fenv''. fenv' :> fenv'' -> BaseVars fenv'' r)
                  -> (forall fenv''. fenv' :> fenv'' -> FutureEnv fenv'' genv')
+                 -- A list of signals which will be resolved in this binding.
+                 -- If the body of a 'let' statement directly waits on all
+                 -- these signals, then we can execute the statement serially.
+                 -- If not, then we execute it in parallel: the body might be
+                 -- able to do some work before the binding has finished.
+                 -> (forall fenv''. fenv' :> fenv'' -> Maybe [Idx fenv'' Signal])
                  -> DeclareBinding kernel fenv genv' t
 
 declareBinding
@@ -2788,9 +2818,9 @@ declareBinding retOutputEnv retOutputVars = \fenv -> go weakenId (\k -> mapParti
   where
     go :: forall fenv' genv1 genv2 t. (fenv :> fenv') -> (forall fenv''. fenv' :> fenv'' -> FutureEnv fenv'' genv1) -> GLeftHandSide t genv1 genv2 -> TupR (Destination ret) t -> TupR Uniqueness t -> DeclareBinding kernel fenv' genv2 t
     go k fenv (LeftHandSidePair lhs1 lhs2) (TupRpair dest1 dest2) (TupRpair u1 u2)
-      | DeclareBinding k1 instr1 out1 vars1 fenv1 <- go k fenv  lhs1 dest1 u1
-      , DeclareBinding k2 instr2 out2 vars2 fenv2 <- go (k1 .> k) fenv1 lhs2 dest2 u2
-      = DeclareBinding (k2 .> k1) (instr1 . instr2) (OutputEnvPair out1 out2) (\k' -> TupRpair (vars1 $ k' .> k2) (vars2 k')) fenv2
+      | DeclareBinding k1 instr1 out1 vars1 fenv1 signals1 <- go k fenv  lhs1 dest1 u1
+      , DeclareBinding k2 instr2 out2 vars2 fenv2 signals2 <- go (k1 .> k) fenv1 lhs2 dest2 u2
+      = DeclareBinding (k2 .> k1) (instr1 . instr2) (OutputEnvPair out1 out2) (\k' -> TupRpair (vars1 $ k' .> k2) (vars2 k')) fenv2 (\k' -> (++) <$> signals1 (k' .> k2) <*> signals2 k')
     go _ fenv (LeftHandSideWildcard _) _ _
       = DeclareBinding
           weakenId
@@ -2798,6 +2828,7 @@ declareBinding retOutputEnv retOutputVars = \fenv -> go weakenId (\k -> mapParti
           OutputEnvIgnore
           (const TupRunit)
           fenv
+          (const $ Just [])
     go k fenv (LeftHandSideSingle _) (TupRsingle (DestinationReuse idx)) _
       | OutputEnvAndVars outputEnv outputVars <- prjDest retOutputEnv retOutputVars idx
       = DeclareBinding
@@ -2806,6 +2837,7 @@ declareBinding retOutputEnv retOutputVars = \fenv -> go weakenId (\k -> mapParti
           outputEnv
           (\k' -> mapTupR (weaken (k' .> k)) outputVars)
           (\k' -> PNone $ fenv k')
+          (const Nothing)
     go _ fenv (LeftHandSideSingle (GroundRscalar tp)) _ _
       = DeclareBinding
           (weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId)
@@ -2819,6 +2851,7 @@ declareBinding retOutputEnv retOutputVars = \fenv -> go weakenId (\k -> mapParti
                         tp
                         (k' >:> idx3)
                         (k' >:> idx1))
+          (\k' -> Just [k' >:> idx3])
       where
         instr
           = Alet lhsSignal NewSignal
@@ -2849,6 +2882,7 @@ declareBinding retOutputEnv retOutputVars = \fenv -> go weakenId (\k -> mapParti
                         (k' >:> idx1)
                         (Move (k' >:> idx5))
                         $ Just $ Move $ k' >:> idx3)
+          (\k' -> Just [k' >:> idx7, k' >:> idx5, k' >:> idx3])
       where
         instr
           = Alet lhsSignal NewSignal -- Signal to grant access to the reference (idx7, idx6)
@@ -2882,6 +2916,7 @@ declareBinding retOutputEnv retOutputVars = \fenv -> go weakenId (\k -> mapParti
                         (k' >:> idx1)
                         (Move (k' >:> idx3))
                         Nothing)
+          (\k' -> Just [k' >:> idx5, k' >:> idx3])
       where
         instr
           = Alet lhsSignal NewSignal

@@ -61,6 +61,7 @@ module Data.Array.Accelerate.AST.Exp (
   -- ** Miscellaneous
   mkConstant, mkBinary, unBody,
   showExpOp, Direction(..),
+  expIsTrivial,
 
 ) where
 
@@ -795,3 +796,29 @@ showExpOp PrimApp{}         = "PrimApp"
 showExpOp (ArrayInstr ar _) = showArrayInstrOp ar
 showExpOp ShapeSize{}       = "ShapeSize"
 showExpOp Coerce{}          = "Coerce"
+
+expIsTrivial :: forall arr env t. (forall s. arr s -> Bool) -> PreOpenExp arr env t -> Bool
+expIsTrivial arrayInstr = \case
+  Let _ bnd body          -> trav bnd && trav body
+  Evar{}                  -> True
+  Const{}                 -> True
+  Undef{}                 -> True
+  Pair a b                -> trav a && trav b
+  Nil                     -> True
+  VecPack _ e             -> trav e
+  VecUnpack _ e           -> trav e
+  IndexSlice _ a b        -> trav a && trav b
+  IndexFull _ a b         -> trav a && trav b
+  ToIndex _ a b           -> trav a && trav b
+  FromIndex _ a b         -> trav a && trav b
+  Case scrutinee alts def -> trav scrutinee && all (trav . snd) alts && all trav def
+  Cond c t f              -> trav c && trav t && trav f
+  PrimConst{}             -> True
+  PrimApp _ a             -> trav a
+  ArrayInstr ar a         -> arrayInstr ar && trav a
+  ShapeSize _ a           -> trav a
+  Coerce _ _ a            -> trav a
+  _                       -> False
+  where
+    trav :: PreOpenExp arr env' t' -> Bool
+    trav = expIsTrivial arrayInstr
