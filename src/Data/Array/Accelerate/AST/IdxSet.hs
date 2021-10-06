@@ -18,7 +18,7 @@
 
 module Data.Array.Accelerate.AST.IdxSet (
   IdxSet(..),
-  member, varMember, intersect, union, insert, insertVar, skip, skip',
+  member, varMember, intersect, union, (\\), insert, insertVar, skip, skip',
   push, empty, drop, drop', fromList, fromVarList,
   singleton, singletonVar,
 toList) where
@@ -46,6 +46,9 @@ intersect (IdxSet a) (IdxSet b) = IdxSet $ intersectPartialEnv (\_ _ -> Present)
 
 union :: IdxSet env -> IdxSet env -> IdxSet env
 union (IdxSet a) (IdxSet b) = IdxSet $ unionPartialEnv (\_ _ -> Present) a b
+
+(\\) :: IdxSet env -> IdxSet env -> IdxSet env
+IdxSet a \\ IdxSet b = IdxSet $ diffPartialEnv a b
 
 insert :: Idx env t -> IdxSet env -> IdxSet env
 insert idx (IdxSet a) = IdxSet $ partialUpdate Present idx a

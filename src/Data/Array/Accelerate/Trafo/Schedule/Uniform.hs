@@ -17,7 +17,7 @@
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 {-# OPTIONS_HADDOCK hide #-}
 -- |
--- Module      : Data.Array.Accelerate.Trafo.Operation.Substitution
+-- Module      : Data.Array.Accelerate.Trafo.Schedule.Uniform
 -- Copyright   : [2012..2020] The Accelerate Team
 -- License     : BSD3
 --
@@ -43,10 +43,13 @@ import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
+import Data.Array.Accelerate.Trafo.DeadVars
 import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Data.Array.Accelerate.Trafo.Operation.Substitution   (strengthenArrayInstr)
 import Data.Array.Accelerate.Trafo.Substitution
 import Data.Array.Accelerate.Trafo.Var
+import Data.Array.Accelerate.Trafo.Schedule.Uniform.Simplify
+import Data.Array.Accelerate.Trafo.Schedule.Uniform.Substitution
 import Data.Array.Accelerate.Type
 import qualified Data.Array.Accelerate.AST.IdxSet           as IdxSet
 import qualified Data.Array.Accelerate.AST.Operation    as C
@@ -54,8 +57,7 @@ import qualified Data.Array.Accelerate.AST.Partitioned  as C
 import Data.Kind
 import Data.Maybe
 import Data.List
-    ( groupBy, nub, nubBy, sort, group, isSubsequenceOf, (\\) )
-import qualified Data.List as List
+    ( groupBy, nubBy, sort, group )
 import Prelude hiding (id, (.), read)
 import Control.Category
 import Control.DeepSeq
@@ -68,7 +70,7 @@ instance IsSchedule UniformScheduleFun where
   type ScheduleOutput UniformScheduleFun a = Output a
 
   convertScheduleFun afun
-    | (partial, _) <- partialScheduleFun afun = fromPartialFun PEnd (ReusedVars IdxSet.empty) partial
+    | (partial, _) <- partialScheduleFun afun = simplifyFun emptySimplifyEnv $ fromPartialFun PEnd (ReusedVars IdxSet.empty) partial
 
   rnfSchedule (Slam lhs s) = rnfLeftHandSide rnfBaseR lhs `seq` rnfSchedule s
   rnfSchedule (Sbody s) = rnfSchedule' s
@@ -110,35 +112,6 @@ rnfSArg (SArgBuffer mod' var) = mod' `seq` rnfGroundVar var
 rnfInputOutputR :: InputOutputR input output -> ()
 rnfInputOutputR (InputOutputRpair io1 io2) = rnfInputOutputR io1 `seq` rnfInputOutputR io2
 rnfInputOutputR _ = ()
-
-instance Sink' (UniformSchedule kernel) where
-  weaken' _ Return                        = Return
-  weaken' k (Alet lhs b s)                
-    | Exists lhs' <- rebuildLHS lhs   = Alet lhs' (weaken k b) (weaken' (sinkWithLHS lhs lhs' k) s)
-  weaken' k (Effect effect s)         = Effect (weaken' k effect) (weaken' k s)
-  weaken' k (Acond cond true false s) = Acond (weaken k cond) (weaken' k true) (weaken' k false) (weaken' k s)
-  weaken' k (Awhile io f input s)     = Awhile io (weaken k f) (mapTupR (weaken k) input) (weaken' k s)
-  weaken' k (Fork s1 s2)              = Fork (weaken' k s1) (weaken' k s2)
-
-instance Sink (UniformScheduleFun kernel) where
-  weaken k (Slam lhs f)
-    | Exists lhs' <- rebuildLHS lhs = Slam lhs' $ weaken (sinkWithLHS lhs lhs' k) f
-  weaken k (Sbody s)    = Sbody $ weaken' k s
-
-instance Sink Binding where
-  weaken k (Compute e)       = Compute $ mapArrayInstr (weaken k) e
-  weaken _ NewSignal         = NewSignal
-  weaken _ (NewRef r)        = NewRef r
-  weaken k (Alloc shr tp sz) = Alloc shr tp $ mapTupR (weaken k) sz
-  weaken _ (Use tp n buffer) = Use tp n buffer
-  weaken k (Unit var)        = Unit $ weaken k var
-  weaken k (RefRead ref)     = RefRead $ weaken k ref
-
-instance Sink' (Effect kernel) where
-  weaken' k (Exec kernel args) = Exec kernel $ runIdentity $ reindexSArgs' (ReindexF $ \ix -> NewIdxJust <$> weakenReindex k ix) args
-  weaken' k (SignalAwait vars) = SignalAwait $ map (weaken k) vars
-  weaken' k (SignalResolve vars) = SignalResolve $ map (weaken k) vars
-  weaken' k (RefWrite ref value) = RefWrite (weaken k ref) (weaken k value)
 
 {-
 -- * Compilation from PartitionedAcc to UniformSchedule
@@ -489,16 +462,6 @@ writeOutput doOutput outputVars valueVars = go doOutput outputVars valueVars Ret
       . Effect (SignalResolve [varIdx s1, varIdx s2, varIdx s3])
     go _ _ _ = internalError "Tuple mismatch in PartialDoOutput, output variables and value variables"
 
-data ReEnv genv fenv where
-  ReEnvEnd  :: ReEnv genv fenv
-  ReEnvSkip :: ReEnv genv fenv -> ReEnv (genv, t) fenv
-  ReEnvKeep :: ReEnv genv fenv -> ReEnv (genv, t) (fenv, t)
-
-reEnvIdx :: ReEnv genv fenv -> genv :?> fenv
-reEnvIdx (ReEnvKeep _) ZeroIdx = Just ZeroIdx
-reEnvIdx (ReEnvKeep r) (SuccIdx ix) = SuccIdx <$> reEnvIdx r ix
-reEnvIdx (ReEnvSkip r) (SuccIdx ix) = reEnvIdx r ix
-reEnvIdx _             _            = Nothing
 {-
 data ConvertEnvRead kernel genv fenv1 where
   ConvertEnvRead :: (UniformSchedule kernel fenv2 -> UniformSchedule kernel fenv1)
@@ -515,12 +478,12 @@ convertEnvRefs :: forall genv fenv fenv'. ConvertEnv genv fenv fenv' -> PartialE
 convertEnvRefs env = partialEnvFromList const $ snd $ go weakenId env []
   where
     go :: fenv2 :> fenv' -> ConvertEnv genv fenv1 fenv2 -> [EnvBinding (FutureRef fenv') genv] -> (fenv1 :> fenv', [EnvBinding (FutureRef fenv') genv])
-    go k ConvertEnvNil                 accum = (k, accum)
-    go k (ConvertEnvSeq e1 e2)         accum = (k1, bs')
+    go k ConvertEnvNil                  accum = (k, accum)
+    go k (ConvertEnvSeq e1 e2)          accum = (k1, bs')
       where
         (k2, bs) = go k e2 accum
         (k1, bs') = go k2 e1 bs
-    go k (ConvertEnvAcquire _)         accum = (weakenSucc $ weakenSucc k, accum)
+    go k (ConvertEnvAcquire _)          accum = (weakenSucc $ weakenSucc k, accum)
     go k (ConvertEnvFuture (Var tp ix)) accum = (weakenSucc $ weakenSucc k, EnvBinding ix (FutureRef $ Var (BaseRref tp) $ k >:> ZeroIdx) : accum)
 
 data Reads kernel genv fenv where
@@ -611,8 +574,11 @@ convertEnvToList = (`go` [])
     go (ConvertEnvFuture (Var _ idx)) = (Exists idx :)
 
 convertEnvVar :: Var AccessGroundR genv t -> Exists (ConvertEnv genv fenv)
-convertEnvVar (Var (AccessGroundRscalar   tp) ix) = Exists $ ConvertEnvFuture $ Var (GroundRscalar tp) ix
-convertEnvVar (Var (AccessGroundRbuffer m tp) ix) = Exists $ ConvertEnvFuture var `ConvertEnvSeq` ConvertEnvAcquire (Acquire m var)
+convertEnvVar (Var (AccessGroundRscalar    tp) ix) = Exists $ ConvertEnvFuture $ Var (GroundRscalar tp) ix
+convertEnvVar (Var (AccessGroundRbuffer In tp) ix) = Exists $ ConvertEnvFuture var `ConvertEnvSeq` ConvertEnvAcquire (Acquire In var)
+  where
+    var = Var (GroundRbuffer tp) ix
+convertEnvVar (Var (AccessGroundRbuffer m  tp) ix) = Exists $ ConvertEnvFuture var `ConvertEnvSeq` ConvertEnvAcquire (Acquire In var) `ConvertEnvSeq` ConvertEnvAcquire (Acquire m var)
   where
     var = Var (GroundRbuffer tp) ix
 
@@ -806,7 +772,7 @@ partialSchedule = (\(s, used, _) -> (s, used)) . travA (TupRsingle Shared)
             , IdxSet.fromList $ convertEnvToList env
             , TupRunit
             )
-      | otherwise = error "partialSchedule: reindexExecPartial returned Nothing. Probably some variable is missing in 'execVars'"
+      | otherwise = error "partialSchedule: reindexArgs returned Nothing. Probably some variable is missing in 'execVars'"
       where
         combineMod' :: Exists (Var AccessGroundR env) -> Exists (Var AccessGroundR env) -> Exists (Var AccessGroundR env)
         combineMod' (Exists (Var (AccessGroundRbuffer m1 tp) ix)) var@(Exists (Var (AccessGroundRbuffer m2 _) _))
@@ -968,7 +934,7 @@ syncEnvFun (Plam lhs f) = weakenSyncEnv lhs $ syncEnvFun f
 syncEnvFun (Pbody s)    = syncEnv s
 
 convertEnvToSyncEnv :: ConvertEnv genv fenv fenv' -> SyncEnv genv
-convertEnvToSyncEnv = partialEnvFromList (error "convertEnvToSyncEnv: Variable occurs multiple times") . (`go` [])
+convertEnvToSyncEnv = partialEnvFromList max . (`go` [])
   where
     go :: ConvertEnv genv fenv fenv' -> [EnvBinding Sync genv] -> [EnvBinding Sync genv]
     go (ConvertEnvSeq env1 env2)                  accum = go env1 $ go env2 accum
@@ -2568,23 +2534,6 @@ awhileWriteResult = \env resVars io vars -> go env resVars io vars []
         k = weakenSucc $ weakenId
     go _ _ _ _ = internalError "OutputEnv and InputOutputR don't match"
 
-matchOutputEnvWithEnv :: OutputEnv t r -> PartialDoOutput fenv fenv' t r' -> Maybe (r :~: r')
-matchOutputEnvWithEnv (OutputEnvPair v1 v2) (PartialDoOutputPair e1 e2)
-  | Just Refl <- matchOutputEnvWithEnv v1 e1
-  , Just Refl <- matchOutputEnvWithEnv v2 e2                    = Just Refl
-matchOutputEnvWithEnv OutputEnvScalar{} PartialDoOutputScalar{} = Just Refl
-matchOutputEnvWithEnv OutputEnvShared{} PartialDoOutputShared{} = Just Refl
-matchOutputEnvWithEnv OutputEnvUnique{} PartialDoOutputUnique{} = Just Refl
-matchOutputEnvWithEnv OutputEnvIgnore   PartialDoOutputUnit     = Just Refl
-matchOutputEnvWithEnv OutputEnvShared   PartialDoOutputUnique{} = error "shared/unique mismatch"
-matchOutputEnvWithEnv OutputEnvUnique   PartialDoOutputShared{} = error "unique/shared mismatch"
-matchOutputEnvWithEnv OutputEnvIgnore   PartialDoOutputScalar{} = error "ignore scalar"
-matchOutputEnvWithEnv OutputEnvIgnore   PartialDoOutputScalar{} = error "ignore scalar"
-matchOutputEnvWithEnv OutputEnvIgnore   PartialDoOutputShared{} = error "ignore shared buffer"
-matchOutputEnvWithEnv OutputEnvIgnore   PartialDoOutputUnique{} = error "ignore unique buffer"
-matchOutputEnvWithEnv OutputEnvIgnore   PartialDoOutputPair{}   = error "ignore pair"
-matchOutputEnvWithEnv _                 _                       = Nothing
-
 partialDoSubstituteOutput :: forall fenv fenv' t r ro. PartialDoOutput () fenv t r -> OutputEnv t ro -> BaseVars fenv' ro -> Env (NewIdx fenv') fenv
 partialDoSubstituteOutput = go Env.Empty
   where
@@ -2632,60 +2581,6 @@ partialDoSubstituteConvertEnv (ConvertEnvFuture var) fenv env
     in
       env `Push` NewIdxJust signal `Push` NewIdxJust ref
   | otherwise = internalError $ "Requested access to a variable " ++ (show $ idxToInt $ varIdx var) ++ " of type " ++ show (prettyGroundR $ varType var) ++ ", but the Future was not found in the environment"
-
--- Forks the two schedules, unless the second schedule directly awaits on all the signals in the given list.
--- In such case, we try to execute them serial.
-forkUnless :: UniformSchedule kernel fenv -> UniformSchedule kernel fenv -> Maybe [Idx fenv Signal] -> UniformSchedule kernel fenv
-forkUnless Return s      _      = s
-forkUnless s      Return _      = s
-forkUnless s1     s2     awaits
-  | Just awaits' <- awaits
-  , sort awaits' `isSubsequenceOf` sort signals2''
-    = await intersection $ serial [await signals1'' s1', await signals2'' s2']
-  | trivialSchedule s1'
-    = await intersection $ serial [await signals1'' s1', await signals2'' s2']
-  | trivialSchedule s2'
-    = await intersection $ serial [await signals1'' s2', await signals2'' s1']
-  | otherwise
-    = await intersection $ Fork (await signals1'' s1') (await signals2'' s2')
-  where
-    (signals1, s1') = directlyAwaits $ reorder s1
-    signals1' = nub signals1
-    signals1'' = signals1' \\ intersection
-    (signals2, s2') = directlyAwaits $ reorder s2
-    signals2' = nub signals2
-    signals2'' = signals2' \\ intersection
-    intersection = List.intersect signals1' signals2'
-
-fork :: UniformSchedule kernel fenv -> UniformSchedule kernel fenv -> UniformSchedule kernel fenv
-fork s1 s2 = forkUnless s1 s2 Nothing
-
-forks :: [UniformSchedule kernel fenv] -> UniformSchedule kernel fenv
-forks = forks' . filter notReturn
-  where
-    notReturn Return = False
-    notReturn _ = True
-
-forks' :: [UniformSchedule kernel fenv] -> UniformSchedule kernel fenv
-forks' [] = Return
-forks' [u] = u
-forks' (u:us) = Fork (forks' us) u
-
-serial :: forall kernel fenv. [UniformSchedule kernel fenv] -> UniformSchedule kernel fenv
-serial = go weakenId
-  where
-    go :: forall fenv1. fenv :> fenv1 -> [UniformSchedule kernel fenv] -> UniformSchedule kernel fenv1
-    go _  [] = Return
-    go k1 (u:us) = trav k1 (weaken' k1 u)
-      where
-        trav :: forall fenv'. fenv :> fenv' -> UniformSchedule kernel fenv' -> UniformSchedule kernel fenv'
-        trav k = \case
-          Return -> go k us
-          Alet lhs bnd u' -> Alet lhs bnd $ trav (weakenWithLHS lhs .> k) u'
-          Effect effect u' -> Effect effect $ trav k u'
-          Acond cond true false u' -> Acond cond true false $ trav k u'
-          Awhile io f input u' -> Awhile io f input $ trav k u'
-          Fork u' u'' -> Fork (trav k u') u''
 
 data DeclareInput fenv genv' t where
   DeclareInput :: fenv :> fenv'
@@ -2943,109 +2838,6 @@ declareBinding retOutputEnv retOutputVars = \fenv -> go weakenId (\k -> mapParti
 
 data OutputEnvAndVars fenv t where
   OutputEnvAndVars :: OutputEnv t r -> BaseVars fenv r -> OutputEnvAndVars fenv t
-
-type ReindexPartialN f env env' = forall a. Idx env a -> f (NewIdx env' a)
-
-data NewIdx env t where
-  NewIdxNoResolver :: NewIdx env SignalResolver
-  NewIdxJust :: Idx env t -> NewIdx env t
-
-data SunkReindexPartialN f env env' where
-  Sink     :: SunkReindexPartialN f env env' -> SunkReindexPartialN f (env, s) (env', s)
-  ReindexF :: ReindexPartialN f env env' -> SunkReindexPartialN f env env'
-
-
-reindexSchedule :: (Applicative f) => ReindexPartialN f env env' -> UniformSchedule kernel env -> f (UniformSchedule kernel env')
-reindexSchedule k = reindexSchedule' $ ReindexF k
-
-sinkReindexWithLHS :: LeftHandSide s t env1 env1' -> LeftHandSide s t env2 env2' -> SunkReindexPartialN f env1 env2 -> SunkReindexPartialN f env1' env2'
-sinkReindexWithLHS (LeftHandSideWildcard _) (LeftHandSideWildcard _) k = k
-sinkReindexWithLHS (LeftHandSideSingle _)   (LeftHandSideSingle _)   k = Sink k
-sinkReindexWithLHS (LeftHandSidePair a1 b1) (LeftHandSidePair a2 b2) k = sinkReindexWithLHS b1 b2 $ sinkReindexWithLHS a1 a2 k
-sinkReindexWithLHS _ _ _ = internalError "sinkReindexWithLHS: left hand sides don't match"
-
-reindex' :: Applicative f => SunkReindexPartialN f env env' -> ReindexPartialN f env env'
-reindex' (ReindexF f) = f
-reindex' (Sink k) = \case
-  ZeroIdx    -> pure $ NewIdxJust ZeroIdx
-  SuccIdx ix ->
-    let
-      f NewIdxNoResolver = NewIdxNoResolver
-      f (NewIdxJust ix') = NewIdxJust $ SuccIdx ix'
-    in
-      f <$> reindex' k ix
-
-reindexSchedule' :: (Applicative f) => SunkReindexPartialN f env env' -> UniformSchedule kernel env -> f (UniformSchedule kernel env')
-reindexSchedule' k = \case
-  Return -> pure Return
-  Alet lhs bnd s
-    | Exists lhs' <- rebuildLHS lhs -> Alet lhs' <$> reindexBinding' k bnd <*> reindexSchedule' (sinkReindexWithLHS lhs lhs' k) s
-  Effect effect s -> Effect <$> reindexEffect' k effect <*> reindexSchedule' k s
-  Acond cond t f continue -> Acond <$> reindexVarUnsafe k cond <*> reindexSchedule' k t <*> reindexSchedule' k f <*> reindexSchedule' k continue
-  Awhile io f initial continue -> Awhile io <$> reindexScheduleFun' k f <*> traverseTupR (reindexVarUnsafe k) initial <*> reindexSchedule' k continue
-  Fork s1 s2 -> Fork <$> reindexSchedule' k s1 <*> reindexSchedule' k s2
-
-reindexVarUnsafe :: Applicative f => SunkReindexPartialN f env env' -> Var s env t -> f (Var s env' t)
-reindexVarUnsafe k (Var tp idx) = Var tp . fromNewIdxUnsafe <$> reindex' k idx
-
-reindexScheduleFun' :: (Applicative f) => SunkReindexPartialN f env env' -> UniformScheduleFun kernel env t -> f (UniformScheduleFun kernel env' t)
-reindexScheduleFun' k = \case
-  Sbody s -> Sbody <$> reindexSchedule' k s
-  Slam lhs f
-    | Exists lhs' <- rebuildLHS lhs -> Slam lhs' <$> reindexScheduleFun' (sinkReindexWithLHS lhs lhs' k) f
-
-reindexEffect' :: forall kernel f env env'. (Applicative f) => SunkReindexPartialN f env env' -> Effect kernel env -> f (Effect kernel env')
-reindexEffect' k = \case
-  Exec kernel args -> Exec kernel <$> reindexSArgs' k args
-  SignalAwait signals -> SignalAwait <$> traverse (fromNewIdxSignal <.> reindex' k) signals
-  SignalResolve resolvers -> SignalResolve . mapMaybe toMaybe <$> traverse (reindex' k) resolvers
-  RefWrite ref value -> RefWrite <$> reindexVar (fromNewIdxOutputRef <.> reindex' k) ref <*> reindexVar (fromNewIdxUnsafe <.> reindex' k) value
-  where
-    toMaybe :: NewIdx env' a -> Maybe (Idx env' a)
-    toMaybe (NewIdxJust idx) = Just idx
-    toMaybe _ = Nothing
-
-reindexSArgs' :: Applicative f => SunkReindexPartialN f env env' -> SArgs env t -> f (SArgs env' t)
-reindexSArgs' k = \case
-  a :>: as -> (:>:) <$> reindexSArg' k a <*> reindexSArgs' k as
-  ArgsNil  -> pure ArgsNil
-
-reindexSArg' :: Applicative f => SunkReindexPartialN f env env' -> SArg env t -> f (SArg env' t)
-reindexSArg' k = \case
-  SArgScalar   var -> SArgScalar   <$> reindexVarUnsafe k var
-  SArgBuffer m var -> SArgBuffer m <$> reindexVarUnsafe k var
-
--- For Exec we cannot have a safe function from the conversion,
--- as we cannot enforce in the type system that no SignalResolvers
--- occur in an Exec or Compute.
-fromNewIdxUnsafe :: NewIdx env' a -> Idx env' a
-fromNewIdxUnsafe (NewIdxJust idx) = idx
-fromNewIdxUnsafe _ = error "Expected NewIdxJust"
-
--- Different versions, which have different ways of getting evidence
--- that NewIdxNoResolver is impossible
-fromNewIdxSignal :: NewIdx env' Signal -> Idx env' Signal
-fromNewIdxSignal (NewIdxJust idx) = idx
-
-fromNewIdxOutputRef :: NewIdx env' (OutputRef t) -> Idx env' (OutputRef t)
-fromNewIdxOutputRef (NewIdxJust idx) = idx
-
-fromNewIdxGround :: GroundR a -> NewIdx env' a -> Idx env' a
-fromNewIdxGround _  (NewIdxJust idx) = idx
-fromNewIdxGround tp NewIdxNoResolver = signalResolverImpossible (TupRsingle tp)
-
-reindexBinding' :: Applicative f => SunkReindexPartialN f env env' -> Binding env t -> f (Binding env' t)
-reindexBinding' k = \case
-  Compute e -> Compute <$> reindexExp (fromNewIdxUnsafe <.> reindex' k) e
-  NewSignal -> pure NewSignal
-  NewRef tp -> pure $ NewRef tp
-  Alloc shr tp sh -> Alloc shr tp <$> reindexVars (fromNewIdxUnsafe <.> reindex' k) sh
-  Use tp n buffer -> pure $ Use tp n buffer
-  Unit (Var tp idx) -> Unit . Var tp <$> (fromNewIdxGround (GroundRscalar tp) <.> reindex' k) idx
-  RefRead ref -> RefRead <$> reindexVar (fromNewIdxUnsafe <.> reindex' k) ref
-
-(<.>) :: Applicative f => (b -> c) -> (a -> f b) -> a -> f c
-(<.>) g h a = g <$> h a
 
 unionLeftHandSides :: LeftHandSide s t env env1' -> LeftHandSide s t env env2' -> Exists (LeftHandSide s t env)
 unionLeftHandSides = unionLeftHandSides'

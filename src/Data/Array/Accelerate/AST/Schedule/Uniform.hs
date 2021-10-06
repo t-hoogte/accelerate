@@ -239,8 +239,9 @@ newtype Ref t  = Ref (IORef t)
 newtype OutputRef t = OutputRef (IORef t)
 
 await :: [Idx env Signal] -> UniformSchedule kernel env -> UniformSchedule kernel env
-await [] = id
-await signals = Effect (SignalAwait signals)
+await []      schedule = schedule
+await _       Return   = Return
+await signals schedule = Effect (SignalAwait signals) schedule
 
 resolve :: [Idx env SignalResolver] -> UniformSchedule kernel env -> UniformSchedule kernel env
 resolve [] = id

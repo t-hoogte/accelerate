@@ -30,7 +30,7 @@ module Data.Array.Accelerate.AST.Operation (
   HasGroundsR(..), groundToExpVar,
 
   PreArgs(..), Arg(..), Args, argsToList, Modifier(..), argArrayR, argVarType,
-  rnfArg, rnfArgs, rnfPreArgs,
+  rnfArg, rnfArgs, rnfPreArgs, mapArgs,
 
   Var', Exp', Fun', In, Out, Mut,
 
@@ -251,6 +251,10 @@ rnfArg (ArgArray m repr sh buffers) = m `seq` rnfArrayR repr `seq` rnfGroundVars
 
 rnfArgs :: Args env t -> ()
 rnfArgs = rnfPreArgs rnfArg
+
+mapArgs :: (forall s. a s -> b s) -> PreArgs a t -> PreArgs b t
+mapArgs f (a :>: as) = f a :>: mapArgs f as
+mapArgs _ ArgsNil    = ArgsNil
 
 -- | The arguments to be passed to an operation, in some environment.
 --
