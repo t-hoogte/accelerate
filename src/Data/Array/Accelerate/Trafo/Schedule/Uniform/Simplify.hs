@@ -70,10 +70,10 @@ data InfoEnv env = InfoEnv
   (WEnv Info env)
   -- List of signals that we waited on after resolving the last signal.
   -- Also includes the index of the signals that we resolved last.
-  [Idx env Signal]
+  (IdxSet env)
 
 emptySimplifyEnv :: InfoEnv ()
-emptySimplifyEnv = InfoEnv wempty []
+emptySimplifyEnv = InfoEnv wempty IdxSet.empty
 
 data Info env t where
   InfoSignalResolver
@@ -128,12 +128,13 @@ instance Sink Info where
 
 -- When the first signal is resolved, all the signals in the list will have
 -- been resolved as well.
-data SignalImplication env = SignalImplication (Idx env Signal) [Idx env Signal]
+data SignalImplication env = SignalImplication (Idx env Signal) (IdxSet env)
 
-strengthenImplication :: (env' :?> env) -> SignalImplication env' -> Maybe (SignalImplication env)
-strengthenImplication k (SignalImplication idx implies)
-  | Just idx' <- k idx
-  , implies'@(_ : _) <- mapMaybe k implies = Just $ SignalImplication idx' implies'
+strengthenImplication :: LeftHandSide s t env env' -> SignalImplication env' -> Maybe (SignalImplication env)
+strengthenImplication lhs (SignalImplication idx implies)
+  | Just idx' <- strengthenWithLHS lhs idx
+  , implies' <- IdxSet.drop' lhs implies
+  , not $ IdxSet.isEmpty implies' = Just $ SignalImplication idx' implies'
   | otherwise = Nothing -- idx doesn't exist in env, or implies' became empty.
 
 simplifyFun :: InfoEnv env -> UniformScheduleFun kernel env f -> UniformScheduleFun kernel env f
@@ -152,7 +153,7 @@ simplify' env (Effect effect next) = (implications1 ++ implications2, instr next
     (implications1, env', instr) = simplifyEffect env effect
     (implications2, next') = simplify' env' next
 -- Bindings
-simplify' env (Alet lhs binding next) = (mapMaybe (strengthenImplication $ strengthenWithLHS lhs) implications, schedule)
+simplify' env (Alet lhs binding next) = (mapMaybe (strengthenImplication lhs) implications, schedule)
   where
     binding' = case binding of
       RefRead{} -> binding -- We don't have to apply the substitution here, as the substitution doesn't affect references
@@ -191,9 +192,9 @@ simplifyEffect env (Exec kernel args) = ([], env, Effect $ Exec kernel $ mapArgs
 simplifyEffect env (SignalAwait awaits) = ([], env', instr)
   where
     (env', instr) = await' env awaits
-simplifyEffect env (SignalResolve resolvers) = (concat implications, env', Effect $ SignalResolve resolvers)
+simplifyEffect env (SignalResolve resolvers) = (implications, env', Effect $ SignalResolve resolvers)
   where
-    (env', implications) = mapAccumL resolve' env resolvers
+    (env', implications) = resolves' env resolvers
 simplifyEffect env (RefWrite ref value) = ([], env', Effect $ RefWrite ref value')
   where
     value' = weaken (substitute env) value
@@ -206,7 +207,7 @@ setInfo :: Idx env t -> Info env t -> InfoEnv env -> InfoEnv env
 setInfo ix info (InfoEnv env signals) = InfoEnv (wupdate (const info) ix env) signals
 
 bindEnv :: BLeftHandSide t env env' -> InfoEnv env -> InfoEnv env'
-bindEnv lhs (InfoEnv env' awaitedSignals) = InfoEnv (go lhs $ weaken k env') $ map (weaken k) awaitedSignals
+bindEnv lhs (InfoEnv env' awaitedSignals) = InfoEnv (go lhs $ weaken k env') $ IdxSet.skip' lhs awaitedSignals
   where
     k = weakenWithLHS lhs
 
@@ -228,26 +229,31 @@ bindingEnv lhs@(LeftHandSideSingle _) (RefRead ref) env = refRead (bindEnv lhs e
 bindingEnv (LeftHandSideSingle _ `LeftHandSidePair` LeftHandSideSingle _) NewSignal (InfoEnv env awaitedSignals)
   = InfoEnv (wpush2 env (InfoSignalImplies []) (InfoSignalResolver $ Just $ SuccIdx ZeroIdx)) awaitedSignals'
   where
-    k = weakenSucc $ weakenSucc weakenId
-    awaitedSignals' = map (weaken k) awaitedSignals
+    awaitedSignals' = IdxSet.skip $ IdxSet.skip awaitedSignals
 bindingEnv (LeftHandSideSingle _ `LeftHandSidePair` LeftHandSideSingle _) (NewRef _) (InfoEnv env awaitedSignals)
   = InfoEnv (wpush2 env (InfoRef Nothing) (InfoRefWrite $ Just $ SuccIdx ZeroIdx)) awaitedSignals'
   where
-    k = weakenSucc $ weakenSucc weakenId
-    awaitedSignals' = map (weaken k) awaitedSignals
+    awaitedSignals' = IdxSet.skip $ IdxSet.skip awaitedSignals
 bindingEnv lhs _ env = bindEnv lhs env
 
 propagate :: forall env. [SignalImplication env] -> InfoEnv env -> InfoEnv env
-propagate implications (InfoEnv env awaitedSignals) = (InfoEnv (foldl' add env implications) awaitedSignals)
+propagate implications infoEnv@(InfoEnv env awaitedSignals) = (InfoEnv (foldl' add env implications) awaitedSignals)
   where
     add :: WEnv Info env -> SignalImplication env -> WEnv Info env
-    add env1 (SignalImplication signal implied) = wupdate (f implied) signal env1
+    add env1 (SignalImplication signal implied) = wupdate (f $ map toSignal $ IdxSet.toList implied) signal env1
 
     f :: [Idx env Signal] -> Info env Signal -> Info env Signal
     f newImplied (InfoSignalImplies implied) = InfoSignalImplies (newImplied' ++ implied)
       where
         newImplied' = filter (`notElem` implied) newImplied
     f _ info = info
+
+    toSignal :: Exists (Idx env) -> Idx env Signal
+    toSignal (Exists idx) = case infoFor idx infoEnv of
+      InfoSignalImplies _ -> idx
+      InfoSignalInstead _ -> idx
+      InfoSignalResolved  -> idx
+      _                   -> internalError "Expected this index to point to a Signal"
 
 findSignalReplacements :: forall kernel env. UniformSchedule kernel env -> InfoEnv env -> InfoEnv env
 findSignalReplacements = go []
@@ -266,17 +272,28 @@ findSignalReplacements = go []
 resolve' :: forall env. InfoEnv env -> Idx env SignalResolver -> (InfoEnv env, [SignalImplication env])
 resolve' env@(InfoEnv env' awaitedSignals) resolver
   | InfoSignalResolver (Just signal) <- infoFor resolver env =
-    ( InfoEnv (wupdate (const InfoSignalResolved) signal env') [signal]
-    , if null awaitedSignals then [] else [SignalImplication signal awaitedSignals]
+    ( InfoEnv (wupdate (const InfoSignalResolved) signal env') (IdxSet.insert signal awaitedSignals)
+    , if IdxSet.isEmpty awaitedSignals then [] else [SignalImplication signal awaitedSignals]
     )
   | otherwise =
     ( env
     , []
     )
 
+
+resolves' :: forall env. InfoEnv env -> [Idx env SignalResolver] -> (InfoEnv env, [SignalImplication env])
+resolves' env@(InfoEnv env' awaitedSignals) resolvers = case signals of
+  [] -> (env, [])
+  _  -> (InfoEnv env'' $ IdxSet.union awaitedSignals $ IdxSet.fromList' signals, implications)
+  where
+    signals = [ signal | resolver <- resolvers, InfoSignalResolver (Just signal) <- [infoFor resolver env] ]
+    signalsSet = IdxSet.fromList' signals
+    implications = map (\idx -> SignalImplication idx (IdxSet.remove idx signalsSet `IdxSet.union` awaitedSignals)) signals
+    env'' = foldl' (\e idx -> wupdate (const InfoSignalResolved) idx e) env' signals
+
 await' :: forall kernel env. InfoEnv env -> [Idx env Signal] -> (InfoEnv env, UniformSchedule kernel env -> UniformSchedule kernel env)
 await' env@(InfoEnv env' awaitedSignals) signals =
-  ( InfoEnv env1' (allMinimal' ++ awaitedSignals)
+  ( InfoEnv env1' (IdxSet.fromList' allMinimal' `IdxSet.union` awaitedSignals)
   , await allMinimal'
   )
   where
@@ -314,7 +331,7 @@ await' env@(InfoEnv env' awaitedSignals) signals =
         -- This signal wasn't implied by another signal yet. This signal may
         -- imply signals which were already in 'minimal', so we remove them
         -- here.
-        = (resolved, IdxSet.insert idx $ minimal IdxSet.\\ reachable)
+        = (resolved `IdxSet.union` reachable, IdxSet.insert idx $ minimal IdxSet.\\ reachable)
       where
         reachable = traverseImplied resolved IdxSet.empty idx
 

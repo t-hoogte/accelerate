@@ -23,7 +23,7 @@ module Data.Array.Accelerate.AST.Environment (
   unionPartialEnv, EnvBinding(..), partialEnvFromList, mapPartialEnv,
   mapMaybePartialEnv, partialEnvValues, diffPartialEnv, diffPartialEnvWith,
   intersectPartialEnv, partialEnvTail, partialEnvLast, partialEnvSkip,
-  partialUpdate, partialEnvToList, partialEnvSingleton, partialEnvPush,
+  partialUpdate, partialRemove, partialEnvToList, partialEnvSingleton, partialEnvPush,
   partialEnvSameKeys, partialEnvSub, partialEnvSkipLHS,
 
   Skip(..), skipIdx, chainSkip,
@@ -145,6 +145,12 @@ partialUpdate v ZeroIdx       env         = PPush (partialEnvTail env) v
 partialUpdate v (SuccIdx idx) (PPush e a) = PPush (partialUpdate v idx e) a
 partialUpdate v (SuccIdx idx) (PNone e  ) = PNone (partialUpdate v idx e)
 partialUpdate v (SuccIdx idx) PEnd        = PNone (partialUpdate v idx PEnd)
+
+partialRemove :: Idx env t -> PartialEnv f env -> PartialEnv f env
+partialRemove ZeroIdx       env         = partialEnvSkip $ partialEnvTail env
+partialRemove (SuccIdx idx) (PPush e a) = PPush (partialRemove idx e) a
+partialRemove (SuccIdx idx) (PNone e  ) = PNone (partialRemove idx e)
+partialRemove (SuccIdx _  ) PEnd        = PEnd
 
 partialEnvSameKeys :: PartialEnv f env -> PartialEnv g env -> Bool
 partialEnvSameKeys PEnd        PEnd        = True

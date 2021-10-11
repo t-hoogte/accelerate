@@ -19,9 +19,9 @@
 module Data.Array.Accelerate.AST.IdxSet (
   IdxSet(..),
   member, varMember, intersect, union, unions, (\\), (>>=), insert, insertVar, skip, skip',
-  push, empty, drop, drop', fromList, fromVarList, fromVars, map,
+  push, empty, isEmpty, drop, drop', remove, fromList, fromList', fromVarList, fromVars, map,
   singleton, singletonVar,
-toList) where
+  toList) where
 
 import Prelude hiding (drop, (>>=), map)
 
@@ -64,6 +64,9 @@ insert idx (IdxSet a) = IdxSet $ partialUpdate Present idx a
 insertVar :: Var s env t -> IdxSet env -> IdxSet env
 insertVar (Var _ idx) = insert idx
 
+remove :: Idx env t -> IdxSet env -> IdxSet env
+remove idx (IdxSet a) = IdxSet $ partialRemove idx a
+
 skip :: IdxSet env -> IdxSet (env, t)
 skip = IdxSet . PNone . unIdxSet
 
@@ -78,6 +81,11 @@ push = IdxSet . flip PPush Present . unIdxSet
 empty :: IdxSet env
 empty = IdxSet PEnd
 
+isEmpty :: IdxSet env -> Bool
+isEmpty (IdxSet PEnd)        = True
+isEmpty (IdxSet (PNone set)) = isEmpty $ IdxSet set
+isEmpty _                    = False
+
 drop :: IdxSet (env, t) -> IdxSet env
 drop = IdxSet . partialEnvTail . unIdxSet
 
@@ -91,6 +99,9 @@ toList = fmap (\(EnvBinding idx _) -> Exists idx) . partialEnvToList . unIdxSet
 
 fromList :: [Exists (Idx env)] -> IdxSet env
 fromList = IdxSet . partialEnvFromList (\_ _ -> Present) . fmap (\(Exists idx) -> EnvBinding idx Present)
+
+fromList' :: [Idx env t] -> IdxSet env
+fromList' = IdxSet . partialEnvFromList (\_ _ -> Present) . fmap (\idx -> EnvBinding idx Present)
 
 map :: (forall t. Idx env t -> Idx env' t) -> IdxSet env -> IdxSet env'
 map f = fromList . fmap (\(Exists idx) -> Exists $ f idx) . toList
