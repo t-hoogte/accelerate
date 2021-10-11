@@ -47,8 +47,8 @@ import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Trafo.Exp.Substitution
-import Data.Array.Accelerate.Trafo.Operation.Substitution   (strengthenArrayInstr)
-import Data.Array.Accelerate.Trafo.Substitution
+import Data.Array.Accelerate.Trafo.Operation.Substitution   ( strengthenArrayInstr, weakenArrayInstr )
+import Data.Array.Accelerate.Trafo.Substitution             hiding ( weakenArrayInstr )
 import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Trafo.WeakenedEnvironment
 import Data.Array.Accelerate.Trafo.Schedule.Uniform.Substitution
@@ -152,7 +152,7 @@ simplify' env (Effect effect next) = (implications1 ++ implications2, instr next
     (implications1, env', instr) = simplifyEffect env effect
     (implications2, next') = simplify' env' next
 -- Bindings
-simplify' env (Alet lhs binding next) = (mapMaybe (strengthenImplication $ strengthenWithLHS lhs) implications, Alet lhs binding' next')
+simplify' env (Alet lhs binding next) = (mapMaybe (strengthenImplication $ strengthenWithLHS lhs) implications, schedule)
   where
     binding' = case binding of
       RefRead{} -> binding -- We don't have to apply the substitution here, as the substitution doesn't affect references
@@ -161,6 +161,10 @@ simplify' env (Alet lhs binding next) = (mapMaybe (strengthenImplication $ stren
     env' = bindingEnv lhs binding' env
 
     (implications, next') = simplify' env' next
+
+    schedule = case binding' of
+      Compute e -> bindExp lhs e next'
+      _ -> Alet lhs binding' next'
 -- Control flow
 simplify' _ Return = ([], Return)
 simplify' env (Acond condition true false next)
@@ -445,3 +449,19 @@ serial = go weakenId
           Acond cond true false u' -> Acond cond true false $ trav k u'
           Awhile io f input u' -> Awhile io f input $ trav k u'
           Fork u' u'' -> Fork (trav k u') u''
+
+bindExp
+    :: BLeftHandSide bnd env env'
+    -> Exp env bnd
+    -> UniformSchedule kernel env'
+    -> UniformSchedule kernel env
+bindExp lhs bnd next =
+  case lhs of
+    LeftHandSideWildcard{} -> next
+    LeftHandSideSingle{}   -> Alet lhs (Compute bnd) next
+    LeftHandSidePair l1 l2 ->
+      case bnd of
+        Pair e1 e2 -> bindExp l1 e1
+                    $ bindExp l2 (weakenArrayInstr (weakenWithLHS l1) e2) next
+        _          -> Alet lhs (Compute bnd) next
+
