@@ -451,6 +451,8 @@ library
         Data.Array.Accelerate.Pretty.Operation
         Data.Array.Accelerate.Pretty.Partitioned
         Data.Array.Accelerate.Pretty.Print
+        Data.Array.Accelerate.Pretty.Schedule
+        Data.Array.Accelerate.Pretty.Schedule.Uniform
         Data.Array.Accelerate.Pretty.Type
         Data.Array.Accelerate.Trafo.Algebra
         Data.Array.Accelerate.Trafo.Environment

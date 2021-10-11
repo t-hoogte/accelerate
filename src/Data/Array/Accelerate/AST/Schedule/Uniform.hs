@@ -25,7 +25,7 @@ module Data.Array.Accelerate.AST.Schedule.Uniform (
   BaseR(..), BasesR, BaseVar, BaseVars, BLeftHandSide,
   Signal(..), SignalResolver(..), Ref(..), OutputRef(..),
   module Operation,
-  module Partitioned,
+  Cluster,
   await, resolve,
   signalResolverImpossible, scalarSignalResolverImpossible,
   rnfBaseR,
@@ -144,7 +144,7 @@ data SArg env t where
              -> SArg env (Var' e)
 
   SArgBuffer :: Modifier m
-             -> GroundVar env e
+             -> GroundVar env (Buffer e)
              -> SArg env (m DIM1 e)
 
 type SArgs env = PreArgs (SArg env)
