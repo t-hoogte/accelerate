@@ -11,7 +11,7 @@
 -- module Main where
 
 -- import Build_doctests                           ( flags, pkgs, module_sources )
--- import Data.Foldable                            ( traverse_ )
+-- import DatFoldable                            ( traverse_ )
 -- import Test.DocTest
 
 -- main :: IO ()
@@ -27,16 +27,38 @@
 {-# language TemplateHaskell #-}
 {-# language TypeApplications #-}
 {-# language TypeOperators #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE RebindableSyntax #-}
+{-# LANGUAGE LambdaCase #-}
 module Main where
 
-import qualified Data.Array.Accelerate as A
-import qualified Data.Array.Accelerate.Interpreter as A
+import Data.Array.Accelerate
+import Data.Array.Accelerate.Interpreter
+import qualified Prelude as P
 
-main :: IO ()
-main = A.test @A.InterpretOp twoMaps `seq` return ()
+dotp :: Acc (Vector Int) -> Acc (Vector Int) -> Acc (Scalar Int)
+dotp a b = fold (+) 0 $ zipWith (*) (map (+1) a) (map (`div` 2) b)
 
-dotp :: A.Acc (A.Vector Int) -> A.Acc (A.Vector Int) -> A.Acc (A.Scalar Int)
-dotp a b = A.fold (+) 0 $ A.zipWith (*) (A.map (+1) a) (A.map (`div` 2) b)
+twoMaps :: Acc (Vector Int)-- -> Acc (Vector Int)
+twoMaps = map (+1) . map (*2) . use $ fromList (Z :. 10) [1..]
 
-twoMaps :: A.Acc (A.Vector Int)-- -> A.Acc (A.Vector Int)
-twoMaps = A.map (+1) . A.map (*2) . A.use $ A.fromList (A.Z A.:. 10) [1..]
+-- data Foo = Foo Int Int
+--   deriving (Generic, Elt)
+-- mkPattern ''Foo
+
+-- mapGen :: Acc (Vector Foo) -> Acc (Matrix Int)
+-- mapGen acc = map (match $ \(Foo_ x y) -> x * y) $ generate (I2 size size) (\(I2 i j) -> acc ! I1 (max i j))
+--   where
+--     I1 size = shape acc
+
+awhile' :: Acc (Vector Int) -> Acc (Vector Int)
+awhile' = awhile (\x -> unit ((x ! I1 0) == 0)) P.id
+
+iffy :: Acc (Vector Int) -> Acc (Vector Int)
+iffy acc = if (acc ! I1 0) == 0 then twoMaps else reshape (Z_ ::. 1) (unit 1)
+
+main :: P.IO ()
+main = P.seq (test @InterpretOp awhile') (P.return ())
+

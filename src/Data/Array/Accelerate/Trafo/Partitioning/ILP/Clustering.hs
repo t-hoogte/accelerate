@@ -120,8 +120,8 @@ openReconstructF a b c l d e= (\(Right x) -> x) $ openReconstruct' a b c (Just l
 
 openReconstruct' :: forall op aenv. Pretty.PrettyOp (Cluster op) => LabelEnv aenv -> Graph -> [ClusterLs] -> Maybe Label -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> Either (Exists (PreOpenAcc (Cluster op) aenv)) (Exists (PreOpenAfun (Cluster op) aenv))
 openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = case mlab of
-  Just l  -> Debug.Trace.traceShow "hello" $ Debug.Trace.traceShow (clusters, construct) $ Debug.Trace.trace "bye" $ Right $ makeASTF labelenv l mempty
-  Nothing -> Debug.Trace.traceShow "hello" $ Debug.Trace.traceShow (clusters, construct) $ Debug.Trace.trace "hi" $ Left $ makeAST labelenv clusters mempty
+  Just l  -> Right $ makeASTF labelenv l mempty
+  Nothing -> Left $ makeAST labelenv clusters mempty
   where
     -- Make a tree of let bindings
 
@@ -147,9 +147,10 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
               (unsafeCoerce @(PreOpenAcc (Cluster op) env _)
                             @(PreOpenAcc (Cluster op) env _)
                             facc)
-         CWhl env' c b i  -> case (makeASTF env c prev, makeASTF env b prev) of
+         CWhl env' c b i  -> case (subcluster c, subcluster b) of
+           ([NonExecL c'], [NonExecL b']) -> case (makeASTF env c' prev, makeASTF env b' prev) of
             (Exists cfun, Exists bfun) -> Exists $ Awhile
-              (error "ask Ivo")
+              (shared i)
               -- [See NOTE unsafeCoerce result type]
               (unsafeCoerce @(PreOpenAfun (Cluster op) env _)
                             @(PreOpenAfun (Cluster op) env (_ -> PrimBool))
@@ -165,13 +166,12 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
          CCmp env' expr     -> Exists $ Compute     (fromJust $ reindexExp  (mkReindexPartial env' env) expr)
          CAlc env' shr e sh -> Exists $ Alloc shr e (fromJust $ reindexVars (mkReindexPartial env' env) sh)
          CUnt env' evar     -> Exists $ Unit        (fromJust $ reindexVar  (mkReindexPartial env' env) evar)
-    makeAST env (cluster:ctail) prev = -- This is probably the culprit: The 'prev' map does not really work. Instead, we need to enforce that
-    -- each lhs comes before its body! Otherwise reindexing fails when using the bound variables.
+    makeAST env (cluster:ctail) prev = 
 
       case makeCluster env cluster of
       NotFold con -> case con of
-        CLHS (mylhs :: MyGLHS a) b -> Debug.Trace.traceShow mylhs $ case prev M.! b of
-          Exists bnd -> Debug.Trace.trace "hello!!" $ createLHS mylhs env $ \env' lhs ->
+        CLHS (mylhs :: MyGLHS a) b -> case prev M.! b of
+          Exists bnd -> createLHS mylhs env $ \env' lhs ->
             case makeAST env' ctail (M.map (\(Exists acc) -> Exists $ weakenAcc lhs acc) prev) of
               Exists scp -> Exists $ Alet lhs
                                           (error "ask Ivo")
@@ -193,10 +193,10 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
 
     makeASTF :: forall env. LabelEnv env -> Label -> M.Map Label (Exists (PreOpenAcc (Cluster op) env)) -> Exists (PreOpenAfun (Cluster op) env)
     makeASTF env l prev = case makeCluster env (NonExecL l) of
-      NotFold (CBod l') -> case makeAST env (subcluster l ) prev of 
+      NotFold (CBod l') -> case makeAST env (subcluster l) prev of 
         --  fromJust $ l' ^. parent) prev of 
         Exists acc -> Exists $ Abody acc
-      NotFold (CFun lhs l') -> Debug.Trace.traceShow lhs $ createLHS lhs env $ \env' lhs' -> case makeASTF env' l' (M.map (\(Exists acc) -> Exists $ weakenAcc lhs' acc) prev) of
+      NotFold (CFun lhs l') -> createLHS lhs env $ \env' lhs' -> case makeASTF env' l' (M.map (\(Exists acc) -> Exists $ weakenAcc lhs' acc) prev) of
         Exists fun -> Exists $ Alam lhs' fun
       NotFold {} -> error "wrong type: acc"
       _ -> error "not a notfold"
@@ -208,10 +208,10 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
     subclusters = M.map (map ( \case
                       Execs ls -> topSort graph ls
                       NonExec l -> NonExecL l)) subclustersmap
-    subcluster !l = subclusters M.! l
+    subcluster l = subclusters M.! l
 
     makeCluster :: LabelEnv env -> ClusterL -> FoldType op env
-    makeCluster (Debug.Trace.traceShowId . Debug.Trace.trace "v env"-> env) (ExecL (Debug.Trace.traceShowId . Debug.Trace.trace "v ls" -> ls)) =
+    makeCluster env (ExecL ls) =
        foldr1 (flip fuseCluster)
                     $ map ( \l -> case construct M.! l of
                               -- At first thought, this `fromJust` might error if we fuse an array away.
@@ -220,7 +220,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
                               -- If the array is never read from in later clusters (vertical instead of diagonal fusion),
                               -- we will need to clean it up afterwards with a separate dead-array removal pass,
                               -- which should also delete the corresponding allocation. TODO
-                              CExe (Debug.Trace.traceShowId . Debug.Trace.trace "v env'" -> env') ((Debug.Trace.traceShowId . Debug.Trace.trace "v args" -> args)) op -> InitFold op $ fromJust $ reindexLabelledArgs (mkReindexPartial env' env) args --labelled env env' args
+                              CExe env' args op -> InitFold op $ fromJust $ reindexLabelledArgs (mkReindexPartial env' env) args --labelled env env' args
                               _                 -> error "avoid this next refactor" -- c -> NotFold c
                           ) ls
     makeCluster _ (NonExecL l) = NotFold $ construct M.! l

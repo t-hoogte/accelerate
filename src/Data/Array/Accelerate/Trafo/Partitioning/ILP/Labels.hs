@@ -34,6 +34,8 @@ import Lens.Micro ((^.))
 import Data.Bifunctor (first)
 import Data.Type.Equality
 import Unsafe.Coerce (unsafeCoerce)
+import qualified Data.Functor.Const as C
+import Data.Array.Accelerate.Array.Buffer (Buffers)
 
 {-
 Label is for each AST node: every exec, every let, every branch of control flow, etc has a unique label.
@@ -67,17 +69,29 @@ level (Label _ (Just l)) = 1 + level l
 
 type Labels = S.Set Label
 type ELabels = (ELabel, Labels)
+type ELabelTup = TupR (C.Const ELabel)
 data ALabel t where
-  Arr :: ELabel -- elabel of buffer
+  Arr :: ELabelTup e -- elabel of buffer
       -> ALabel (m sh e) -- only matches on arrays, but supports In, Out and Mut
   NotArr :: ALabel (t e) -- matches on `Var' e`, `Exp' e` and `Fun' e` (is typecorrect on arrays, but wish it wasn't)
-deriving instance Show (ALabel t)
+-- deriving instance Show (ALabel t)
 
 matchALabel :: ALabel (m sh s) -> ALabel (m' sh' t) -> Maybe ((sh,s) :~: (sh',t))
 matchALabel (Arr e1) (Arr e2)
-  -- If the labels align, we inform the typechecker that the types are equal
-  | e1 == e2 = Just $ unsafeCoerce Refl
+  | Just Refl <- matchELabelTup e1 e2
+  = Just $ unsafeCoerce Refl
 matchALabel _ _ = Nothing
+
+matchELabelTup :: ELabelTup a -> ELabelTup b -> Maybe (a :~: b)
+matchELabelTup TupRunit TupRunit = Just Refl
+matchELabelTup (TupRsingle (C.Const e)) (TupRsingle (C.Const f))
+  -- If the labels align, we inform the typechecker that the types are equal
+  | e == f = Just $ unsafeCoerce Refl
+matchELabelTup (TupRpair t1 t2) (TupRpair t3 t4)
+  | Just Refl <- matchELabelTup t1 t3
+  , Just Refl <- matchELabelTup t2 t4
+  = Just Refl
+matchELabelTup _ _ = Nothing
 
 type ALabels t = (ALabel t, Labels) -- An ELabel if it corresponds to an array, otherwise Nothing
 
@@ -94,14 +108,14 @@ newtype ELabel = ELabel { runELabel :: Int }
 data LabelledArg  env a = L (Arg env a) (ALabels a)
 type LabelledArgs env = PreArgs (LabelledArg env)
 
-instance Show (LabelledArgs env args) where 
-  show ArgsNil = "ArgsNil"
-  show (L arg a :>: args) = "L " ++ x ++ " " ++ show a ++ " :>: " ++ show args
-    where x = case arg of
-            ArgVar tr -> "Var"
-            ArgExp poe -> "Exp"
-            ArgFun pof -> "Fun"
-            ArgArray mod ar tr tr' -> "Arr"
+-- instance Show (LabelledArgs env args) where 
+--   show ArgsNil = "ArgsNil"
+--   show (L arg a :>: args) = "L " ++ x ++ " " ++ show a ++ " :>: " ++ show args
+--     where x = case arg of
+--             ArgVar tr -> "Var"
+--             ArgExp poe -> "Exp"
+--             ArgFun pof -> "Fun"
+--             ArgArray mod ar tr tr' -> "Arr"
 
 
 -- instance Semigroup (LabelledArgs env args) where
@@ -175,7 +189,7 @@ getLabelArgs ArgsNil _ = ArgsNil
 getLabelArgs (arg :>: args) e = arg `L` getLabelsArg arg e :>: getLabelArgs args e
 
 getLabelsArg :: Arg env t -> LabelEnv env -> ALabels t
-getLabelsArg (ArgVar tup)                  env = (\(Left x) -> x) $ getLabelsTup tup    env
+getLabelsArg (ArgVar tup)                  env = first (const NotArr) (getLabelsTup tup env)
 getLabelsArg (ArgExp expr)                 env = getLabelsExp expr   env
 getLabelsArg (ArgFun fun)                  env = getLabelsFun fun    env
 -- TODO this gets us the singleton label assigned to the buffer, check whether this doesn't make us use/write an array before we know its size
@@ -183,29 +197,31 @@ getLabelsArg (ArgFun fun)                  env = getLabelsFun fun    env
 -- using this one S.Set for both conflicts (as seen in 'const' vs 'insert')
 
 -- The comment above is outdated, but I'm not sure what is going on here anymore. What are the two types of return arguments from getLabelsTup? Does it make sense that a TupRsingle always gives Right?
-getLabelsArg (ArgArray _ _ shVars buVars) env = let
-                                                    -- shLabs = case getLabelsTup shVars env of
-                                                    --           Left (_, x)  -> x
-                                                    --           Right (_, x) -> x
-                                                    Right (Arr x,     buLabs) = getLabelsTup buVars env
-                                                in (Arr x, buLabs)
+-- ALabels shouldn't contain a single ELabel for arrays, but a TupR of ELabels (one for each buffer)!
+getLabelsArg (ArgArray _ _ shVars buVars) env = let (Arr x,             buLabs) = getLabelsTup buVars env
+                                                in  (unBuffers $ Arr x, buLabs)
 
-getLabelsTup :: TupR (Var a env) b -> LabelEnv env -> Either (ALabels (Var' b)) (ALabels (m sh b))
-getLabelsTup TupRunit         _   = Left (NotArr, mempty)
-getLabelsTup (TupRsingle var) env = Right $ getLabelsVar var env
-getLabelsTup (TupRpair x y)   env = case (getLabelsTup x env, getLabelsTup y env) of
-  (Left  (_, a), Left  (_, b)) -> Left (NotArr, a <> b)
-  (Left  (_, a), Right (Arr z, b)) -> Right (Arr z, a <> b)
-  (Right (Arr z, a), Left  (_, b)) -> Right (Arr z, a <> b)
-  (Right (_, a), Right (_, b)) -> Left (NotArr, a <> b)
-  _ -> error "who?"
+getLabelsTup :: TupR (Var a env) b -> LabelEnv env -> ALabels (m sh b)
+getLabelsTup TupRunit         _   = (Arr TupRunit, mempty)
+getLabelsTup (TupRsingle var) env = getLabelsVar var env
+getLabelsTup (TupRpair l r) env = let
+  (Arr l', lset) = getLabelsTup l env
+  (Arr r', rset) = getLabelsTup r env
+  in (Arr $ TupRpair l' r', lset <> rset)
+-- getLabelsTup (TupRsingle var) env = Right $ getLabelsVar var env
+-- getLabelsTup (TupRpair x y)   env = case (getLabelsTup x env, getLabelsTup y env) of
+--   (Left  (_, a), Left  (_, b)) -> Left (NotArr, a <> b)
+--   (Left  (_, a), Right (Arr z, b)) -> Right (Arr z, a <> b)
+--   (Right (Arr z, a), Left  (_, b)) -> Right (Arr z, a <> b)
+--   (Right (_, a), Right (_, b)) -> Left (NotArr, a <> b)
+--   _ -> error "who?"
 
 
 getLabelsVar :: Var s env t -> LabelEnv env -> ALabels (m sh t)
 getLabelsVar (varIdx -> idx) = getLabelsIdx idx
 
 getLabelsIdx :: Idx env a -> LabelEnv env -> ALabels (m sh a)
-getLabelsIdx ZeroIdx (el :>>: _) = first Arr el
+getLabelsIdx ZeroIdx (el :>>: _) = first (Arr . TupRsingle . C.Const) el
 getLabelsIdx (SuccIdx idx) (_ :>>: env) = getLabelsIdx idx env
 
 getELabelIdx :: Idx env a -> LabelEnv env -> ELabel
@@ -306,3 +322,12 @@ body :: ALabel (Exp' e) -> ALabel (Fun' e)
 body NotArr = NotArr
 lam  :: ALabel (Fun' f) -> ALabel (Fun' (e->f))
 lam  NotArr = NotArr
+
+unBuffers :: ALabel (m sh (Buffers e)) -> ALabel (m sh e)
+unBuffers (Arr TupRunit)        = Arr $ unsafeCoerce TupRunit
+unBuffers (Arr (TupRsingle e)) = Arr $ unsafeCoerce (TupRsingle e)
+unBuffers (Arr (TupRpair l r))
+  | Arr l' <- unBuffers (unsafeCoerce $ Arr l)
+  , Arr r' <- unBuffers (unsafeCoerce $ Arr r)
+  = Arr (unsafeCoerce $ TupRpair l' r')
+unBuffers _ = error "not arr"

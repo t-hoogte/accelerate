@@ -28,7 +28,7 @@ module Data.Array.Accelerate.AST.Environment (
   prjUpdate', prjReplace', update', updates', mapEnv,
   Identity(..), (:>)(..), weakenId, weakenSucc, weakenSucc', weakenEmpty,
   sink, (.>), sinkWithLHS, weakenWithLHS, substituteLHS,
-varsGet,varsGetVal) where
+varsGet,varsGetVal, PartEnv(..),stripWithLhs) where
 
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Var
@@ -195,16 +195,21 @@ partialEnvSingleton (SuccIdx idx) v = PNone $ partialEnvSingleton idx v
 -- Wrapper to put homogenous types in an Env or PartialEnv
 newtype IdentityF t f = IdentityF t
 
+-- ??
 data Skip env env' where
   SkipSucc :: Skip env (env', t) -> Skip env env'
   SkipNone :: Skip env env
+
+data PartEnv big small where
+  PartAll :: PartEnv env env
+  PartYes :: PartEnv env env' -> PartEnv (env, t) (env', t)
+  PartNo  :: PartEnv env env' -> PartEnv (env, t)  env'
 
 skipIdx :: Skip env env' -> Idx env t -> Maybe (Idx env' t)
 skipIdx SkipNone     idx           = Just idx
 skipIdx (SkipSucc s) idx = case skipIdx s idx of
   Just (SuccIdx idx') -> Just idx'
   _                   -> Nothing
-
 prjUpdate' :: (f t -> (f t, a)) -> Idx env t -> Env f env -> (Env f env, a)
 prjUpdate' f ZeroIdx       (Push env v) = (Push env v', a)
   where (v', a) = f v
@@ -322,3 +327,8 @@ varsGet (TupRpair v1 v2) env = (,) <$> varsGet v1 env <*> varsGet v2 env
 
 varsGetVal :: Vars s env t -> Val env -> t
 varsGetVal vars = runIdentity . varsGet vars
+
+stripWithLhs :: LeftHandSide f a env env' -> Env g env' -> Env g env
+stripWithLhs (LeftHandSideSingle _) (Push env _) = env
+stripWithLhs (LeftHandSideWildcard _) env = env
+stripWithLhs (LeftHandSidePair lhs1 lhs2) env = stripWithLhs lhs1 $ stripWithLhs lhs2 env

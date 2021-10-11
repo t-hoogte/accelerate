@@ -3,6 +3,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE BangPatterns #-}
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve where
 
 
@@ -131,16 +132,12 @@ data ClusterLs = Execs Labels | NonExec Label
 -- and their bodies should all be in earlier clusters already.
 -- Simply make one cluster per let, before the cluster with execs.
 splitExecs :: ([Labels], M.Map Label [Labels]) -> M.Map Label (Construction op) -> ([ClusterLs], M.Map Label [ClusterLs])
-splitExecs (xs, xM) constrM = let xs' = map (map (constrM M.!) . S.toList) xs 
-                                  xM' = map (map (map (constrM M.!) . S.toList)) $ M.elems xM in xs' `seq` xM' `seq` 
-  Debug.Trace.trace "splitExecs:" $ 
-    Debug.Trace.traceShow xs' $ 
-      Debug.Trace.traceShow xM' $ (f xs, M.map f xM)
+splitExecs (xs, xM) constrM = (f xs, M.map f xM)
   where
     f :: [Labels] -> [ClusterLs]
     f = concatMap (\ls -> filter (/= Execs mempty) $ map NonExec (S.toList $ S.filter isNonExec ls) ++ [Execs (S.filter isExec ls)])
 
-    isExec l = case constrM M.! l of
-      CExe{} -> True
+    isExec l = case constrM M.!? l of
+      Just CExe{} -> True
       _ -> False
     isNonExec l = not $ isExec l

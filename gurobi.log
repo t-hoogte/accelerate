@@ -5228,3 +5228,1271 @@ Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
 
 Wrote result file '/tmp/gurobi30767-1.sol'
 
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Fri Oct  1 13:33:31 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 's' in bounds section
+Read LP format model from file /tmp/gurobi31202-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 23 rows, 19 columns, 54 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 23 rows, 19 columns and 54 nonzeros
+Model fingerprint: 0xdb726e5c
+Variable types: 1 continuous, 18 integer (2 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+01]
+  Objective range  [1e+00, 1e+00]
+  Bounds range     [1e+00, 1e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 1.0000000
+Presolve removed 23 rows and 19 columns
+Presolve time: 0.00s
+Presolve: All rows and columns removed
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 2: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi31202-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Fri Oct  1 13:47:19 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 's' in bounds section
+Read LP format model from file /tmp/gurobi31937-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 23 rows, 19 columns, 54 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 23 rows, 19 columns and 54 nonzeros
+Model fingerprint: 0xdb726e5c
+Variable types: 1 continuous, 18 integer (2 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+01]
+  Objective range  [1e+00, 1e+00]
+  Bounds range     [1e+00, 1e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 1.0000000
+Presolve removed 23 rows and 19 columns
+Presolve time: 0.00s
+Presolve: All rows and columns removed
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 2: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi31937-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Fri Oct  1 13:47:36 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi32169-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 16 rows, 15 columns, 36 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 16 rows, 15 columns and 36 nonzeros
+Model fingerprint: 0xf7c7c0bb
+Variable types: 0 continuous, 15 integer (1 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+01]
+  Objective range  [1e+00, 1e+00]
+  Bounds range     [1e+00, 1e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi32169-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct  4 19:35:28 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'p' in bounds section
+Read LP format model from file /tmp/gurobi91887-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 20 rows, 17 columns, 44 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 20 rows, 17 columns and 44 nonzeros
+Model fingerprint: 0x93fc8973
+Variable types: 0 continuous, 17 integer (1 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+01]
+  Objective range  [1e+00, 1e+00]
+  Bounds range     [1e+00, 1e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi91887-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Fri Oct  8 17:16:00 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'p' in bounds section
+Read LP format model from file /tmp/gurobi137945-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 20 rows, 17 columns, 44 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 20 rows, 17 columns and 44 nonzeros
+Model fingerprint: 0x93fc8973
+Variable types: 0 continuous, 17 integer (1 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+01]
+  Objective range  [1e+00, 1e+00]
+  Bounds range     [1e+00, 1e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi137945-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Fri Oct  8 17:20:33 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'zw' in bounds section
+Warning: unknown variable 'zzc' in bounds section
+Warning: unknown variable 'zzf' in bounds section
+Warning: unknown variable 'zx' in bounds section
+Warning: unknown variable 'zr' in bounds section
+Warning: unknown variable 'zza' in bounds section
+Warning: unknown variable 'zzd' in bounds section
+Warning: unknown variable 'zz' in bounds section
+Warning: unknown variable 'zt' in bounds section
+Warning: unknown variable 'zzg' in bounds section
+Warning: unknown variable 'zy' in bounds section
+Warning: unknown variable 'zs' in bounds section
+Warning: unknown variable 'zv' in bounds section
+Warning: unknown variable 'zzb' in bounds section
+Warning: unknown variable 'zze' in bounds section
+Warning: unknown variable 'zzh' in bounds section
+Warning: unknown variable 'zu' in bounds section
+Read LP format model from file /tmp/gurobi138405-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 49 rows, 61 columns, 102 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 49 rows, 61 columns and 102 nonzeros
+Model fingerprint: 0xc409cb9d
+Variable types: 5 continuous, 56 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 5e+01]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+00, 5e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi138405-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Fri Oct  8 17:29:34 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'j' in bounds section
+Warning: unknown variable 'm' in bounds section
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'h' in bounds section
+Warning: unknown variable 'k' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'i' in bounds section
+Warning: unknown variable 'l' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi139195-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 7 rows, 18 columns, 14 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 7 rows, 18 columns and 14 nonzeros
+Model fingerprint: 0x0a6f8940
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi139195-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Fri Oct  8 17:36:08 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'j' in bounds section
+Warning: unknown variable 'm' in bounds section
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'h' in bounds section
+Warning: unknown variable 'k' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'i' in bounds section
+Warning: unknown variable 'l' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi140398-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 7 rows, 18 columns, 14 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 7 rows, 18 columns and 14 nonzeros
+Model fingerprint: 0x0a6f8940
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi140398-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Fri Oct  8 17:36:22 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi140616-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 12 rows, 18 columns, 24 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 12 rows, 18 columns and 24 nonzeros
+Model fingerprint: 0x22bcf20a
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi140616-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct 11 14:48:35 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi150611-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 12 rows, 18 columns, 24 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 12 rows, 18 columns and 24 nonzeros
+Model fingerprint: 0x22bcf20a
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi150611-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct 11 14:53:01 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi151307-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 12 rows, 18 columns, 24 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 12 rows, 18 columns and 24 nonzeros
+Model fingerprint: 0x22bcf20a
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi151307-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct 11 14:59:39 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi152449-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 12 rows, 18 columns, 24 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 12 rows, 18 columns and 24 nonzeros
+Model fingerprint: 0x22bcf20a
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi152449-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct 11 15:08:11 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi152881-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 12 rows, 18 columns, 24 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 12 rows, 18 columns and 24 nonzeros
+Model fingerprint: 0x22bcf20a
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi152881-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct 11 15:12:32 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi153478-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 12 rows, 18 columns, 24 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 12 rows, 18 columns and 24 nonzeros
+Model fingerprint: 0x22bcf20a
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi153478-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct 11 15:15:14 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi153974-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 12 rows, 18 columns, 24 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 12 rows, 18 columns and 24 nonzeros
+Model fingerprint: 0x22bcf20a
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi153974-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct 11 15:23:46 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi154480-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 12 rows, 18 columns, 24 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 12 rows, 18 columns and 24 nonzeros
+Model fingerprint: 0x22bcf20a
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi154480-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct 11 15:30:57 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi155175-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 12 rows, 18 columns, 24 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 12 rows, 18 columns and 24 nonzeros
+Model fingerprint: 0x22bcf20a
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi155175-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct 11 15:31:17 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi155424-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 12 rows, 18 columns, 24 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 12 rows, 18 columns and 24 nonzeros
+Model fingerprint: 0x22bcf20a
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi155424-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct 11 16:23:50 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi158639-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 12 rows, 18 columns, 24 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 12 rows, 18 columns and 24 nonzeros
+Model fingerprint: 0x22bcf20a
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi158639-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct 11 16:48:09 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi160062-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 12 rows, 18 columns, 24 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 12 rows, 18 columns and 24 nonzeros
+Model fingerprint: 0x22bcf20a
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi160062-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct 11 17:01:41 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi161056-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 12 rows, 18 columns, 24 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 12 rows, 18 columns and 24 nonzeros
+Model fingerprint: 0x22bcf20a
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi161056-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct 11 17:02:35 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi161314-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 12 rows, 18 columns, 24 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 12 rows, 18 columns and 24 nonzeros
+Model fingerprint: 0x22bcf20a
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi161314-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct 11 17:06:20 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi161684-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 12 rows, 18 columns, 24 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 12 rows, 18 columns and 24 nonzeros
+Model fingerprint: 0x22bcf20a
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi161684-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct 11 17:09:16 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi162614-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 12 rows, 18 columns, 24 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 12 rows, 18 columns and 24 nonzeros
+Model fingerprint: 0x22bcf20a
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi162614-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct 11 17:11:15 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi162937-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 12 rows, 18 columns, 24 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 12 rows, 18 columns and 24 nonzeros
+Model fingerprint: 0x22bcf20a
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi162937-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct 11 18:41:22 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi165026-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 12 rows, 18 columns, 24 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 12 rows, 18 columns and 24 nonzeros
+Model fingerprint: 0x22bcf20a
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi165026-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct 11 18:43:17 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'zd' in bounds section
+Warning: unknown variable 'zc' in bounds section
+Warning: unknown variable 'zf' in bounds section
+Warning: unknown variable 'ze' in bounds section
+Read LP format model from file /tmp/gurobi165723-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 32 rows, 32 columns, 72 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 32 rows, 32 columns and 72 nonzeros
+Model fingerprint: 0x43659637
+Variable types: 1 continuous, 31 integer (2 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 2e+01]
+  Objective range  [1e+00, 1e+00]
+  Bounds range     [1e+00, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 2.0000000
+Presolve removed 32 rows and 32 columns
+Presolve time: 0.00s
+Presolve: All rows and columns removed
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 2: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi165723-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct 11 18:44:23 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'j' in bounds section
+Warning: unknown variable 'm' in bounds section
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'h' in bounds section
+Warning: unknown variable 'k' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'i' in bounds section
+Warning: unknown variable 'l' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi166038-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 7 rows, 18 columns, 14 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 7 rows, 18 columns and 14 nonzeros
+Model fingerprint: 0x0a6f8940
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi166038-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct 11 18:48:05 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'j' in bounds section
+Warning: unknown variable 'm' in bounds section
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'h' in bounds section
+Warning: unknown variable 'k' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'i' in bounds section
+Warning: unknown variable 'l' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi166726-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 7 rows, 18 columns, 14 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 7 rows, 18 columns and 14 nonzeros
+Model fingerprint: 0x0a6f8940
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi166726-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct 11 18:49:15 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'j' in bounds section
+Warning: unknown variable 'm' in bounds section
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'h' in bounds section
+Warning: unknown variable 'k' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'i' in bounds section
+Warning: unknown variable 'l' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi167130-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 7 rows, 18 columns, 14 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 7 rows, 18 columns and 14 nonzeros
+Model fingerprint: 0x0a6f8940
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi167130-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct 11 18:51:27 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'j' in bounds section
+Warning: unknown variable 'm' in bounds section
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'h' in bounds section
+Warning: unknown variable 'k' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'i' in bounds section
+Warning: unknown variable 'l' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi167664-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 7 rows, 18 columns, 14 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 7 rows, 18 columns and 14 nonzeros
+Model fingerprint: 0x0a6f8940
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi167664-1.sol'
+
+
+Gurobi 9.1.1 (linux64, gurobi_cl) logging started Mon Oct 11 18:52:13 2021
+
+Academic license - for non-commercial use only - expires 2022-09-17
+Using license file /home/david/gurobi.lic
+Set parameter LogFile to value gurobi.log
+
+Gurobi Optimizer version 9.1.1 build v9.1.1rc0 (linux64)
+Copyright (c) 2020, Gurobi Optimization, LLC
+
+Warning: unknown variable 'j' in bounds section
+Warning: unknown variable 'm' in bounds section
+Warning: unknown variable 'q' in bounds section
+Warning: unknown variable 'h' in bounds section
+Warning: unknown variable 'k' in bounds section
+Warning: unknown variable 'n' in bounds section
+Warning: unknown variable 'i' in bounds section
+Warning: unknown variable 'l' in bounds section
+Warning: unknown variable 'p' in bounds section
+Warning: unknown variable 'o' in bounds section
+Read LP format model from file /tmp/gurobi167927-0.lp
+Reading time = 0.00 seconds
+AccelerateObjective: 7 rows, 18 columns, 14 nonzeros
+Thread count: 6 physical cores, 12 logical processors, using up to 12 threads
+Optimize a model with 7 rows, 18 columns and 14 nonzeros
+Model fingerprint: 0x0a6f8940
+Variable types: 1 continuous, 17 integer (0 binary)
+Coefficient statistics:
+  Matrix range     [1e+00, 1e+00]
+  Objective range  [0e+00, 0e+00]
+  Bounds range     [2e+01, 2e+01]
+  RHS range        [1e+00, 1e+00]
+Found heuristic solution: objective 0.0000000
+
+Explored 0 nodes (0 simplex iterations) in 0.00 seconds
+Thread count was 1 (of 12 available processors)
+
+Solution count 1: 0 
+
+Optimal solution found (tolerance 1.00e-04)
+Best objective 0.000000000000e+00, best bound 0.000000000000e+00, gap 0.0000%
+
+Wrote result file '/tmp/gurobi167927-1.sol'
+
