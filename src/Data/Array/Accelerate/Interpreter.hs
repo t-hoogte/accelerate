@@ -250,7 +250,7 @@ instance IsKernel InterpretKernel where
 instance PrettyKernel InterpretKernel where
   -- PrettyKernelBody provides a Val but prettyOpWithArgs expects a Val', should we change them to have the
   -- same type (either Val or Val'?)
-  prettyKernel = PrettyKernelBody $ \env (InterpretKernel cluster args) -> prettyOpWithArgs env cluster args
+  prettyKernel = PrettyKernelBody False $ \env (InterpretKernel cluster args) -> prettyOpWithArgs env cluster args
 
 -- -2 is left>right, -1 is right>left, n is 'according to computation n' (e.g. Backpermute) 
 -- (Note that Labels are uniquely identified by an Int, the parent just gives extra information)

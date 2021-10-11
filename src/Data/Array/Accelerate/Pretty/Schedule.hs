@@ -24,7 +24,10 @@ class PrettySchedule sched where
 class PrettyKernel kernel where
   prettyKernel :: PrettyKernelStyle kernel
 
+-- Whether modifiers should be included in the valuation of buffer arguments.
+type IncludeModifier = Bool
+
 data PrettyKernelStyle kernel where
-  PrettyKernelBody :: (forall env. Val env -> kernel env -> Adoc) -> PrettyKernelStyle kernel
+  PrettyKernelBody :: IncludeModifier -> (forall env. Val env -> kernel env -> Adoc) -> PrettyKernelStyle kernel
 
   PrettyKernelFun :: (forall t. KernelFun kernel t -> Adoc) -> PrettyKernelStyle kernel

@@ -182,14 +182,19 @@ prettyEffect env = \case
 
 prettyKernelFun :: forall kernel env f. PrettyKernel kernel => Val' env -> KernelFun kernel f -> SArgs env f -> Adoc
 prettyKernelFun env fun args = case prettyKernel of
-  PrettyKernelBody prettyKernelBody ->
+  PrettyKernelBody includeModifier prettyKernelBody ->
     let
       go :: Val kenv -> OpenKernelFun kernel kenv t -> SArgs env t -> Adoc
       go kenv (KernelFunBody kernel) ArgsNil = prettyKernelBody kenv kernel
       go kenv (KernelFunLam (KernelArgRscalar _) f) (SArgScalar a :>: as)
         = go (Push kenv $ prettyVar env a) f as
-      go kenv (KernelFunLam (KernelArgRbuffer _ _) f) (SArgBuffer mod' a :>: as)
-        = go (Push kenv $ prettyModifier mod' <+> prettyVar env a) f as
+      go kenv (KernelFunLam (KernelArgRbuffer _ _) f) (SArgBuffer mod' a :>: as) =
+        let
+          a'
+            | includeModifier = prettyModifier mod' <+> prettyVar env a
+            | otherwise       = prettyVar env a
+        in
+          go (Push kenv a') f as
     in
       go Empty fun args
   PrettyKernelFun prettyKernelAsFun ->
