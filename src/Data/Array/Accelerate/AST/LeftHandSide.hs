@@ -81,3 +81,4 @@ flattenTupR = (`go` [])
     go (TupRsingle s)   accum = Exists s : accum
     go (TupRpair t1 t2) accum = go t1 $ go t2 accum
     go TupRunit         accum = accum
+

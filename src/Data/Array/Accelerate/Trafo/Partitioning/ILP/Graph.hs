@@ -319,7 +319,7 @@ mkFullGraph (Alet (lhs :: GLeftHandSide bnd env env') _ bnd scp) = do
 
 
 mkFullGraph (Return vars)    = mkFullGraphHelper $ \env ->
-      ( getLabelsTup vars env ^. eitherLens _2 _2
+      ( getLabelsTup vars env ^. _2
       , CRet env vars)
 
 mkFullGraph (Compute expr)   = mkFullGraphHelper $ \env ->
@@ -327,7 +327,7 @@ mkFullGraph (Compute expr)   = mkFullGraphHelper $ \env ->
       , CCmp env expr)
 
 mkFullGraph (Alloc shr e sh) = mkFullGraphHelper $ \env ->
-      ( getLabelsTup sh env ^. eitherLens _2 _2
+      ( getLabelsTup sh env ^. _2
       , CAlc env shr e sh)
 
 mkFullGraph (Unit var)       = mkFullGraphHelper $ \env ->
@@ -344,6 +344,7 @@ mkFullGraph (Use sctype n buff) = do
 
 mkFullGraph (Acond cond tacc facc) = do
   l_acond <- freshL
+  currL.parent .= Just l_acond -- set the parent of l_true and l_false to be the acond
   l_true  <- freshL
   l_false <- freshL
   env <- use lenv
@@ -369,6 +370,7 @@ mkFullGraph (Acond cond tacc facc) = do
 -- 'cond' and 'bdy' much like we used 'tbranch' and 'fbranch'.
 mkFullGraph (Awhile _ cond bdy startvars) = do
   l_while <- freshL
+  currL.parent .= Just l_while
   l_cond  <- freshL
   l_body  <- freshL
   env  <- use lenv
@@ -436,7 +438,7 @@ zoomState :: forall env env' a x. GLeftHandSide x env env' -> Label -> State (Fu
 zoomState lhs l f = do
     env <- use lenv
     env' <- zoom currE (addLhs lhs (S.singleton l) env)
-    let mylhs = Debug.Trace.traceShowId $ unEnvLHS lhs env'
+    let mylhs = unEnvLHS lhs env'
     (, mylhs) <$> zoom (zoomStateLens env') f
   where
     -- | This lens allows us to `zoom` into a state computation with a bigger environment,
