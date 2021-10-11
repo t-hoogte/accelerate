@@ -26,6 +26,8 @@ module Data.Array.Accelerate.AST.Environment (
   partialUpdate, partialEnvToList, partialEnvSingleton, partialEnvPush,
   partialEnvSameKeys, partialEnvSub, partialEnvSkipLHS,
 
+  Skip(..), skipIdx, chainSkip,
+
   prjUpdate', prjReplace', update', updates', mapEnv,
   Identity(..), (:>)(..), weakenId, weakenSucc, weakenSucc', weakenEmpty,
   sink, (.>), sinkWithLHS, weakenWithLHS, substituteLHS,
@@ -226,6 +228,10 @@ skipIdx SkipNone     idx           = Just idx
 skipIdx (SkipSucc s) idx = case skipIdx s idx of
   Just (SuccIdx idx') -> Just idx'
   _                   -> Nothing
+
+chainSkip :: Skip env1 env2 -> Skip env2 env3 -> Skip env1 env3
+chainSkip skipL (SkipSucc skipR) = SkipSucc $ chainSkip skipL skipR
+chainSkip skipL SkipNone         = skipL
 
 prjUpdate' :: (f t -> (f t, a)) -> Idx env t -> Env f env -> (Env f env, a)
 prjUpdate' f ZeroIdx       (Push env v) = (Push env v', a)

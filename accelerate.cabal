@@ -384,10 +384,10 @@ library
         Data.Array.Accelerate.Sugar.Vec
         Data.Array.Accelerate.Trafo
         Data.Array.Accelerate.Trafo.Config
-        Data.Array.Accelerate.Trafo.DeadVars
         Data.Array.Accelerate.Trafo.Desugar
         Data.Array.Accelerate.Trafo.Exp.Shrink
         Data.Array.Accelerate.Trafo.Exp.Substitution
+        Data.Array.Accelerate.Trafo.LiveVars
         Data.Array.Accelerate.Trafo.NewNewFusion
         Data.Array.Accelerate.Trafo.Partitioning.ILP
         Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering
@@ -398,6 +398,7 @@ library
         Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
         Data.Array.Accelerate.Trafo.Partitioning.Stream
         Data.Array.Accelerate.Trafo.Schedule.Uniform
+        Data.Array.Accelerate.Trafo.Schedule.Uniform.LiveVars
         Data.Array.Accelerate.Trafo.Schedule.Uniform.Simplify
         Data.Array.Accelerate.Trafo.Schedule.Uniform.Substitution
         Data.Array.Accelerate.Trafo.Sharing

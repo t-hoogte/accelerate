@@ -43,11 +43,11 @@ import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
-import Data.Array.Accelerate.Trafo.DeadVars
 import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Data.Array.Accelerate.Trafo.Operation.Substitution   (strengthenArrayInstr)
 import Data.Array.Accelerate.Trafo.Substitution
 import Data.Array.Accelerate.Trafo.Var
+import Data.Array.Accelerate.Trafo.Schedule.Uniform.LiveVars
 import Data.Array.Accelerate.Trafo.Schedule.Uniform.Simplify
 import Data.Array.Accelerate.Trafo.Schedule.Uniform.Substitution
 import Data.Array.Accelerate.Type
@@ -70,7 +70,7 @@ instance IsSchedule UniformScheduleFun where
   type ScheduleOutput UniformScheduleFun a = Output a
 
   convertScheduleFun afun
-    | (partial, _) <- partialScheduleFun afun = simplifyFun emptySimplifyEnv $ fromPartialFun PEnd (ReusedVars IdxSet.empty) partial
+    | (partial, _) <- partialScheduleFun afun = stronglyLiveVariablesFun $ simplifyFun emptySimplifyEnv $ fromPartialFun PEnd (ReusedVars IdxSet.empty) partial
 
   rnfSchedule (Slam lhs s) = rnfLeftHandSide rnfBaseR lhs `seq` rnfSchedule s
   rnfSchedule (Sbody s) = rnfSchedule' s
@@ -465,7 +465,7 @@ writeOutput doOutput outputVars valueVars = go doOutput outputVars valueVars Ret
 {-
 data ConvertEnvRead kernel genv fenv1 where
   ConvertEnvRead :: (UniformSchedule kernel fenv2 -> UniformSchedule kernel fenv1)
-                 -> (forall fenv3. ReEnv genv fenv2 fenv3 -> ReEnv genv fenv1 fenv3) -- TODO: This doesn't work. We need to assure that genv and fenv are in the same order
+                 -> (forall fenv3. ReEnv' genv fenv2 fenv3 -> ReEnv' genv fenv1 fenv3) -- TODO: This doesn't work. We need to assure that genv and fenv are in the same order
                  -> fenv1 :> fenv2
                  -> ConvertEnvRead kernel genv fenv1
 -}
@@ -487,26 +487,37 @@ convertEnvRefs env = partialEnvFromList const $ snd $ go weakenId env []
     go k (ConvertEnvFuture (Var tp ix)) accum = (weakenSucc $ weakenSucc k, EnvBinding ix (FutureRef $ Var (BaseRref tp) $ k >:> ZeroIdx) : accum)
 
 data Reads kernel genv fenv where
-  Reads :: ReEnv genv fenv'
+  Reads :: ReEnv' genv fenv'
         -> (fenv :> fenv')
         -> (UniformSchedule kernel fenv' -> UniformSchedule kernel fenv)
         -> Reads kernel genv fenv
 
 readRefs :: PartialEnv (FutureRef fenv) genv -> Reads kernel genv fenv
-readRefs PEnd = Reads ReEnvEnd weakenId id
+readRefs PEnd = Reads ReEnvEnd' weakenId id
 readRefs (PPush env (FutureRef (Var tp idx)))
   | Reads r k f <- readRefs env =
     let
       tp' = case tp of
         BaseRref t -> BaseRground t
         _ -> error "Impossible Ref base type"
-      r' = ReEnvKeep r
+      r' = ReEnvKeep' r
       k' = weakenSucc' k
       f' = f . Alet (LeftHandSideSingle tp') (RefRead $ Var tp $ k >:> idx)
     in
       Reads r' k' f'
 readRefs (PNone env)
-  | Reads r k f <- readRefs env = Reads (ReEnvSkip r) k f
+  | Reads r k f <- readRefs env = Reads (ReEnvSkip' r) k f
+
+data ReEnv' genv fenv where
+  ReEnvEnd'  :: ReEnv' genv fenv
+  ReEnvSkip' :: ReEnv' genv fenv -> ReEnv' (genv, t) fenv
+  ReEnvKeep' :: ReEnv' genv fenv -> ReEnv' (genv, t) (fenv, t)
+
+reEnvIdx' :: ReEnv' genv fenv -> genv :?> fenv
+reEnvIdx' (ReEnvKeep' _) ZeroIdx      = Just ZeroIdx
+reEnvIdx' (ReEnvKeep' r) (SuccIdx ix) = SuccIdx <$> reEnvIdx' r ix
+reEnvIdx' (ReEnvSkip' r) (SuccIdx ix) = reEnvIdx' r ix
+reEnvIdx' _              _            = Nothing
 
 convertEnvWeaken :: ConvertEnv genv fenv fenv' -> fenv :> fenv'
 convertEnvWeaken ConvertEnvNil = weakenId
@@ -756,7 +767,7 @@ partialSchedule = (\(s, used, _) -> (s, used)) . travA (TupRsingle Shared)
     travA _  (C.Exec op args)
       | Exists env <- convertEnvFromList $ map (foldr1 combineMod') $ groupBy (\(Exists v1) (Exists v2) -> isJust $ matchIdx (varIdx v1) (varIdx v2)) $ argsVars args -- TODO: Remove duplicates more efficiently
       , Reads reEnv k inputBindings <- readRefs $ convertEnvRefs env
-      , Just args' <- reindexArgs (reEnvIdx reEnv) args
+      , Just args' <- reindexArgs (reEnvIdx' reEnv) args
       , CompiledKernel kernel sargs <- compileKernel' op args'
         = let
             signals = convertEnvSignals env
@@ -846,7 +857,7 @@ partialLift tp f vars
   , Exists env <- convertEnvReadonlyFromList $ nubBy (\(Exists v1) (Exists v2) -> isJust $ matchVar v1 v2) vars -- TODO: Remove duplicates more efficiently
   , Reads reEnv k inputBindings <- readRefs $ convertEnvRefs env
   , DeclareVars lhs k' value <- declareVars $ mapTupR BaseRground tp
-  , Just binding <- f (reEnvIdx reEnv)
+  , Just binding <- f (reEnvIdx' reEnv)
   =
     let
       signals = convertEnvSignals env
@@ -2552,7 +2563,7 @@ partialDoSubstituteOutput = go Env.Empty
     go env (PartialDoOutputUnique _) OutputEnvShared (TupRpair (TupRpair (TupRsingle v1) (TupRsingle v2)) (TupRsingle v3))
       = env `Push` NewIdxJust (varIdx v3) `Push` NewIdxJust (varIdx v2) `Push` NewIdxJust (varIdx v1) `Push` NewIdxNoResolver
     -- Shared buffer written to unique buffer destination
-    go env (PartialDoOutputShared _) OutputEnvUnique _
+    go _   (PartialDoOutputShared _) OutputEnvUnique _
       = internalError "Cannot write shared buffer to unique buffer destination"
     go _ _ _ _ = internalError "Mismatch in PartialDoOutput and OutputEnv"
 

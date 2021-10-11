@@ -37,7 +37,6 @@ import Data.Array.Accelerate.Analysis.Match
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.IdxSet (IdxSet)
-import qualified Data.Array.Accelerate.AST.IdxSet as IdxSet
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.AST.Kernel
 import Data.Array.Accelerate.AST.Schedule
@@ -119,7 +118,7 @@ data Info env t where
 
 instance Sink Info where
   weaken k (InfoSignalResolver signal) = InfoSignalResolver $ fmap (weaken k) signal
-  weaken k InfoSignalResolved = InfoSignalResolved
+  weaken _ InfoSignalResolved = InfoSignalResolved
   weaken k (InfoSignalImplies signals) = InfoSignalImplies $ map (weaken k) signals
   weaken k (InfoSignalInstead signals) = InfoSignalInstead $ map (weaken k) signals
   weaken k (InfoRefWrite ref) = InfoRefWrite $ fmap (weaken k) ref
@@ -238,7 +237,7 @@ propagate :: forall env. [SignalImplication env] -> InfoEnv env -> InfoEnv env
 propagate implications (InfoEnv env awaitedSignals) = (InfoEnv (foldl' add env implications) awaitedSignals)
   where
     add :: WEnv Info env -> SignalImplication env -> WEnv Info env
-    add env1 (SignalImplication signal implied) = wupdate (f implied) signal env
+    add env1 (SignalImplication signal implied) = wupdate (f implied) signal env1
 
     f :: [Idx env Signal] -> Info env Signal -> Info env Signal
     f newImplied (InfoSignalImplies implied) = InfoSignalImplies (newImplied' ++ implied)
@@ -258,6 +257,7 @@ findSignalReplacements = go []
     add signals env resolver
       | InfoSignalResolver (Just signal) <- infoFor resolver env
       = setInfo signal (InfoSignalInstead signals) env
+      | otherwise = env
 
 resolve' :: forall env. InfoEnv env -> Idx env SignalResolver -> (InfoEnv env, [SignalImplication env])
 resolve' env@(InfoEnv env' awaitedSignals) resolver
