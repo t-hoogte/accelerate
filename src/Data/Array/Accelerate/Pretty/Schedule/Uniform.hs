@@ -75,18 +75,18 @@ push BaseRsignal                   (Val' env b e s r) = (Val' (Push env d) b e (
 push BaseRsignalResolver           (Val' env b e s r) = (Val' (Push env d) b e (s + 1) r, d)
   where d = "s" <> pretty s <> "'"
 push BaseRref{}                    (Val' env b e s r) = (Val' (Push env d) b e s (r + 1), d)
-  where d = "r" <> pretty s
+  where d = "r" <> pretty r
 push BaseRrefWrite{}               (Val' env b e s r) = (Val' (Push env d) b e s (r + 1), d)
-  where d = "r" <> pretty s <> "'"
+  where d = "r" <> pretty r <> "'"
 
 pushNewSignal :: Val' env -> (Val' ((env, Signal), SignalResolver), Adoc, Adoc)
-pushNewSignal (Val' env b e s r) = (Val' (Push (Push env d2) d1) b e (s + 1) r, d1, d2)
+pushNewSignal (Val' env b e s r) = (Val' (Push (Push env d1) d2) b e (s + 1) r, d1, d2)
   where
     d1 = "s" <> pretty s
     d2 = "s" <> pretty s <> "'"
 
 pushNewRef :: Val' env -> (Val' ((env, Ref t), OutputRef t), Adoc, Adoc)
-pushNewRef (Val' env b e s r) = (Val' (Push (Push env d2) d1) b e s (r + 1), d1, d2)
+pushNewRef (Val' env b e s r) = (Val' (Push (Push env d1) d2) b e s (r + 1), d1, d2)
   where
     d1 = "r" <> pretty r
     d2 = "r" <> pretty r <> "'"

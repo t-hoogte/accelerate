@@ -37,14 +37,16 @@
 -- the semantics clearly, not on performance.
 --
 
-module Data.Array.Accelerate.Interpreter
+module Data.Array.Accelerate.Interpreter (
+  module Data.Array.Accelerate.Interpreter,
+  UniformScheduleFun
+) where
 
-
-  where
 import Prelude                                                      hiding (take, (!!), sum )
 import Data.Array.Accelerate.AST.Partitioned hiding (Empty)
 import qualified Data.Array.Accelerate.AST.Partitioned as P
 import Data.Array.Accelerate.AST.Operation
+import Data.Array.Accelerate.AST.Kernel
 import Data.Array.Accelerate.Trafo.Desugar
 import qualified Data.Array.Accelerate.Debug.Internal as Debug
 import Data.Array.Accelerate.Representation.Array
@@ -77,9 +79,14 @@ import Control.DeepSeq (($!!))
 import qualified Data.Array.Accelerate.AST.Environment as Env
 import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Pretty.Operation ( PrettyOp(..) )
+import Data.Array.Accelerate.Pretty.Partitioned ()
+import Data.Array.Accelerate.Pretty.Schedule
 import Data.Array.Accelerate.AST.LeftHandSide (lhsToTupR)
 import Data.Functor.Identity ( Identity(Identity) )
 
+import Data.Array.Accelerate.AST.Schedule.Uniform (UniformScheduleFun)
+import Data.Array.Accelerate.Trafo.Schedule.Uniform ()
+import Data.Array.Accelerate.Pretty.Schedule.Uniform ()
 
 -- Overly simplistic datatype: We simply ignore all the functions that don't make sense (e.g. for non-array, non-generate args, or non-input args).
 data BackpermutedArg env t = BPA (Arg env t) (Int -> Int)
@@ -228,6 +235,22 @@ instance DesugarAcc InterpretOp where
   mkGenerate    a b     = Exec IGenerate    (a :>: b :>:             ArgsNil)
   mkPermute     a b c d = Exec IPermute     (a :>: b :>: c :>: d :>: ArgsNil)
   -- etc, but the rest piggybacks off of Generate for now (see Desugar.hs)
+
+data InterpretKernel env where
+  InterpretKernel :: Cluster InterpretOp args -> Args env args -> InterpretKernel env
+
+instance NFData' InterpretKernel where
+  rnf' (InterpretKernel cluster args) = rnf' cluster `seq` rnfArgs args
+
+instance IsKernel InterpretKernel where
+  type KernelOperation InterpretKernel = InterpretOp
+
+  compileKernel = InterpretKernel
+
+instance PrettyKernel InterpretKernel where
+  -- PrettyKernelBody provides a Val but prettyOpWithArgs expects a Val', should we change them to have the
+  -- same type (either Val or Val'?)
+  prettyKernel = PrettyKernelBody $ \env (InterpretKernel cluster args) -> prettyOpWithArgs env cluster args
 
 -- -2 is left>right, -1 is right>left, n is 'according to computation n' (e.g. Backpermute) 
 -- (Note that Labels are uniquely identified by an Int, the parent just gives extra information)

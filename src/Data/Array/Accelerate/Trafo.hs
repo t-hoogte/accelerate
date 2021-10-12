@@ -1,3 +1,4 @@
+{-# LANGUAGE AllowAmbiguousTypes                 #-}
 {-# LANGUAGE CPP                 #-}
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE RankNTypes          #-}
@@ -56,8 +57,8 @@ import Data.Array.Accelerate.Trafo.Desugar (DesugarAcc, desugar, desugarAfun)
 import qualified Data.Array.Accelerate.Trafo.NewNewFusion as NewNewFusion
 import qualified Data.Array.Accelerate.Pretty             as Pretty
 import qualified Data.Array.Accelerate.Pretty.Operation   as Pretty
+import qualified Data.Array.Accelerate.Pretty.Schedule    as Pretty
 import Data.Array.Accelerate.Pretty.Partitioned ()
-import qualified Debug.Trace
 
 #ifdef ACCELERATE_DEBUG
 import Text.Printf
@@ -67,18 +68,24 @@ import Data.Array.Accelerate.Debug.Internal.Timed
 #endif
 
 test
-  :: forall op f. (Afunction f, DesugarAcc op, Partitioning.MakesILP op, Pretty.PrettyOp op)
+  :: forall sched kernel f. (Afunction f, DesugarAcc (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), Pretty.PrettyKernel kernel, IsSchedule sched, IsKernel kernel, Pretty.PrettySchedule sched)
   => f
-  -> op ()
-test = error 
-     . ("PartitionedAfun:\n" ++) 
-     . Pretty.renderForTerminal . Pretty.prettyAfun 
-     . NewNewFusion.convertAfun 
-     . (\x -> Debug.Trace.trace (Pretty.renderForTerminal $ Pretty.prettyAfun x) x)
-     . desugarAfun @op 
-     . LetSplit.convertAfun 
-     . Sharing.convertAfunWith defaultOptions
+  -> String
+test f
+  = "OperationAcc:\n"
+  ++ Pretty.renderForTerminal (Pretty.prettyAfun operation)
+  ++ "\n\nPartitionedAcc:\n"
+  ++ Pretty.renderForTerminal (Pretty.prettyAfun partitioned)
+  ++ "\n\nSchedule:\n"
+  ++ Pretty.renderForTerminal (Pretty.prettySchedule schedule)
+  where
+    operation = desugarAfun @(KernelOperation kernel)
+      $ LetSplit.convertAfun 
+      $ Sharing.convertAfunWith defaultOptions f
 
+    partitioned = NewNewFusion.convertAfun operation
+
+    schedule = convertScheduleFun @sched @kernel partitioned
 
 -- HOAS -> de Bruijn conversion
 -- ----------------------------

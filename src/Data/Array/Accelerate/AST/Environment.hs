@@ -24,11 +24,15 @@ module Data.Array.Accelerate.AST.Environment (
   mapMaybePartialEnv, partialEnvValues, diffPartialEnv, diffPartialEnvWith,
   intersectPartialEnv, partialEnvTail, partialEnvLast, partialEnvSkip,
   partialUpdate, partialEnvToList, partialEnvSingleton, partialEnvPush,
+  partialEnvSameKeys, partialEnvSub, partialEnvSkipLHS,
+
+  Skip(..), skipIdx, chainSkip,
 
   prjUpdate', prjReplace', update', updates', mapEnv,
   Identity(..), (:>)(..), weakenId, weakenSucc, weakenSucc', weakenEmpty,
   sink, (.>), sinkWithLHS, weakenWithLHS, substituteLHS,
-varsGet,varsGetVal, PartEnv(..),stripWithLhs) where
+  varsGet,varsGetVal, PartEnv(..),stripWithLhs) where
+
 
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Var
@@ -81,6 +85,7 @@ prj' (SuccIdx idx) (Push env _) = prj' idx env
 prjPartial :: Idx env t -> PartialEnv f env -> Maybe (f t)
 prjPartial ZeroIdx       (PPush _   v) = Just v
 prjPartial (SuccIdx idx) (PPush env _) = prjPartial idx env
+prjPartial (SuccIdx idx) (PNone env)   = prjPartial idx env
 prjPartial _             _             = Nothing
 
 unionPartialEnv :: (forall t. f t -> f t -> f t) -> PartialEnv f env -> PartialEnv f env -> PartialEnv f env
@@ -101,7 +106,7 @@ intersectPartialEnv g (PPush e1 a) (PPush e2 b) = PPush (intersectPartialEnv g e
 
 -- Creates a partial environment containing only the identifiers which where
 -- present in the first env but not in the second env.
-diffPartialEnv :: PartialEnv f env -> PartialEnv f env -> PartialEnv f env
+diffPartialEnv :: PartialEnv f env -> PartialEnv g env -> PartialEnv f env
 diffPartialEnv = diffPartialEnvWith (const $ const Nothing)
 
 diffPartialEnvWith :: (forall t. f t -> g t -> Maybe (f t)) -> PartialEnv f env -> PartialEnv g env -> PartialEnv f env
@@ -127,6 +132,11 @@ partialEnvSkip :: PartialEnv f env -> PartialEnv f (env, t)
 partialEnvSkip PEnd = PEnd
 partialEnvSkip e = PNone e
 
+partialEnvSkipLHS :: LeftHandSide s t env env' -> PartialEnv f env -> PartialEnv f env'
+partialEnvSkipLHS (LeftHandSideSingle _)   = partialEnvSkip
+partialEnvSkipLHS (LeftHandSideWildcard _) = id
+partialEnvSkipLHS (LeftHandSidePair l1 l2) = partialEnvSkipLHS l2 . partialEnvSkipLHS l1
+
 partialEnvPush :: PartialEnv f env -> Maybe (f t) -> PartialEnv f (env, t)
 partialEnvPush e Nothing  = PNone e
 partialEnvPush e (Just a) = PPush e a
@@ -137,6 +147,21 @@ partialUpdate v (SuccIdx idx) (PPush e a) = PPush (partialUpdate v idx e) a
 partialUpdate v (SuccIdx idx) (PNone e  ) = PNone (partialUpdate v idx e)
 partialUpdate v (SuccIdx idx) PEnd        = PNone (partialUpdate v idx PEnd)
 
+partialEnvSameKeys :: PartialEnv f env -> PartialEnv g env -> Bool
+partialEnvSameKeys PEnd        PEnd        = True
+partialEnvSameKeys (PPush a _) (PPush b _) = partialEnvSameKeys a b
+partialEnvSameKeys (PNone a  ) (PNone b  ) = partialEnvSameKeys a b
+partialEnvSameKeys (PNone a  ) PEnd        = partialEnvSameKeys a PEnd
+partialEnvSameKeys PEnd        (PNone b  ) = partialEnvSameKeys PEnd b
+partialEnvSameKeys _           _           = False
+
+partialEnvSub :: PartialEnv f env -> PartialEnv g env -> Bool
+partialEnvSub (PPush a _) (PPush b _) = partialEnvSub a b
+partialEnvSub (PNone a)   b           = partialEnvSub a $ partialEnvTail b
+partialEnvSub PEnd        _           = True
+partialEnvSub _           _           = False
+
+-- TODO: This is actually isomorphic to Var. Should we remove this data type?
 data EnvBinding f env where
   EnvBinding :: Idx env t -> f t -> EnvBinding f env
 
@@ -210,6 +235,11 @@ skipIdx SkipNone     idx           = Just idx
 skipIdx (SkipSucc s) idx = case skipIdx s idx of
   Just (SuccIdx idx') -> Just idx'
   _                   -> Nothing
+
+chainSkip :: Skip env1 env2 -> Skip env2 env3 -> Skip env1 env3
+chainSkip skipL (SkipSucc skipR) = SkipSucc $ chainSkip skipL skipR
+chainSkip skipL SkipNone         = skipL
+
 prjUpdate' :: (f t -> (f t, a)) -> Idx env t -> Env f env -> (Env f env, a)
 prjUpdate' f ZeroIdx       (Push env v) = (Push env v', a)
   where (v', a) = f v

@@ -29,6 +29,7 @@ module Data.Array.Accelerate.AST.Schedule.Uniform (
   await, resolve,
   signalResolverImpossible, scalarSignalResolverImpossible,
   rnfBaseR,
+  directlyAwaits, reorder, trivialBinding, trivialSchedule,
 
   -- ** Free variables
   freeVars, funFreeVars, effectFreeVars, bindingFreeVars,
@@ -49,6 +50,8 @@ import Data.Array.Accelerate.AST.Partitioned as Partitioned         hiding (Part
 import Data.Array.Accelerate.AST.Kernel
 import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Control.Concurrent.MVar
+import Control.Monad
+import Data.Either
 import Data.IORef
 import Data.Typeable                                                ( (:~:)(..) )
 
@@ -236,8 +239,9 @@ newtype Ref t  = Ref (IORef t)
 newtype OutputRef t = OutputRef (IORef t)
 
 await :: [Idx env Signal] -> UniformSchedule kernel env -> UniformSchedule kernel env
-await [] = id
-await signals = Effect (SignalAwait signals)
+await []      schedule = schedule
+await _       Return   = Return
+await signals schedule = Effect (SignalAwait signals) schedule
 
 resolve :: [Idx env SignalResolver] -> UniformSchedule kernel env -> UniformSchedule kernel env
 resolve [] = id
@@ -302,3 +306,61 @@ rnfBaseR BaseRsignal            = ()
 rnfBaseR BaseRsignalResolver    = ()
 rnfBaseR (BaseRref ground)      = rnfGroundR ground
 rnfBaseR (BaseRrefWrite ground) = rnfGroundR ground
+
+-- Returns a list of signals on which the schedule waits before doing any
+-- work. Assumes that the schedule starts with SignalAwait; the schedule
+-- can be reordered to assure this by using 'reorder'.
+directlyAwaits :: UniformSchedule kernel env -> ([Idx env Signal], UniformSchedule kernel env)
+directlyAwaits (Effect (SignalAwait signals) next) = (signals, next)
+directlyAwaits schedule = ([], schedule)
+
+-- Reorders a schedule.
+-- Moves SignalAwait to the front of the schedule if possible.
+-- Stops at a Fork, making it safe to call this function while
+-- constructing a schedule in different parts of the tree,
+-- without causing quadratic traversal costs.
+reorder :: forall kernel env. UniformSchedule kernel env -> UniformSchedule kernel env
+reorder = uncurry await . go Just
+  where
+    go :: env' :?> env -> UniformSchedule kernel env' -> ([Idx env Signal], UniformSchedule kernel env')
+    -- Try to move SignalAwait to the front of the schedule
+    go k (Effect (SignalAwait awaits) next) = (rs ++ signals, await ls next')
+      where
+        (ls, rs) = partitionEithers $ map (try k) awaits
+        (signals, next') = go k next
+    -- Write may be postponed: a write doesn't do synchronisation,
+    -- that is done by a signal(resolver).
+    go k (Effect effect@RefWrite{} next) = (signals, Effect effect next')
+      where
+        (signals, next') = go k next
+    go k (Alet lhs bnd next)
+      | trivialBinding bnd = (signals, Alet lhs bnd next')
+      where
+        (signals, next') = go (k <=< strengthenWithLHS lhs) next
+    go k sched = ([], sched)
+
+    try :: env' :?> env -> Idx env' t -> Either (Idx env' t) (Idx env t)
+    try k ix = case k ix of
+      Just ix' -> Right ix'
+      Nothing  -> Left ix
+
+-- If a binding will only take little time to execute, we say it's trivial and
+-- move it (usually postpone) in the schedule.
+trivialBinding :: Binding env t -> Bool
+trivialBinding NewSignal   = True
+trivialBinding (NewRef _)  = True
+trivialBinding (Use _ _ _) = True
+trivialBinding (Unit _)    = True
+trivialBinding (RefRead _) = True
+trivialBinding (Compute e) = expIsTrivial (const True) e
+trivialBinding _           = False
+
+-- If a schedule does not do blocking or slow operations, we say it's trivial
+-- and don't need to fork it as we do not gain much task parallelism from it.
+trivialSchedule :: UniformSchedule kernel env -> Bool
+trivialSchedule (Effect SignalResolve{} next) = trivialSchedule next
+trivialSchedule (Effect RefWrite{} next)      = trivialSchedule next
+trivialSchedule (Alet _ bnd next)             = trivialBinding bnd && trivialSchedule next
+trivialSchedule Return                        = True
+trivialSchedule (Acond _ true false next)     = trivialSchedule true && trivialSchedule false && trivialSchedule next
+trivialSchedule _                             = False

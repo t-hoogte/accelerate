@@ -18,8 +18,9 @@
 
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering where
 
-import Data.Array.Accelerate.AST.LeftHandSide ( Exists(..), LeftHandSide (LeftHandSideUnit) )
+import Data.Array.Accelerate.AST.LeftHandSide ( Exists(..), LeftHandSide (..), lhsToTupR )
 import Data.Array.Accelerate.AST.Partitioned hiding (take')
+import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
 
@@ -172,13 +173,14 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
         CLHS (mylhs :: MyGLHS a) b -> case prev M.! b of
           Exists bnd -> createLHS mylhs env $ \env' lhs ->
             case makeAST env' ctail (M.map (\(Exists acc) -> Exists $ weakenAcc lhs acc) prev) of
-              Exists scp -> Exists $ Alet lhs
-                                          (error "ask Ivo")
-                                          -- [See NOTE unsafeCoerce result type]
-                                          (unsafeCoerce @(PreOpenAcc (Cluster op) env _)
-                                                        @(PreOpenAcc (Cluster op) env a)
-                                                        bnd)
-                                          scp
+              Exists scp
+                | bnd' <- unsafeCoerce @(PreOpenAcc (Cluster op) env _) -- [See NOTE unsafeCoerce result type]
+                                       @(PreOpenAcc (Cluster op) env a)
+                                       bnd
+                  -> Exists $ Alet lhs
+                      (makeUniqueness lhs bnd')
+                      bnd'
+                      scp
         _ -> let res = makeAST env [cluster] prev in case cluster of
                 ExecL _ -> case (res, makeAST env ctail prev) of
                   (Exists exec@Exec{}, Exists scp) -> Exists $ Alet LeftHandSideUnit (shared TupRunit) exec scp
@@ -188,7 +190,9 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
                   (Exists exec@Exec{}, Exists scp) -> Exists $ Alet LeftHandSideUnit (shared TupRunit) exec scp
                 NonExecL _ -> makeAST env ctail $ foldC (`M.insert` res) prev cluster
 
-
+    makeUniqueness :: forall env env' t. GLeftHandSide t env env' -> PreOpenAcc (Cluster op) env t -> Uniquenesses t
+    makeUniqueness LeftHandSideSingle{} Alloc{} = TupRsingle Unique
+    makeUniqueness lhs _ = mapTupR (const Shared) $ lhsToTupR lhs
 
     makeASTF :: forall env. LabelEnv env -> Label -> M.Map Label (Exists (PreOpenAcc (Cluster op) env)) -> Exists (PreOpenAfun (Cluster op) env)
     makeASTF env l prev = case makeCluster env (NonExecL l) of

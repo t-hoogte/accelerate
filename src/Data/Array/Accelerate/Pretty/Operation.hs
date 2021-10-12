@@ -48,7 +48,7 @@ class PrettyOp op where
   -- Only used in OperationAcc, when printing a PartitionedAcc a cluster is printed using prettyOp.
   -- The reason is that PrettyOp (Cluster op) instance defines prettyOpWithArgs in terms of prettyOp.
   --
-  prettyOpWithArgs :: Val' env -> op t -> Args env t -> Adoc
+  prettyOpWithArgs :: Val env -> op t -> Args env t -> Adoc
   prettyOpWithArgs env op args = hang 2 $ group $ vsep [annotate Execute "execute", prettyOp op, prettyArgs env args]
 
 prettyAcc :: PrettyOp op => OperationAcc op () t -> Adoc
@@ -65,27 +65,25 @@ prettyOpenAfun env (Alam lhs f) = "\\" <> lhs' <+> "->" <> hardline <> indent 2 
 
 prettyOpenAcc :: PrettyOp op => Val' benv -> OperationAcc op benv t -> Adoc
 prettyOpenAcc env = \case
-  Exec op args -> prettyOpWithArgs env op args
-  Return vars -> hang 2 $ group $ vsep [annotate Statement "return", prettyVars env 10 vars]
+  Exec op args -> prettyOpWithArgs (val env) op args
+  Return vars -> hang 2 $ group $ vsep [annotate Statement "return", prettyVars (val env) 10 vars]
   Compute exp -> hang 2 $ group $ vsep [annotate Statement "compute", prettyExp (val env) exp]
   Alet LeftHandSideUnit _ bnd body
     -> prettyOpenAcc env bnd
         <> hardline
         <> prettyOpenAcc env body
   Alet lhs us bnd body
-    -- TODO FIX I want to prettyprint but the uniquenesses don't work yet :)
-    --  | (env', lhs') <- prettyGLhsWithUniquenessTypes env lhs us
-    | (env', lhs') <- prettyGLhs env lhs
+    | (env', lhs') <- prettyGLhsWithUniquenessTypes env lhs us
       -> hang 2 (group $ vsep [lhs' <+> "=", prettyOpenAcc env bnd])
          <> hardline
          <> prettyOpenAcc env' body
-  Alloc _ tp sh -> hang 2 $ group $ vsep [annotate Statement "alloc", prettyScalarType tp <> "[" <> prettyShapeVars env sh <> "]"]
+  Alloc _ tp sh -> hang 2 $ group $ vsep [annotate Statement "alloc", prettyScalarType tp <> "[" <> prettyShapeVars (val env) sh <> "]"]
   Use tp n buffer -> hang 2 $ group $ vsep [annotate Statement "use" <+> prettyScalarType tp <> "[" <> pretty n <> "]", prettyBuffer tp n buffer]
-  Unit var -> hang 2 $ group $ vsep [annotate Statement "unit", prettyVar env var]
+  Unit var -> hang 2 $ group $ vsep [annotate Statement "unit", prettyVar (val env) var]
   Acond c true false
     -> group $ vsep
         [ hang 2 $ group $ vsep
-          [ if_ <+> prettyVar env c <+> then_
+          [ if_ <+> prettyVar (val env) c <+> then_
           , prettyOpenAcc env true
           ]
         , hang 2 $ group $ vsep
@@ -99,15 +97,15 @@ prettyOpenAcc env = \case
         <> hardline <> "  )"
         <> hardline <> hang 4 ("  ( " <> prettyOpenAfun env step)
         <> hardline <> "  )"
-        <> hardline <> indent 2 (prettyVars env 10 initial)
+        <> hardline <> indent 2 (prettyVars (val env) 10 initial)
 
-prettyArgs :: Val' benv -> Args benv f -> Adoc
+prettyArgs :: Val benv -> Args benv f -> Adoc
 prettyArgs env args = tupled $ map (\(Exists a) -> prettyArg env a) $ argsToList args
 
-prettyArg :: Val' benv -> Arg benv t -> Adoc
+prettyArg :: Val benv -> Arg benv t -> Adoc
 prettyArg env (ArgVar vars) = prettyVars env 10 vars
-prettyArg env (ArgExp e) = prettyExp (val env) e
-prettyArg env (ArgFun f) = prettyFun (val env) f
+prettyArg env (ArgExp e) = prettyExp env e
+prettyArg env (ArgFun f) = prettyFun env f
 prettyArg env (ArgArray m _ sh buffers) = group $ vsep [prettyModifier m, "(" <> prettyShapeVars env sh <> ")", prettyVars env 0 buffers]
 
 prettyModifier :: Modifier m -> Adoc
@@ -175,13 +173,13 @@ val :: Val' env -> Val env
 val (Val' env _ _) = env
 
 -- Variables
-prettyVar :: Val' env -> Var s env t -> Adoc
-prettyVar (Val' env _ _) (Var _ ix) = prj ix env
+prettyVar :: Val env -> Var s env t -> Adoc
+prettyVar env (Var _ ix) = prj ix env
 
-prettyVars :: forall env s t. Val' env -> Precedence -> Vars s env t -> Adoc
+prettyVars :: forall env s t. Val env -> Precedence -> Vars s env t -> Adoc
 prettyVars env = prettyTupR $ const $ prettyVar env
 
-prettyShapeVars :: Val' env -> Vars s env sh -> Adoc
+prettyShapeVars :: Val env -> Vars s env sh -> Adoc
 prettyShapeVars _   TupRunit = "Z"
 prettyShapeVars env vars = encloseSep "Z :. " "" " :. " $ map (\(Exists v) -> prettyVar env v) $ flattenTupR vars
 

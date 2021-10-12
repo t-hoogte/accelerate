@@ -35,11 +35,11 @@ module Data.Array.Accelerate.Trafo.Exp.Substitution (
   (:>), SinkExp(..), weakenVars,
 
   -- ** Strengthening
-  (:?>), strengthenE,
+  (:?>), strengthenE, strengthenWithLHS,
 
   -- ** Rebuilding terms
   RebuildableExp(..), rebuildLHS,
-  lhsFullVars,
+  lhsFullVars, lhsVars, lhsIndices,
 
   RebuildArrayInstr, rebuildArrayInstrMap,
   rebuildNoArrayInstr, mapArrayInstr,
@@ -55,6 +55,8 @@ import Data.Array.Accelerate.AST.Exp
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.AST.Idx
+import Data.Array.Accelerate.AST.IdxSet (IdxSet)
+import qualified Data.Array.Accelerate.AST.IdxSet                as IdxSet
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.Analysis.Match
 import Data.Array.Accelerate.Error
@@ -81,10 +83,28 @@ lhsFullVars = fmap snd . go weakenId
       , Just (k'', v1) <- go k' l1 = Just (k'', TupRpair v1 v2)
     go _ _ = Nothing
 
+lhsVars :: forall s a env1 env2. LeftHandSide s a env1 env2 -> [Exists (Var s env2)]
+lhsVars = snd . flip (go weakenId) []
+  where
+    go :: env' :> env2 -> LeftHandSide s b env env' -> [Exists (Var s env2)] -> (env :> env2, [Exists (Var s env2)])
+    go k (LeftHandSideSingle tp) accum  = (weakenSucc k, Exists (Var tp $ k >:> ZeroIdx) : accum)
+    go k (LeftHandSideWildcard _) accum = (k, accum)
+    go k (LeftHandSidePair l1 l2) accum = go k' l1 accum'
+      where
+        (k', accum') = go k l2 accum
+
+lhsIndices :: forall s a env1 env2. LeftHandSide s a env1 env2 -> IdxSet env2
+lhsIndices = go IdxSet.empty
+  where
+    go :: IdxSet env -> LeftHandSide s b env env' -> IdxSet env'
+    go set (LeftHandSideSingle _) = IdxSet.push set
+    go set (LeftHandSideWildcard _) = set
+    go set (LeftHandSidePair l1 l2) = go (go set l1) l2
+
 bindingIsTrivial :: LeftHandSide s a env1 env2 -> Vars s env2 b -> Maybe (a :~: b)
 bindingIsTrivial lhs vars
-  | Just lhsVars <- lhsFullVars lhs
-  , Just Refl    <- matchVars vars lhsVars
+  | Just lhsVars' <- lhsFullVars lhs
+  , Just Refl     <- matchVars vars lhsVars'
   = Just Refl
 bindingIsTrivial _ _ = Nothing
 

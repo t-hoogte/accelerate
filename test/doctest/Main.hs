@@ -62,5 +62,5 @@ iffy acc = if size acc == 1 then twoMaps acc else reshape (Z_ ::. 1) (unit 1)
 foo (a :: Acc (Vector Int)) = map (*2) $ if (a ! I1 0) == 2 then map (+1) a else a
 
 main :: P.IO ()
-main = P.seq (test @InterpretOp dotp) (P.return ())
+main = P.putStrLn (test @UniformScheduleFun @InterpretKernel dotp)
 
