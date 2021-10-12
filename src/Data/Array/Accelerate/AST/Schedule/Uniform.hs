@@ -241,11 +241,15 @@ newtype OutputRef t = OutputRef (IORef t)
 await :: [Idx env Signal] -> UniformSchedule kernel env -> UniformSchedule kernel env
 await []      schedule = schedule
 await _       Return   = Return
+await signals (Effect (SignalAwait signals') schedule)
+                       = Effect (SignalAwait $ signals ++ signals') schedule
 await signals schedule = Effect (SignalAwait signals) schedule
 
 resolve :: [Idx env SignalResolver] -> UniformSchedule kernel env -> UniformSchedule kernel env
-resolve [] = id
-resolve signals = Effect (SignalResolve signals)
+resolve []      schedule = schedule
+resolve signals (Effect (SignalResolve signals') schedule)
+                         = Effect (SignalResolve $ signals ++ signals') schedule
+resolve signals schedule = Effect (SignalResolve signals) schedule
 
 freeVars :: UniformSchedule kernel env -> IdxSet env
 freeVars Return = IdxSet.empty

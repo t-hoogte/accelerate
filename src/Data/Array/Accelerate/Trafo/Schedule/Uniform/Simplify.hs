@@ -59,8 +59,7 @@ import Data.Maybe
 import Data.List
     ( groupBy, nub, nubBy, sort, group, isSubsequenceOf, (\\), foldl', partition, mapAccumL, mapAccumR )
 import qualified Data.List as List
-import Prelude hiding (id, (.), read)
-import Control.Category
+import Control.Monad
 import Control.DeepSeq
 import qualified Data.Array.Accelerate.AST.Environment as Env
 
@@ -379,10 +378,11 @@ substitute env = Weaken $ \idx -> case infoFor idx env of
   InfoBuffer   (Just idx') -> idx'
   _                        -> idx
 
+
 simplifyForks :: InfoEnv env -> UniformSchedule kernel env -> ([SignalImplication env], UniformSchedule kernel env)
 simplifyForks env schedule
-  | SplitTrivials _ trivial branches'' <- splitTrivials weakenId branches'
-  = (signalImplications, trivial $ forks branches'')
+  | SplitTrivials _ k trivial branches'' <- splitTrivials weakenId branches'
+  = (signalImplications, trivial $ serializeDependentForks k env branches'')
   where
     branches = collectForks schedule
     -- Signal implications are only propagated in one direction (namely from
@@ -408,6 +408,7 @@ simplifyForks env schedule
 data SplitTrivials kernel env where
   SplitTrivials
     :: env :> env'
+    -> env' :?> env
     -- The trivial part of the start of the schedule
     -> (UniformSchedule kernel env' -> UniformSchedule kernel env)
     -- The remaining parts of the schedule
@@ -417,14 +418,15 @@ data SplitTrivials kernel env where
 -- Splits a list of schedules in their trivial initial parts and the remainders.
 splitTrivials :: env :> env' -> [UniformSchedule kernel env] -> SplitTrivials kernel env'
 splitTrivials k (a : as)
-  | SplitTrivial  k1 trivial1 remaining1 <- splitTrivial $ weaken' k a
-  , SplitTrivials k2 trivial2 remaining2 <- splitTrivials (k1 .> k) as
-  = SplitTrivials (k2 .> k1) (trivial1 . trivial2) (weaken' k2 remaining1 : remaining2)
-splitTrivials k [] = SplitTrivials weakenId id []
+  | SplitTrivial  k1 k1' trivial1 remaining1 <- splitTrivial $ weaken' k a
+  , SplitTrivials k2 k2' trivial2 remaining2 <- splitTrivials (k1 .> k) as
+  = SplitTrivials (k2 .> k1) (k1' <=< k2') (trivial1 . trivial2) (weaken' k2 remaining1 : remaining2)
+splitTrivials _ [] = SplitTrivials weakenId Just id []
 
 data SplitTrivial kernel env where
   SplitTrivial
     :: env :> env'
+    -> env' :?> env
     -- The trivial part of the start of the schedule
     -> (UniformSchedule kernel env' -> UniformSchedule kernel env)
     -- The remaining part of the schedule
@@ -435,19 +437,19 @@ data SplitTrivial kernel env where
 splitTrivial :: UniformSchedule kernel env -> SplitTrivial kernel env
 splitTrivial (Effect effect next)
   | trivialEffect effect
-  , SplitTrivial k trivial next' <- splitTrivial next
-  = SplitTrivial k (Effect effect . trivial) next'
+  , SplitTrivial k k' trivial next' <- splitTrivial next
+  = SplitTrivial k k' (Effect effect . trivial) next'
 splitTrivial (Alet lhs bnd next)
   | trivialBinding bnd
-  , SplitTrivial k trivial next' <- splitTrivial next
-  = SplitTrivial (k .> weakenWithLHS lhs) (Alet lhs bnd . trivial) next'
+  , SplitTrivial k k' trivial next' <- splitTrivial next
+  = SplitTrivial (k .> weakenWithLHS lhs) (strengthenWithLHS lhs <=< k') (Alet lhs bnd . trivial) next'
 splitTrivial (Acond condition true false next)
   | trivialSchedule true
   , trivialSchedule false
-  , SplitTrivial k trivial next' <- splitTrivial next
-  = SplitTrivial k (Acond condition true false . trivial) next'
+  , SplitTrivial k k' trivial next' <- splitTrivial next
+  = SplitTrivial k k' (Acond condition true false . trivial) next'
 splitTrivial schedule
-  = SplitTrivial weakenId id schedule
+  = SplitTrivial weakenId Just id schedule
 
 collectForks :: UniformSchedule kernel env -> [UniformSchedule kernel env]
 collectForks = (`go` [])
@@ -455,6 +457,54 @@ collectForks = (`go` [])
     go :: UniformSchedule kernel env -> [UniformSchedule kernel env] -> [UniformSchedule kernel env]
     go (Fork s1 s2) = go s2 . go s1
     go u = (u :)
+
+-- Returns the set of indices of signal resolvers (not signals) which are
+-- resolved at the end of this schedule.
+resolvesAtEnd :: UniformSchedule kernel env -> IdxSet env
+resolvesAtEnd (Effect (SignalResolve resolvers) Return)
+                                  = IdxSet.fromList' resolvers
+resolvesAtEnd Return              = IdxSet.empty
+resolvesAtEnd (Alet lhs _ next)   = IdxSet.drop' lhs $ resolvesAtEnd next
+resolvesAtEnd (Effect _ next)     = resolvesAtEnd next
+resolvesAtEnd (Acond _ _ _ next)  = resolvesAtEnd next
+resolvesAtEnd (Awhile _ _ _ next) = resolvesAtEnd next
+-- In a Fork, we traverse only the left subterm. This matches with the
+-- inlining done in 'serial'.
+resolvesAtEnd (Fork next _)       = resolvesAtEnd next
+
+serializeDependentForks :: forall kernel env env'. env' :?> env -> InfoEnv env -> [UniformSchedule kernel env'] -> UniformSchedule kernel env'
+serializeDependentForks k env branches = go (map reorder branches) []
+  where
+    -- Takes a list of branches which are not processed yet and a list of
+    -- already processed branches. We still need to have access to the
+    -- processed branches as they still may be serialized with another
+    -- branch.
+    go :: [UniformSchedule kernel env'] -> [UniformSchedule kernel env'] -> UniformSchedule kernel env'
+    go []     accum = forks $ reverse accum -- Accumulator was in reverse order.
+    go (a:as) accum
+      | [] <- signals     = go as  (a  : accum)
+      | [] <- successors
+      , [] <- successors' = go as  (a  : accum)
+      | otherwise         = go as' (a' : accum')
+      where
+        resolvesSet = resolvesAtEnd a
+        signals = sort $ mapMaybe findSignal $ IdxSet.toList resolvesSet
+        (successors, as') = partition directlyFollows as
+        (successors', accum') = partition directlyFollows accum
+
+        a' = serial [a, go successors successors']
+
+        findSignal :: Exists (Idx env') -> Maybe (Idx env Signal)
+        findSignal (Exists idx')
+          | Just idx <- k idx'
+          , InfoSignalResolver msignal <- infoFor idx env
+          = msignal
+        findSignal _ = Nothing
+      
+        directlyFollows :: UniformSchedule kernel env' -> Bool
+        directlyFollows other = signals `isSubsequenceOf` sort (mapMaybe k otherSignals)
+          where
+            otherSignals = fst $ directlyAwaits other
 
 -- Utilities
 

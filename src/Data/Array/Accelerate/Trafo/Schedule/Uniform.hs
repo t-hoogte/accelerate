@@ -70,7 +70,10 @@ instance IsSchedule UniformScheduleFun where
   type ScheduleOutput UniformScheduleFun a = Output a
 
   convertScheduleFun afun
-    | (partial, _) <- partialScheduleFun afun = stronglyLiveVariablesFun $ simplifyFun emptySimplifyEnv $ fromPartialFun PEnd (ReusedVars IdxSet.empty) partial
+    | (partial, _) <- partialScheduleFun afun
+    = stronglyLiveVariablesFun $ simplifyFun emptySimplifyEnv $ simplifyFun emptySimplifyEnv
+    $ stronglyLiveVariablesFun $ simplifyFun emptySimplifyEnv
+    $ fromPartialFun PEnd (ReusedVars IdxSet.empty) partial
 
   rnfSchedule (Slam lhs s) = rnfLeftHandSide rnfBaseR lhs `seq` rnfSchedule s
   rnfSchedule (Sbody s) = rnfSchedule' s
