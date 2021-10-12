@@ -93,9 +93,8 @@ topSort (Graph _ fedges _) cluster = ExecL topsorted
     -- getLabels = labelMap cluster
     (graph, getAdj, _) =
           G.graphFromEdges
-          . uncurry (foldr (\(_,y) acc -> fromMaybe ((y, y, []):acc) (tryUpdateList ((==y) . view _1) id acc)))
-          . first (foldr (\(x, y) acc -> fromMaybe ((x,x,[y]):acc) $ tryUpdateList ((==x) . view _1) (_3 %~ (y:)) acc) [])
-          . (\x -> (x,x))
+          . flip (foldr (\y acc -> fromMaybe ((y, y, []):acc) (tryUpdateList ((==y) . view _1) id acc))) (S.toList cluster)
+          . foldr (\(x, y) acc -> fromMaybe ((x,x,[y]):acc) $ tryUpdateList ((==x) . view _1) (_3 %~ (y:)) acc) []
           . S.toList
           . S.filter (uncurry ((&&) `on` (`elem` cluster))) -- filter edges on 'both vertices are in this cluster'
           . S.map (\(x :-> y) -> (x, y))

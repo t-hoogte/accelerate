@@ -38,8 +38,7 @@ import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.Trafo.Config
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Trafo.Partitioning.ILP (gurobiFusion, gurobiFusionF)
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP, makeFullGraphF)
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (LabelEnv (LabelEnvNil))
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP)
 import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
 
 

@@ -343,11 +343,14 @@ mkFullGraph (Use sctype n buff) = do
          & construc               .~ M.singleton l (CUse sctype n buff)
 
 mkFullGraph (Acond cond tacc facc) = do
-  l_acond <- freshL
+  condres <- mkFullGraphHelper $ \env ->
+    ( getLabelsVar cond env ^. _2
+    , CITE undefined undefined undefined undefined) -- set a placeholder Construction, fill it in at the end
+  env <- use lenv
+  l_acond <- use currL -- the one set by mkFullGraphHelper
   currL.parent .= Just l_acond -- set the parent of l_true and l_false to be the acond
   l_true  <- freshL
   l_false <- freshL
-  env <- use lenv
   -- Set the parent before recursing
   currL.parent .= Just l_true
   tRes <- mkFullGraph tacc
@@ -360,16 +363,19 @@ mkFullGraph (Acond cond tacc facc) = do
   lenv <>= tEnv
   -- Restore the old parent
   currL.parent .= l_acond ^. parent
-  return $ (tRes <> fRes)
+  return $ (tRes <> fRes <> condres)
          & l_res    ?~ l_acond
          & info.graphI.graphNodes <>~ S.fromList [l_acond, l_true, l_false]
-         & construc %~ M.insert l_acond (CITE env cond l_true l_false)
+         & construc %~ M.adjust (\(CITE _ _ _ _) -> CITE env cond l_true l_false) l_acond
 
 -- like Acond. The biggest difference is that 'cond' is a function instead of an expression here.
 -- For the graph, we use 'startvars' much like we used 'cond' in Acond, and we use
 -- 'cond' and 'bdy' much like we used 'tbranch' and 'fbranch'.
 mkFullGraph (Awhile _ cond bdy startvars) = do
-  l_while <- freshL
+  varsres <- mkFullGraphHelper $ \env ->
+    ( getLabelsTup startvars env ^. _2
+    , CWhl undefined undefined undefined undefined)
+  l_while <- use currL
   currL.parent .= Just l_while
   l_cond  <- freshL
   l_body  <- freshL
@@ -382,10 +388,10 @@ mkFullGraph (Awhile _ cond bdy startvars) = do
   bRes <- mkFullGraphF bdy
   lenv <>= cEnv
   currL.parent .= l_while ^. parent
-  return $ (cRes <> bRes)
+  return $ (cRes <> bRes <> varsres)
          & l_res    ?~ l_while
          & info.graphI.graphNodes <>~ S.fromList [l_while, l_cond, l_body]
-         & construc %~ M.insert l_while (CWhl env l_cond l_body startvars)
+         & construc %~ M.adjust (\(CWhl _ _ _ _) -> CWhl env l_cond l_body startvars) l_while
 
 
 -- | Like mkFullGraph, but for @PreOpenAfun@.
