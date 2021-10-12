@@ -226,17 +226,17 @@ createLHS (LHSPair l r)   env k =
 -- which helps to re-index into the new environment later.
 -- next iteration might want to use 'dependant-map', to store some type information at type level.
 data Construction (op :: Type -> Type) where
-  CExe :: LabelEnv env -> LabelledArgs env args -> op args            -> Construction op
-  CUse ::                 ScalarType e -> Int -> Buffer e             -> Construction op
-  CITE :: LabelEnv env -> ExpVar env PrimBool -> Label -> Label       -> Construction op
-  CWhl :: LabelEnv env -> Label -> Label -> GroundVars env a          -> Construction op
-  CLHS ::                 MyGLHS a -> Label                           -> Construction op
-  CFun ::                 MyGLHS a -> Label                           -> Construction op
-  CBod ::                 Label                                       -> Construction op
-  CRet :: LabelEnv env -> GroundVars env a                            -> Construction op
-  CCmp :: LabelEnv env -> Exp env a                                   -> Construction op
-  CAlc :: LabelEnv env -> ShapeR sh -> ScalarType e -> ExpVars env sh -> Construction op
-  CUnt :: LabelEnv env -> ExpVar env e                                -> Construction op
+  CExe :: LabelEnv env -> LabelledArgs env args -> op args                              -> Construction op
+  CUse ::                 ScalarType e -> Int -> Buffer e                               -> Construction op
+  CITE :: LabelEnv env -> ExpVar env PrimBool -> Label -> Label                         -> Construction op
+  CWhl :: LabelEnv env -> Label -> Label -> GroundVars env a          -> Uniquenesses a -> Construction op
+  CLHS ::                 MyGLHS a -> Label                           -> Uniquenesses a -> Construction op
+  CFun ::                 MyGLHS a -> Label                                             -> Construction op
+  CBod ::                 Label                                                         -> Construction op
+  CRet :: LabelEnv env -> GroundVars env a                                              -> Construction op
+  CCmp :: LabelEnv env -> Exp env a                                                     -> Construction op
+  CAlc :: LabelEnv env -> ShapeR sh -> ScalarType e -> ExpVars env sh                   -> Construction op
+  CUnt :: LabelEnv env -> ExpVar env e                                                  -> Construction op
 instance Show (Construction op) where
   show CExe{} = "CExe{}"
   show CUse{} = "CUse{}"
@@ -297,8 +297,7 @@ mkFullGraph (Alet LeftHandSideUnit _ bnd scp) = do
   return $ (res1 <> res2)
          & l_res .~ (res2 ^. l_res)
 
--- We throw away the uniquenessess information here, in the future we will add uniqueness variables to the ILP
-mkFullGraph (Alet (lhs :: GLeftHandSide bnd env env') _ bnd scp) = do
+mkFullGraph (Alet (lhs :: GLeftHandSide bnd env env') u bnd scp) = do
   l <- freshL
   bndRes <- mkFullGraph bnd
   (scpRes, mylhs) <- zoomState lhs l (mkFullGraph scp)
@@ -308,13 +307,13 @@ mkFullGraph (Alet (lhs :: GLeftHandSide bnd env env') _ bnd scp) = do
                             & info.graphI.infusibleEdges <>~ S.fromList [ fromJust (bndRes ^. l_res) -?> l
                                                                         ,                          l -?> scpResL
                                                                         ]
-                            & construc                    %~ M.insert l (CLHS mylhs (fromJust $ bndRes ^. l_res))
+                            & construc                    %~ M.insert l (CLHS mylhs (fromJust $ bndRes ^. l_res) u)
                             & l_res                       ?~ scpResL
     -- The right-hand side of this let-binding had no result (e.g. an Execute)
     Nothing -> return $ (bndRes <> scpRes)
                       & info.graphI.graphNodes %~ S.insert l
                       & info.graphI.infusibleEdges <>~ S.singleton (fromJust (bndRes ^. l_res) -?> l)
-                      & construc                    %~ M.insert l (CLHS mylhs (fromJust $ bndRes ^. l_res))
+                      & construc                    %~ M.insert l (CLHS mylhs (fromJust $ bndRes ^. l_res) u)
                       & l_res ?~ l
 
 
@@ -343,11 +342,14 @@ mkFullGraph (Use sctype n buff) = do
          & construc               .~ M.singleton l (CUse sctype n buff)
 
 mkFullGraph (Acond cond tacc facc) = do
-  l_acond <- freshL
+  condres <- mkFullGraphHelper $ \env ->
+    ( getLabelsVar cond env ^. _2
+    , CITE undefined undefined undefined undefined) -- set a placeholder Construction, fill it in at the end
+  env <- use lenv
+  l_acond <- use currL -- the one set by mkFullGraphHelper
   currL.parent .= Just l_acond -- set the parent of l_true and l_false to be the acond
   l_true  <- freshL
   l_false <- freshL
-  env <- use lenv
   -- Set the parent before recursing
   currL.parent .= Just l_true
   tRes <- mkFullGraph tacc
@@ -360,16 +362,19 @@ mkFullGraph (Acond cond tacc facc) = do
   lenv <>= tEnv
   -- Restore the old parent
   currL.parent .= l_acond ^. parent
-  return $ (tRes <> fRes)
+  return $ (tRes <> fRes <> condres)
          & l_res    ?~ l_acond
          & info.graphI.graphNodes <>~ S.fromList [l_acond, l_true, l_false]
-         & construc %~ M.insert l_acond (CITE env cond l_true l_false)
+         & construc %~ M.adjust (\(CITE _ _ _ _) -> CITE env cond l_true l_false) l_acond
 
 -- like Acond. The biggest difference is that 'cond' is a function instead of an expression here.
 -- For the graph, we use 'startvars' much like we used 'cond' in Acond, and we use
 -- 'cond' and 'bdy' much like we used 'tbranch' and 'fbranch'.
-mkFullGraph (Awhile _ cond bdy startvars) = do
-  l_while <- freshL
+mkFullGraph (Awhile u cond bdy startvars) = do
+  varsres <- mkFullGraphHelper $ \env ->
+    ( getLabelsTup startvars env ^. _2
+    , CWhl undefined undefined undefined undefined undefined)
+  l_while <- use currL
   currL.parent .= Just l_while
   l_cond  <- freshL
   l_body  <- freshL
@@ -382,10 +387,10 @@ mkFullGraph (Awhile _ cond bdy startvars) = do
   bRes <- mkFullGraphF bdy
   lenv <>= cEnv
   currL.parent .= l_while ^. parent
-  return $ (cRes <> bRes)
+  return $ (cRes <> bRes <> varsres)
          & l_res    ?~ l_while
          & info.graphI.graphNodes <>~ S.fromList [l_while, l_cond, l_body]
-         & construc %~ M.insert l_while (CWhl env l_cond l_body startvars)
+         & construc %~ M.adjust (\(CWhl _ _ _ _ _) -> CWhl env l_cond l_body startvars u) l_while
 
 
 -- | Like mkFullGraph, but for @PreOpenAfun@.

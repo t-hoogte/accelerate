@@ -94,9 +94,8 @@ topSort (Graph _ fedges _) cluster = ExecL topsorted
     -- getLabels = labelMap cluster
     (graph, getAdj, _) =
           G.graphFromEdges
-          . uncurry (foldr (\(_,y) acc -> fromMaybe ((y, y, []):acc) (tryUpdateList ((==y) . view _1) id acc)))
-          . first (foldr (\(x, y) acc -> fromMaybe ((x,x,[y]):acc) $ tryUpdateList ((==x) . view _1) (_3 %~ (y:)) acc) [])
-          . (\x -> (x,x))
+          . flip (foldr (\y acc -> fromMaybe ((y, y, []):acc) (tryUpdateList ((==y) . view _1) id acc))) (S.toList cluster)
+          . foldr (\(x, y) acc -> fromMaybe ((x,x,[y]):acc) $ tryUpdateList ((==x) . view _1) (_3 %~ (y:)) acc) []
           . S.toList
           . S.filter (uncurry ((&&) `on` (`elem` cluster))) -- filter edges on 'both vertices are in this cluster'
           . S.map (\(x :-> y) -> (x, y))
@@ -148,10 +147,10 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
               (unsafeCoerce @(PreOpenAcc (Cluster op) env _)
                             @(PreOpenAcc (Cluster op) env _)
                             facc)
-         CWhl env' c b i  -> case (subcluster c, subcluster b) of
+         CWhl env' c b i u -> case (subcluster c, subcluster b) of
            ([NonExecL c'], [NonExecL b']) -> case (makeASTF env c' prev, makeASTF env b' prev) of
             (Exists cfun, Exists bfun) -> Exists $ Awhile
-              (shared i)
+              u
               -- [See NOTE unsafeCoerce result type]
               (unsafeCoerce @(PreOpenAfun (Cluster op) env _)
                             @(PreOpenAfun (Cluster op) env (_ -> PrimBool))
@@ -171,7 +170,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
 
       case makeCluster env cluster of
       NotFold con -> case con of
-        CLHS (mylhs :: MyGLHS a) b -> case prev M.! b of
+        CLHS (mylhs :: MyGLHS a) b u -> case prev M.! b of
           Exists bnd -> createLHS mylhs env $ \env' lhs ->
             case makeAST env' ctail (M.map (\(Exists acc) -> Exists $ weakenAcc lhs acc) prev) of
               Exists scp
@@ -179,7 +178,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
                                        @(PreOpenAcc (Cluster op) env a)
                                        bnd
                   -> Exists $ Alet lhs
-                      (makeUniqueness lhs bnd')
+                      u -- (makeUniqueness lhs bnd') -- TODO @Ivo: `u` is the old uniquenesses of this lhs, do we just take that?
                       bnd'
                       scp
         _ -> let res = makeAST env [cluster] prev in case cluster of
