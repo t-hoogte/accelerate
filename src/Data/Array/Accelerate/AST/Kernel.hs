@@ -20,7 +20,6 @@ module Data.Array.Accelerate.AST.Kernel (
 ) where
 
 import Data.Array.Accelerate.AST.Partitioned
-import Data.Array.Accelerate.Representation.Ground
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Array.Buffer

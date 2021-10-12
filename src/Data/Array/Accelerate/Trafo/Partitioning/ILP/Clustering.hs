@@ -36,13 +36,9 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (ClusterLs (Execs, Non
 import Data.Array.Accelerate.AST.Environment (Identity(runIdentity), weakenWithLHS)
 
 import Prelude hiding ( take )
-import qualified Debug.Trace
-import Lens.Micro ((%~), _1, _3, (^.))
+import Lens.Micro ((%~), _1, _3)
 import Lens.Micro.Extras (view)
-import Data.Bifunctor (first)
-import qualified Data.Array.Accelerate.Pretty as Pretty
 import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
-import Data.Array.Accelerate.Representation.Type (TupR(TupRunit))
 
 -- "open research question"
 -- -- Each set of ints corresponds to a set of Constructions, which themselves contain a set of ints (the things they depend on).
@@ -196,7 +192,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
 
     makeASTF :: forall env. LabelEnv env -> Label -> M.Map Label (Exists (PreOpenAcc (Cluster op) env)) -> Exists (PreOpenAfun (Cluster op) env)
     makeASTF env l prev = case makeCluster env (NonExecL l) of
-      NotFold (CBod l') -> case makeAST env (subcluster l) prev of 
+      NotFold CBod -> case makeAST env (subcluster l) prev of 
         --  fromJust $ l' ^. parent) prev of 
         Exists acc -> Exists $ Abody acc
       NotFold (CFun lhs l') -> createLHS lhs env $ \env' lhs' -> case makeASTF env' l' (M.map (\(Exists acc) -> Exists $ weakenAcc lhs' acc) prev) of

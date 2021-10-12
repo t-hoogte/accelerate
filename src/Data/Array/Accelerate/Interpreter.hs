@@ -391,6 +391,8 @@ evalLHS1 Base Empty _ = Empty
 evalLHS1 (Reqr t _ lhs) i env = let (BP (FromArg x) f, i') = take' t i in PushBPFA f x (evalLHS1 lhs i' env)
 evalLHS1 (Make _   lhs) (PushBPFA f x i') env = PushBPFA f x (evalLHS1 lhs i' env)
 evalLHS1 (EArg     lhs) (PushBPFA f x i') env = PushBPFA f x (evalLHS1 lhs i' env)
+evalLHS1 (FArg     lhs) (PushBPFA f x i') env = PushBPFA f x (evalLHS1 lhs i' env)
+evalLHS1 (VArg     lhs) (PushBPFA f x i') env = PushBPFA f x (evalLHS1 lhs i' env)
 evalLHS1 (Adju     lhs) (PushBPFA f x i') env = PushBPFA f x (evalLHS1 lhs i' env)
 evalLHS1 (Ignr     lhs) (PushBPFA _ _ i') env =             evalLHS1 lhs i' env
 
@@ -400,6 +402,8 @@ evalLHS2 (Reqr t1 t2 lhs) i env o = let (x, i') = take' t1 i
                                     in                    put' t2 x       (evalLHS2 lhs i' env o)
 evalLHS2 (Make t lhs) (PushBPFA f _ i) env (Push o y)   = put' t (BP y f) (evalLHS2 lhs i  env o)
 evalLHS2 (EArg   lhs) (PushBPFA f e i) env           o  = PushBPFA f e    (evalLHS2 lhs i  env o)
+evalLHS2 (FArg   lhs) (PushBPFA f e i) env           o  = PushBPFA f e    (evalLHS2 lhs i  env o)
+evalLHS2 (VArg   lhs) (PushBPFA f e i) env           o  = PushBPFA f e    (evalLHS2 lhs i  env o)
 evalLHS2 (Adju   lhs) (PushBPFA f _ i) env (PushFA m o) = PushBPFA f m    (evalLHS2 lhs i  env o)
 evalLHS2 (Ignr   lhs) (PushBPFA f x i) env           o  = PushBPFA f x    (evalLHS2 lhs i  env o)
 
@@ -413,7 +417,7 @@ evalLHS2 (Ignr   lhs) (PushBPFA f x i) env           o  = PushBPFA f x    (evalL
 --
 
 run :: forall a. (HasCallStack, Sugar.Arrays a) => Smart.Acc a -> a
-run a = unsafePerformIO execute
+run _ = unsafePerformIO execute
   where
     acc :: PartitionedAcc InterpretOp () (DesugaredArrays (Sugar.ArraysR a))
     !acc    = undefined -- convertAcc a

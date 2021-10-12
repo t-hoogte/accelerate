@@ -50,10 +50,9 @@ import Control.Monad.State
 import Data.Kind ( Type )
 import Unsafe.Coerce (unsafeCoerce)
 import Data.Maybe (isJust, fromJust)
-import Data.Array.Accelerate.Representation.Type (TupR, liftTypeQ)
+import Data.Array.Accelerate.Representation.Type (TupR)
 import Data.Array.Accelerate.AST.LeftHandSide (LeftHandSide (LeftHandSideSingle, LeftHandSideWildcard, LeftHandSidePair, LeftHandSideUnit))
 import Data.Array.Accelerate.Representation.Shape (ShapeR)
-import qualified Debug.Trace
 
 
 -- | Directed edge (a :-> b): `b` depends on `a`.
@@ -190,8 +189,8 @@ data MyLHS s v where
 type MyGLHS = MyLHS GroundR
 
 instance Show (MyGLHS v) where
-  show (LHSSingle gr x0) = "LHSSingle " <> show x0
-  show (LHSWildcard tr) = "LHSWild"
+  show (LHSSingle _ x0) = "LHSSingle " <> show x0
+  show (LHSWildcard _) = "LHSWild"
   show (LHSPair ml ml') = "LHSPair (" <> show ml <> ") (" <> show ml' <> ")"
 
 
@@ -232,7 +231,7 @@ data Construction (op :: Type -> Type) where
   CWhl :: LabelEnv env -> Label -> Label -> GroundVars env a          -> Uniquenesses a -> Construction op
   CLHS ::                 MyGLHS a -> Label                           -> Uniquenesses a -> Construction op
   CFun ::                 MyGLHS a -> Label                                             -> Construction op
-  CBod ::                 Label                                                         -> Construction op
+  CBod ::                                                                                  Construction op
   CRet :: LabelEnv env -> GroundVars env a                                              -> Construction op
   CCmp :: LabelEnv env -> Exp env a                                                     -> Construction op
   CAlc :: LabelEnv env -> ShapeR sh -> ScalarType e -> ExpVars env sh                   -> Construction op
@@ -405,7 +404,7 @@ mkFullGraphF (Abody acc) = do
   return $ res
          & l_res    ?~ l
          & info.graphI.graphNodes %~ S.insert l
-         & construc %~ M.insert l (CBod (fromJust $ res ^. l_res))
+         & construc %~ M.insert l CBod
 
 mkFullGraphF (Alam lhs f) = do
   l <- freshL

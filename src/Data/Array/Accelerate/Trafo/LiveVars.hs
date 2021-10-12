@@ -35,7 +35,6 @@ import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Data.Array.Accelerate.Trafo.Substitution
-import Data.Array.Accelerate.Trafo.WeakenedEnvironment
 
 import Data.List (foldl')
 import Data.Maybe
@@ -157,7 +156,7 @@ pushLivenessEnv lhs (LivenessEnv env) = LivenessEnv $ go lhs $ mapEnv (weaken k)
 -- denoting whether the variable is live.
 --
 data LHSLiveness s t env env' where
-  LHSLivenessWildcard :: (TupR s t) -> LHSLiveness s t env env
+  LHSLivenessWildcard :: TupR s t -> LHSLiveness s t env env
   LHSLivenessSingle   :: Bool -> s t -> LHSLiveness s t env (env, t)
   LHSLivenessPair     :: LHSLiveness s t1 env env'
                       -> LHSLiveness s t2 env' env''

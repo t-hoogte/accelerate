@@ -26,7 +26,6 @@ import Data.Function ( on )
 import Lens.Micro ((^.),  _1 )
 import Lens.Micro.Extras ( view )
 import Data.Maybe (fromJust,  mapMaybe )
-import qualified Debug.Trace
 
 
 trimIds :: S.Set Edge -> S.Set Edge

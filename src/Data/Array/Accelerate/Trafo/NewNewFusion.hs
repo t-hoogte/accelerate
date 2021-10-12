@@ -77,5 +77,5 @@ withSimplStats x = unsafePerformIO Stats.resetSimplCount `seq` x
 withSimplStats x = x
 #endif
 
-dontFuse :: op args -> Args env args -> Cluster op args
-dontFuse = unfused
+-- dontFuse :: op args -> Args env args -> Cluster op args
+-- dontFuse = unfused
