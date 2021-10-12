@@ -29,7 +29,7 @@ module Data.Array.Accelerate.AST.Schedule.Uniform (
   await, resolve,
   signalResolverImpossible, scalarSignalResolverImpossible,
   rnfBaseR,
-  directlyAwaits, reorder, trivialBinding, trivialSchedule,
+  directlyAwaits, reorder, trivialBinding, trivialSchedule, trivialEffect,
 
   -- ** Free variables
   freeVars, funFreeVars, effectFreeVars, bindingFreeVars,
@@ -358,9 +358,13 @@ trivialBinding _           = False
 -- If a schedule does not do blocking or slow operations, we say it's trivial
 -- and don't need to fork it as we do not gain much task parallelism from it.
 trivialSchedule :: UniformSchedule kernel env -> Bool
-trivialSchedule (Effect SignalResolve{} next) = trivialSchedule next
-trivialSchedule (Effect RefWrite{} next)      = trivialSchedule next
-trivialSchedule (Alet _ bnd next)             = trivialBinding bnd && trivialSchedule next
-trivialSchedule Return                        = True
-trivialSchedule (Acond _ true false next)     = trivialSchedule true && trivialSchedule false && trivialSchedule next
-trivialSchedule _                             = False
+trivialSchedule (Effect effect next)      = trivialEffect effect && trivialSchedule next
+trivialSchedule (Alet _ bnd next)         = trivialBinding bnd && trivialSchedule next
+trivialSchedule Return                    = True
+trivialSchedule (Acond _ true false next) = trivialSchedule true && trivialSchedule false && trivialSchedule next
+trivialSchedule _                         = False
+
+trivialEffect :: Effect kernel env -> Bool
+trivialEffect SignalResolve{} = True
+trivialEffect RefWrite{}      = True
+trivialEffect _               = False

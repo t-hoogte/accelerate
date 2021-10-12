@@ -380,7 +380,9 @@ substitute env = Weaken $ \idx -> case infoFor idx env of
   _                        -> idx
 
 simplifyForks :: InfoEnv env -> UniformSchedule kernel env -> ([SignalImplication env], UniformSchedule kernel env)
-simplifyForks env schedule = (signalImplications, serial $ trivial ++ [forks branches''])
+simplifyForks env schedule
+  | SplitTrivials _ trivial branches'' <- splitTrivials weakenId branches'
+  = (signalImplications, trivial $ forks branches'')
   where
     branches = collectForks schedule
     -- Signal implications are only propagated in one direction (namely from
@@ -391,7 +393,6 @@ simplifyForks env schedule = (signalImplications, serial $ trivial ++ [forks bra
     -- that will allow us to learn something from signals resolved in the
     -- binding and waited on in the body.
     ((_, signalImplications), branches') = mapAccumR simplifyBranch (env1, []) branches
-    (trivial, branches'') = partition trivialSchedule branches'
 
     simplifyBranch
       :: (InfoEnv env, [SignalImplication env])
@@ -403,6 +404,50 @@ simplifyForks env schedule = (signalImplications, serial $ trivial ++ [forks bra
         env2' = propagate implications' env2
 
     env1 = foldl' (flip findSignalReplacements) env branches
+
+data SplitTrivials kernel env where
+  SplitTrivials
+    :: env :> env'
+    -- The trivial part of the start of the schedule
+    -> (UniformSchedule kernel env' -> UniformSchedule kernel env)
+    -- The remaining parts of the schedule
+    -> [UniformSchedule kernel env']
+    -> SplitTrivials kernel env
+
+-- Splits a list of schedules in their trivial initial parts and the remainders.
+splitTrivials :: env :> env' -> [UniformSchedule kernel env] -> SplitTrivials kernel env'
+splitTrivials k (a : as)
+  | SplitTrivial  k1 trivial1 remaining1 <- splitTrivial $ weaken' k a
+  , SplitTrivials k2 trivial2 remaining2 <- splitTrivials (k1 .> k) as
+  = SplitTrivials (k2 .> k1) (trivial1 . trivial2) (weaken' k2 remaining1 : remaining2)
+splitTrivials k [] = SplitTrivials weakenId id []
+
+data SplitTrivial kernel env where
+  SplitTrivial
+    :: env :> env'
+    -- The trivial part of the start of the schedule
+    -> (UniformSchedule kernel env' -> UniformSchedule kernel env)
+    -- The remaining part of the schedule
+    -> UniformSchedule kernel env'
+    -> SplitTrivial kernel env
+
+-- Splits a schedule in its trivial initial part and the remainder.
+splitTrivial :: UniformSchedule kernel env -> SplitTrivial kernel env
+splitTrivial (Effect effect next)
+  | trivialEffect effect
+  , SplitTrivial k trivial next' <- splitTrivial next
+  = SplitTrivial k (Effect effect . trivial) next'
+splitTrivial (Alet lhs bnd next)
+  | trivialBinding bnd
+  , SplitTrivial k trivial next' <- splitTrivial next
+  = SplitTrivial (k .> weakenWithLHS lhs) (Alet lhs bnd . trivial) next'
+splitTrivial (Acond condition true false next)
+  | trivialSchedule true
+  , trivialSchedule false
+  , SplitTrivial k trivial next' <- splitTrivial next
+  = SplitTrivial k (Acond condition true false . trivial) next'
+splitTrivial schedule
+  = SplitTrivial weakenId id schedule
 
 collectForks :: UniformSchedule kernel env -> [UniformSchedule kernel env]
 collectForks = (`go` [])
