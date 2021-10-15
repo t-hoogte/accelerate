@@ -856,7 +856,7 @@ strengthenVars k (TupRpair v1 v2)        = TupRpair <$> strengthenVars k v1 <*> 
 
 partialLift :: forall kernel genv s. GroundsR s -> (forall fenv. genv :?> fenv -> Maybe (Binding fenv s)) -> [Exists (GroundVar genv)] -> (PartialSchedule kernel genv s, IdxSet genv, MaybeVars genv s)
 partialLift tp f vars
-  | DefineOutput doOutput _ varsOut <- defineOutput @() @s tp (mapTupR uniqueIfBuffer tp)
+  | DefineOutput doOutput _ varsOut <- defineOutput @() @s tp $ unique tp
   , Exists env <- convertEnvReadonlyFromList $ nubBy (\(Exists v1) (Exists v2) -> isJust $ matchVar v1 v2) vars -- TODO: Remove duplicates more efficiently
   , Reads reEnv k inputBindings <- readRefs $ convertEnvRefs env
   , DeclareVars lhs k' value <- declareVars $ mapTupR BaseRground tp
@@ -931,10 +931,6 @@ compileKernel' cluster args =
       = CompiledKernel (KernelFunLam (KernelArgRbuffer mod' tp) kernel) (SArgBuffer mod' (Var (GroundRbuffer tp) $ k1 >:> ZeroIdx) :>: sargs)
     go (PNone env) k1 kenvF
       = go env (weakenSucc k1) (\k2 kenv -> kenvF k2 $ PNone kenv)
-
-uniqueIfBuffer :: GroundR t -> Uniqueness t
-uniqueIfBuffer (GroundRbuffer _) = Unique
-uniqueIfBuffer _                 = Shared
 
 syncEnv :: PartialSchedule kernel genv t -> SyncEnv genv
 syncEnv (PartialDo _ env _)          = convertEnvToSyncEnv env
@@ -1844,8 +1840,8 @@ loopFuture _ k01 (FutureBuffer tp signal ref readLock (Just writeLock)) Nothing 
               LoopFutureBody
                 instr
                 weakenId
-                (Just future')
                 Nothing
+                (Just future')
                 (releaseRead ++ releaseWrite)
 
 -- Cases with only read permissions
@@ -2143,6 +2139,18 @@ fromPartial outputEnv outputVars env reused = \case
       -> UniformSchedule kernel fenv
     awhile = fromPartialAwhile outputEnv outputVars env reused
 
+debugFutureEnv :: FutureEnv fenv genv -> String
+debugFutureEnv (PPush env e) = debugFutureEnv env ++ " " ++ e'
+  where
+    e' = case e of
+      FutureScalar _ _ _ -> "S"
+      FutureBuffer _ _ _ _ Nothing -> "R"
+      FutureBuffer _ _ _ _ Just{}  -> "W"
+debugFutureEnv (PNone env) = debugFutureEnv env ++ " _"
+debugFutureEnv PEnd = "FutureEnv"
+
+-- TODO: How do the condition and step synchronize access between the variables from the state?
+
 fromPartialAwhile
   :: forall kernel fenv genv t r.
      HasCallStack
@@ -2241,14 +2249,14 @@ fromPartialAwhile outputEnv outputVars env reused uniquenesses conditionFun@(Pla
         -- but does not guarantee that. Hence we still need the synchronisation
         -- with the signal.
         $ serial
-          [ fromPartial
+          [ fromPartialSub
               (OutputEnvScalar scalarType)
               -- Write output to the locally defined signal resolver and
               -- reference
               (TupRsingle (Var BaseRsignalResolver $ SuccIdx $ SuccIdx ZeroIdx) `TupRpair` TupRsingle (Var (BaseRrefWrite $ GroundRscalar scalarType) ZeroIdx))
               -- Use the previously constructed environment for the condition
-              -- (envC) and weaken it as we introduced a signal and reference
-              -- (2 * 2 variables).
+              -- (envC) and weaken it as we introduced a signal (resolver) and
+              -- (writeable) reference (2 * 2 variables).
               (mapPartialEnv (weaken $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId) envC)
               (ReusedVars $ IdxSet.skip' lhsC $ reusedVarsSet reused)
               condition
@@ -2269,7 +2277,7 @@ fromPartialAwhile outputEnv outputVars env reused uniquenesses conditionFun@(Pla
             -- Branch on the condition
             $ Acond (Var scalarType ZeroIdx)
               ( -- Condition is true, perform next iteration
-                fromPartial
+                fromPartialSub
                   outputEnv'
                   -- Write to the destinations passed in the output argument
                   -- (lhsOutput).
@@ -2546,6 +2554,7 @@ awhileWriteResult = \env resVars io vars -> go env resVars io vars []
       $ Return
       where
         k = weakenSucc $ weakenId
+    go OutputEnvIgnore _ _ _ = (Return :)
     go _ _ _ _ = internalError "OutputEnv and InputOutputR don't match"
 
 partialDoSubstituteOutput :: forall fenv fenv' t r ro. PartialDoOutput () fenv t r -> OutputEnv t ro -> BaseVars fenv' ro -> Env (NewIdx fenv') fenv

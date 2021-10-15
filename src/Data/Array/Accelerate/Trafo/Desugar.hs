@@ -221,7 +221,7 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
         argTmp' = ArgArray Out (ArrayR shr tp) shOut' (valueTmp weakenId)
         argTmp  = ArgArray In  (ArrayR shr tp) shOut' (valueTmp weakenId)
       in
-        alet lhsTmp (desugarAlloc (ArrayR shr tp) $ groundToExpVar (shapeType shr) shOut)
+        aletUnique lhsTmp (desugarAlloc (ArrayR shr tp) $ groundToExpVar (shapeType shr) shOut)
           $ alet (LeftHandSideWildcard TupRunit) (mkGenerate argG argTmp')
           $ mkScan dir (weaken kTmp f) Nothing argTmp (weaken kTmp argOut)
   mkScan dir f Nothing (ArgArray _ (ArrayR shr tp) sh input) argOut
@@ -252,7 +252,7 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
         -- Awhile step function
         g = Alam lhs
               $ Abody
-              $ alet lhsAlloc (desugarAlloc (ArrayR shr tp) $ groundToExpVar (shapeType shr) $ weakenVars (weakenSucc $ weakenSucc kTmp) sh)
+              $ aletUnique lhsAlloc (desugarAlloc (ArrayR shr tp) $ groundToExpVar (shapeType shr) $ weakenVars (weakenSucc $ weakenSucc kTmp) sh)
               $ alet (LeftHandSideWildcard TupRunit) (mkGenerate (weaken kAlloc reduce) argAlloc)
               $ alet (LeftHandSideSingle $ GroundRscalar scalarTypeInt)
                 (Compute $ mkBinary (PrimAdd numType) (paramIn' $ weaken (kAlloc .> kTmp) $ Var scalarTypeInt ZeroIdx) (mkConstant (TupRsingle scalarTypeInt) 1))
@@ -297,7 +297,7 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
                   (mkBinary (PrimAdd numType) (Evar (Var scalarTypeInt ZeroIdx)) (mkConstant (TupRsingle scalarTypeInt) 0))
       in
         alet (LeftHandSideSingle $ GroundRscalar scalarTypeInt) (Compute $ mkBinary (PrimAdd numType) (paramsIn (TupRsingle scalarTypeInt) y) $ mkConstant (TupRsingle scalarTypeInt) 1)
-          $ alet lhsTmp (desugarAlloc (ArrayR shr tp) $ groundToExpVar (shapeType shr) shTmp')
+          $ aletUnique lhsTmp (desugarAlloc (ArrayR shr tp) $ groundToExpVar (shapeType shr) shTmp')
           $ alet (LeftHandSideWildcard TupRunit) (mkScan dir (weaken k f) (Just $ weaken k def) (weaken k input) argTmp')
           $ alet (LeftHandSideWildcard TupRunit) (case dir of
               LeftToRight -> mkShrink argTmp $ weaken k out1
@@ -427,7 +427,7 @@ desugarOpenAcc env = travA
             argF   = ArgFun $ desugarFun env' f
           in
             alet lhs' (travA def)
-              $ alet lhsOut (desugarAlloc (ArrayR shr' tp) (valueSh' kDef))
+              $ aletUnique lhsOut (desugarAlloc (ArrayR shr' tp) (valueSh' kDef))
               $ alet lhs    (desugarOpenAcc (weakenBEnv (kOut .> kDef .> kSh') env) src)
               $ alet (LeftHandSideWildcard TupRunit) (mkCopy argDef argOut)
               $ alet (LeftHandSideWildcard TupRunit) (mkPermute argC argMut argF argSrc)
@@ -442,7 +442,7 @@ desugarOpenAcc env = travA
             argOut = ArgArray Out (ArrayR shr tp) sh' (valueBf weakenId)
           in
             alet (mapLeftHandSide GroundRscalar lhsSh) (Compute $ travE sh)
-              $ alet lhsBf (desugarAlloc (ArrayR shr tp) (valueSh weakenId))
+              $ aletUnique lhsBf (desugarAlloc (ArrayR shr tp) (valueSh weakenId))
               $ alet (LeftHandSideWildcard TupRunit) (mkGenerate argF argOut)
               $ Return (sh' `TupRpair` valueBf weakenId)
 
@@ -463,7 +463,7 @@ desugarOpenAcc env = travA
           in
             alet (LeftHandSidePair lhsShIn lhsIn) (travA a)
               $ alet (mapLeftHandSide GroundRscalar lhsShOut) (Compute $ desugarExp (weakenBEnv (kIn .> kShIn) env) shExp)
-              $ alet lhsOut (desugarAlloc (ArrayR shrOut tpOut) (valueShOut weakenId))
+              $ aletUnique lhsOut (desugarAlloc (ArrayR shrOut tpOut) (valueShOut weakenId))
               $ alet (LeftHandSideWildcard TupRunit) (mkTransform argIdxF argValF argIn argOut)
               $ Return (shOut `TupRpair` bfOut)
       
@@ -488,7 +488,7 @@ desugarOpenAcc env = travA
             argOut = ArgArray Out (ArrayR shr tp)   sh (valueOut weakenId)
           in
             alet lhs (travA a)
-              $ alet lhsOut (desugarAlloc (ArrayR shr tp) (valueSh kIn))
+              $ aletUnique lhsOut (desugarAlloc (ArrayR shr tp) (valueSh kIn))
               $ alet (LeftHandSideWildcard TupRunit) (mkMap argF argIn argOut)
               $ Return (sh `TupRpair` valueOut weakenId)
       
@@ -508,7 +508,7 @@ desugarOpenAcc env = travA
           in
             alet (LeftHandSidePair lhsShIn lhsIn) (travA a)
               $ alet (mapLeftHandSide GroundRscalar lhsShOut) (Compute $ desugarExp (weakenBEnv (kIn .> kShIn) env) shExp)
-              $ alet lhsOut (desugarAlloc (ArrayR shrOut tp) (valueShOut weakenId))
+              $ aletUnique lhsOut (desugarAlloc (ArrayR shrOut tp) (valueShOut weakenId))
               $ alet (LeftHandSideWildcard TupRunit) (mkBackpermute argF argIn argOut)
               $ Return (shOut `TupRpair` bfOut)
 
@@ -538,8 +538,8 @@ desugarOpenAcc env = travA
             alet lhs1 (travA a1)
               $ alet lhs2 (desugarOpenAcc (weakenBEnv (kIn1 .> kSh1) env) a2)
               $ alet (mapLeftHandSide GroundRscalar lhsSh) (Compute $ mkIntersect shr (valueSh1 $ kIn2 .> kSh2 .> kIn1) (valueSh2 kIn2))
-              $ alet lhsOut1 (desugarAlloc (ArrayR shr t1) (valueSh weakenId))
-              $ alet lhsOut2 (desugarAlloc (ArrayR shr t2) (valueSh kOut1))
+              $ aletUnique lhsOut1 (desugarAlloc (ArrayR shr t1) (valueSh weakenId))
+              $ aletUnique lhsOut2 (desugarAlloc (ArrayR shr t2) (valueSh kOut1))
               $ alet (LeftHandSideWildcard TupRunit) (mkShrink argIn1 argOut1)
               $ alet (LeftHandSideWildcard TupRunit) (mkShrink argIn2 argOut2)
               $ Return (sh `TupRpair` desugarUnzip (valueOut1 kOut2 `TupRpair` valueOut2 weakenId) (LeftHandSidePair elhs1 elhs2) vars)
@@ -567,7 +567,7 @@ desugarOpenAcc env = travA
             alet lhs1 (travA a1)
               $ alet lhs2 (desugarOpenAcc (weakenBEnv (kIn1 .> kSh1) env) a2)
               $ alet (mapLeftHandSide GroundRscalar lhsSh) (Compute $ mkIntersect shr (valueSh1 $ kIn2 .> kSh2 .> kIn1) (valueSh2 kIn2))
-              $ alet lhsOut (desugarAlloc (ArrayR shr tp) (valueSh weakenId))
+              $ aletUnique lhsOut (desugarAlloc (ArrayR shr tp) (valueSh weakenId))
               $ alet (LeftHandSideWildcard TupRunit) (mkZipWith argF argIn1 argIn2 argOut)
               $ Return (sh `TupRpair` valueOut weakenId)
             
@@ -591,7 +591,7 @@ desugarOpenAcc env = travA
             alet lhs (travA a)
               $ alet (mapLeftHandSide GroundRscalar lhsSlix) (Compute slix')
               $ alet (mapLeftHandSide GroundRscalar lhsSl)   (Compute $ IndexSlice sliceIx (paramsIn' $ valueSlix weakenId) (paramsIn' $ valueSh $ kSlix .> kIn))
-              $ alet lhsOut (desugarAlloc (ArrayR slr tp) (valueSl weakenId))
+              $ aletUnique lhsOut (desugarAlloc (ArrayR slr tp) (valueSl weakenId))
               $ alet (LeftHandSideWildcard TupRunit) (mkSlice sliceIx argSlix argIn argOut)
               $ Return (sl `TupRpair` valueOut weakenId)
 
@@ -615,7 +615,7 @@ desugarOpenAcc env = travA
             alet lhs (travA a)
               $ alet (mapLeftHandSide GroundRscalar lhsSlix) (Compute slix')
               $ alet (mapLeftHandSide GroundRscalar lhsSh)   (Compute $ IndexFull sliceIx (paramsIn' $ valueSlix weakenId) (paramsIn' $ valueSl $ kSlix .> kIn))
-              $ alet lhsOut (desugarAlloc (ArrayR shr tp) (valueSh weakenId))
+              $ aletUnique lhsOut (desugarAlloc (ArrayR shr tp) (valueSh weakenId))
               $ alet (LeftHandSideWildcard TupRunit) (mkReplicate sliceIx argSlix argIn argOut)
               $ Return (sh `TupRpair` valueOut weakenId)
 
@@ -639,7 +639,7 @@ desugarOpenAcc env = travA
             argOut = ArgArray Out (ArrayR shr tp) shOut (valueOut weakenId)
           in
             alet (LeftHandSidePair (mapLeftHandSide GroundRscalar lhsSh) lhsIn) (travA a)
-              $ alet lhsOut (desugarAlloc (ArrayR shr tp) shOut')
+              $ aletUnique lhsOut (desugarAlloc (ArrayR shr tp) shOut')
               $ alet (LeftHandSideWildcard TupRunit) (mkFold argF argDef argIn argOut)
               $ Return (shOut `TupRpair` valueOut weakenId)
 
@@ -670,7 +670,7 @@ desugarOpenAcc env = travA
             argSeg = ArgArray In  (ArrayR dim1 $ TupRsingle itp) (TupRpair TupRunit $ TupRsingle $ Var (GroundRscalar scalarTypeInt) $ SuccIdx ZeroIdx) (TupRsingle $ Var (GroundRbuffer itp) ZeroIdx)
           in
             alet (LeftHandSidePair (mapLeftHandSide GroundRscalar lhsSh) lhsIn) (travA a)
-              $ alet lhsOut (desugarAlloc (ArrayR shr tp) sh')
+              $ aletUnique lhsOut (desugarAlloc (ArrayR shr tp) sh')
               $ alet lhsSeg (desugarOpenAcc (weakenBEnv (kOut .> kIn .> kSh) env) segments)
               $ alet (LeftHandSideWildcard TupRunit) (mkFoldSeg i argF argDef argIn argSeg argOut)
               $ Return (sh `TupRpair` valueOut kSeg)
@@ -689,7 +689,7 @@ desugarOpenAcc env = travA
             argOut = ArgArray Out (ArrayR shr tp) sh (valueOut weakenId)
           in
             alet (LeftHandSidePair (mapLeftHandSide GroundRscalar lhsSh) lhsIn) (travA a)
-              $ alet lhsOut (desugarAlloc (ArrayR shr tp) $ valueSh kIn)
+              $ aletUnique lhsOut (desugarAlloc (ArrayR shr tp) $ valueSh kIn)
               $ alet (LeftHandSideWildcard TupRunit) (mkScan dir argF Nothing argIn argOut)
               $ Return (sh `TupRpair` valueOut weakenId)
 
@@ -721,7 +721,7 @@ desugarOpenAcc env = travA
           in
             alet (LeftHandSidePair (mapLeftHandSide GroundRscalar lhsShIn) lhsIn) (travA a)
               $ alet (mapLeftHandSide GroundRscalar lhsShOut) (Compute $ mkBinary (PrimAdd numType) (ArrayInstr (Parameter shIn1) Nil) (mkConstant (TupRsingle scalarTypeInt) 1))
-              $ alet lhsOut (desugarAlloc (ArrayR shr tp) $ shOut')
+              $ aletUnique lhsOut (desugarAlloc (ArrayR shr tp) $ shOut')
               $ alet (LeftHandSideWildcard TupRunit) (mkScan dir argF argDef argIn argOut)
               $ Return (shOut `TupRpair` valueOut weakenId)
 
@@ -753,8 +753,8 @@ desugarOpenAcc env = travA
             argOut2 = ArgArray Out (ArrayR shr tp) shOut2 (valueOut2 weakenId)
           in
             alet (LeftHandSidePair (mapLeftHandSide GroundRscalar lhsSh) lhsIn) (travA a)
-              $ alet lhsOut1 (desugarAlloc (ArrayR (ShapeRsnoc shr) tp) $ shOut1')
-              $ alet lhsOut2 (desugarAlloc (ArrayR shr tp) $ shOut2')
+              $ aletUnique lhsOut1 (desugarAlloc (ArrayR (ShapeRsnoc shr) tp) $ shOut1')
+              $ aletUnique lhsOut2 (desugarAlloc (ArrayR shr tp) $ shOut2')
               $ alet (LeftHandSideWildcard TupRunit) (mkScan' dir argF argDef argIn argOut1 argOut2)
               $ Return (TupRpair sh (valueOut1 kOut2) `TupRpair` TupRpair shOut2 (valueOut2 weakenId))
 
@@ -774,7 +774,7 @@ desugarOpenAcc env = travA
             boundary' = desugarBoundary env' boundary
           in
             alet lhs (travA a)
-              $ alet lhsOut (desugarAlloc (ArrayR shr tp) (valueSh kIn))
+              $ aletUnique lhsOut (desugarAlloc (ArrayR shr tp) (valueSh kIn))
               $ alet (LeftHandSideWildcard TupRunit) (mkStencil sr argF boundary' argIn argOut)
               $ Return (sh `TupRpair` valueOut weakenId)
 
@@ -805,7 +805,7 @@ desugarOpenAcc env = travA
             alet lhs1 (travA a1)
               $ alet lhs2 (desugarOpenAcc (weakenBEnv (kIn1 .> kSh1) env) a2)
               $ alet (mapLeftHandSide GroundRscalar lhsSh) (Compute $ mkIntersect shr (valueSh1 $ kIn2 .> kSh2 .> kIn1) (valueSh2 kIn2))
-              $ alet lhsOut (desugarAlloc (ArrayR shr tp3) (valueSh weakenId))
+              $ aletUnique lhsOut (desugarAlloc (ArrayR shr tp3) (valueSh weakenId))
               $ alet (LeftHandSideWildcard TupRunit) (mkStencil2 sr1 sr2 argF b1' argIn1 b2' argIn2 argOut)
               $ Return (sh `TupRpair` valueOut weakenId)
 
@@ -1157,7 +1157,7 @@ mkDefaultFoldStep1 (ArgFun f) def argIn@(ArgArray _ (ArrayR shr tp) (sh `TupRpai
       argTmp  = ArgArray Out (ArrayR shr tp) shTmp tmp
     in
       alet lhsN1 (Compute $ mkBinary (PrimBShiftL integralType) (mkConstant (TupRsingle scalarTypeInt) 1) $ mkLog2 nMinus1)
-        $ alet lhsTmp (mkDefaultFoldAllocOrOutput (weaken kN1 argOut) $ groundToExpVar (shapeType shr) shTmp')
+        $ aletUnique lhsTmp (mkDefaultFoldAllocOrOutput (weaken kN1 argOut) $ groundToExpVar (shapeType shr) shTmp')
         $ alet (LeftHandSideWildcard TupRunit) (mkGenerate argG argTmp)
         $ Return (shTmp `TupRpair` tmp)
 
@@ -1217,7 +1217,7 @@ mkDefaultFoldStep2 (ArgFun f) argIn@(ArgArray _ (ArrayR shr@(ShapeRsnoc shr') tp
       argTmp  = ArgArray Out (ArrayR shr tp) shTmp temp
     in
       alet lhsSh (Compute $ mkBinary (PrimRem integralType) (paramsIn (TupRsingle scalarTypeInt) n) (Const scalarTypeInt 2))
-        $ alet lhsTmp (mkDefaultFoldAllocOrOutput (weaken kSh argOut) $ groundToExpVar (shapeType shr) shTmp')
+        $ aletUnique lhsTmp (mkDefaultFoldAllocOrOutput (weaken kSh argOut) $ groundToExpVar (shapeType shr) shTmp')
         $ alet (LeftHandSideWildcard TupRunit) (mkGenerate argG argTmp)
         $ Return (shTmp `TupRpair` temp)
 

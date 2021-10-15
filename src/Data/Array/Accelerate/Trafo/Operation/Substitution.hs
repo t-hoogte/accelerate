@@ -29,7 +29,7 @@ module Data.Array.Accelerate.Trafo.Operation.Substitution (
   Sink(..), Sink'(..),
   reindexPartial,
   reindexPartialAfun,
-  pair, alet,
+  pair, alet, aletUnique, alet',
   weakenArrayInstr,
   strengthenArrayInstr,
 
@@ -142,15 +142,21 @@ pair a b = goA weakenId a
                                = Alet lhs (shared $ groundsR b) acc $ Return (TupRpair (weakenVars k varsA) (value weakenId))
 
 alet :: GLeftHandSide t env env' -> PreOpenAcc op env t -> PreOpenAcc op env' s -> PreOpenAcc op env s
-alet lhs1 (Alet lhs2 uniqueness a1 a2) a3
-  | Exists lhs1' <- rebuildLHS lhs1 = Alet lhs2 uniqueness a1 $ alet lhs1' a2 $ weaken (sinkWithLHS lhs1 lhs1' $ weakenWithLHS lhs2) a3
-alet     (LeftHandSideWildcard TupRunit) (Return TupRunit) a = a
-alet     (LeftHandSideWildcard TupRunit) (Compute Nil) a = a
-alet lhs@(LeftHandSideWildcard TupRunit) bnd a = Alet lhs TupRunit bnd a
-alet lhs  (Return vars)     a    = weaken (substituteLHS lhs vars) a
-alet lhs  (Compute e)       a
+alet lhs = alet' lhs $ shared $ lhsToTupR lhs
+
+aletUnique :: GLeftHandSide t env env' -> PreOpenAcc op env t -> PreOpenAcc op env' s -> PreOpenAcc op env s
+aletUnique lhs = alet' lhs $ unique $ lhsToTupR lhs
+
+alet' :: GLeftHandSide t env env' -> Uniquenesses t -> PreOpenAcc op env t -> PreOpenAcc op env' s -> PreOpenAcc op env s
+alet' lhs1 us (Alet lhs2 uniqueness a1 a2) a3
+  | Exists lhs1' <- rebuildLHS lhs1 = Alet lhs2 uniqueness a1 $ alet' lhs1' us a2 $ weaken (sinkWithLHS lhs1 lhs1' $ weakenWithLHS lhs2) a3
+alet' (LeftHandSideWildcard TupRunit) _ (Return TupRunit) a = a
+alet' (LeftHandSideWildcard TupRunit) _ (Compute Nil) a = a
+alet' lhs@(LeftHandSideWildcard TupRunit) _ bnd a = Alet lhs TupRunit bnd a
+alet' lhs _ (Return vars)      a = weaken (substituteLHS lhs vars) a
+alet' lhs _ (Compute e)        a
   | Just vars <- extractParams e = weaken (substituteLHS lhs vars) a
-alet lhs  bnd               a    = Alet lhs (shared $ lhsToTupR lhs) bnd a
+alet' lhs us bnd               a = Alet lhs us bnd a
 
 extractParams :: OpenExp env benv t -> Maybe (ExpVars benv t)
 extractParams Nil                          = Just TupRunit

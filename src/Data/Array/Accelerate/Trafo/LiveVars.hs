@@ -1,5 +1,6 @@
 {-# LANGUAGE GADTs                #-}
 {-# LANGUAGE LambdaCase           #-}
+{-# LANGUAGE MultiWayIf           #-}
 {-# LANGUAGE RankNTypes           #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
 {-# LANGUAGE TypeOperators        #-}
@@ -22,23 +23,29 @@ module Data.Array.Accelerate.Trafo.LiveVars
   , Liveness(..), dead, LivenessEnv, emptyLivenessEnv
   , setLive, setIndicesLive, setVarsLive, setLivenessImplies, setLivenessImplications, isLive
   , strengthenLiveness, dropLivenessEnv, pushLivenessEnv
-  , bind, BindLiveness(..)
-  , LVAnalysis(..), LVAnalysis'(..)
+  , bind, BindLiveness(..), bindSub, BindLivenessSub(..)
+  , ReturnImplication(..), ReturnImplications, noReturnImplications, strengthenReturnImplications
+  , joinReturnImplications, joinReturnImplication
+  , SubTupR(..), subTupR, subTupUnit, DeclareSubVars(..), declareSubVars
+  , LVAnalysis(..), LVAnalysisFun(..), LVAnalysis'(..), allDead, expectJust
   ) where
 
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.IdxSet ( IdxSet(..) )
-import Data.Array.Accelerate.AST.Var
 import qualified Data.Array.Accelerate.AST.IdxSet as IdxSet
+import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.Representation.Type
+import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Data.Array.Accelerate.Trafo.Substitution
 import Data.Array.Accelerate.Trafo.WeakenedEnvironment
+import Data.Array.Accelerate.Error
 
 import Data.List (foldl')
 import Data.Maybe
+import Data.Type.Equality
 
 data ReEnv env subenv where
   ReEnvEnd  :: ReEnv () ()
@@ -122,14 +129,19 @@ isLive (LivenessEnv env) idx
   | otherwise            = False
 
 strengthenLiveness :: forall env' env t. LivenessEnv env' -> env' :?> env -> Liveness env' t -> Liveness env t
-strengthenLiveness (LivenessEnv env) k (Unknown implies) = Unknown $ implies IdxSet.>>= go
+strengthenLiveness env k (Unknown implies) = Unknown implies'
+  where
+    ReturnImplication implies' = strengthenReturnImplications env k $ ReturnImplication implies
+strengthenLiveness _   _ Live = Live
+
+strengthenReturnImplications :: forall env' env t. LivenessEnv env' -> env' :?> env -> ReturnImplication env' t -> ReturnImplication env t
+strengthenReturnImplications (LivenessEnv env) k (ReturnImplication implies) = ReturnImplication $ implies IdxSet.>>= go
   where
     go :: Idx env' s -> IdxSet env
     go idx
       | Just idx' <- k idx = IdxSet.singleton idx'
       | Unknown implies' <- prj' idx env = implies' IdxSet.>>= go
       | otherwise = IdxSet.empty
-strengthenLiveness _   _ Live              = Live
 
 dropLivenessEnv :: forall s t env env'. LeftHandSide s t env env' -> LivenessEnv env' -> LivenessEnv env
 dropLivenessEnv lhs lenv@(LivenessEnv env) = LivenessEnv $ mapEnv (strengthenLiveness lenv k) $ go lhs env
@@ -142,16 +154,18 @@ dropLivenessEnv lhs lenv@(LivenessEnv env) = LivenessEnv $ mapEnv (strengthenLiv
     go (LeftHandSideWildcard _) e          = e
     go (LeftHandSidePair l1 l2) e          = go l1 $ go l2 e
 
-pushLivenessEnv :: forall s t env env'. LeftHandSide s t env env' -> LivenessEnv env -> LivenessEnv env'
-pushLivenessEnv lhs (LivenessEnv env) = LivenessEnv $ go lhs $ mapEnv (weaken k) env
+pushLivenessEnv :: forall s t env env'. LeftHandSide s t env env' -> ReturnImplications env t -> LivenessEnv env -> LivenessEnv env'
+pushLivenessEnv lhs bodyImplications (LivenessEnv env) = LivenessEnv $ go lhs bodyImplications $ mapEnv (weaken k) env
   where
     k :: env :> env'
     k = weakenWithLHS lhs
 
-    go :: LeftHandSide s t' env1 env2 -> Env (Liveness env') env1 -> Env (Liveness env') env2
-    go (LeftHandSideSingle _) e = Push e dead
-    go (LeftHandSideWildcard _) e = e
-    go (LeftHandSidePair l1 l2) e = go l2 $ go l1 e
+    go :: LeftHandSide s t' env1 env2 -> ReturnImplications env t' -> Env (Liveness env') env1 -> Env (Liveness env') env2
+    go (LeftHandSideSingle _)   (TupRsingle (ReturnImplication set)) e = Push e $ Unknown $ IdxSet.skip' lhs set
+    go (LeftHandSideWildcard _) _                                    e = e
+    go (LeftHandSidePair l1 l2) (TupRpair i1 i2)                     e = go l2 i2 $ go l1 i1 e
+    go (LeftHandSidePair l1 l2) (TupRsingle (ReturnImplication set)) e = go l2 (TupRsingle $ ReturnImplication set) $ go l1 (TupRsingle $ ReturnImplication set) e
+    go _                        _                                    _ = internalError "Tuple mismatch"
 
 -- Similar to LeftHandSide, but LeftHandSideSingle is annotated with a boolean
 -- denoting whether the variable is live.
@@ -225,21 +239,120 @@ data BindLiveness s t env' subenv where
     -> ReEnv env' subenv'
     -> BindLiveness s t env' subenv
 
+bindSub :: LeftHandSide s t env env' -> ReEnv env subenv -> LivenessEnv env' -> BindLivenessSub s t env' subenv
+bindSub lhs re (LivenessEnv env) = go lhs2 re
+  where
+    (env', lhs1) = envToLHSLiveness env lhs
+    lhs2 = propagateLiveness env' re lhs1
+
+    go :: LHSLiveness s t env1 env2 -> ReEnv env1 subenv1 -> BindLivenessSub s t env2 subenv1
+    go (LHSLivenessWildcard tp)     re' = BindLivenessSub SubTupRskip (LeftHandSideWildcard tp) (LeftHandSideWildcard TupRunit) re'
+    go (LHSLivenessSingle True  tp) re' = BindLivenessSub SubTupRkeep (LeftHandSideSingle tp) (LeftHandSideSingle tp) (ReEnvKeep re')
+    go (LHSLivenessSingle False tp) re' = BindLivenessSub SubTupRskip (LeftHandSideWildcard $ TupRsingle tp) (LeftHandSideWildcard TupRunit) (ReEnvSkip re')
+    go (LHSLivenessPair l1 l2)      re'
+      | BindLivenessSub subTup1 l1' l1'' re''  <- go l1 re'
+      , BindLivenessSub subTup2 l2' l2'' re''' <- go l2 re''
+      = if
+          | LeftHandSideWildcard _ <- l1''
+          , LeftHandSideWildcard _ <- l2''
+          -> BindLivenessSub SubTupRskip (leftHandSidePair l1' l2') (LeftHandSideWildcard TupRunit) re'''
+
+          | SubTupRkeep <- subTup1
+          , SubTupRkeep <- subTup2
+          -> BindLivenessSub SubTupRkeep (leftHandSidePair l1' l2') (LeftHandSidePair l1'' l2'') re'''
+
+          | otherwise
+          -> BindLivenessSub (SubTupRpair subTup1 subTup2) (leftHandSidePair l1' l2') (LeftHandSidePair l1'' l2'') re'''
+
+-- Captures the existentionals subenv' and t'
+data BindLivenessSub s t env' subenv where
+  BindLivenessSub
+    :: SubTupR t t'
+    -> LeftHandSide s t  subenv subenv'
+    -> LeftHandSide s t' subenv subenv'
+    -> ReEnv env' subenv'
+    -> BindLivenessSub s t env' subenv
+
+data DeclareSubVars s t t' env where
+  DeclareSubVars :: LeftHandSide s t env env'
+                 -> (env :> env')
+                 -> (forall env''. env' :> env'' -> Vars s env'' t')
+                 -> DeclareSubVars s t t' env
+
+declareSubVars :: TupR s t -> SubTupR t t' -> DeclareSubVars s t t' env
+declareSubVars tp SubTupRkeep
+  | DeclareVars lhs k vars <- declareVars tp = DeclareSubVars lhs k vars
+declareSubVars tp SubTupRskip
+  = DeclareSubVars (LeftHandSideWildcard tp) weakenId (const TupRunit)
+declareSubVars (TupRpair t1 t2) (SubTupRpair s1 s2)
+  | DeclareSubVars lhs1 subst1 a1 <- declareSubVars t1 s1
+  , DeclareSubVars lhs2 subst2 a2 <- declareSubVars t2 s2
+  = DeclareSubVars (LeftHandSidePair lhs1 lhs2) (subst2 .> subst1) $ \k -> a1 (k .> subst2) `TupRpair` a2 k
+declareSubVars _ _ = internalError "Tuple mismatch"
+
 -- For an IR parameterized over the result type, implement a function of this
 -- type:
 --
--- stronglyLiveVariables :: LivenessEnv env -> SomeAcc env t -> LVAnalysis ir env t
+-- stronglyLiveVariables :: LivenessEnv env -> SomeAcc env t -> LVAnalysis SomeAcc env t
+--
+-- If the IR does have a result type, but we cannot change that type, then use:
+--
+-- stronglyLiveVariables :: LivenessEnv env -> SomeAcc env t -> LVAnalysisFun SomeAcc env t
 --
 -- For an IR which is not parameterized over the result type, but only over the
 -- environment, implement a function of this type:
 --
--- stronglyLiveVariables :: LivenessEnv env -> SomeAcc env -> LVAnalysis' ir env
+-- stronglyLiveVariables :: LivenessEnv env -> SomeAcc env -> LVAnalysis' SomeAcc env
+
+-- If this part of the returned value is returned, then this set of variables is live
+newtype ReturnImplication env t = ReturnImplication (IdxSet env)
+type ReturnImplications env = TupR (ReturnImplication env)
+
+noReturnImplications :: ReturnImplications env t
+noReturnImplications = TupRsingle $ ReturnImplication IdxSet.empty
+
+joinReturnImplication :: ReturnImplication env t -> ReturnImplication env t -> ReturnImplication env t
+joinReturnImplication (ReturnImplication a) (ReturnImplication b) = ReturnImplication $ IdxSet.union a b
+
+joinReturnImplications :: ReturnImplications env t -> ReturnImplications env t -> ReturnImplications env t
+joinReturnImplications (TupRsingle (ReturnImplication left))   right = mapTupR (joinReturnImplication $ ReturnImplication left) right
+joinReturnImplications left   (TupRsingle (ReturnImplication right)) = mapTupR (joinReturnImplication $ ReturnImplication right) left
+joinReturnImplications (TupRpair l1 l2)       (TupRpair r1 r2)       = joinReturnImplications l1 r1 `TupRpair` joinReturnImplications l2 r2
+joinReturnImplications TupRunit               TupRunit               = TupRunit
+
+data SubTupR t t' where
+  SubTupRskip :: SubTupR t ()
+
+  SubTupRkeep :: SubTupR t t
+
+  SubTupRpair :: SubTupR t1 t1'
+              -> SubTupR t2 t2'
+              -> SubTupR (t1, t2) (t1', t2')
+
+subTupR :: SubTupR t t' -> TupR s t -> TupR s t'
+subTupR SubTupRskip         _                = TupRunit
+subTupR SubTupRkeep         t                = t
+subTupR (SubTupRpair s1 s2) (TupRpair t1 t2) = subTupR s1 t1 `TupRpair` subTupR s2 t2
+subTupR _                   _                = internalError "Tuple mismatch"
+
+subTupUnit :: SubTupR () t' -> t' :~: ()
+subTupUnit SubTupRskip = Refl
+subTupUnit SubTupRkeep = Refl
 
 data LVAnalysis ir env t where
   LVAnalysis
     :: LivenessEnv env
-    -> (forall subenv. ReEnv env subenv -> ir subenv t)
+    -> ReturnImplications env t
+    -- Depending on the binding, it may or may not be possible to restrict the
+    -- term to only the used parts of the tuple.
+    -> (forall subenv t'. ReEnv env subenv -> SubTupR t t' -> Either (ir subenv t) (ir subenv t'))
     -> LVAnalysis ir env t
+
+data LVAnalysisFun ir env t where
+  LVAnalysisFun
+    :: LivenessEnv env
+    -> (forall subenv. ReEnv env subenv -> ir subenv t)
+    -> LVAnalysisFun ir env t
 
 data LVAnalysis' ir env where
   LVAnalysis'
@@ -247,3 +360,9 @@ data LVAnalysis' ir env where
     -> (forall subenv. ReEnv env subenv -> ir subenv)
     -> LVAnalysis' ir env
 
+allDead :: ReEnv env subenv -> IdxSet env -> Bool
+allDead re set = all (\(Exists idx) -> isNothing $ reEnvIdx re idx) $ IdxSet.toList set
+
+expectJust :: HasCallStack => Maybe a -> a
+expectJust (Just a) = a
+expectJust Nothing  = internalError "Substitution in live variable analysis failed. A variable which was assumed to be dead appeared to be live."
