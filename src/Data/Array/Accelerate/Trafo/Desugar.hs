@@ -570,7 +570,6 @@ desugarOpenAcc env = travA
               $ alet lhsOut (desugarAlloc (ArrayR shr tp) (valueSh weakenId))
               $ alet (LeftHandSideWildcard TupRunit) (mkZipWith argF argIn1 argIn2 argOut)
               $ Return (sh `TupRpair` valueOut weakenId)
-            
       Named.Slice sliceIx a slix
         | ArrayR shr tp <- Named.arrayR a
         , slr <- sliceShapeR sliceIx

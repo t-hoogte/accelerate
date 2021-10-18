@@ -27,7 +27,9 @@ import Lens.Micro ((^.),  _1 )
 import Lens.Micro.Extras ( view )
 import Data.Maybe (fromJust,  mapMaybe )
 
-
+-- Any edge of this form will either be trivial (if fusible) or impossible (if infusible). 
+-- They originate from the smart constructor -?>, which is not quite smart enough: It should really perform this check,
+-- but then it returns a Maybe Edge, which requires refactoring.. So we simply filter all of those out in this step instead.
 trimIds :: S.Set Edge -> S.Set Edge
 trimIds = S.filter (\(x:->y) -> x /= y)
 
@@ -100,7 +102,7 @@ interpretSolution =
       , M.fromList $ 
             map
             (\l -> 
-              ( fromJust 
+              ( fromJust -- All labels in the Map will have a parent, only the top clusters can have Nothing as parent (depending on whether we have an Acc or an Afun)
               . view parent 
               . S.findMin -- `head` and `findMin` just to get _any_ element:
               . head      -- there is at least one and the parents are all identical

@@ -44,14 +44,14 @@ dotp a b = fold (+) 0 $ zipWith (*) (map (+1) a) (map (`div` 2) b)
 twoMaps :: Acc (Vector Int) -> Acc (Vector Int)
 twoMaps = map (+1) . map (*2)-- . use $ fromList (Z :. 10) [1..]
 
--- data Foo = Foo Int Int
---   deriving (Generic, Elt)
--- mkPattern ''Foo
+data Foo = Foo Int Int
+  deriving (Generic, Elt)
+mkPattern ''Foo
 
--- mapGen :: Acc (Vector Foo) -> Acc (Matrix Int)
--- mapGen acc = map (match $ \(Foo_ x y) -> x * y) $ generate (I2 size size) (\(I2 i j) -> acc ! I1 (max i j))
---   where
---     I1 size = shape acc
+mapGen :: Acc (Vector Foo) -> Acc (Matrix Int)
+mapGen acc = map (match $ \(Foo_ x y) -> x * y) $ generate (I2 size size) (\(I2 i j) -> acc ! I1 (max i j))
+  where
+    I1 size = shape acc
 
 awhile' :: Acc (Vector Int) -> Acc (Vector Int)
 awhile' = awhile (\x -> unit ((x ! I1 0) == 0)) P.id
@@ -62,5 +62,5 @@ iffy acc = if size acc == 1 then twoMaps acc else reshape (Z_ ::. 1) (unit 1)
 foo (a :: Acc (Vector Int)) = map (*2) $ if (a ! I1 0) == 2 then map (+1) a else a
 
 main :: P.IO ()
-main = P.putStrLn (test @UniformScheduleFun @InterpretKernel dotp)
+main = P.putStrLn (test @UniformScheduleFun @InterpretKernel mapGen)
 
