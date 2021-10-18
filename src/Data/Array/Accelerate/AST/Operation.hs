@@ -24,7 +24,7 @@
 module Data.Array.Accelerate.AST.Operation (
   PreOpenAcc(..), PreOpenAfun(..),
   OperationAcc, OperationAfun,
-  Uniqueness(..), Uniquenesses, shared,
+  Uniqueness(..), Uniquenesses, shared, unique,
 
   GroundR(..), GroundsR, GroundVar, GroundVars, GLeftHandSide, Var(..), Vars,
   HasGroundsR(..), groundToExpVar,
@@ -204,6 +204,13 @@ type Uniquenesses = TupR Uniqueness
 
 shared :: TupR s t -> Uniquenesses t
 shared = mapTupR (const Shared)
+
+unique :: GroundsR t -> Uniquenesses t
+unique = mapTupR f
+  where
+    f :: GroundR s -> Uniqueness s
+    f (GroundRbuffer _) = Unique
+    f _                 = Shared
 
 -- | The arguments to be passed to an operation of type `t`.
 -- This type is represented as a cons list, separated by (->) and ending

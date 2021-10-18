@@ -464,6 +464,7 @@ library
         Data.Array.Accelerate.Trafo.Exp.Simplify
         Data.Array.Accelerate.Trafo.LetSplit
         Data.Array.Accelerate.Trafo.Operation.Substitution
+        Data.Array.Accelerate.Trafo.Operation.LiveVars
         Data.Array.Accelerate.Trafo.Shrink
         Data.Array.Accelerate.Trafo.Var
         Data.Atomic

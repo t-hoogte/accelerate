@@ -41,6 +41,7 @@ import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Ground
 import Data.Array.Accelerate.Trafo
 import Data.Array.Accelerate.Trafo.Config
+import qualified Data.Array.Accelerate.Trafo.Operation.LiveVars as Operation
 
 import Data.Array.Accelerate.Trafo.Sharing (Afunction(..), AfunctionRepr(..), afunctionGroundR, afunctionRepr)
 import qualified Data.Array.Accelerate.Trafo.Desugar as Desugar
@@ -51,6 +52,7 @@ import Data.Type.Equality
 
 class
   ( Desugar.DesugarAcc (Operation backend)
+  , Operation.SLVOperation (Operation backend)
   , Partitioning.MakesILP (Operation backend)
   , IsSchedule (Schedule backend)
   , IsKernel (Kernel backend)

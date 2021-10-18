@@ -48,6 +48,7 @@ import Data.Array.Accelerate.AST.Schedule
 import qualified Data.Array.Accelerate.Trafo.LetSplit     as LetSplit
 import qualified Data.Array.Accelerate.Trafo.Exp.Simplify as Rewrite
 import qualified Data.Array.Accelerate.Trafo.Sharing      as Sharing
+import qualified Data.Array.Accelerate.Trafo.Operation.LiveVars as Operation
 -- import qualified Data.Array.Accelerate.Trafo.Vectorise    as Vectorise
 
 import Control.DeepSeq
@@ -68,7 +69,7 @@ import Data.Array.Accelerate.Debug.Internal.Timed
 #endif
 
 test
-  :: forall sched kernel f. (Afunction f, DesugarAcc (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), Pretty.PrettyKernel kernel, IsSchedule sched, IsKernel kernel, Pretty.PrettySchedule sched)
+  :: forall sched kernel f. (Afunction f, DesugarAcc (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), Pretty.PrettyKernel kernel, IsSchedule sched, IsKernel kernel, Pretty.PrettySchedule sched)
   => f
   -> String
 test f
@@ -79,7 +80,9 @@ test f
   ++ "\n\nSchedule:\n"
   ++ Pretty.renderForTerminal (Pretty.prettySchedule schedule)
   where
-    operation = desugarAfun @(KernelOperation kernel)
+    operation
+      = Operation.stronglyLiveVariablesFun
+      $ desugarAfun @(KernelOperation kernel)
       $ LetSplit.convertAfun 
       $ Sharing.convertAfunWith defaultOptions f
 
@@ -95,21 +98,22 @@ test f
 --
 convertAcc
   :: forall sched kernel arrs.
-     (DesugarAcc (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
+     (DesugarAcc (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
   => Acc arrs
   -> sched kernel () (ScheduleOutput sched (DesugaredArrays (ArraysR arrs)) -> ())
 convertAcc = convertAccWith defaultOptions
 
 convertAccWith
   :: forall sched kernel arrs.
-     (DesugarAcc (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
+     (DesugarAcc (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
   => Config
   -> Acc arrs
   -> sched kernel () (ScheduleOutput sched (DesugaredArrays (ArraysR arrs)) -> ())
 convertAccWith config
   = phase' "codegen"     rnfSchedule convertSchedule
   . phase  "array-fusion"           (NewNewFusion.convertAccWith config)
-  . phase  "desugar"                 desugar
+  . phase  "operation-live-vars"    Operation.stronglyLiveVariables
+  . phase  "desugar"                desugar
   . phase  "array-split-lets"       LetSplit.convertAcc
   -- phase "vectorise-sequences"    Vectorise.vectoriseSeqAcc `when` vectoriseSequences
   . phase  "sharing-recovery"       (Sharing.convertAccWith config)
@@ -120,20 +124,21 @@ convertAccWith config
 --
 convertAfun
   :: forall sched kernel f.
-     (Afunction f, DesugarAcc (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
+     (Afunction f, DesugarAcc (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
   => f
   -> sched kernel () (Scheduled sched (DesugaredAfun (ArraysFunctionR f)))
 convertAfun = convertAfunWith defaultOptions
 
 convertAfunWith
   :: forall sched kernel f.
-     (Afunction f, DesugarAcc (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
+     (Afunction f, DesugarAcc (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel)
   => Config
   -> f
   -> sched kernel () (Scheduled sched (DesugaredAfun (ArraysFunctionR f)))
 convertAfunWith config
   = phase' "codegen"     rnfSchedule convertScheduleFun
   . phase  "array-fusion"           (NewNewFusion.convertAfunWith config)
+  . phase  "operation-live-vars"    Operation.stronglyLiveVariablesFun
   . phase  "desugar"                desugarAfun
   . phase  "array-split-lets"       LetSplit.convertAfun
   -- phase "vectorise-sequences"    Vectorise.vectoriseSeqAfun  `when` vectoriseSequences

@@ -41,26 +41,27 @@ import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Data.Array.Accelerate.Trafo.LiveVars
 import Data.Array.Accelerate.Trafo.Substitution
+import Data.Array.Accelerate.Trafo.Operation.LiveVars (reEnvArrayInstr)
 
 import Data.Maybe
 
 stronglyLiveVariablesFun :: UniformScheduleFun kernel () t -> UniformScheduleFun kernel () t
 stronglyLiveVariablesFun schedule = schedule' ReEnvEnd
   where
-    LVAnalysis _ schedule' = stronglyLiveVariablesFun' emptyLivenessEnv schedule
+    LVAnalysisFun _ schedule' = stronglyLiveVariablesFun' emptyLivenessEnv schedule
 
-stronglyLiveVariablesFun' :: LivenessEnv env -> UniformScheduleFun kernel env t -> LVAnalysis (UniformScheduleFun kernel) env t
+stronglyLiveVariablesFun' :: LivenessEnv env -> UniformScheduleFun kernel env t -> LVAnalysisFun (UniformScheduleFun kernel) env t
 stronglyLiveVariablesFun' liveness = \case
   Sbody body
     | LVAnalysis' liveness2 body' <- stronglyLiveVariables' liveness body
-      -> LVAnalysis liveness2 $ \re -> Sbody $ body' re
+      -> LVAnalysisFun liveness2 $ \re -> Sbody $ body' re
   Slam lhs f
     | liveness1 <-
       setIndicesLive
         (mapMaybe (\(Exists (Var tp idx)) -> if isOutput tp then Just $ Exists idx else Nothing) $ lhsVars lhs)
-        (pushLivenessEnv lhs liveness)
-    , LVAnalysis liveness2 f' <- stronglyLiveVariablesFun' liveness1 f
-      -> LVAnalysis
+        (pushLivenessEnv lhs noReturnImplications liveness)
+    , LVAnalysisFun liveness2 f' <- stronglyLiveVariablesFun' liveness1 f
+      -> LVAnalysisFun
           (dropLivenessEnv lhs liveness2)
           $ \re -> if -- A one-way "multi way if" to pattern match on a GADT
             | BindLiveness lhs' re' <- bind lhs re liveness2
@@ -71,7 +72,7 @@ stronglyLiveVariables' liveness = \case
   Return -> LVAnalysis' liveness $ const Return
   Alet lhs binding body ->
     let
-      liveness1 = analyseBinding (weakenWithLHS lhs) (lhsIndices lhs) binding $ pushLivenessEnv lhs liveness
+      liveness1 = analyseBinding (weakenWithLHS lhs) (lhsIndices lhs) binding $ pushLivenessEnv lhs noReturnImplications liveness
       LVAnalysis' liveness2 body' = stronglyLiveVariables' liveness1 body
     in
       LVAnalysis'
@@ -113,8 +114,8 @@ stronglyLiveVariables' liveness = \case
     let
       -- TODO: We could track which parts of the state are used
       liveness1 = setVarsLive initial liveness
-      LVAnalysis  liveness2 step' = stronglyLiveVariablesFun' liveness1 step
-      LVAnalysis' liveness3 next' = stronglyLiveVariables' liveness2 next
+      LVAnalysisFun liveness2 step' = stronglyLiveVariablesFun' liveness1 step
+      LVAnalysis'   liveness3 next' = stronglyLiveVariables' liveness2 next
     in
       LVAnalysis'
         liveness3
@@ -177,10 +178,6 @@ reEnvBinding re = \case
   Unit var         -> Unit $ expectJust $ reEnvVar re var
   RefRead var      -> RefRead $ expectJust $ reEnvVar re var
 
-reEnvArrayInstr :: ReEnv env subenv -> ArrayInstr env t -> ArrayInstr subenv t
-reEnvArrayInstr re (Parameter var) = Parameter $ expectJust $ reEnvVar re var
-reEnvArrayInstr re (Index buffer)  = Index $ expectJust $ reEnvVar re buffer
-
 analyseEffect :: Effect kernel env -> LivenessEnv env -> LivenessEnv env
 analyseEffect (Exec _ args) liveness = setIndicesLive (argsIndices args) liveness
 analyseEffect (SignalAwait signals) liveness = setIndicesLive (map Exists signals) liveness
@@ -212,7 +209,3 @@ isOutput :: BaseR t -> Bool
 isOutput BaseRrefWrite{} = True
 isOutput BaseRsignalResolver = True
 isOutput _ = False
-
-expectJust :: HasCallStack => Maybe a -> a
-expectJust (Just a) = a
-expectJust Nothing  = internalError "Substitution in live variable analysis failed. A variable which was assumed to be dead appeared to be live."

@@ -42,8 +42,10 @@ module Data.Array.Accelerate.Trafo.Exp.Substitution (
   lhsFullVars, lhsVars, lhsIndices,
 
   RebuildArrayInstr, rebuildArrayInstrMap,
-  rebuildNoArrayInstr, mapArrayInstr,
+  rebuildNoArrayInstr, mapArrayInstr, mapArrayInstrFun,
   arrayInstrs, arrayInstrsFun,
+
+  returnExpVars,
 
   -- ** Checks
   isIdentity, extractExpVars,
@@ -495,6 +497,12 @@ mapArrayInstr
     -> PreOpenExp arr' env e
 mapArrayInstr f = runIdentity . rebuildArrayInstrOpenExp (rebuildArrayInstrMap (Identity . f))
 
+mapArrayInstrFun
+    :: (forall s t. arr (s -> t) -> arr' (s -> t))
+    -> PreOpenFun arr  env e
+    -> PreOpenFun arr' env e
+mapArrayInstrFun f = runIdentity . rebuildArrayInstrFun (rebuildArrayInstrMap (Identity . f))
+
 rebuildArrayInstrOpenExp
     :: forall f arr arr' env t.
        (HasCallStack, Applicative f)
@@ -585,3 +593,8 @@ extractExpVars Nil          = Just TupRunit
 extractExpVars (Pair e1 e2) = TupRpair <$> extractExpVars e1 <*> extractExpVars e2
 extractExpVars (Evar v)     = Just $ TupRsingle v
 extractExpVars _            = Nothing
+
+returnExpVars :: ExpVars env a -> PreOpenExp arr env a
+returnExpVars TupRunit         = Nil
+returnExpVars (TupRpair v1 v2) = returnExpVars v1 `Pair` returnExpVars v2
+returnExpVars (TupRsingle v)   = Evar v
