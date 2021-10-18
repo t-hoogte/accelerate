@@ -381,7 +381,7 @@ desugarOpenAcc env = travA
         | DeclareVars lhs _ value <- declareVars tp ->
           let
             go :: forall benv' t. ExpVars benv' t -> OperationAcc op benv' (Buffers t)
-            go (TupRpair v1 v2)           = go v1 `pair` go v2
+            go (TupRpair v1 v2)           = go v1 `pairUnique` go v2
             go TupRunit                   = Return TupRunit
             go (TupRsingle v@(Var repr _))
               | Refl <- reprIsSingle @ScalarType @t @Buffer repr = Unit v
@@ -811,7 +811,7 @@ desugarOpenAcc env = travA
 
 desugarAlloc :: forall benv op sh a. ArrayR (Array sh a) -> ExpVars benv sh -> OperationAcc op benv (Buffers a)
 desugarAlloc (ArrayR _   TupRunit        ) _  = Return TupRunit
-desugarAlloc (ArrayR shr (TupRpair t1 t2)) sh = desugarAlloc (ArrayR shr t1) sh `pair` desugarAlloc (ArrayR shr t2) sh
+desugarAlloc (ArrayR shr (TupRpair t1 t2)) sh = desugarAlloc (ArrayR shr t1) sh `pairUnique` desugarAlloc (ArrayR shr t2) sh
 desugarAlloc (ArrayR shr (TupRsingle tp) ) sh
   | Refl <- reprIsSingle @ScalarType @a @Buffer tp = Alloc shr tp sh
 

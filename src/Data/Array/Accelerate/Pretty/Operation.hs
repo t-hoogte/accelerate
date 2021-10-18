@@ -69,6 +69,9 @@ prettyOpenAcc env = \case
   Return vars -> hang 2 $ group $ vsep [annotate Statement "return", prettyVars (val env) 10 vars]
   Compute exp -> hang 2 $ group $ vsep [annotate Statement "compute", prettyExp (val env) exp]
   Alet LeftHandSideUnit _ bnd body
+    | notReturn bnd
+    -- A return looks very strange if there is no explict LHS. It's uncommon,
+    -- but also very strange when this does happens.
     -> prettyOpenAcc env bnd
         <> hardline
         <> prettyOpenAcc env body
@@ -98,6 +101,9 @@ prettyOpenAcc env = \case
         <> hardline <> hang 4 ("  ( " <> prettyOpenAfun env step)
         <> hardline <> "  )"
         <> hardline <> indent 2 (prettyVars (val env) 10 initial)
+  where
+    notReturn Return{} = False
+    notReturn _        = True
 
 prettyArgs :: Val benv -> Args benv f -> Adoc
 prettyArgs env args = tupled $ map (\(Exists a) -> prettyArg env a) $ argsToList args

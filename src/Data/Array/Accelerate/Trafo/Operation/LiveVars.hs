@@ -170,10 +170,10 @@ stronglyLiveVariables' liveness us = \case
         (mapTupR (strengthenReturnImplications liveness3 $ strengthenWithLHS lhs) ret)
         $ \re subTup -> case bindSub lhs re $ propagateReturnLiveness subTup droppedRetBnd liveness3 of
           BindLivenessSub subTup' lhsFull lhsSub re' -> case (bnd' re subTup', body' re' subTup) of
-            (Left bnd'',  Left body'')  -> Left  $ Alet lhsFull us' bnd'' body''
-            (Left bnd'',  Right body'') -> Right $ Alet lhsFull us' bnd'' body''
-            (Right bnd'', Left body'')  -> Left  $ Alet lhsSub (subTupR subTup' us') bnd'' body''
-            (Right bnd'', Right body'') -> Right $ Alet lhsSub (subTupR subTup' us') bnd'' body''
+            (Left bnd'',  Left body'')  -> Left  $ mkAlet lhsFull us' bnd'' body''
+            (Left bnd'',  Right body'') -> Right $ mkAlet lhsFull us' bnd'' body''
+            (Right bnd'', Left body'')  -> Left  $ mkAlet lhsSub (subTupR subTup' us') bnd'' body''
+            (Right bnd'', Right body'') -> Right $ mkAlet lhsSub (subTupR subTup' us') bnd'' body''
   Alloc shr tp sh ->
     let
       free = IdxSet.fromVars sh
@@ -238,6 +238,9 @@ stronglyLiveVariables' liveness us = \case
     mkAcond _         (Return TupRunit) (Return TupRunit) = Return TupRunit
     mkAcond condition true              false             = Acond condition true false
 
+    mkAlet :: GLeftHandSide bnd subenv subenv' -> Uniquenesses bnd -> PreOpenAcc op subenv bnd -> PreOpenAcc op subenv' t -> PreOpenAcc op subenv t
+    mkAlet (LeftHandSideWildcard TupRunit) _ (Return TupRunit) body = body
+    mkAlet lhs us' bnd body = Alet lhs us' bnd body
 
 class SLVOperation op where
   slvOperation :: op f -> Maybe (ShrinkOperation op f)
