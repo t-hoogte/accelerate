@@ -22,9 +22,11 @@
 --
 
 module Data.Array.Accelerate.Trafo.Operation.LiveVars (
+  module Data.Array.Accelerate.Trafo.LiveVars,
+
   stronglyLiveVariables, stronglyLiveVariablesFun,
 
-  SLVOperation(..), ShrinkOperation(..), SubArgs(..), SubArg(..),
+  SLVOperation(..), ShrinkOperation(..), ShrunkOperation(..), SubArgs(..), SubArg(..),
   reEnvArrayInstr
 ) where
 
@@ -87,6 +89,7 @@ stronglyLiveVariablesFun'' liveness us (Alam lhs (Abody body))
       $ \re -> if
         | BindLiveness lhs' re' <- bind lhs re liveness3 ->
           Alam lhs' $ Abody $ fromEither' $ body' re' SubTupRkeep
+stronglyLiveVariablesFun'' _ _ _ = internalError "Function impossible"
 
 fromEither' :: Either a a -> a
 fromEither' (Left  x) = x
@@ -95,7 +98,7 @@ fromEither' (Right x) = x
 stronglyLiveVariables' :: SLVOperation op => LivenessEnv env -> Uniquenesses t -> PreOpenAcc op env t -> LVAnalysis (PreOpenAcc op) env t
 stronglyLiveVariables' liveness us = \case
   Exec op args
-    | Just (ShrinkOperation op') <- slvOperation op
+    | Just (ShrinkOperation shrinkOp) <- slvOperation op
     -- We can shrink this operation to output to part of its buffers.
     , input <- IdxSet.fromList $ inputs args
     , output <- IdxSet.fromList $ outputs args
@@ -109,8 +112,9 @@ stronglyLiveVariables' liveness us = \case
             Right $ Return TupRunit
 
           | Refl <- subTupUnit subTup
-          , ReEnvSubArgs subArgs args' <- reEnvSubArgs re args ->
-            Right $ Exec (op' subArgs) args'
+          , ReEnvSubArgs subArgs args' <- reEnvSubArgs re args
+          , ShrunkOperation op' args'' <- shrinkOp subArgs args' ->
+            Right $ Exec op' args''
 
     -- We cannot shrink this operation to only output a part of its buffers.
     -- Hence it's "all or nothing", if we use at least one of the output
@@ -130,7 +134,6 @@ stronglyLiveVariables' liveness us = \case
           , args' <- reEnvArgs re args ->
             Right $ Exec op args' -- Live
 
-    
   Return vars ->
     let
       returnImplications = mapTupR (\(Var _ idx) -> ReturnImplication $ IdxSet.singleton idx) vars
@@ -160,11 +163,12 @@ stronglyLiveVariables' liveness us = \case
   Alet lhs us' bnd body
     | LVAnalysis liveness1 retBnd bnd' <- stronglyLiveVariables' liveness  us' bnd
     , liveness2 <- pushLivenessEnv lhs retBnd liveness1
-    , LVAnalysis liveness3 ret   body' <- stronglyLiveVariables' liveness2 us body ->
+    , LVAnalysis liveness3 ret   body' <- stronglyLiveVariables' liveness2 us body
+    , droppedRetBnd <- mapTupR (droppedReturnImplications lhs) ret ->
       LVAnalysis
         (dropLivenessEnv lhs liveness3)
         (mapTupR (strengthenReturnImplications liveness3 $ strengthenWithLHS lhs) ret)
-        $ \re subTup -> case bindSub lhs re liveness3 of
+        $ \re subTup -> case bindSub lhs re $ propagateReturnLiveness subTup droppedRetBnd liveness3 of
           BindLivenessSub subTup' lhsFull lhsSub re' -> case (bnd' re subTup', body' re' subTup) of
             (Left bnd'',  Left body'')  -> Left  $ Alet lhsFull us' bnd'' body''
             (Left bnd'',  Right body'') -> Right $ Alet lhsFull us' bnd'' body''
@@ -231,27 +235,32 @@ stronglyLiveVariables' liveness us = \case
           Left $ Awhile us' (condition' re) (step' re) $ expectJust $ reEnvVars re initial      
   where
     mkAcond :: ExpVar env' PrimBool -> PreOpenAcc op env' t' -> PreOpenAcc op env' t' -> PreOpenAcc op env' t'
-    mkAcond condition (Return TupRunit) (Return TupRunit) = Return TupRunit
+    mkAcond _         (Return TupRunit) (Return TupRunit) = Return TupRunit
     mkAcond condition true              false             = Acond condition true false
 
 
 class SLVOperation op where
   slvOperation :: op f -> Maybe (ShrinkOperation op f)
 
-newtype ShrinkOperation op f = ShrinkOperation (forall f'. SubArgs f f' -> op f')
+newtype ShrinkOperation op f = ShrinkOperation (forall f' env. SubArgs f f' -> Args env f' -> ShrunkOperation op env)
+
+data ShrunkOperation op env where
+  ShrunkOperation :: op f' -> Args env f' -> ShrunkOperation op env
 
 data SubArgs f f' where
   SubArgsNil  :: SubArgs () ()
 
   -- This Out argument is dead.
   -- Note that implementers of 'slvOperation' may assume that at least one Out
-  -- argument is preserved.
+  -- or Mut argument is preserved.
   SubArgsDead :: SubArgs t t'
               -> SubArgs ((Out sh e) -> t) t'
 
   SubArgsLive :: SubArg  s s'
               -> SubArgs t t'
               -> SubArgs (s -> t) (s' -> t')
+
+infixr 9 `SubArgsLive`
 
 data SubArg t t' where
   SubArgKeep :: SubArg t t
@@ -304,10 +313,11 @@ reEnvSubArgs re (a :>: as)
         ReEnvSubBuffers SubTupRkeep buffers' -> ReEnvSubArgs (SubArgsLive SubArgKeep subs) (ArgArray Out (ArrayR shr tp) (expectJust $ reEnvVars re sh) buffers' :>: as')
         ReEnvSubBuffers sub         buffers' -> ReEnvSubArgs (SubArgsLive (SubArgOut sub) subs) (ArgArray Out (ArrayR shr $ subTupR sub tp) (expectJust $ reEnvVars re sh) buffers' :>: as')
       _ -> ReEnvSubArgs (SubArgsLive SubArgKeep subs) (reEnvArg re a :>: as')
+reEnvSubArgs _ ArgsNil = ReEnvSubArgs SubArgsNil ArgsNil
 
 reEnvSubBuffers :: ReEnv env subenv -> TypeR t -> GroundVars env (Buffers t) -> ReEnvSubBuffers subenv t
 reEnvSubBuffers _  TupRunit TupRunit = ReEnvSubBuffers SubTupRskip TupRunit
-reEnvSubBuffers re (TupRsingle tp) (TupRsingle var)
+reEnvSubBuffers re (TupRsingle _) (TupRsingle var)
   | Just var' <- reEnvVar re var = ReEnvSubBuffers SubTupRkeep (TupRsingle var')
   | otherwise = ReEnvSubBuffers SubTupRskip TupRunit
 reEnvSubBuffers re (TupRpair t1 t2) (TupRpair v1 v2)

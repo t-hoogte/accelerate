@@ -67,6 +67,7 @@ import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Unsafe.Coerce (unsafeCoerce)
 import Control.Monad.ST
 import Data.Bits
+import Data.Array.Accelerate.Trafo.Operation.LiveVars
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP (..), Information (Info), Var (BackendSpecific), (-?>), fused, infusibleEdges)
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
 import qualified Data.Set as S
@@ -235,6 +236,23 @@ instance DesugarAcc InterpretOp where
   mkGenerate    a b     = Exec IGenerate    (a :>: b :>:             ArgsNil)
   mkPermute     a b c d = Exec IPermute     (a :>: b :>: c :>: d :>: ArgsNil)
   -- etc, but the rest piggybacks off of Generate for now (see Desugar.hs)
+
+instance SLVOperation InterpretOp where
+  slvOperation IGenerate = Just $ ShrinkOperation $ \subArgs args@(ArgFun f :>: array :>: ArgsNil) -> case subArgs of
+    SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgsNil
+      -> ShrunkOperation IGenerate args
+    SubArgKeep `SubArgsLive` SubArgOut subTup `SubArgsLive` SubArgsNil
+      -> ShrunkOperation IGenerate (ArgFun (subTupFun subTup f) :>: array :>: ArgsNil)
+    _ `SubArgsLive` SubArgsDead _ -> internalError "At least one output should be preserved"
+
+  slvOperation IMap = Just $ ShrinkOperation $ \subArgs args@(ArgFun f :>: input :>: output :>: ArgsNil) -> case subArgs of
+    SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgsNil
+      -> ShrunkOperation IMap args
+    SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgOut subTup `SubArgsLive` SubArgsNil
+      -> ShrunkOperation IMap (ArgFun (subTupFun subTup f) :>: input :>: output :>: ArgsNil)
+    _ `SubArgsLive` _ `SubArgsLive` SubArgsDead _ -> internalError "At least one output should be preserved"
+
+  slvOperation _ = Nothing
 
 data InterpretKernel env where
   InterpretKernel :: Cluster InterpretOp args -> Args env args -> InterpretKernel env

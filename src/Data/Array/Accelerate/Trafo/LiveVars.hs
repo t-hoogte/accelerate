@@ -24,13 +24,16 @@ module Data.Array.Accelerate.Trafo.LiveVars
   , setLive, setIndicesLive, setVarsLive, setLivenessImplies, setLivenessImplications, isLive
   , strengthenLiveness, dropLivenessEnv, pushLivenessEnv
   , bind, BindLiveness(..), bindSub, BindLivenessSub(..)
-  , ReturnImplication(..), ReturnImplications, noReturnImplications, strengthenReturnImplications
+  , ReturnImplication(..), ReturnImplications, noReturnImplications
+  , strengthenReturnImplications, droppedReturnImplications, propagateReturnLiveness
   , joinReturnImplications, joinReturnImplication
   , SubTupR(..), subTupR, subTupUnit, DeclareSubVars(..), declareSubVars
   , LVAnalysis(..), LVAnalysisFun(..), LVAnalysis'(..), allDead, expectJust
+  , subTupExp, subTupFun
   ) where
 
 import Data.Array.Accelerate.AST.Environment
+import Data.Array.Accelerate.AST.Exp
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.IdxSet ( IdxSet(..) )
 import qualified Data.Array.Accelerate.AST.IdxSet as IdxSet
@@ -142,6 +145,9 @@ strengthenReturnImplications (LivenessEnv env) k (ReturnImplication implies) = R
       | Just idx' <- k idx = IdxSet.singleton idx'
       | Unknown implies' <- prj' idx env = implies' IdxSet.>>= go
       | otherwise = IdxSet.empty
+
+droppedReturnImplications :: LeftHandSide s t env env' -> ReturnImplication env' v -> ReturnImplication env' v
+droppedReturnImplications lhs (ReturnImplication implies) = ReturnImplication $ IdxSet.intersect implies $ lhsIndices lhs
 
 dropLivenessEnv :: forall s t env env'. LeftHandSide s t env env' -> LivenessEnv env' -> LivenessEnv env
 dropLivenessEnv lhs lenv@(LivenessEnv env) = LivenessEnv $ mapEnv (strengthenLiveness lenv k) $ go lhs env
@@ -264,6 +270,13 @@ bindSub lhs re (LivenessEnv env) = go lhs2 re
           | otherwise
           -> BindLivenessSub (SubTupRpair subTup1 subTup2) (leftHandSidePair l1' l2') (LeftHandSidePair l1'' l2'') re'''
 
+propagateReturnLiveness :: SubTupR t t' -> ReturnImplications env t -> LivenessEnv env -> LivenessEnv env
+propagateReturnLiveness SubTupRskip         _                env = env
+propagateReturnLiveness SubTupRkeep         ret              env
+  = foldl' (\e (Exists (ReturnImplication set)) -> setIndicesLive (IdxSet.toList set) e) env $ flattenTupR ret
+propagateReturnLiveness (SubTupRpair s1 s2) (TupRpair r1 r2) env
+  = propagateReturnLiveness s1 r1 $ propagateReturnLiveness s2 r2 env
+
 -- Captures the existentionals subenv' and t'
 data BindLivenessSub s t env' subenv where
   BindLivenessSub
@@ -366,3 +379,15 @@ allDead re set = all (\(Exists idx) -> isNothing $ reEnvIdx re idx) $ IdxSet.toL
 expectJust :: HasCallStack => Maybe a -> a
 expectJust (Just a) = a
 expectJust Nothing  = internalError "Substitution in live variable analysis failed. A variable which was assumed to be dead appeared to be live."
+
+-- Utilities for expressions
+subTupExp :: IsArrayInstr arr => SubTupR t t' -> PreOpenExp arr env t -> PreOpenExp arr env t'
+subTupExp SubTupRkeep expr = expr
+subTupExp SubTupRskip _    = Nil
+subTupExp subTup      expr
+  | DeclareSubVars lhs _ vars <- declareSubVars (expType expr) subTup
+  = Let lhs expr $ expVars $ vars weakenId
+
+subTupFun :: IsArrayInstr arr => SubTupR t t' -> PreOpenFun arr env (s -> t) -> PreOpenFun arr env (s -> t')
+subTupFun subTup (Lam lhs (Body body)) = Lam lhs $ Body $ subTupExp subTup body
+subTupFun _      _                     = internalError "Function impossible"
