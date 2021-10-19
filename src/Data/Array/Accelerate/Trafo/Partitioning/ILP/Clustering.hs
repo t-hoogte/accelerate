@@ -5,6 +5,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE LambdaCase #-}
 
 -- _Significantly_ speeds up compilation of this file, but at an obvious cost!
@@ -88,19 +89,15 @@ topSort :: Graph -> Labels -> ClusterL
 topSort _ (S.toList -> [l]) = ExecL [l]
 topSort (Graph _ fedges _) cluster = ExecL topsorted
   where
-    -- TODO: this function would probably be much more readable if we first made an entry for each label (with no outgoing edges), 
-    -- and then added the edges (where tryUpdateList would return Just every time)
-    -- Maybe even use M.Map: init with every label pointing to [], then just M.adjust it. Note: M.adjust silently ignores missing entries, I want a hard crash :)
     (graph, getAdj, _) =
           G.graphFromEdges
-            -- add the labels that are not in the list (i.e. the ones that have no edges within the cluster)
-          . flip (foldr (\y acc -> fromMaybe ((y, y, []):acc) (tryUpdateList ((==y) . view _1) id acc))) (S.toList cluster)
-            -- For each edge, update the existing elem of the list or insert a new one if it doesn't exist yet
-          . foldr (\(x, y) acc -> fromMaybe ((x,x,[y]):acc) $ tryUpdateList ((==x) . view _1) (_3 %~ (y:)) acc) []
+          . map (\(a,b) -> (a,a,b))
+          . M.toList
+          . flip (S.fold (\(x :-> y) -> M.adjust (y:) x)) fedges
+          . M.fromList
+          . map (,[])
           . S.toList
-          . S.filter (uncurry ((&&) `on` (`elem` cluster))) -- filter edges on 'both vertices are in this cluster'
-          . S.map (\(x :-> y) -> (x, y))
-          $ fedges
+          $ cluster
     topsorted = map (view _1 . getAdj) $ G.topSort graph 
 
 openReconstruct   :: Pretty.PrettyOp (Cluster op) => LabelEnv aenv
