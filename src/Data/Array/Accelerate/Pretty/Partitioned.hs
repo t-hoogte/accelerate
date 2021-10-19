@@ -57,11 +57,11 @@ clusterEnv env = \cio args -> (input cio args, output cio args)
     input :: ClusterIO t input' output' -> Args env t -> Pretty.Val input'
     input Empty ArgsNil
       = Pretty.Empty
-    input (Vertical _ cio) (ArgVar sh :>: as)
+    input (Vertical _ _ cio) (ArgVar sh :>: as)
       = Pretty.Push (input cio as) (prettyShapeVars env sh)
     input (Input cio) (a :>: as)
       = Pretty.Push (input cio as) (prettyArg env a)
-    input (Output _ cio) (ArgArray Out _ sh _ :>: as)
+    input (Output _ _ _ cio) (ArgArray Out _ sh _ :>: as)
       = Pretty.Push (input cio as) (prettyShapeVars env sh)
     input (MutPut cio) (a :>: as)
       = Pretty.Push (input cio as) (prettyArg env a)
@@ -71,11 +71,11 @@ clusterEnv env = \cio args -> (input cio args, output cio args)
     output :: ClusterIO t input' output' -> Args env t -> PartialVal output'
     output Empty ArgsNil
       = PEnd
-    output (Vertical _ cio) (_ :>: as)
-      = PSkip (output cio as) -- We will name intermediate arrays in 'forward (Make _ _) _ _ _'
+    output (Vertical t _ cio) (_ :>: as)
+      = pSkipAt t (output cio as) -- We will name intermediate arrays in 'forward (Make _ _) _ _ _'
     output (Input cio) (a :>: as)
       = PPush (output cio as) (prettyArg env a)
-    output (Output t cio) (a :>: as)
+    output (Output t _ _ cio) (a :>: as)
       = pInsertAt t (prettyArg env a) (output cio as)
     output (MutPut cio) (a :>: as)
       = PPush (output cio as) (prettyArg env a)

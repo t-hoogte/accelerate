@@ -38,11 +38,13 @@ import Data.Array.Accelerate.AST.Operation
 import Prelude hiding ( take )
 import Data.Bifunctor
 import Data.Array.Accelerate.Trafo.Desugar (ArrayDescriptor(..))
-import Data.Array.Accelerate.Representation.Array (Array, ArrayR, Buffers)
+import Data.Array.Accelerate.Representation.Array (Array, Buffers, ArrayR (ArrayR), arrayRtype)
 import qualified Data.Array.Accelerate.AST.Environment as Env
 import Data.Array.Accelerate.Representation.Shape (ShapeR)
 import Data.Type.Equality
 import Unsafe.Coerce (unsafeCoerce)
+import Data.Array.Accelerate.Trafo.Operation.LiveVars
+import Data.Array.Accelerate.Representation.Type (TypeR)
 
 -- In this model, every thread has one input element per input array,
 -- and one output element per output array. That works perfectly for
@@ -111,14 +113,15 @@ data LeftHandSideArgs body env scope where
 data ClusterIO args input output where
   Empty  :: ClusterIO () () ()
   -- Even when an array is fused away, we'll still need its shape sometimes!
-  Vertical :: ArrayR (Array sh e) 
-           -> ClusterIO args input output 
-           -> ClusterIO (Var' sh -> args) (input, Sh sh e) (output, Value sh e)
-  Input  :: ClusterIO              args   input      output
+  Vertical :: Take (Value sh e) eoutput output -> ArrayR (Array sh e) 
+           -> ClusterIO             args   input            output 
+           -> ClusterIO (Var' sh -> args) (input, Sh sh e) eoutput
+  Input  :: ClusterIO              args   input               output
          -> ClusterIO (In  sh e -> args) (input, Value sh e) (output, Value sh e)
   Output :: Take (Value sh e) eoutput output
-         -> ClusterIO              args   input             output
-         -> ClusterIO (Out sh e -> args) (input, Sh sh e)    eoutput
+         -> SubTupR e e' -> TypeR e
+         -> ClusterIO              args   input               output
+         -> ClusterIO (Out sh e' -> args) (input, Sh sh e)    eoutput
   MutPut :: ClusterIO              args   input             output
          -> ClusterIO (Mut sh e -> args) (input, Mut sh e) (output, Mut sh e)
   ExpPut :: ClusterIO              args   input             output
@@ -174,7 +177,7 @@ unfused op args = iolhs args $ \io lhs -> Cluster io (Bind lhs op None)
 iolhs :: Args env args -> (forall x y. ClusterIO args x y -> LeftHandSideArgs args x y -> r) -> r
 iolhs ArgsNil                     f =                       f  Empty            Base
 iolhs (ArgArray In  _ _ _ :>: as) f = iolhs as $ \io lhs -> f (Input       io) (Reqr Here Here lhs)
-iolhs (ArgArray Out _ _ _ :>: as) f = iolhs as $ \io lhs -> f (Output Here io) (Make Here lhs)
+iolhs (ArgArray Out r _ _ :>: as) f = iolhs as $ \io lhs -> f (Output Here SubTupRkeep (arrayRtype r) io) (Make Here lhs)
 iolhs (ArgArray Mut _ _ _ :>: as) f = iolhs as $ \io lhs -> f (MutPut io) (Adju lhs)
 iolhs (ArgExp _           :>: as) f = iolhs as $ \io lhs -> f (ExpPut      io) (EArg lhs)
 iolhs (ArgVar _           :>: as) f = iolhs as $ \io lhs -> f (VarPut      io) (VArg lhs)
@@ -183,10 +186,10 @@ iolhs (ArgFun _           :>: as) f = iolhs as $ \io lhs -> f (FunPut      io) (
 mkBase :: ClusterIO args i o -> LeftHandSideArgs () i i
 mkBase Empty = Base
 mkBase (Input    ci) = Ignr (mkBase ci)
-mkBase (Output _ ci) = Ignr (mkBase ci)
+mkBase (Output _ _ _ ci) = Ignr (mkBase ci)
 mkBase (MutPut   ci) = Ignr (mkBase ci)
 mkBase (ExpPut'   ci) = Ignr (mkBase ci)
-mkBase (Vertical _ ci) = Ignr (mkBase ci)
+mkBase (Vertical _ _ ci) = Ignr (mkBase ci)
 
 fromArgsTake :: forall env a ab b. Take a ab b -> Take (FromArg env a) (FromArgs env ab) (FromArgs env b)
 fromArgsTake Here = Here
@@ -240,7 +243,7 @@ type family OutArgs a where
 data ToArg env a where
   ArrArg :: ArrayR (Array sh e)
          -> GroundVars env sh
-         -> GroundVars env (Buffers e) 
+         -> GroundVars env (Buffers e)
          -> ToArg env (Value sh e)
   OutArg :: ArrayR (Array sh e)
          -> GroundVars env sh
@@ -317,3 +320,31 @@ data Sh sh e    = Shape (ShapeR sh) sh
 
 instance NFData' op => NFData' (Cluster op) where
   rnf' = error "todo"
+
+
+instance SLVOperation (Cluster op) where
+  slvOperation (Cluster io ast :: Cluster op args) = Just $ ShrinkOperation shrinkOperation
+    where
+      shrinkOperation :: SubArgs args args' -> Args env args' -> Args env' args -> ShrunkOperation (Cluster op) env
+      shrinkOperation subArgs args' args = ShrunkOperation (Cluster (slvIO subArgs args' args io) ast) args'
+
+      slvIO :: SubArgs a a' -> Args env a' -> Args env' a -> ClusterIO a i o -> ClusterIO a' i o
+      slvIO SubArgsNil ArgsNil ArgsNil Empty = Empty
+      slvIO (SubArgsDead subargs) (ArgVar _ :>: args') (ArgArray Out (ArrayR shr r) _ _ :>: args) (Output t s te io') = Vertical t (ArrayR shr te) (slvIO subargs args' args io')
+      slvIO (SubArgsLive SubArgKeep subargs) (_ :>: (args' :: Args env a')) (_ :>: (args :: Args env' a)) io'
+        = let k :: forall i o. ClusterIO a i o -> ClusterIO a' i o 
+              k = slvIO subargs args' args in case io' of
+            Vertical t r io'' -> Vertical t r $ k io''
+            Input        io'' -> Input        $ k io''
+            Output t s e io'' -> Output t s e $ k io''
+            MutPut       io'' -> MutPut       $ k io''
+            ExpPut       io'' -> ExpPut       $ k io''
+            VarPut       io'' -> VarPut       $ k io''
+            FunPut       io'' -> FunPut       $ k io''
+      slvIO
+        (SubArgsLive (SubArgOut s) subargs)
+        ((ArgArray Out _ _ _) :>: args')
+        ((ArgArray Out _ _ _) :>: args)
+        (Output t s' tr io')
+        = Output t (composeSubTupR s s') tr (slvIO subargs args' args io')
+

@@ -113,7 +113,7 @@ stronglyLiveVariables' liveness us = \case
 
           | Refl <- subTupUnit subTup
           , ReEnvSubArgs subArgs args' <- reEnvSubArgs re args
-          , ShrunkOperation op' args'' <- shrinkOp subArgs args' ->
+          , ShrunkOperation op' args'' <- shrinkOp subArgs args' args ->
             Right $ Exec op' args''
 
     -- We cannot shrink this operation to only output a part of its buffers.
@@ -129,7 +129,7 @@ stronglyLiveVariables' liveness us = \case
           | Refl <- subTupUnit subTup
           , allDead re output ->
             Right $ Return TupRunit -- All output vars are dead
-          
+
           | Refl <- subTupUnit subTup
           , args' <- reEnvArgs re args ->
             Right $ Exec op args' -- Live
@@ -232,7 +232,7 @@ stronglyLiveVariables' liveness us = \case
         liveness3
         noReturnImplications
         $ \re _ ->
-          Left $ Awhile us' (condition' re) (step' re) $ expectJust $ reEnvVars re initial      
+          Left $ Awhile us' (condition' re) (step' re) $ expectJust $ reEnvVars re initial
   where
     mkAcond :: ExpVar env' PrimBool -> PreOpenAcc op env' t' -> PreOpenAcc op env' t' -> PreOpenAcc op env' t'
     mkAcond _         (Return TupRunit) (Return TupRunit) = Return TupRunit
@@ -242,7 +242,7 @@ stronglyLiveVariables' liveness us = \case
 class SLVOperation op where
   slvOperation :: op f -> Maybe (ShrinkOperation op f)
 
-newtype ShrinkOperation op f = ShrinkOperation (forall f' env. SubArgs f f' -> Args env f' -> ShrunkOperation op env)
+newtype ShrinkOperation op f = ShrinkOperation (forall f' env env'. SubArgs f f' -> Args env f' -> Args env' f -> ShrunkOperation op env)
 
 data ShrunkOperation op env where
   ShrunkOperation :: op f' -> Args env f' -> ShrunkOperation op env
@@ -254,7 +254,7 @@ data SubArgs f f' where
   -- Note that implementers of 'slvOperation' may assume that at least one Out
   -- or Mut argument is preserved.
   SubArgsDead :: SubArgs t t'
-              -> SubArgs ((Out sh e) -> t) t'
+              -> SubArgs (Out sh e -> t) (Var' sh -> t')
 
   SubArgsLive :: SubArg  s s'
               -> SubArgs t t'
@@ -309,7 +309,7 @@ reEnvSubArgs re (a :>: as)
   | ReEnvSubArgs subs as' <- reEnvSubArgs re as =
     case a of
       ArgArray Out (ArrayR shr tp) sh buffers -> case reEnvSubBuffers re tp buffers of
-        ReEnvSubBuffers SubTupRskip _        -> ReEnvSubArgs (SubArgsDead subs) as'
+        ReEnvSubBuffers SubTupRskip _        -> ReEnvSubArgs (SubArgsDead subs) (ArgVar (fromGrounds $ expectJust $ reEnvVars re sh) :>: as')
         ReEnvSubBuffers SubTupRkeep buffers' -> ReEnvSubArgs (SubArgsLive SubArgKeep subs) (ArgArray Out (ArrayR shr tp) (expectJust $ reEnvVars re sh) buffers' :>: as')
         ReEnvSubBuffers sub         buffers' -> ReEnvSubArgs (SubArgsLive (SubArgOut sub) subs) (ArgArray Out (ArrayR shr $ subTupR sub tp) (expectJust $ reEnvVars re sh) buffers' :>: as')
       _ -> ReEnvSubArgs (SubArgsLive SubArgKeep subs) (reEnvArg re a :>: as')

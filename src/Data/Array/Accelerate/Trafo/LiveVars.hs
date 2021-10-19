@@ -30,7 +30,7 @@ module Data.Array.Accelerate.Trafo.LiveVars
   , SubTupR(..), subTupR, subTupUnit, DeclareSubVars(..), declareSubVars
   , LVAnalysis(..), LVAnalysisFun(..), LVAnalysis'(..), allDead, expectJust
   , subTupExp, subTupFun
-  ) where
+  ,composeSubTupR,subTup) where
 
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Exp
@@ -49,6 +49,7 @@ import Data.Array.Accelerate.Error
 import Data.List (foldl')
 import Data.Maybe
 import Data.Type.Equality
+import Unsafe.Coerce (unsafeCoerce)
 
 data ReEnv env subenv where
   ReEnvEnd  :: ReEnv () ()
@@ -342,11 +343,24 @@ data SubTupR t t' where
               -> SubTupR t2 t2'
               -> SubTupR (t1, t2) (t1', t2')
 
+composeSubTupR :: SubTupR b c -> SubTupR a b -> SubTupR a c
+composeSubTupR bc SubTupRkeep = bc
+composeSubTupR SubTupRkeep ab = ab
+composeSubTupR SubTupRskip SubTupRskip = SubTupRskip
+composeSubTupR SubTupRskip _ = SubTupRskip
+composeSubTupR (SubTupRpair bc bc') (SubTupRpair ab ab') = SubTupRpair (composeSubTupR bc ab) (composeSubTupR bc' ab')
+
 subTupR :: SubTupR t t' -> TupR s t -> TupR s t'
 subTupR SubTupRskip         _                = TupRunit
 subTupR SubTupRkeep         t                = t
 subTupR (SubTupRpair s1 s2) (TupRpair t1 t2) = subTupR s1 t1 `TupRpair` subTupR s2 t2
 subTupR _                   _                = internalError "Tuple mismatch"
+
+subTup :: SubTupR t t' -> t -> t'
+subTup SubTupRskip _ = ()
+subTup SubTupRkeep t = t
+subTup (SubTupRpair l r) (t1, t2) = (subTup l t1, subTup r t2)
+
 
 subTupUnit :: SubTupR () t' -> t' :~: ()
 subTupUnit SubTupRskip = Refl
