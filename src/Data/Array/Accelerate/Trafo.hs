@@ -77,6 +77,8 @@ test f
   ++ Pretty.renderForTerminal (Pretty.prettyAfun operation)
   ++ "\n\nPartitionedAcc:\n"
   ++ Pretty.renderForTerminal (Pretty.prettyAfun partitioned)
+  ++ "\nSLV'd PartitionedAcc:\n"
+  ++ Pretty.renderForTerminal (Pretty.prettyAfun slvpartitioned)
   ++ "\n\nSchedule:\n"
   ++ Pretty.renderForTerminal (Pretty.prettySchedule schedule)
   where
@@ -87,6 +89,8 @@ test f
       $ Sharing.convertAfunWith defaultOptions f
 
     partitioned = NewNewFusion.convertAfun operation
+
+    slvpartitioned = Operation.stronglyLiveVariablesFun partitioned
 
     schedule = convertScheduleFun @sched @kernel partitioned
 
