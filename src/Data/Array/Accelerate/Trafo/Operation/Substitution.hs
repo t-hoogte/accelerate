@@ -29,7 +29,7 @@ module Data.Array.Accelerate.Trafo.Operation.Substitution (
   Sink(..), Sink'(..),
   reindexPartial,
   reindexPartialAfun,
-  pair, alet, aletUnique, alet',
+  pair, pair', pairUnique, alet, aletUnique, alet',
   weakenArrayInstr,
   strengthenArrayInstr,
 
@@ -119,7 +119,13 @@ reindexAfun' k (Alam lhs f)
 reindexAfun' k (Abody a) = Abody <$> reindexA' k a
 
 pair :: forall op env a b. PreOpenAcc op env a -> PreOpenAcc op env b -> PreOpenAcc op env (a, b)
-pair a b = goA weakenId a
+pair = pair' False
+
+pairUnique :: forall op env a b. PreOpenAcc op env a -> PreOpenAcc op env b -> PreOpenAcc op env (a, b)
+pairUnique = pair' True
+
+pair' :: forall op env a b. Bool -> PreOpenAcc op env a -> PreOpenAcc op env b -> PreOpenAcc op env (a, b)
+pair' u a b = goA weakenId a
   where
     -- Traverse 'a' and look for a return. We can jump over let bindings
     -- If we don't find a 'return', we must first bind the value in a let,
@@ -131,7 +137,7 @@ pair a b = goA weakenId a
     goA k (Return vars)    = goB vars $ weaken k b
     goA k acc
       | DeclareVars lhs k' value <- declareVars $ groundsR acc
-                           = Alet lhs (shared $ groundsR acc) acc $ goB (value weakenId) $ weaken (k' .> k) b
+                           = Alet lhs ((if u then unique else shared) $ groundsR acc) acc $ goB (value weakenId) $ weaken (k' .> k) b
 
     goB :: GroundVars env' a -> PreOpenAcc op env' b -> PreOpenAcc op env' (a, b)
     goB varsA (Alet lhs uniqueness bnd x)
@@ -139,7 +145,7 @@ pair a b = goA weakenId a
     goB varsA (Return varsB)   = Return (TupRpair varsA varsB)
     goB varsA acc
       | DeclareVars lhs k value <- declareVars $ groundsR b
-                               = Alet lhs (shared $ groundsR b) acc $ Return (TupRpair (weakenVars k varsA) (value weakenId))
+                               = Alet lhs ((if u then unique else shared) $ groundsR b) acc $ Return (TupRpair (weakenVars k varsA) (value weakenId))
 
 alet :: GLeftHandSide t env env' -> PreOpenAcc op env t -> PreOpenAcc op env' s -> PreOpenAcc op env s
 alet lhs = alet' lhs $ shared $ lhsToTupR lhs

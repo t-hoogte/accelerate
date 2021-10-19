@@ -95,6 +95,12 @@ instance Sink Liveness where
   weaken k (Unknown s) = Unknown $ IdxSet.map (weaken k) s
 
 newtype LivenessEnv env = LivenessEnv (Env (Liveness env) env)
+-- TODO: Instead of using Env, use a specialized Env which makes it cheaper to
+-- weaken and strengthen the environment (with an LHS). This would require an
+-- approach similar to WEnv, but with something like Skip instead of a (:>),
+-- as the latter doesn't provide a way to strengthen.
+-- Such environment prevents doing many maps over the entire environment.
+--
 
 emptyLivenessEnv :: LivenessEnv ()
 emptyLivenessEnv = LivenessEnv Empty
@@ -253,10 +259,11 @@ bindSub lhs re (LivenessEnv env) = go lhs2 re
     lhs2 = propagateLiveness env' re lhs1
 
     go :: LHSLiveness s t env1 env2 -> ReEnv env1 subenv1 -> BindLivenessSub s t env2 subenv1
-    go (LHSLivenessWildcard tp)     re' = BindLivenessSub SubTupRskip (LeftHandSideWildcard tp) (LeftHandSideWildcard TupRunit) re'
-    go (LHSLivenessSingle True  tp) re' = BindLivenessSub SubTupRkeep (LeftHandSideSingle tp) (LeftHandSideSingle tp) (ReEnvKeep re')
-    go (LHSLivenessSingle False tp) re' = BindLivenessSub SubTupRskip (LeftHandSideWildcard $ TupRsingle tp) (LeftHandSideWildcard TupRunit) (ReEnvSkip re')
-    go (LHSLivenessPair l1 l2)      re'
+    go (LHSLivenessWildcard TupRunit) re' = BindLivenessSub SubTupRkeep (LeftHandSideWildcard TupRunit) (LeftHandSideWildcard TupRunit) re'
+    go (LHSLivenessWildcard tp)       re' = BindLivenessSub SubTupRskip (LeftHandSideWildcard tp) (LeftHandSideWildcard TupRunit) re'
+    go (LHSLivenessSingle True  tp)   re' = BindLivenessSub SubTupRkeep (LeftHandSideSingle tp) (LeftHandSideSingle tp) (ReEnvKeep re')
+    go (LHSLivenessSingle False tp)   re' = BindLivenessSub SubTupRskip (LeftHandSideWildcard $ TupRsingle tp) (LeftHandSideWildcard TupRunit) (ReEnvSkip re')
+    go (LHSLivenessPair l1 l2)        re'
       | BindLivenessSub subTup1 l1' l1'' re''  <- go l1 re'
       , BindLivenessSub subTup2 l2' l2'' re''' <- go l2 re''
       = if
