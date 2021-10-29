@@ -340,6 +340,7 @@ library
 
         -- For backend development (hidden)
         Data.Array.Accelerate.AST
+        Data.Array.Accelerate.AST.CountEnv
         Data.Array.Accelerate.AST.Environment
         Data.Array.Accelerate.AST.Execute
         Data.Array.Accelerate.AST.Exp
@@ -402,6 +403,7 @@ library
         Data.Array.Accelerate.Trafo.Schedule.Uniform.Simplify
         Data.Array.Accelerate.Trafo.Schedule.Uniform.Substitution
         Data.Array.Accelerate.Trafo.Sharing
+        Data.Array.Accelerate.Trafo.SkipEnvironment
         Data.Array.Accelerate.Trafo.Substitution
         Data.Array.Accelerate.Trafo.WeakenedEnvironment
         Data.Array.Accelerate.Type

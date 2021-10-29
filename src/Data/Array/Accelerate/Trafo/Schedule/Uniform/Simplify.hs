@@ -37,6 +37,9 @@ import Data.Array.Accelerate.Analysis.Match
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.IdxSet (IdxSet)
+import qualified Data.Array.Accelerate.AST.IdxSet           as IdxSet
+import Data.Array.Accelerate.AST.CountEnv (CountEnv)
+import qualified Data.Array.Accelerate.AST.CountEnv         as CountEnv
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.AST.Kernel
 import Data.Array.Accelerate.AST.Schedule
@@ -53,15 +56,14 @@ import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Trafo.WeakenedEnvironment
 import Data.Array.Accelerate.Trafo.Schedule.Uniform.Substitution
 import Data.Array.Accelerate.Type
-import qualified Data.Array.Accelerate.AST.IdxSet           as IdxSet
 import Data.Kind
 import Data.Maybe
 import Data.List
-    ( groupBy, nub, nubBy, sort, group, isSubsequenceOf, (\\), foldl', partition, mapAccumL, mapAccumR )
 import qualified Data.List as List
 import Control.Monad
 import Control.DeepSeq
 import qualified Data.Array.Accelerate.AST.Environment as Env
+
 
 import Data.Array.Accelerate.Pretty.Operation
 
@@ -170,7 +172,7 @@ simplify' _ Return = ([], Return)
 simplify' env (Acond condition true false next)
   | Return <- true'
   , Return <- false' = simplify' env next
-  | otherwise = Acond condition' true' false' <$> simplify' env next
+  | otherwise = (implications ++ implicationsNext, Acond condition' true' false' next')
   where
     condition' = weaken (substitute env) condition
 
@@ -182,9 +184,19 @@ simplify' env (Acond condition true false next)
     -- implications from both branches and then it's a waste of time to compute
     -- those intersections.
     --
-    (_, true')  = simplify' env true
-    (_, false') = simplify' env false
+    (implicationsTrue,  true')  = simplify' env true
+    (implicationsFalse, false') = simplify' env false
+    implications = intersectSignalImplications implicationsTrue implicationsFalse
+    env' = propagate implications env
+    (implicationsNext,  next')  = simplify' env' next
 simplify' env (Awhile io body initial next) = Awhile io (simplifyFun env body) (mapTupR (weaken $ substitute env) initial) <$> simplify' env next
+
+intersectSignalImplications :: [SignalImplication env] -> [SignalImplication env] -> [SignalImplication env]
+intersectSignalImplications as bs = mapMaybe f as
+  where
+    f (SignalImplication idx set) = case find (\(SignalImplication idx' _) -> idx == idx') bs of
+      Just (SignalImplication _ set') -> Just $ SignalImplication idx $ IdxSet.intersect set set'
+      Nothing -> Nothing
 
 simplifyEffect :: InfoEnv env -> Effect kernel env -> ([SignalImplication env], InfoEnv env, UniformSchedule kernel env -> UniformSchedule kernel env)
 simplifyEffect env (Exec kernel args) = ([], env, Effect $ Exec kernel $ mapArgs (weaken $ substitute env) args)
@@ -378,11 +390,10 @@ substitute env = Weaken $ \idx -> case infoFor idx env of
   InfoBuffer   (Just idx') -> idx'
   _                        -> idx
 
-
 simplifyForks :: InfoEnv env -> UniformSchedule kernel env -> ([SignalImplication env], UniformSchedule kernel env)
 simplifyForks env schedule
   | SplitTrivials _ k trivial branches'' <- splitTrivials weakenId branches'
-  = (signalImplications, trivial $ serializeDependentForks k env branches'')
+  = (signalImplications, trivial $ forksGroupCommonAwait k env $ map reorder branches'')
   where
     branches = collectForks schedule
     -- Signal implications are only propagated in one direction (namely from
@@ -458,6 +469,75 @@ collectForks = (`go` [])
     go (Fork s1 s2) = go s2 . go s1
     go u = (u :)
 
+forksGroupCommonAwait :: forall kernel env env'. env' :?> env -> InfoEnv env -> [UniformSchedule kernel env'] -> UniformSchedule kernel env'
+forksGroupCommonAwait k env = serializeDependentForks k env . go . map (\b -> let (signals, b') = directlyAwaits b in (IdxSet.fromList' signals, b'))
+  where
+    go :: [(IdxSet env', UniformSchedule kernel env')] -> [UniformSchedule kernel env']
+    go [] = []
+    go [(_, s)] = [s]
+    go branches
+      -- No signals found which are awaited by some branches.
+      -- Now check if there signals waited by all branches
+      | [] <- awaitedByAllList = branches''
+      | otherwise = [await awaitedByAllList $ serializeDependentForks k env branches'']
+      where
+        toBranch :: (IdxSet env', UniformSchedule kernel env') -> UniformSchedule kernel env'
+        toBranch (set, branch) = await (map toSignal $ IdxSet.toList set) branch
+
+        awaitedByAll :: IdxSet env'
+        awaitedByAll = case branches of
+          [] -> IdxSet.empty
+          ((b,_):bs) -> foldl' (\s (s', _) -> IdxSet.intersect s s') b bs
+
+        -- To get the type information that the indices are indeed signals,
+        -- we filter the list of signals of the first branch, instead of using
+        -- IdxSet.toList. The latter would not guarantee that the indices are
+        -- signals.
+        awaitedByAllList :: [Idx env' Signal]
+        awaitedByAllList = case branches of
+          [] -> []
+          ((_, b) : _) -> filter (`IdxSet.member` awaitedByAll) $ fst $ directlyAwaits b
+
+        -- Remove the signals which occur in every branch
+        branches' :: [(IdxSet env', UniformSchedule kernel env')]
+        branches' = map (\(s, b) -> (s IdxSet.\\ awaitedByAll, b)) branches
+
+        -- Now we try to group branches, by checking if a signal occurs in some
+        -- (at least 2) but not all branches.
+        counts = mconcat $ map (CountEnv.fromIdxSet . fst) branches'
+
+        -- Maximum number of branches in which a common signal occurs
+        commonCount = CountEnv.maxCount counts
+
+        -- Signal which occurs in the most number of branches
+        commonSignal =  IdxSet.first $ CountEnv.findWithCount counts commonCount
+
+        branches'' :: [UniformSchedule kernel env']
+        branches''
+          | False
+          , commonCount >= 2
+          , Just (Exists signal) <- commonSignal
+          , False
+          -- common is the list of branches which wait on this signal, and
+          -- uncommon is the list of branches which do not wait on the signal.
+          , (common, uncommon) <- partition (\(s, _) -> signal `IdxSet.member` s) branches'
+          , common' <- map (\(s, b) -> (IdxSet.remove signal s, b)) common
+          = go uncommon ++ [await [toSignal $ Exists signal] $ serializeDependentForks k env $ go common']
+          
+          | otherwise
+          -- No signals found which are awaited by some branches.
+          -- Now check if there signals waited by all branches
+          = map toBranch branches'
+
+        toSignal :: Exists (Idx env') -> Idx env' Signal
+        toSignal (Exists idx)
+          | Just idx' <- k idx = case infoFor idx' env of
+            InfoSignalImplies _ -> idx
+            InfoSignalInstead _ -> idx
+            InfoSignalResolved  -> idx
+            _                   -> internalError "Expected this index to point to a Signal"
+        toSignal _ = internalError "Expected this index to point to a Signal"
+
 -- Returns the set of indices of signal resolvers (not signals) which are
 -- resolved at the end of this schedule.
 resolvesAtEnd :: UniformSchedule kernel env -> IdxSet env
@@ -473,7 +553,7 @@ resolvesAtEnd (Awhile _ _ _ next) = resolvesAtEnd next
 resolvesAtEnd (Fork next _)       = resolvesAtEnd next
 
 serializeDependentForks :: forall kernel env env'. env' :?> env -> InfoEnv env -> [UniformSchedule kernel env'] -> UniformSchedule kernel env'
-serializeDependentForks k env branches = go (map reorder branches) []
+serializeDependentForks k env branches = go branches []
   where
     -- Takes a list of branches which are not processed yet and a list of
     -- already processed branches. We still need to have access to the
@@ -500,7 +580,7 @@ serializeDependentForks k env branches = go (map reorder branches) []
           , InfoSignalResolver msignal <- infoFor idx env
           = msignal
         findSignal _ = Nothing
-      
+
         directlyFollows :: UniformSchedule kernel env' -> Bool
         directlyFollows other = signals `isSubsequenceOf` sort (mapMaybe k otherSignals)
           where

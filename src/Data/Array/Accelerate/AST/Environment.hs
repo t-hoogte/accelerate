@@ -26,12 +26,12 @@ module Data.Array.Accelerate.AST.Environment (
   partialUpdate, partialRemove, partialEnvToList, partialEnvSingleton, partialEnvPush,
   partialEnvSameKeys, partialEnvSub, partialEnvSkipLHS,
 
-  Skip(..), skipIdx, chainSkip,
+  Skip(..), skipIdx, chainSkip, skipWeakenIdx,
 
   prjUpdate', prjReplace', update', updates', mapEnv,
   Identity(..), (:>)(..), weakenId, weakenSucc, weakenSucc', weakenEmpty,
   sink, (.>), sinkWithLHS, weakenWithLHS, substituteLHS,
-  varsGet, varsGetVal, PartEnv(..), stripWithLhs) where
+  varsGet, varsGetVal, stripWithLhs) where
 
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Var
@@ -225,15 +225,10 @@ partialEnvSingleton (SuccIdx idx) v = PNone $ partialEnvSingleton idx v
 -- Wrapper to put homogenous types in an Env or PartialEnv
 newtype IdentityF t f = IdentityF t
 
--- ??
+-- Drops some bindings of env' to result in env.
 data Skip env env' where
   SkipSucc :: Skip env (env', t) -> Skip env env'
   SkipNone :: Skip env env
-
-data PartEnv big small where
-  PartAll :: PartEnv env env
-  PartYes :: PartEnv env env' -> PartEnv (env, t) (env', t)
-  PartNo  :: PartEnv env env' -> PartEnv (env, t)  env'
 
 skipIdx :: Skip env env' -> Idx env t -> Maybe (Idx env' t)
 skipIdx SkipNone     idx           = Just idx
@@ -244,6 +239,10 @@ skipIdx (SkipSucc s) idx = case skipIdx s idx of
 chainSkip :: Skip env1 env2 -> Skip env2 env3 -> Skip env1 env3
 chainSkip skipL (SkipSucc skipR) = SkipSucc $ chainSkip skipL skipR
 chainSkip skipL SkipNone         = skipL
+
+skipWeakenIdx :: Skip env env' -> env' :> env
+skipWeakenIdx (SkipSucc s) = weakenSucc $ skipWeakenIdx s
+skipWeakenIdx SkipNone     = weakenId
 
 prjUpdate' :: (f t -> (f t, a)) -> Idx env t -> Env f env -> (Env f env, a)
 prjUpdate' f ZeroIdx       (Push env v) = (Push env v', a)
