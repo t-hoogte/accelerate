@@ -130,28 +130,28 @@ unless _ _ = return ()
 #endif
 
 
-setValue   :: Value -> Word32 -> IO ()
+setValue :: Value -> Word32 -> IO ()
 setValue (Value f) v = poke f v
 
-getValue   :: Value -> IO Word32
+getValue :: Value -> IO Word32
 getValue (Value f) = peek f
 
-getFlag    :: Flag -> IO Bool
+getFlag :: Flag -> IO Bool
 getFlag (Flag i) = do
   flags  <- peek __cmd_line_flags
   return $! testBit flags i
 
-setFlag    :: Flag -> IO ()
+setFlag :: Flag -> IO ()
 setFlag (Flag i) = do
   flags <- peek __cmd_line_flags
   poke __cmd_line_flags (setBit flags i)
 
-clearFlag  :: Flag -> IO ()
+clearFlag :: Flag -> IO ()
 clearFlag (Flag i) = do
   flags <- peek __cmd_line_flags
   poke __cmd_line_flags (clearBit flags i)
 
-setFlags   :: [Flag] -> IO ()
+setFlags :: [Flag] -> IO ()
 setFlags = mapM_ setFlag
 
 clearFlags :: [Flag] -> IO ()
@@ -161,10 +161,13 @@ clearFlags = mapM_ clearFlag
 -- notEnabled = error $ unlines [ "Data.Array.Accelerate: Debugging options are disabled."
 --                              , "Reinstall package 'accelerate' with '-fdebug' to enable them." ]
 
--- FIXME: HLS requires stubs because it does not process the
---        'addForeignFilePath' calls when evaluating Template Haskell
+-- Note: [HLS and GHC IDE]
 --
---        https://github.com/haskell/haskell-language-server/issues/365
+-- HLS requires stubs because it does not process the 'addForeignFilePath'
+-- calls when evaluating Template Haskell
+--
+-- > https://github.com/haskell/haskell-language-server/issues/365
+--
 #ifndef __GHCIDE__
 
 -- Import the underlying flag variables. These are defined in the file

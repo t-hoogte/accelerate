@@ -2,6 +2,7 @@
 {-# LANGUAGE GADTs                #-}
 {-# LANGUAGE LambdaCase           #-}
 {-# LANGUAGE MultiWayIf           #-}
+{-# LANGUAGE OverloadedStrings    #-}
 {-# LANGUAGE RankNTypes           #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
 {-# LANGUAGE TypeOperators        #-}
@@ -50,7 +51,6 @@ import Data.Array.Accelerate.Error
 import Data.List (foldl')
 import Data.Maybe
 import Data.Type.Equality
-import Unsafe.Coerce (unsafeCoerce)
 
 data ReEnv env subenv where
   ReEnvEnd  :: ReEnv () ()
@@ -184,7 +184,7 @@ droppedReturnImplications :: LeftHandSide s t env env' -> ReturnImplication env'
 droppedReturnImplications lhs (ReturnImplication implies) = ReturnImplication $ IdxSet.intersect implies $ lhsIndices lhs
 
 dropLivenessEnv :: forall s t env env'. LeftHandSide s t env env' -> LivenessEnv env' -> LivenessEnv env
-dropLivenessEnv lhs lenv@(LivenessEnv env) = LivenessEnv $ strengthenSEnv (lhsSkip' lhs) env
+dropLivenessEnv lhs (LivenessEnv env) = LivenessEnv $ strengthenSEnv (lhsSkip' lhs) env
 
 pushLivenessEnv :: forall s t env env'. LeftHandSide s t env env' -> ReturnImplications env t -> LivenessEnv env -> LivenessEnv env'
 pushLivenessEnv lhs bodyImplications (LivenessEnv env) = LivenessEnv $ go lhs bodyImplications $ weakenSEnv (lhsSkip' lhs) env

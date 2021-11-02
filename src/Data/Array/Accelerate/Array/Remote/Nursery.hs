@@ -1,5 +1,6 @@
-{-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE LambdaCase   #-}
+{-# LANGUAGE BangPatterns      #-}
+{-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE OverloadedStrings #-}
 -- |
 -- Module      : Data.Array.Accelerate.Array.Remote.Nursery
 -- Copyright   : [2008..2020] The Accelerate Team
@@ -16,17 +17,15 @@ module Data.Array.Accelerate.Array.Remote.Nursery (
 
 ) where
 
--- friends
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Debug.Internal.Flags                   as Debug
-import Data.Array.Accelerate.Debug.Internal.Monitoring              as Debug
 import Data.Array.Accelerate.Debug.Internal.Trace                   as Debug
 
--- libraries
 import Control.Concurrent.MVar
 import Data.Int
 import Data.Sequence                                                ( Seq )
 import Data.Word
+import Formatting
 import System.Mem.Weak                                              ( Weak )
 import Prelude                                                      hiding ( lookup )
 import qualified Data.HashTable.IO                                  as HT
@@ -73,7 +72,7 @@ lookup !key (Nursery !ref !_) =
       Just r  ->
         case Seq.viewl r of
           v Seq.:< vs -> do
-            Debug.decreaseCurrentBytesNursery (fromIntegral key)
+            -- Debug.remote_memory_free_nursery v
             if Seq.null vs
               then return (Nothing, Just v)   -- delete this entry from the map
               else return (Just vs, Just v)   -- re-insert the tail
@@ -87,7 +86,7 @@ lookup !key (Nursery !ref !_) =
 insert :: Int -> ptr Word8 -> Nursery ptr -> IO ()
 insert !key !val (Nursery !ref _) =
   withMVar ref $ \nrs -> do
-    Debug.increaseCurrentBytesRemote (fromIntegral key)
+    -- Debug.remote_memory_alloc_nursery val key
     HT.mutate nrs key $ \case
       Nothing -> (Just (Seq.singleton val), ())
       Just vs -> (Just (vs Seq.|> val),     ())
@@ -101,8 +100,7 @@ cleanup delete !ref = do
   message "nursery cleanup"
   modifyMVar_ ref $ \nrs -> do
     HT.mapM_ (Seq.mapM delete . snd) nrs
-    Debug.setCurrentBytesNursery 0
-    nrs'   <- HT.new
+    nrs' <- HT.new
     return nrs'
 
 
@@ -119,6 +117,6 @@ size (Nursery ref _)
 -- -----
 
 {-# INLINE message #-}
-message :: String -> IO ()
-message msg = Debug.traceIO Debug.dump_gc ("gc: " ++ msg)
+message :: Format (IO ()) a -> a
+message fmt = Debug.traceM Debug.dump_gc ("gc: " % fmt)
 

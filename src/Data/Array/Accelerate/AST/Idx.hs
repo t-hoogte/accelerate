@@ -6,7 +6,6 @@
 {-# LANGUAGE PatternSynonyms     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell     #-}
-{-# LANGUAGE TypeApplications    #-}
 {-# LANGUAGE TypeOperators       #-}
 {-# LANGUAGE ViewPatterns        #-}
 {-# OPTIONS_HADDOCK hide #-}
@@ -23,16 +22,14 @@
 --
 
 module Data.Array.Accelerate.AST.Idx (
-
-  Idx(ZeroIdx, SuccIdx, VoidIdx),
+  Idx, pattern ZeroIdx, pattern SuccIdx, pattern VoidIdx,
   idxToInt,
   rnfIdx, liftIdx, matchIdx,
 
   PairIdx(..)
-
 ) where
 
-import Language.Haskell.TH ( Q, TExp )
+import Language.Haskell.TH.Extra
 import Control.DeepSeq
 
 #ifndef ACCELERATE_INTERNAL_CHECKS
@@ -74,7 +71,7 @@ rnfIdx :: Idx env t -> ()
 rnfIdx ZeroIdx      = ()
 rnfIdx (SuccIdx ix) = rnfIdx ix
 
-liftIdx :: Idx env t -> Q (TExp (Idx env t))
+liftIdx :: Idx env t -> CodeQ (Idx env t)
 liftIdx ZeroIdx      = [|| ZeroIdx ||]
 liftIdx (SuccIdx ix) = [|| SuccIdx $$(liftIdx ix) ||]
 
@@ -93,14 +90,14 @@ matchIdx _           _           = Nothing
 -- data Idx env t where
 --   ZeroIdx ::              Idx (env, t) t
 --   SuccIdx :: Idx env t -> Idx (env, s) t
--- 
+--
 -- For performance, it uses an Int under the hood.
 newtype Idx env t = UnsafeIdxConstructor { unsafeRunIdx :: Int } deriving ( Eq, Ord )
 
 {-# COMPLETE ZeroIdx, SuccIdx #-}
 
 pattern ZeroIdx :: forall envt t. () => forall env. (envt ~ (env, t)) => Idx envt t
-pattern ZeroIdx <- (\x -> (idxToInt x, unsafeCoerce @_ @(envt :~: (_, t)) Refl) -> (0, Refl))
+pattern ZeroIdx <- (\x -> (idxToInt x, unsafeCoerce Refl) -> (0, Refl :: envt :~: (env, t)))
   where
     ZeroIdx = UnsafeIdxConstructor 0
 
@@ -120,10 +117,7 @@ idxToInt = unsafeRunIdx
 rnfIdx :: Idx env t -> ()
 rnfIdx !_ = ()
 
-instance NFData (Idx env t) where
-  rnf = rnfIdx
-
-liftIdx :: Idx env t -> Q (TExp (Idx env t))
+liftIdx :: Idx env t -> CodeQ (Idx env t)
 liftIdx (UnsafeIdxConstructor i) = [|| UnsafeIdxConstructor i ||]
 
 {-# INLINEABLE matchIdx #-}
@@ -131,15 +125,15 @@ matchIdx :: Idx env s -> Idx env t -> Maybe (s :~: t)
 matchIdx (UnsafeIdxConstructor i) (UnsafeIdxConstructor j)
   | i == j = Just $ unsafeCoerce Refl
   | otherwise = Nothing
-
 #endif
+
+instance NFData (Idx env t) where
+  rnf = rnfIdx
 
 -- | Despite the 'complete' pragma above, GHC can't infer that there is no
 -- pattern possible if the environment is empty. This can be used instead.
 pattern VoidIdx :: forall env t a. (env ~ ()) => () => a -> Idx env t
 pattern VoidIdx a <- (\case{} -> a)
-{-# COMPLETE VoidIdx #-}
-
 
 data PairIdx p a where
   PairIdxLeft  :: PairIdx (a, b) a

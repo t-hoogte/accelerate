@@ -56,6 +56,8 @@ import qualified Data.Array.Accelerate.AST.Operation    as C
 import qualified Data.Array.Accelerate.AST.Partitioned  as C
 import Data.Kind
 import Data.Maybe
+import Data.String
+import Formatting
 import Data.List
     ( groupBy, nubBy, sort, group )
 import Prelude hiding (id, (.), read)
@@ -2603,7 +2605,7 @@ partialDoSubstituteConvertEnv (ConvertEnvFuture var) fenv env
         | FutureBuffer _ s r _ _ <- future = (s, r)
     in
       env `Push` NewIdxJust signal `Push` NewIdxJust ref
-  | otherwise = internalError $ "Requested access to a variable " ++ (show $ idxToInt $ varIdx var) ++ " of type " ++ show (prettyGroundR $ varType var) ++ ", but the Future was not found in the environment"
+  | otherwise = internalError $ "Requested access to a variable " % (fromString $ show $ idxToInt $ varIdx var) % " of type " % fromString (show $ prettyGroundR $ varType var) % ", but the Future was not found in the environment"
 
 data DeclareInput fenv genv' t where
   DeclareInput :: fenv :> fenv'
