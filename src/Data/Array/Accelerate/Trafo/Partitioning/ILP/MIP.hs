@@ -29,22 +29,20 @@ import Data.Bifunctor (bimap)
 
 import Numeric.Optimization.MIP.Solver
     ( cbc, cplex, glpsol, gurobiCl, lpSolve, scip )
-import Data.Char (isSpace, ord)
-import qualified Debug.Trace
-import Text.Read (readMaybe)
-import Data.Maybe (catMaybes, mapMaybe)
+import Data.Char (ord)
+import Data.Maybe (mapMaybe)
 import Control.Monad.State
 import Control.Monad.Reader
 
 instance (MakesILP op, MIP.IsSolver s IO) => ILPSolver s op where
-  solve s ilp@(ILP dir obj constr bnds n) = makeSolution names <$> MIP.solve s options problem
+  solve s (ILP dir obj constr bnds n) = makeSolution names <$> MIP.solve s options problem
     where
       options = MIP.SolveOptions{ MIP.solveTimeLimit   = Nothing
                                 , MIP.solveLogger      = putStrLn . ("AccILPSolver: "      ++)
                                 , MIP.solveErrorLogger = putStrLn . ("AccILPSolverError: " ++) }
 
       stateProblem = Problem (Just "AccelerateILP") <$> (mkFun dir <$> expr n obj) <*> cons n constr <*> pure [] <*> pure [] <*> vartypes <*> bounds bnds
-      (problem, names) = runState stateProblem $ (mempty, mempty)
+      (problem, names) = runState stateProblem (mempty, mempty)
 
       mkFun Maximise = ObjectiveFunction (Just "AccelerateObjective") OptMax
       mkFun Minimise = ObjectiveFunction (Just "AccelerateObjective") OptMin

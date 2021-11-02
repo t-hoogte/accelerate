@@ -138,7 +138,7 @@ makeBackpermuteArg args env (Cluster io ast) = let o = getOutputEnv io args
                                                         _ -> error "urk"
     lhsEnvArgs (Make   t lhs) env = case take' t env of (BPE (ArrArg r sh buf) f, env') -> BPA (ArgArray Out r sh buf) f :>: lhsEnvArgs lhs env'
                                                         _ -> error "urk"
-    lhsEnvArgs (EArg lhs) (Push env (BPE (Others arg) f)) = BPA arg f :>: lhsEnvArgs lhs env
+    lhsEnvArgs (ExpArg lhs) (Push env (BPE (Others arg) f)) = BPA arg f :>: lhsEnvArgs lhs env
     lhsEnvArgs (Adju lhs) (Push env (BPE (Others arg) f)) = BPA arg f :>: lhsEnvArgs lhs env
     lhsEnvArgs (Ignr lhs) (Push env _) = lhsEnvArgs lhs env
 
@@ -147,26 +147,37 @@ makeBackpermuteArg args env (Cluster io ast) = let o = getOutputEnv io args
     lhsArgsEnv (Reqr t1 t2 lhs)       env              (BPA _ f :>: args) = case take' t2 env of (BPE arg          _, env') -> put' t1 (BPE arg f) (lhsArgsEnv lhs env' args)
     lhsArgsEnv (Make t     lhs)       env              (BPA _ f :>: args) = case take' t  env of (BPE (ArrArg r sh buf) _, env') -> Push (lhsArgsEnv lhs env' args) (BPE (OutArg r sh buf) f)
                                                                                                  _ -> error "urk"
-    lhsArgsEnv (EArg       lhs) (Push env (BPE arg _)) (BPA _ f :>: args) = Push (lhsArgsEnv lhs env  args) (BPE arg f)
+    lhsArgsEnv (ExpArg     lhs) (Push env (BPE arg _)) (BPA _ f :>: args) = Push (lhsArgsEnv lhs env  args) (BPE arg f)
     lhsArgsEnv (Adju       lhs) (Push env (BPE arg _)) (BPA _ f :>: args) = Push (lhsArgsEnv lhs env  args) (BPE arg f)
     lhsArgsEnv (Ignr       lhs) (Push env arg)                      args  = Push (lhsArgsEnv lhs env  args) arg
 
     getOutputEnv :: ClusterIO args i o -> Args env args -> BackpermutedEnv env o
     getOutputEnv P.Empty       ArgsNil           = Empty
-    getOutputEnv (Vertical r io) (ArgVar vars :>: args) = Push (getOutputEnv io args) (BPE (ArrArg r (toGrounds vars) (error "accessing a fused away buffer")) id) -- there is no buffer!
+    getOutputEnv (Vertical t r io) (ArgVar vars :>: args) = put' t (BPE (ArrArg r (toGrounds vars) (error "accessing a fused away buffer")) id) (getOutputEnv io args) -- there is no buffer!
     getOutputEnv (Input      io) (ArgArray In r sh buf :>: args) = Push (getOutputEnv io args) (BPE (ArrArg r sh buf) id)
-    getOutputEnv (Output t   io) (ArgArray Out r sh buf :>: args) = put' t (BPE (ArrArg r sh buf) id) (getOutputEnv io args)
+    getOutputEnv (Output t s e io) (ArgArray Out r sh buf :>: args) = put' t (BPE (ArrArg (ArrayR (arrayRshape r) e) sh (biggenBuffers s buf)) id) (getOutputEnv io args)
     getOutputEnv (MutPut     io) (arg :>: args) = Push (getOutputEnv io args) (BPE (Others arg) id)
-    getOutputEnv (ExpPut     io) (arg :>: args) = Push (getOutputEnv io args) (BPE (Others arg) id)
+    getOutputEnv (ExpPut'    io) (arg :>: args) = Push (getOutputEnv io args) (BPE (Others arg) id)
+
+    biggenBuffers :: SubTupR e e' -> GroundVars env (Buffers e') -> GroundVars env (Buffers e)
+    biggenBuffers SubTupRskip _ = error "accessing a simplified away buffer"
+    biggenBuffers SubTupRkeep vars = vars
+    biggenBuffers (SubTupRpair _ _) (TupRsingle _) = error "impossible???"
+    biggenBuffers (SubTupRpair sl sr) (TupRpair bufl bufr) = TupRpair (biggenBuffers sl bufl) (biggenBuffers sr bufr)
 
     fromInputEnv :: ClusterIO args input output -> BackpermutedEnv env input -> BackpermutedArgs env args
     fromInputEnv P.Empty       Empty = ArgsNil
-    fromInputEnv (Vertical _ io) (Push env (BPE (OutArg _ sh _) f)) = BPA (ArgVar (fromGrounds sh)) f :>: fromInputEnv io env
+    fromInputEnv (Vertical _ _ io) (Push env (BPE (OutArg _ sh _) f)) = BPA (ArgVar (fromGrounds sh)) f :>: fromInputEnv io env
     fromInputEnv (Input    io) (Push env (BPE (ArrArg r sh buf) f)) = BPA (ArgArray In r sh buf) f :>: fromInputEnv io env
-    fromInputEnv (Output _ io) (Push env (BPE (OutArg r sh buf) f)) = BPA (ArgArray Out r sh buf) f :>: fromInputEnv io env
+    fromInputEnv (Output _ s e io) (Push env (BPE (OutArg r sh buf) f)) = BPA (ArgArray Out (ArrayR (arrayRshape r) (subTupR s e)) sh (subTupR (onBuffers s) buf)) f :>: fromInputEnv io env
     fromInputEnv (MutPut   io) (Push env (BPE (Others arg) f)) = BPA arg f :>: fromInputEnv io env
     fromInputEnv (ExpPut   io) (Push env (BPE (Others arg) f)) = BPA arg f :>: fromInputEnv io env
     fromInputEnv _ (Push _ (BPE (Others _) _)) = error "Array argument found in Other"
+
+    onBuffers :: SubTupR e e' -> SubTupR (Buffers e) (Buffers e')
+    onBuffers SubTupRskip = SubTupRskip
+    onBuffers SubTupRkeep = SubTupRkeep
+    onBuffers (SubTupRpair l r) = SubTupRpair (onBuffers l) (onBuffers r)
 
 -- Conceptually, this computes the body of the fused loop
 -- It only deals with scalar values - wrap it in a loop!
@@ -238,14 +249,14 @@ instance DesugarAcc InterpretOp where
   -- etc, but the rest piggybacks off of Generate for now (see Desugar.hs)
 
 instance SLVOperation InterpretOp where
-  slvOperation IGenerate = Just $ ShrinkOperation $ \subArgs args@(ArgFun f :>: array :>: ArgsNil) -> case subArgs of
+  slvOperation IGenerate = Just $ ShrinkOperation $ \subArgs args@(ArgFun f :>: array :>: ArgsNil) _ -> case subArgs of
     SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgsNil
       -> ShrunkOperation IGenerate args
     SubArgKeep `SubArgsLive` SubArgOut subTup `SubArgsLive` SubArgsNil
       -> ShrunkOperation IGenerate (ArgFun (subTupFun subTup f) :>: array :>: ArgsNil)
     _ `SubArgsLive` SubArgsDead _ -> internalError "At least one output should be preserved"
 
-  slvOperation IMap = Just $ ShrinkOperation $ \subArgs args@(ArgFun f :>: input :>: output :>: ArgsNil) -> case subArgs of
+  slvOperation IMap = Just $ ShrinkOperation $ \subArgs args@(ArgFun f :>: input :>: output :>: ArgsNil) _ -> case subArgs of
     SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgsNil
       -> ShrunkOperation IMap args
     SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgOut subTup `SubArgsLive` SubArgsNil
@@ -379,21 +390,23 @@ doNTimes n f x
 
 evalIO1 :: Int -> ClusterIO args i o -> BackpermutedArgs env args -> Val env -> IO (BPFromArg env i)
 evalIO1 _ P.Empty                                         ArgsNil    _ = pure Empty
-evalIO1 n (Vertical r io) (BPA (ArgVar vars          ) f :>: args) env = PushBPFA f (Shape (arrayRshape r) (varsGetVal vars env)) <$> evalIO1 n io args env
+evalIO1 n (Vertical _ r io) (BPA (ArgVar vars          ) f :>: args) env = PushBPFA f (Shape (arrayRshape r) (varsGetVal vars env)) <$> evalIO1 n io args env
 evalIO1 n (Input      io) (BPA (ArgArray In r sh buf ) f :>: args) env = PushBPFA f <$> value                                     <*> evalIO1 n io args env 
   where value = Value <$> indexBuffers' (arrayRtype  r) (varsGetVal buf env) n 
                       <*> pure (Shape   (arrayRshape r) (varsGetVal sh  env))
-evalIO1 n (Output _   io) (BPA (ArgArray Out r sh   _) f :>: args) env = PushBPFA f (Shape (arrayRshape r) (varsGetVal sh env))   <$> evalIO1 n io args env
+evalIO1 n (Output _ _ _ io) (BPA (ArgArray Out r sh   _) f :>: args) env = PushBPFA f (Shape (arrayRshape r) (varsGetVal sh env))   <$> evalIO1 n io args env
 evalIO1 n (MutPut     io) (BPA (ArgArray Mut r sh buf) f :>: args) env = PushBPFA f (ArrayDescriptor (arrayRshape r) sh buf)      <$> evalIO1 n io args env
-evalIO1 n (ExpPut     io) (BPA (ArgExp e)              f :>: args) env = PushBPFA f e                                             <$> evalIO1 n io args env
+evalIO1 n (ExpPut'    io) (BPA (ArgExp e)              f :>: args) env = PushBPFA f e                                             <$> evalIO1 n io args env
+evalIO1 n (ExpPut'    io) (BPA (ArgVar e)              f :>: args) env = PushBPFA f e                                             <$> evalIO1 n io args env
+evalIO1 n (ExpPut'    io) (BPA (ArgFun e)              f :>: args) env = PushBPFA f e                                             <$> evalIO1 n io args env
 
 evalIO2 :: Int -> ClusterIO args i o -> Args env args -> Val env -> Env (FromArg' env) o -> IO (Val env)
 evalIO2 _ P.Empty ArgsNil env Empty = pure env
-evalIO2 n (Vertical _ io) (_ :>: args) env (PushFA _ o) = evalIO2 n io args env o
+evalIO2 n (Vertical t _ io) (_ :>: args) env (take' t -> (_, o)) = evalIO2 n io args env o
 evalIO2 n (Input      io) (_ :>: args) env (PushFA _ o) = evalIO2 n io args env o
 evalIO2 n (MutPut     io) (_ :>: args) env (PushFA _ o) = evalIO2 n io args env o
-evalIO2 n (ExpPut     io) (_ :>: args) env (PushFA _ o) = evalIO2 n io args env o
-evalIO2 n (Output t   io) (ArgArray Out (arrayRtype -> r) _ buf :>: args) env o = let (FromArg (Value x _), o') = take' t o in writeBuffers r (veryUnsafeUnfreezeBuffers r $ varsGetVal buf env) n x >> evalIO2 n io args env o'
+evalIO2 n (ExpPut'     io) (_ :>: args) env (PushFA _ o) = evalIO2 n io args env o
+evalIO2 n (Output t s _ io) (ArgArray Out (arrayRtype -> r) _ buf :>: args) env o = let (FromArg (Value x _), o') = take' t o in writeBuffers r (veryUnsafeUnfreezeBuffers r $ varsGetVal buf env) n (subTup s x) >> evalIO2 n io args env o'
 
 evalAST :: forall i o env. Int -> ClusterAST InterpretOp i o -> Val env -> BPFromArg env i -> IO (Env (FromArg' env) o)
 evalAST _ None _ Empty = pure Empty
@@ -409,6 +422,8 @@ evalLHS1 Base Empty _ = Empty
 evalLHS1 (Reqr t _ lhs) i env = let (BP (FromArg x) f, i') = take' t i in PushBPFA f x (evalLHS1 lhs i' env)
 evalLHS1 (Make _   lhs) (PushBPFA f x i') env = PushBPFA f x (evalLHS1 lhs i' env)
 evalLHS1 (EArg     lhs) (PushBPFA f x i') env = PushBPFA f x (evalLHS1 lhs i' env)
+evalLHS1 (FArg     lhs) (PushBPFA f x i') env = PushBPFA f x (evalLHS1 lhs i' env)
+evalLHS1 (VArg     lhs) (PushBPFA f x i') env = PushBPFA f x (evalLHS1 lhs i' env)
 evalLHS1 (Adju     lhs) (PushBPFA f x i') env = PushBPFA f x (evalLHS1 lhs i' env)
 evalLHS1 (Ignr     lhs) (PushBPFA _ _ i') env =             evalLHS1 lhs i' env
 
@@ -418,6 +433,8 @@ evalLHS2 (Reqr t1 t2 lhs) i env o = let (x, i') = take' t1 i
                                     in                    put' t2 x       (evalLHS2 lhs i' env o)
 evalLHS2 (Make t lhs) (PushBPFA f _ i) env (Push o y)   = put' t (BP y f) (evalLHS2 lhs i  env o)
 evalLHS2 (EArg   lhs) (PushBPFA f e i) env           o  = PushBPFA f e    (evalLHS2 lhs i  env o)
+evalLHS2 (FArg   lhs) (PushBPFA f e i) env           o  = PushBPFA f e    (evalLHS2 lhs i  env o)
+evalLHS2 (VArg   lhs) (PushBPFA f e i) env           o  = PushBPFA f e    (evalLHS2 lhs i  env o)
 evalLHS2 (Adju   lhs) (PushBPFA f _ i) env (PushFA m o) = PushBPFA f m    (evalLHS2 lhs i  env o)
 evalLHS2 (Ignr   lhs) (PushBPFA f x i) env           o  = PushBPFA f x    (evalLHS2 lhs i  env o)
 
@@ -431,7 +448,7 @@ evalLHS2 (Ignr   lhs) (PushBPFA f x i) env           o  = PushBPFA f x    (evalL
 --
 
 run :: forall a. (HasCallStack, Sugar.Arrays a) => Smart.Acc a -> a
-run a = unsafePerformIO execute
+run _ = unsafePerformIO execute
   where
     acc :: PartitionedAcc InterpretOp () (DesugaredArrays (Sugar.ArraysR a))
     !acc    = undefined -- convertAcc a

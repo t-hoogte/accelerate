@@ -198,8 +198,8 @@ getLabelsArg (ArgFun fun)                  env = getLabelsFun fun    env
 
 -- The comment above is outdated, but I'm not sure what is going on here anymore. What are the two types of return arguments from getLabelsTup? Does it make sense that a TupRsingle always gives Right?
 -- ALabels shouldn't contain a single ELabel for arrays, but a TupR of ELabels (one for each buffer)!
-getLabelsArg (ArgArray _ _ shVars buVars) env = let (Arr x,             buLabs) = getLabelsTup buVars env
-                                                in  (unBuffers $ Arr x, buLabs)
+getLabelsArg (ArgArray _ _ _ buVars) env = let (Arr x,             buLabs) = getLabelsTup buVars env
+                                           in  (unBuffers $ Arr x, buLabs)
 
 getLabelsTup :: TupR (Var a env) b -> LabelEnv env -> ALabels (m sh b)
 getLabelsTup TupRunit         _   = (Arr TupRunit, mempty)

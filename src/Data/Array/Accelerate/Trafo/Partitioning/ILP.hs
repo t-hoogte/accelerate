@@ -21,9 +21,8 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.MIP
 
 import System.IO.Unsafe (unsafePerformIO)
 import Data.Maybe (fromJust)
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (LabelEnv, Label)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (Label)
 import Data.Map (Map)
-import qualified Debug.Trace
 import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
 
 

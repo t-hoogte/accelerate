@@ -182,6 +182,13 @@ shapeType (ShapeRsnoc shr) =
   `TupRpair`
   TupRsingle (SingleScalarType (NumSingleType (IntegralNumType TypeInt)))
 
+typeShape :: TypeR sh -> Maybe (ShapeR sh)
+typeShape TupRunit = Just ShapeRz
+typeShape (tup `TupRpair` TupRsingle (SingleScalarType (NumSingleType (IntegralNumType TypeInt))))
+  | Just sh <- typeShape tup
+  = Just $ ShapeRsnoc sh
+typeShape _ = Nothing
+
 rnfShape :: ShapeR sh -> sh -> ()
 rnfShape ShapeRz          ()      = ()
 rnfShape (ShapeRsnoc shr) (sh, s) = s `seq` rnfShape shr sh

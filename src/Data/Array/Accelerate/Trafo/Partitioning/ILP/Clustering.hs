@@ -5,6 +5,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE LambdaCase #-}
 
 -- _Significantly_ speeds up compilation of this file, but at an obvious cost!
@@ -36,13 +37,11 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (ClusterLs (Execs, Non
 import Data.Array.Accelerate.AST.Environment (Identity(runIdentity), weakenWithLHS)
 
 import Prelude hiding ( take )
-import qualified Debug.Trace
-import Lens.Micro ((%~), _1, _3, (^.))
+import Lens.Micro ((%~), _1, _3)
 import Lens.Micro.Extras (view)
-import Data.Bifunctor (first)
-import qualified Data.Array.Accelerate.Pretty as Pretty
 import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
-import Data.Array.Accelerate.Representation.Type (TupR(TupRunit))
+import Data.Array.Accelerate.Trafo.LiveVars (SubTupR(SubTupRkeep))
+import Data.Array.Accelerate.Representation.Array (arrayRtype)
 
 -- "open research question"
 -- -- Each set of ints corresponds to a set of Constructions, which themselves contain a set of ints (the things they depend on).
@@ -90,26 +89,25 @@ topSort :: Graph -> Labels -> ClusterL
 topSort _ (S.toList -> [l]) = ExecL [l]
 topSort (Graph _ fedges _) cluster = ExecL topsorted
   where
-    -- cluster' = S.map _labelId cluster
-    -- getLabels = labelMap cluster
     (graph, getAdj, _) =
           G.graphFromEdges
-          . flip (foldr (\y acc -> fromMaybe ((y, y, []):acc) (tryUpdateList ((==y) . view _1) id acc))) (S.toList cluster)
-          . foldr (\(x, y) acc -> fromMaybe ((x,x,[y]):acc) $ tryUpdateList ((==x) . view _1) (_3 %~ (y:)) acc) []
+          . map (\(a,b) -> (a,a,b))
+          . M.toList
+          . flip (S.fold (\(x :-> y) -> M.adjust (y:) x)) fedges
+          . M.fromList
+          . map (,[])
           . S.toList
-          . S.filter (uncurry ((&&) `on` (`elem` cluster))) -- filter edges on 'both vertices are in this cluster'
-          . S.map (\(x :-> y) -> (x, y))
-          $ fedges
+          $ cluster
     topsorted = map (view _1 . getAdj) $ G.topSort graph 
 
-openReconstruct   :: Pretty.PrettyOp (Cluster op) =>LabelEnv aenv
+openReconstruct   :: Pretty.PrettyOp (Cluster op) => LabelEnv aenv
                   -> Graph
                   -> [ClusterLs]
                   -> M.Map Label [ClusterLs]
                   -> M.Map Label (Construction op)
                   -> Exists (PreOpenAcc (Cluster op) aenv)
 openReconstruct  a b c d e = (\(Left x) -> x) $ openReconstruct' a b c Nothing d e
-openReconstructF  :: Pretty.PrettyOp (Cluster op) =>LabelEnv aenv
+openReconstructF  :: Pretty.PrettyOp (Cluster op) => LabelEnv aenv
                   -> Graph
                   -> [ClusterLs]
                   -> Label
@@ -196,7 +194,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
 
     makeASTF :: forall env. LabelEnv env -> Label -> M.Map Label (Exists (PreOpenAcc (Cluster op) env)) -> Exists (PreOpenAfun (Cluster op) env)
     makeASTF env l prev = case makeCluster env (NonExecL l) of
-      NotFold (CBod l') -> case makeAST env (subcluster l) prev of 
+      NotFold CBod -> case makeAST env (subcluster l) prev of 
         --  fromJust $ l' ^. parent) prev of 
         Exists acc -> Exists $ Abody acc
       NotFold (CFun lhs l') -> createLHS lhs env $ \env' lhs' -> case makeASTF env' l' (M.map (\(Exists acc) -> Exists $ weakenAcc lhs' acc) prev) of
@@ -292,9 +290,9 @@ consCluster largs lextra (Cluster cIO cAST) op k =
           (\lhs' -> -- Existing input, fuse horizontally
             consCluster'        ltot  r toAdd ast                  lhs' io)
           (fuseInput a ltot lhs io)
-      L (ArgArray Out _ _ _) _ ->
+      L (ArgArray Out (arrayRtype -> r') _ _) _ ->
         fromMaybe
-          (addOutput ast io $ \ast' io' -> -- new output
+          (addOutput r' ast io $ \ast' io' -> -- new output
             consCluster' (a :>: ltot) r toAdd ast' (Make Here lhs) io')
           (fuseOutput a ltot lhs io $ \take' lhs' io' _ -> -- diagonal fusion
             -- note that we prepend 'a': The fused cluster only outputs this arg
@@ -359,7 +357,7 @@ fuseInput
   | Just Refl <- matchALabel a1 a2 =
     Just $ Reqr Here Here lhs
 -- The rest are recursive cases
-fuseInput x (_ :>: as) (Make t lhs) (Output _ io) =
+fuseInput x (_ :>: as) (Make t lhs) (Output _ _ _ io) =
   (\(Reqr a b c) -> ttake b t $ \b' t' -> Reqr (There a) b' (Make t' c))
   <$> fuseInput x as lhs io
 fuseInput x as (Reqr t t2 lhs) io =
@@ -374,7 +372,7 @@ fuseInput x (_ :>: as) (EArg lhs) (ExpPut' io) = (\(Reqr a b c) -> Reqr (There a
 fuseInput x (_ :>: as) (VArg lhs) (ExpPut' io) = (\(Reqr a b c) -> Reqr (There a) (There b) $ VArg c) <$> fuseInput x as lhs io
 fuseInput x (_ :>: as) (FArg lhs) (ExpPut' io) = (\(Reqr a b c) -> Reqr (There a) (There b) $ FArg c) <$> fuseInput x as lhs io
 -- Ignore cases that don't get fused
-fuseInput x (_ :>: as) (Ignr lhs) (Output _ io) =
+fuseInput x (_ :>: as) (Ignr lhs) (Output _ _ _ io) =
   (\(Reqr a b c) -> Reqr (There a) (There b) (Ignr c))
   <$> fuseInput x as lhs io
 fuseInput x (_ :>: as) (Ignr lhs) (Input io) =
@@ -386,10 +384,10 @@ fuseInput x (_ :>: as) (Ignr lhs) (MutPut io) =
 fuseInput x (_ :>: as) (Ignr lhs) (ExpPut' io) =
   (\(Reqr a b c) -> Reqr (There a) (There b) (Ignr c))
   <$> fuseInput x as lhs io
-fuseInput x (_ :>: as) (Make t lhs) (Vertical _ io) =
+fuseInput x (_ :>: as) (Make t lhs) (Vertical _ _ io) =
   (\(Reqr a b c) -> ttake b t $ \b' t' -> Reqr (There a) b' (Make t' c))
   <$> fuseInput x as lhs io
-fuseInput x (_ :>: as) (Ignr lhs) (Vertical _ io) =
+fuseInput x (_ :>: as) (Ignr lhs) (Vertical _ _ io) =
   (\(Reqr a b c) -> Reqr (There a) (There b) (Ignr c))
   <$> fuseInput x as lhs io
 
@@ -410,10 +408,10 @@ removeInput (a :>: xs) Here (Input io) k =
 removeInput (x :>: xs) (There t) (Input io) k =
   removeInput xs t io $ \xs' io' t' t'' a ->
     k (x :>: xs') (Input io') (There t') (There' t'') a
-removeInput (x :>: xs) (There t) (Output t1 io) k =
+removeInput (x :>: xs) (There t) (Output t1 s r io) k =
   removeInput xs t io $ \xs' io' t' t'' a ->
     ttake t' t1 $ \t2 t3 ->
-      k (x :>: xs') (Output t3 io') t2 (There' t'') a
+      k (x :>: xs') (Output t3 s r io') t2 (There' t'') a
 removeInput (x :>: xs) (There t) (MutPut io) k =
   removeInput xs t io $ \xs' io' t' t'' a ->
     k (x :>: xs') (MutPut io') (There t') (There' t'') a
@@ -426,9 +424,10 @@ removeInput (x :>: xs) (There t) (VarPut io) k =
 removeInput (x :>: xs) (There t) (FunPut io) k =
   removeInput xs t io $ \xs' io' t' t'' a ->
     k (x :>: xs') (FunPut io') (There t') (There' t'') a
-removeInput (x :>: xs) (There t) (Vertical r io) k =
+removeInput (x :>: xs) (There t) (Vertical t1 r io) k =
   removeInput xs t io $ \xs' io' t' t'' a ->
-    k (x :>: xs') (Vertical r io') (There t') (There' t'') a
+    ttake t' t1 $ \t2 t3 ->
+      k (x :>: xs') (Vertical t3 r io') t2 (There' t'') a
 
 
 restoreInput :: ClusterIO total' i' result'
@@ -442,9 +441,9 @@ restoreInput (Input    cio) (There' tt) (There ti) (There tr) x =
   Input     $ restoreInput cio tt ti tr x
 restoreInput (ExpPut   cio) (There' tt) (There ti) (There tr) x =
   ExpPut    $ restoreInput cio tt ti tr x
-restoreInput (Output t cio) (There' tt) (There ti)        tr  x =
+restoreInput (Output t s r cio) (There' tt) (There ti)        tr  x =
   ttake t tr $ \t' tr' ->
-    Output t' $ restoreInput cio tt ti tr' x
+    Output t' s r $ restoreInput cio tt ti tr' x
 restoreInput (MutPut   cio) (There' tt) (There ti) (There tr) x =
   MutPut    $ restoreInput cio tt ti tr x
 restoreInput _ _ _ _ _ = error "I think this means that the take(')s in restoreInput don't agree with each other"
@@ -492,84 +491,87 @@ fuseOutput _ ArgsNil Base Empty _ = Nothing
 -- Fusion!
 fuseOutput
   (L _ (a1, _))
-  (ArgArray In _ _ _ `L` (a2, _) :>: _)
+  (ArgArray In r _ _ `L` (a2, _) :>: _)
   (Ignr lhs)
   (Input io)
   k
   | Just Refl <- matchALabel a1 a2 =
-    Just $ k Here' (Make Here lhs) (Output Here io) Here
+    Just $ k Here' (Make Here lhs) (Output Here SubTupRkeep (arrayRtype r) io) Here
 
 -- Make case
-fuseOutput x (_ :>: as) (Make t1 lhs) (Output t2 io) k =
-  fuseOutput x as lhs io $ \t' (Make t3 lhs') (Output t4 io') t ->
+fuseOutput x (_ :>: as) (Make t1 lhs) (Output t2 s r io) k =
+  fuseOutput x as lhs io $ \t' (Make t3 lhs') (Output t4 s' r' io') t ->
     ttake t3 t1 $ \t3' t1' ->
       ttake t4 t2 $ \t4' t2' ->
-        k (There' t') (Make t3' $ Make t1' lhs') (Output t4' $ Output t2' io') (There t)
-fuseOutput x (_ :>: as) (Make t1 lhs) (Vertical r io) k =
-  fuseOutput x as lhs io $ \t' (Make t3 lhs') (Output t4 io') t ->
+        k (There' t') (Make t3' $ Make t1' lhs') (Output t4' s' r' $ Output t2' s r io') (There t)
+fuseOutput x (_ :>: as) (Make t1 lhs) (Vertical t2 r' io) k =
+  fuseOutput x as lhs io $ \t' (Make t3 lhs') (Output t4 s r io') t ->
     ttake t3 t1 $ \t3' t1' ->
-        k (There' t') (Make t3' $ Make t1' lhs') (Output (There t4) $ Vertical r io') (There t)
+      ttake t4 t2 $ \t4' t2' ->
+        k (There' t') (Make t3' $ Make t1' lhs') (Output t4' s r $ Vertical t2' r' io') (There t)
 -- The Reqr case is difficult: we use `removeInput` to recurse past the `Reqr`, but
 -- (other than in fuseInput) we have to pass the result of recursing through
 -- `restoreInput` to reassemble the CIO. More elegant (no error cases) would be to
 -- defunctionalise the effect on the CIO (just like Take and Take' do), but that's a heavy hammer.
 fuseOutput x as (Reqr t1 t2 lhs) io k =
   removeInput as t1 io $ \as' io' t3 take' removed ->
-    fuseOutput x as' lhs io' $ \take'' (Make t4 lhs') (Output t5 io'') t ->
+    fuseOutput x as' lhs io' $ \take'' (Make t4 lhs') (Output t5 s r io'') t ->
       ttake t t1 $ \t' t1' ->
         ttake t4 t2 $ \t4' t2' ->
           ttake t5 t3 $ \t5' t3' ->
             ttake' take'' take' $ \take1' take2' ->
-              k take1' (Make t4' $ Reqr t1' t2' lhs') (Output t5' $ restoreInput io'' take2' t1' t3' removed) t'
+              k take1' (Make t4' $ Reqr t1' t2' lhs') (Output t5' s r $ restoreInput io'' take2' t1' t3' removed) t'
 -- Ignr cases, note that we can ignore empty list, Base and Output
 fuseOutput x (_ :>: as) (Ignr lhs) (Input io) k =
-  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
-    k (There' t') (Make (There t1) $ Ignr lhs') (Output (There t2) $ Input io') (There t)
-fuseOutput x (_ :>: as) (Ignr lhs) (Vertical r io) k =
-  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
-    k (There' t') (Make (There t1) $ Ignr lhs') (Output (There t2) $ Vertical r io') (There t)
+  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 s r io') t ->
+    k (There' t') (Make (There t1) $ Ignr lhs') (Output (There t2) s r $ Input io') (There t)
+fuseOutput x (_ :>: as) (Ignr lhs) (Vertical t r' io) k =
+  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 s r io') t3 ->
+    ttake t2 t $ \t2' t'' ->
+      k (There' t') (Make (There t1) $ Ignr lhs') (Output t2' s r $ Vertical t'' r' io') (There t3)
 fuseOutput x (_ :>: as) (Ignr lhs) (MutPut io) k =
-  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
-    k (There' t') (Make (There t1) $ Ignr lhs') (Output (There t2) $ MutPut io') (There t)
+  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 s r io') t ->
+    k (There' t') (Make (There t1) $ Ignr lhs') (Output (There t2) s r $ MutPut io') (There t)
 fuseOutput x (_ :>: as) (Ignr lhs) (ExpPut io) k =
-  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
-    k (There' t') (Make (There t1) $ Ignr lhs') (Output (There t2) $ ExpPut io') (There t)
+  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 s r io') t ->
+    k (There' t') (Make (There t1) $ Ignr lhs') (Output (There t2) s r $ ExpPut io') (There t)
 fuseOutput x (_ :>: as) (Ignr lhs) (VarPut io) k =
-  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
-    k (There' t') (Make (There t1) $ Ignr lhs') (Output (There t2) $ VarPut io') (There t)
+  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 s r io') t ->
+    k (There' t') (Make (There t1) $ Ignr lhs') (Output (There t2) s r $ VarPut io') (There t)
 fuseOutput x (_ :>: as) (Ignr lhs) (FunPut io) k =
-  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
-    k (There' t') (Make (There t1) $ Ignr lhs') (Output (There t2) $ FunPut io') (There t)
-fuseOutput x (_ :>: as) (Ignr lhs) (Output t1 io) k =
-  fuseOutput x as lhs io $ \t' (Make t2 lhs') (Output t3 io') t ->
+  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 s r io') t ->
+    k (There' t') (Make (There t1) $ Ignr lhs') (Output (There t2) s r $ FunPut io') (There t)
+fuseOutput x (_ :>: as) (Ignr lhs) (Output t1 s' r' io) k =
+  fuseOutput x as lhs io $ \t' (Make t2 lhs') (Output t3 s r io') t ->
     ttake t3 t1 $ \t3' t1' ->
-      k (There' t') (Make (There t2) $ Ignr lhs') (Output t3' (Output t1' io')) (There t)
+      k (There' t') (Make (There t2) $ Ignr lhs') (Output t3' s r (Output t1' s' r' io')) (There t)
 -- EArg goes just like Ignr
 fuseOutput x (_ :>: as) (EArg lhs) (ExpPut io) k =
-  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
-    k (There' t') (Make (There t1) $ EArg lhs') (Output (There t2) $ ExpPut io') (There t)
+  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 s r io') t ->
+    k (There' t') (Make (There t1) $ EArg lhs') (Output (There t2) s r $ ExpPut io') (There t)
 fuseOutput x (_ :>: as) (VArg lhs) (VarPut io) k =
-  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
-    k (There' t') (Make (There t1) $ VArg lhs') (Output (There t2) $ VarPut io') (There t)
+  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 s r io') t ->
+    k (There' t') (Make (There t1) $ VArg lhs') (Output (There t2) s r $ VarPut io') (There t)
 fuseOutput x (_ :>: as) (FArg lhs) (FunPut io) k =
-  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
-    k (There' t') (Make (There t1) $ FArg lhs') (Output (There t2) $ FunPut io') (There t)
+  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 s r io') t ->
+    k (There' t') (Make (There t1) $ FArg lhs') (Output (There t2) s r $ FunPut io') (There t)
 -- Adju is like EArg
 fuseOutput x (_ :>: as) (Adju lhs) (MutPut io) k =
-  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 io') t ->
-    k (There' t') (Make (There t1) $ Adju lhs') (Output (There t2) $ MutPut io') (There t)
+  fuseOutput x as lhs io $ \t' (Make t1 lhs') (Output t2 s r io') t ->
+    k (There' t') (Make (There t1) $ Adju lhs') (Output (There t2) s r $ MutPut io') (There t)
 
 
-addOutput :: ClusterAST op scope result
+addOutput :: TypeR e
+          -> ClusterAST op scope result
           -> ClusterIO total i result
           -> (forall result'
               . ClusterAST op (scope, Value sh e) result'
              -> ClusterIO (Out sh e -> total) (i, Sh sh e) result'
              -> r)
           -> r
-addOutput None io k = k None (Output Here io)
-addOutput (Bind lhs op ast) io k =
-  addOutput ast io $ \ast' io' ->
+addOutput r None io k = k None (Output Here SubTupRkeep r io)
+addOutput r (Bind lhs op ast) io k =
+  addOutput r ast io $ \ast' io' ->
     k (Bind (Ignr lhs) op ast') io'
 
 {- [NOTE unsafeCoerce result type]
