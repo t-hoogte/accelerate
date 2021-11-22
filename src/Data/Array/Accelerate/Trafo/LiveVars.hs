@@ -254,7 +254,7 @@ reEnvImpliedLiveness (SPush env (Unknown implied)) (ReEnvKeep re) skip
 reEnvImpliedLiveness (SPush env Live)              (ReEnvKeep re) skip
   -- Variable was already live, no need to propagate new liveness information
   = reEnvImpliedLiveness env re skip
-reEnvImpliedLiveness SEmpty                        ReEnvEnd       skip = IdxSet.empty
+reEnvImpliedLiveness SEmpty                        ReEnvEnd       _ = IdxSet.empty
 
 lhsMarkLive :: IdxSet env' -> LHSLiveness s t env env' -> (IdxSet env, LHSLiveness s t env env')
 lhsMarkLive (IdxSet PEnd) lhs
@@ -450,10 +450,10 @@ expectJust Nothing  = internalError "Substitution in live variable analysis fail
 subTupExp :: IsArrayInstr arr => SubTupR t t' -> PreOpenExp arr env t -> PreOpenExp arr env t'
 subTupExp SubTupRkeep expr = expr
 subTupExp SubTupRskip _    = Nil
-subTupExp subTup      expr
-  | DeclareSubVars lhs _ vars <- declareSubVars (expType expr) subTup
+subTupExp s      expr
+  | DeclareSubVars lhs _ vars <- declareSubVars (expType expr) s
   = Let lhs expr $ expVars $ vars weakenId
 
 subTupFun :: IsArrayInstr arr => SubTupR t t' -> PreOpenFun arr env (s -> t) -> PreOpenFun arr env (s -> t')
-subTupFun subTup (Lam lhs (Body body)) = Lam lhs $ Body $ subTupExp subTup body
+subTupFun s (Lam lhs (Body body)) = Lam lhs $ Body $ subTupExp s body
 subTupFun _      _                     = internalError "Function impossible"

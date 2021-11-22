@@ -43,8 +43,6 @@ import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Array.Remote.Class
 import Data.Array.Accelerate.Array.Remote.Table                     ( StableBuffer, makeWeakArrayData, formatStableBuffer )
 import Data.Array.Accelerate.Error                                  ( internalError )
-import Data.Array.Accelerate.Representation.Elt
-import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Type
 import qualified Data.Array.Accelerate.Array.Remote.Table           as Basic
 import qualified Data.Array.Accelerate.Debug.Internal.Flags         as Debug

@@ -341,7 +341,7 @@ reorder = uncurry await . go Just
       | trivialBinding bnd = (signals, Alet lhs bnd next')
       where
         (signals, next') = go (k <=< strengthenWithLHS lhs) next
-    go k sched = ([], sched)
+    go _ sched = ([], sched)
 
     try :: env' :?> env -> Idx env' t -> Either (Idx env' t) (Idx env t)
     try k ix = case k ix of

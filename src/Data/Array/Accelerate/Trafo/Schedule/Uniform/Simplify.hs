@@ -33,39 +33,34 @@ module Data.Array.Accelerate.Trafo.Schedule.Uniform.Simplify (
   forkUnless, fork, forks, serial,
 ) where
 
-import Data.Array.Accelerate.Analysis.Match
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.IdxSet (IdxSet)
 import qualified Data.Array.Accelerate.AST.IdxSet           as IdxSet
-import Data.Array.Accelerate.AST.CountEnv (CountEnv)
 import qualified Data.Array.Accelerate.AST.CountEnv         as CountEnv
 import Data.Array.Accelerate.AST.LeftHandSide
-import Data.Array.Accelerate.AST.Kernel
-import Data.Array.Accelerate.AST.Schedule
 import Data.Array.Accelerate.AST.Schedule.Uniform
-import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Array
-import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Trafo.Exp.Substitution
-import Data.Array.Accelerate.Trafo.Operation.Substitution   ( strengthenArrayInstr, weakenArrayInstr )
+import Data.Array.Accelerate.Trafo.Operation.Substitution   ( weakenArrayInstr )
 import Data.Array.Accelerate.Trafo.Substitution             hiding ( weakenArrayInstr )
-import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Trafo.WeakenedEnvironment
-import Data.Array.Accelerate.Trafo.Schedule.Uniform.Substitution
+import Data.Array.Accelerate.Trafo.Schedule.Uniform.Substitution ()
 import Data.Array.Accelerate.Type
-import Data.Kind
 import Data.Maybe
 import Data.List
+    ( foldl',
+      find,
+      isSubsequenceOf,
+      (\\),
+      nub,
+      partition,
+      sort,
+      mapAccumR )
 import qualified Data.List as List
 import Control.Monad
-import Control.DeepSeq
-import qualified Data.Array.Accelerate.AST.Environment as Env
-
-
-import Data.Array.Accelerate.Pretty.Operation
 
 data InfoEnv env = InfoEnv
   (WEnv Info env)
@@ -514,7 +509,7 @@ forksGroupCommonAwait k env = serializeDependentForks k env . go . map (\b -> le
 
         branches'' :: [UniformSchedule kernel env']
         branches''
-          | False
+          | False -- @IVO???
           , commonCount >= 2
           , Just (Exists signal) <- commonSignal
           , False

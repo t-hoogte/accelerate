@@ -75,8 +75,7 @@ import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Error
 import Data.Typeable                                                ( (:~:)(..) )
 
-import Data.ByteString.Builder.Extra
-import Language.Haskell.TH                                          ( Q, TExp, Code )
+import Language.Haskell.TH                                          ( Q, Code )
 import Data.Kind (Type)
 import Control.DeepSeq (NFData (rnf))
 

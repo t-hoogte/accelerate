@@ -330,7 +330,7 @@ instance SLVOperation (Cluster op) where
 
       slvIO :: SubArgs a a' -> Args env a' -> Args env' a -> ClusterIO a i o -> ClusterIO a' i o
       slvIO SubArgsNil ArgsNil ArgsNil Empty = Empty
-      slvIO (SubArgsDead subargs) (ArgVar _ :>: args') (ArgArray Out (ArrayR shr r) _ _ :>: args) (Output t s te io') = Vertical t (ArrayR shr te) (slvIO subargs args' args io')
+      slvIO (SubArgsDead subargs) (ArgVar _ :>: args') (ArgArray Out (ArrayR shr _) _ _ :>: args) (Output t _ te io') = Vertical t (ArrayR shr te) (slvIO subargs args' args io')
       slvIO (SubArgsLive SubArgKeep subargs) (_ :>: (args' :: Args env a')) (_ :>: (args :: Args env' a)) io'
         = let k :: forall i o. ClusterIO a i o -> ClusterIO a' i o 
               k = slvIO subargs args' args in case io' of
