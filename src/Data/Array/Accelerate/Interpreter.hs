@@ -284,7 +284,7 @@ instance PrettyKernel InterpretKernel where
 -- -2 is left>right, -1 is right>left, n is 'according to computation n' (e.g. Backpermute) 
 -- (Note that Labels are uniquely identified by an Int, the parent just gives extra information)
 -- Use Output = -3 for 'cannot be fused with consumer', as that is more difficult to express (we don't know the consumer yet)
--- We restrict all the Inputs to (-2, PosInf).
+-- We restrict all the Inputs to >= -2.
 data OrderV = OrderIn  Label
             | OrderOut Label
   deriving (Eq, Ord, Show, Read)
@@ -296,7 +296,7 @@ instance MakesILP InterpretOp where
     Info
       mempty
       (  inputDirectionConstraint l lIn
-      <> var (OrderIn l) .==. int i) -- enforce that the backpermute follows its own rules
+      <> var (OrderIn l) .==. int i) -- enforce that the backpermute follows its own rules, but the output can be anything
       (inOutBounds l)
   mkGraph IGenerate _ l = Info mempty mempty (lower (-2) (BackendSpecific $ OrderOut l))
   mkGraph IMap (_ :>: L _ (_, S.toList -> ~[lIn]) :>: _ :>: ArgsNil) l =

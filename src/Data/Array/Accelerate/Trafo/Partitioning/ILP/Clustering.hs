@@ -89,6 +89,7 @@ topSort :: Graph -> Labels -> ClusterL
 topSort _ (S.toList -> [l]) = ExecL [l]
 topSort (Graph _ fedges _) cluster = ExecL topsorted
   where
+    -- graphs are endomorphisms in the Kleisli category of the free semimodule monad
     (graph, getAdj, _) =
           G.graphFromEdges
           . map (\(a,b) -> (a,a,b))
