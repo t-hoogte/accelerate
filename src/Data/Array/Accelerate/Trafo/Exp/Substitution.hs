@@ -305,7 +305,7 @@ class SinkExp (f :: Type -> Type -> Type) where
 
 instance SinkExp Idx where
   {-# INLINEABLE weakenE #-}
-  weakenE = (>:>)
+  weakenE w = (>:>) w
 
 instance SinkExp (Var s) where
   {-# INLINEABLE weakenE #-}

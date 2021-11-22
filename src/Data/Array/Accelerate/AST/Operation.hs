@@ -76,7 +76,7 @@ import Data.Array.Accelerate.Error
 import Data.Typeable                                                ( (:~:)(..) )
 
 import Data.ByteString.Builder.Extra
-import Language.Haskell.TH                                          ( Q, TExp )
+import Language.Haskell.TH                                          ( Q, TExp, Code )
 import Data.Kind (Type)
 import Control.DeepSeq (NFData (rnf))
 
@@ -388,17 +388,17 @@ rnfGroundVar = rnfVar rnfGroundR
 rnfGroundVars :: GroundVars env t -> ()
 rnfGroundVars = rnfTupR rnfGroundVar
 
-liftGroundR :: GroundR t -> Q (TExp (GroundR t))
+liftGroundR :: GroundR t -> Code Q (GroundR t)
 liftGroundR (GroundRscalar tp) = [|| GroundRscalar $$(liftScalarType tp) ||]
 liftGroundR (GroundRbuffer tp) = [|| GroundRbuffer $$(liftScalarType tp) ||]
 
-liftGroundsR :: GroundsR t -> Q (TExp (GroundsR t))
+liftGroundsR :: GroundsR t -> Code Q (GroundsR t)
 liftGroundsR = liftTupR liftGroundR
 
-liftGroundVar :: GroundVar env t -> Q (TExp (GroundVar env t))
+liftGroundVar :: GroundVar env t -> Code Q (GroundVar env t)
 liftGroundVar = liftVar liftGroundR
 
-liftGroundVars :: GroundVars env t -> Q (TExp (GroundVars env t))
+liftGroundVars :: GroundVars env t -> Code Q (GroundVars env t)
 liftGroundVars = liftTupR liftGroundVar
 
 paramIn :: ScalarType e -> GroundVar benv e -> OpenExp env benv e

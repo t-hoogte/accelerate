@@ -69,7 +69,8 @@ import Unsafe.Coerce (unsafeCoerce)
 import Control.Monad.ST
 import Data.Bits
 import Data.Array.Accelerate.Trafo.Operation.LiveVars
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP (..), Information (Info), Var (BackendSpecific), (-?>), fused, infusibleEdges)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP (..), Information (Info), Var (BackendSpecific), (-?>), fused, infusibleEdges) 
+import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Graph
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
 import qualified Data.Set as S
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
@@ -289,6 +290,9 @@ instance PrettyKernel InterpretKernel where
 data OrderV = OrderIn  Label
             | OrderOut Label
   deriving (Eq, Ord, Show, Read)
+pattern InVar, OutVar :: Label -> Graph.Var InterpretOp
+pattern InVar  l = BackendSpecific (OrderIn l)
+pattern OutVar l = BackendSpecific (OrderOut l)
 
 instance MakesILP InterpretOp where
   type BackendVar InterpretOp = OrderV
@@ -297,34 +301,31 @@ instance MakesILP InterpretOp where
     Info
       mempty
       (  inputDirectionConstraint l lIn
-      <> var (OrderIn l) .==. int i) -- enforce that the backpermute follows its own rules, but the output can be anything
+      <> c (InVar l) .==. int i) -- enforce that the backpermute follows its own rules, but the output can be anything
       (inOutBounds l)
-  mkGraph IGenerate _ l = Info mempty mempty (lower (-2) (BackendSpecific $ OrderOut l))
+  mkGraph IGenerate _ l = Info mempty mempty (lower (-2) (OutVar l))
   mkGraph IMap (_ :>: L _ (_, S.toList -> ~[lIn]) :>: _ :>: ArgsNil) l =
     Info
       mempty
       (  inputDirectionConstraint l lIn
-      <> var (OrderIn l) .==. var (OrderOut l))
+      <> c (InVar l) .==. c (OutVar l))
       (inOutBounds l)
   mkGraph IPermute (_ :>: L _ (_, S.toList -> ~[lTarget]) :>: _ :>: L _ (_, S.toList -> ~[lIn]) :>: ArgsNil) l =
     Info
       (mempty & infusibleEdges .~ S.singleton (lTarget -?> l)) -- Cannot fuse with the producer of the target array
       (  inputDirectionConstraint l lIn
-      <> var (OrderOut l) .==. int (-3)) -- convention meaning infusible
-      (lower (-2) (BackendSpecific $ OrderIn l))
+      <> c (OutVar l) .==. int (-3)) -- convention meaning infusible
+      (lower (-2) (InVar l))
 
 
 -- | If l and lIn are fused, the out-order of lIn and the in-order of l should match
 inputDirectionConstraint :: Label -> Label -> Constraint InterpretOp
 inputDirectionConstraint l lIn =
-                timesN (fused lIn l) .>=. var (OrderIn l) .-. var (OrderOut lIn)
-    <> (-1) .*. timesN (fused lIn l) .<=. var (OrderIn l) .-. var (OrderOut lIn)
+                timesN (fused lIn l) .>=. c (InVar l) .-. c (OutVar lIn)
+    <> (-1) .*. timesN (fused lIn l) .<=. c (InVar l) .-. c (OutVar lIn)
 
 inOutBounds :: Label -> Bounds InterpretOp
 inOutBounds l = lower (-2) (BackendSpecific $ OrderIn l) <> lower (-2) (BackendSpecific $ OrderOut l)
-
-var :: BackendVar InterpretOp -> Expression InterpretOp
-var = c . BackendSpecific
 
 instance NFData' InterpretOp where
   rnf' = error "todo"
