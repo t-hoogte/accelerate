@@ -1,6 +1,7 @@
 {-# LANGUAGE BangPatterns             #-}
 {-# LANGUAGE CPP                      #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
+{-# LANGUAGE OverloadedStrings        #-}
 -- |
 -- Module      : Data.Array.Accelerate.Debug.Internal.Trace
 -- Copyright   : [2008..2020] The Accelerate Team
@@ -18,22 +19,34 @@
 module Data.Array.Accelerate.Debug.Internal.Trace (
 
   showFFloatSIBase,
+  formatSIBase,
 
   putTraceMsg,
-  trace, traceIO,
-  traceEvent, traceEventIO,
+  trace, traceM,
 
 ) where
 
 import Data.Array.Accelerate.Debug.Internal.Flags
 
-import Numeric
+import Control.Monad.Trans
+import Data.Double.Conversion.Text
+import Data.Text.Lazy.Builder
+import Formatting
 
 #ifdef ACCELERATE_DEBUG
 import Data.Array.Accelerate.Debug.Internal.Clock
+import System.IO                                                    hiding ( stderr )
 import System.IO.Unsafe
-import Text.Printf
-import qualified Debug.Trace                            as D
+import qualified Data.Text.IO                                       as T
+
+import GHC.MVar
+import GHC.IO.Encoding
+import GHC.IO.Handle.Types
+import GHC.IO.Handle.Internals
+import qualified GHC.IO.FD                                          as FD
+#if defined(mingw32_HOST_OS)
+import Foreign.C.Types
+#endif
 #endif
 
 
@@ -48,34 +61,47 @@ import qualified Debug.Trace                            as D
 -- is usually 1024, for example when measuring seconds versus bytes,
 -- respectively.
 --
-showFFloatSIBase :: RealFloat a => Maybe Int -> a -> a -> ShowS
-showFFloatSIBase prec !base !k
-  = showString
-  $ case pow of
-      4   -> with "T"
-      3   -> with "G"
-      2   -> with "M"
-      1   -> with "k"
-      -1  -> with "m"
-      -2  -> with "µ"
-      -3  -> with "n"
-      -4  -> with "p"
-      _   -> showGFloat prec k " "      -- no unit or unhandled SI prefix
+{-# INLINEABLE showFFloatSIBase #-}
+showFFloatSIBase :: RealFloat a => Maybe Int -> a -> a -> Builder -> Builder
+showFFloatSIBase mp !b !k !t = bformat (formatSIBase mp b % builder) k t
+
+{-# INLINEABLE formatSIBase #-}
+formatSIBase :: RealFloat a => Maybe Int -> a -> Format r (a -> r)
+formatSIBase mp !b = later go
   where
-    !k'         = k / (base ^^ pow)
-    !pow        = floor (logBase base k) :: Int
-    with unit   = showFFloat prec k' (' ':unit)
+    go k =
+      let !pow  = floor (logBase b k) :: Int
+          !k'   = k / (b ^^ pow)
+          !unit =
+            case pow of
+              4  -> Just "T"
+              3  -> Just "G"
+              2  -> Just "M"
+              1  -> Just "k"
+              -1 -> Just "m"
+              -2 -> Just "µ"
+              -3 -> Just "n"
+              -4 -> Just "p"
+              _  -> Nothing
+      in
+      case unit of
+        Nothing -> bformat (maybe float prec  mp % " ") k
+        Just t  -> bformat (maybe float fixed mp % " " % builder) k' t
+
+{-# INLINE prec #-}
+prec :: Real a => Int -> Format r (a -> r)
+prec digits = later (fromText . toPrecision digits . realToFrac)
 
 
 -- | The 'trace' function outputs the message given as its second argument when
 -- the debug mode indicated by the first argument is enabled, before returning
 -- the third argument as its result. The message is prefixed with a time stamp.
 --
-trace :: Flag -> String -> a -> a
+trace :: Flag -> Builder -> a -> a
 #ifdef ACCELERATE_DEBUG
 {-# NOINLINE trace #-}
 trace f msg expr = unsafePerformIO $ do
-  traceIO f msg
+  traceM f builder msg
   return expr
 #else
 {-# INLINE trace #-}
@@ -83,63 +109,75 @@ trace _ _ expr = expr
 #endif
 
 
--- | The 'traceIO' function outputs the trace message together with a time stamp
--- from the IO monad. This sequences the output with respect to other IO
--- actions.
+-- | The 'traceM' function outputs the trace message together with a time
+-- stamp from the MonadIO monad. This sequences the output with respect to
+-- other IO actions.
 
 -- TLM: Perhaps we should automatically format the log messages. Namely:
 --        * prefix with a description of the mode (e.g. "gc: foo")
 --        * align multi-line messages
 --
-traceIO :: Flag -> String -> IO ()
+{-# INLINE traceM #-}
+traceM :: MonadIO m => Flag -> Format (m ()) a -> a
+traceM _f m =
+  runFormat m $ \_k -> do
 #ifdef ACCELERATE_DEBUG
-traceIO f msg = when f $ putTraceMsg msg
-#else
-{-# INLINE traceIO #-}
-traceIO _ _   = return ()
+    when _f $ putTraceMsg (now _k)
 #endif
-
-
--- | The 'traceEvent' function behaves like 'trace' with the difference that the
--- message is emitted to the eventlog, if eventlog profiling is enabled at
--- runtime.
---
-traceEvent :: Flag -> String -> a -> a
-#ifdef ACCELERATE_DEBUG
-{-# NOINLINE traceEvent #-}
-traceEvent f msg expr = unsafePerformIO $ do
-  traceEventIO f msg
-  return expr
-#else
-{-# INLINE traceEvent #-}
-traceEvent _ _ expr = expr
-#endif
+    return ()
 
 
 -- | Print a message prefixed with the current elapsed wall-clock time.
 --
-putTraceMsg :: String -> IO ()
+{-# INLINE putTraceMsg #-}
+putTraceMsg :: MonadIO m => Format (m ()) a -> a
+putTraceMsg m =
+  runFormat m $ \_k -> liftIO $ do
 #ifdef ACCELERATE_DEBUG
-putTraceMsg msg = do
-  timestamp <- getProgramTime
-  D.traceIO  $ printf "[%8.3f] %s" timestamp msg
-#else
-putTraceMsg _   = return ()
+    timestamp <- getProgramTime
+    T.hPutStr stderr . sformat (squared (rfixed 8 ' ' (fixed 3)) % " " % builder % "\n") timestamp $ _k
 #endif
+    return ()
 
 
--- | The 'traceEventIO' function emits a message to the eventlog, if eventlog
--- profiling is available and enabled at runtime.
---
--- Compared to 'traceEvent', 'traceEventIO' sequences the event with respect to
--- other IO actions.
---
-traceEventIO :: Flag -> String -> IO ()
 #ifdef ACCELERATE_DEBUG
-traceEventIO f msg = do
-  when f $ D.traceEventIO msg
+-- | A handle managing output to the Haskell program's standard output
+-- channnel.
+--
+-- In contrast to 'System.IO.stderr' this output handle is (line) buffered,
+-- which prevents garbled output when used my multiple threads. Stolen from
+-- 'GHC.IO.Handle.FD.stderr'.
+--
+{-# NOINLINE stderr #-}
+stderr :: Handle
+stderr = unsafePerformIO $ do
+  -- TODO: acquire lock
+  setBinaryMode FD.stderr
+  enc <- getLocaleEncoding
+  mkHandle FD.stderr "<stderr>" WriteHandle True -- this stderr IS buffered
+               (Just enc)
+               nativeNewlineMode -- translate newlines
+               (Just stdHandleFinalizer) Nothing
+
+stdHandleFinalizer :: FilePath -> MVar Handle__ -> IO ()
+stdHandleFinalizer fp m = do
+  h_ <- takeMVar m
+  flushWriteBuffer h_
+  case haType h_ of
+    ClosedHandle -> return ()
+    _            -> closeTextCodecs h_
+  putMVar m (ioe_finalizedHandle fp)
+
+-- We have to put the FDs into binary mode on Windows to avoid the newline
+-- translation that the CRT IO library does.
+setBinaryMode :: FD.FD -> IO ()
+#if defined(mingw32_HOST_OS)
+setBinaryMode fd = do _ <- setmode (FD.fdFD fd) True
+                      return ()
+
+foreign import ccall unsafe "__hscore_setmode" setmode :: CInt -> Bool -> IO CInt
 #else
-{-# INLINE traceEventIO #-}
-traceEventIO _ _ = return ()
+setBinaryMode _ = return ()
+#endif
 #endif
 

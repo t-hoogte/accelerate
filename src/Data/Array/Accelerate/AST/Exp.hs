@@ -4,6 +4,7 @@
 {-# LANGUAGE FlexibleInstances     #-}
 {-# LANGUAGE GADTs                 #-}
 {-# LANGUAGE LambdaCase            #-}
+{-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE RankNTypes            #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
 {-# LANGUAGE TemplateHaskell       #-}
@@ -60,7 +61,7 @@ module Data.Array.Accelerate.AST.Exp (
 
   -- ** Miscellaneous
   mkConstant, mkBinary, unBody,
-  showExpOp, Direction(..),
+  formatExpOp, Direction(..),
   expIsTrivial,
 
 ) where
@@ -78,11 +79,13 @@ import Data.Array.Accelerate.Representation.Vec
 import Data.Array.Accelerate.Sugar.Foreign
 import Data.Array.Accelerate.Type
 import Data.Primitive.Vec
+import Data.String
 import Data.Typeable                                                ( (:~:) )
 import Data.ByteString.Builder                                      ( Builder )
 
 import Control.DeepSeq
-import Language.Haskell.TH                                          ( Q, TExp )
+import Language.Haskell.TH.Extra                                ( CodeQ )
+import Formatting
 import Prelude
 
 import GHC.TypeLits
@@ -237,7 +240,7 @@ type ExpVars env   = Vars ScalarType env
 -- Type class 'IsArrayInstr' should be implemented for that type.
 class IsArrayInstr arr where
   arrayInstrType :: arr (a -> b) -> TypeR b
-  liftArrayInstr :: arr t -> Q (TExp (arr t))
+  liftArrayInstr :: arr t -> CodeQ (arr t)
   rnfArrayInstr  :: arr t -> ()
   showArrayInstrOp :: arr t -> String
   encodeArrayInstr :: arr a -> Builder
@@ -386,7 +389,7 @@ expType = \case
   Case{}                       -> internalError "empty case encountered"
   Cond _ e _                   -> expType e
   While _ (Lam lhs _) _        -> lhsToTupR lhs
-  While{}                      -> error "What's the matter, you're running in the shadows"
+  While{}                      -> internalError "What's the matter, you're running in the shadows"
   Const tR _                   -> TupRsingle tR
   PrimConst c                  -> TupRsingle $ SingleScalarType $ primConstType c
   PrimApp f _                  -> snd $ primFunType f
@@ -430,13 +433,13 @@ primFunType = \case
   PrimBOr t                 -> binary' $ integral t
   PrimBXor t                -> binary' $ integral t
   PrimBNot t                -> unary' $ integral t
-  PrimBShiftL t             -> (integral t `TupRpair` int, integral t)
-  PrimBShiftR t             -> (integral t `TupRpair` int, integral t)
-  PrimBRotateL t            -> (integral t `TupRpair` int, integral t)
-  PrimBRotateR t            -> (integral t `TupRpair` int, integral t)
-  PrimPopCount t            -> unary (integral t) int
-  PrimCountLeadingZeros t   -> unary (integral t) int
-  PrimCountTrailingZeros t  -> unary (integral t) int
+  PrimBShiftL t             -> (integral t `TupRpair` tint, integral t)
+  PrimBShiftR t             -> (integral t `TupRpair` tint, integral t)
+  PrimBRotateL t            -> (integral t `TupRpair` tint, integral t)
+  PrimBRotateR t            -> (integral t `TupRpair` tint, integral t)
+  PrimPopCount t            -> unary (integral t) tint
+  PrimCountLeadingZeros t   -> unary (integral t) tint
+  PrimCountTrailingZeros t  -> unary (integral t) tint
 
   -- Fractional, Floating
   PrimFDiv t                -> binary' $ floating t
@@ -467,8 +470,8 @@ primFunType = \case
 
   -- RealFloat
   PrimAtan2 t               -> binary' $ floating t
-  PrimIsNaN t               -> unary (floating t) bool
-  PrimIsInfinite t          -> unary (floating t) bool
+  PrimIsNaN t               -> unary (floating t) tbool
+  PrimIsInfinite t          -> unary (floating t) tbool
 
   -- Relational and equality
   PrimLt t                  -> compare' t
@@ -481,9 +484,9 @@ primFunType = \case
   PrimMin t                 -> binary' $ single t
 
   -- Logical
-  PrimLAnd                  -> binary' bool
-  PrimLOr                   -> binary' bool
-  PrimLNot                  -> unary' bool
+  PrimLAnd                  -> binary' tbool
+  PrimLOr                   -> binary' tbool
+  PrimLNot                  -> unary' tbool
 
   -- general conversion between types
   PrimFromIntegral a b      -> unary (integral a) (num b)
@@ -494,15 +497,15 @@ primFunType = \case
     unary' a   = unary a a
     binary a b = (a `TupRpair` a, b)
     binary' a  = binary a a
-    compare' a = binary (single a) bool
+    compare' a = binary (single a) tbool
 
     single   = TupRsingle . SingleScalarType
     num      = TupRsingle . SingleScalarType . NumSingleType
     integral = num . IntegralNumType
     floating = num . FloatingNumType
 
-    bool     = TupRsingle scalarTypeWord8
-    int      = TupRsingle scalarTypeInt
+    tbool    = TupRsingle scalarTypeWord8
+    tint     = TupRsingle scalarTypeInt
 
 rnfOpenFun :: forall arr env t. IsArrayInstr arr => PreOpenFun arr env t -> ()
 rnfOpenFun (Body b)    = rnfOpenExp b
@@ -636,20 +639,20 @@ rnfList r = go
 liftOpenFun
     :: IsArrayInstr arr
     => PreOpenFun arr env t
-    -> Q (TExp (PreOpenFun arr env t))
+    -> CodeQ (PreOpenFun arr env t)
 liftOpenFun (Lam lhs f)  = [|| Lam $$(liftELeftHandSide lhs) $$(liftOpenFun f) ||]
 liftOpenFun (Body b)     = [|| Body $$(liftOpenExp b) ||]
 
 liftOpenExp
     :: forall arr env t. IsArrayInstr arr
     => PreOpenExp arr env t
-    -> Q (TExp (PreOpenExp arr env t))
+    -> CodeQ (PreOpenExp arr env t)
 liftOpenExp pexp =
   let
-      liftE :: PreOpenExp arr env e -> Q (TExp (PreOpenExp arr env e))
+      liftE :: PreOpenExp arr env e -> CodeQ (PreOpenExp arr env e)
       liftE = liftOpenExp
 
-      liftF :: PreOpenFun arr env f -> Q (TExp (PreOpenFun arr env f))
+      liftF :: PreOpenFun arr env f -> CodeQ (PreOpenFun arr env f)
       liftF = liftOpenFun
   in
   case pexp of
@@ -675,12 +678,12 @@ liftOpenExp pexp =
     ShapeSize shr ix          -> [|| ShapeSize $$(liftShapeR shr) $$(liftE ix) ||]
     Coerce t1 t2 e            -> [|| Coerce $$(liftScalarType t1) $$(liftScalarType t2) $$(liftE e) ||]
 
-liftPrimConst :: PrimConst c -> Q (TExp (PrimConst c))
+liftPrimConst :: PrimConst c -> CodeQ (PrimConst c)
 liftPrimConst (PrimMinBound t) = [|| PrimMinBound $$(liftBoundedType t) ||]
 liftPrimConst (PrimMaxBound t) = [|| PrimMaxBound $$(liftBoundedType t) ||]
 liftPrimConst (PrimPi t)       = [|| PrimPi $$(liftFloatingType t) ||]
 
-liftPrimFun :: PrimFun f -> Q (TExp (PrimFun f))
+liftPrimFun :: PrimFun f -> CodeQ (PrimFun f)
 liftPrimFun (PrimAdd t)                = [|| PrimAdd $$(liftNumType t) ||]
 liftPrimFun (PrimSub t)                = [|| PrimSub $$(liftNumType t) ||]
 liftPrimFun (PrimMul t)                = [|| PrimMul $$(liftNumType t) ||]
@@ -744,18 +747,18 @@ liftPrimFun PrimLNot                   = [|| PrimLNot ||]
 liftPrimFun (PrimFromIntegral ta tb)   = [|| PrimFromIntegral $$(liftIntegralType ta) $$(liftNumType tb) ||]
 liftPrimFun (PrimToFloating ta tb)     = [|| PrimToFloating $$(liftNumType ta) $$(liftFloatingType tb) ||]
 
-liftMaybe :: (a -> Q (TExp a)) -> Maybe a -> Q (TExp (Maybe a))
+liftMaybe :: (a -> CodeQ a) -> Maybe a -> CodeQ (Maybe a)
 liftMaybe _ Nothing  = [|| Nothing ||]
 liftMaybe f (Just x) = [|| Just $$(f x) ||]
 
-liftList :: (a -> Q (TExp a)) -> [a] -> Q (TExp [a])
+liftList :: (a -> CodeQ a) -> [a] -> CodeQ [a]
 liftList _ []     = [|| [] ||]
 liftList f (x:xs) = [|| $$(f x) : $$(liftList f xs) ||]
 
-liftELeftHandSide :: ELeftHandSide t env env' -> Q (TExp (ELeftHandSide t env env'))
+liftELeftHandSide :: ELeftHandSide t env env' -> CodeQ (ELeftHandSide t env env')
 liftELeftHandSide = liftLeftHandSide liftScalarType
 
-liftExpVar :: ExpVar env t -> Q (TExp (ExpVar env t))
+liftExpVar :: ExpVar env t -> CodeQ (ExpVar env t)
 liftExpVar = liftVar liftScalarType
 
 mkConstant :: TypeR t -> t -> PreOpenExp arr env t
@@ -774,28 +777,29 @@ unBody :: TypeR t -> PreOpenFun arr env t -> PreOpenExp arr env t
 unBody _  (Body e)  = e
 unBody tp (Lam _ _) = functionImpossible tp
 
-showExpOp :: IsArrayInstr arr => PreOpenExp arr env t -> String
-showExpOp Let{}             = "Let"
-showExpOp (Evar (Var _ ix)) = "Var x" ++ show (idxToInt ix)
-showExpOp (Const tp c)      = "Const " ++ showElt (TupRsingle tp) c
-showExpOp Undef{}           = "Undef"
-showExpOp Foreign{}         = "Foreign"
-showExpOp Pair{}            = "Pair"
-showExpOp Nil{}             = "Nil"
-showExpOp VecPack{}         = "VecPack"
-showExpOp VecUnpack{}       = "VecUnpack"
-showExpOp IndexSlice{}      = "IndexSlice"
-showExpOp IndexFull{}       = "IndexFull"
-showExpOp ToIndex{}         = "ToIndex"
-showExpOp FromIndex{}       = "FromIndex"
-showExpOp Case{}            = "Case"
-showExpOp Cond{}            = "Cond"
-showExpOp While{}           = "While"
-showExpOp PrimConst{}       = "PrimConst"
-showExpOp PrimApp{}         = "PrimApp"
-showExpOp (ArrayInstr ar _) = showArrayInstrOp ar
-showExpOp ShapeSize{}       = "ShapeSize"
-showExpOp Coerce{}          = "Coerce"
+formatExpOp :: IsArrayInstr arr => Format r (PreOpenExp arr env t -> r)
+formatExpOp = later $ \case
+  Let{}           -> "Let"
+  Evar (Var _ ix) -> bformat ("Var x" % int) (idxToInt ix)
+  Const tp c      -> bformat ("Const " % string) (showElt (TupRsingle tp) c)
+  Undef{}         -> "Undef"
+  Foreign{}       -> "Foreign"
+  Pair{}          -> "Pair"
+  Nil{}           -> "Nil"
+  VecPack{}       -> "VecPack"
+  VecUnpack{}     -> "VecUnpack"
+  IndexSlice{}    -> "IndexSlice"
+  IndexFull{}     -> "IndexFull"
+  ToIndex{}       -> "ToIndex"
+  FromIndex{}     -> "FromIndex"
+  Case{}          -> "Case"
+  Cond{}          -> "Cond"
+  While{}         -> "While"
+  PrimConst{}     -> "PrimConst"
+  PrimApp{}       -> "PrimApp"
+  ArrayInstr ar _ -> fromString $ showArrayInstrOp ar
+  ShapeSize{}     -> "ShapeSize"
+  Coerce{}        -> "Coerce"
 
 expIsTrivial :: forall arr env t. (forall s. arr s -> Bool) -> PreOpenExp arr env t -> Bool
 expIsTrivial arrayInstr = \case

@@ -1,9 +1,10 @@
-{-# LANGUAGE AllowAmbiguousTypes                 #-}
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE CPP                 #-}
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications    #-}
+{-# LANGUAGE OverloadedStrings   #-}
 {-# OPTIONS_HADDOCK hide #-}
 -- |
 -- Module      : Data.Array.Accelerate.Trafo
@@ -60,9 +61,10 @@ import qualified Data.Array.Accelerate.Pretty             as Pretty
 import qualified Data.Array.Accelerate.Pretty.Operation   as Pretty
 import qualified Data.Array.Accelerate.Pretty.Schedule    as Pretty
 import Data.Array.Accelerate.Pretty.Partitioned ()
+import Data.Text.Lazy.Builder
 
 #ifdef ACCELERATE_DEBUG
-import Text.Printf
+import Formatting
 import System.IO.Unsafe
 import Data.Array.Accelerate.Debug.Internal.Flags                   hiding ( when )
 import Data.Array.Accelerate.Debug.Internal.Timed
@@ -193,21 +195,19 @@ convertSeqWith Phase{..} s
 -- Execute a phase of the compiler and (possibly) print some timing/gc
 -- statistics.
 --
-phase :: NFData b => String -> (a -> b) -> a -> b
+phase :: NFData b => Builder -> (a -> b) -> a -> b
 phase n = phase' n rnf
 
 -- Execute a phase of the compiler and (possibly) print some timing/gc
 -- statistics.
 --
-phase' :: String -> (b -> ()) -> (a -> b) -> a -> b
+phase' :: Builder -> (b -> ()) -> (a -> b) -> a -> b
 #ifdef ACCELERATE_DEBUG
 phase' n rnf'' f x = unsafePerformIO $ do
   enabled <- getFlag dump_phases
   if enabled
-    then timed dump_phases (\wall cpu -> printf "phase %s: %s" n (elapsed wall cpu)) (let y = f x in rnf'' y `seq` return y)
+    then timed dump_phases (now ("phase " <> n <> ": ") % elapsed) (let y = f x in rnf'' y `seq` return y)
     else return (f x)
 #else
 phase' _ _ f = f
 #endif
-
-

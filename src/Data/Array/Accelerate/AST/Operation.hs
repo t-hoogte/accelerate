@@ -4,6 +4,7 @@
 {-# LANGUAGE FlexibleInstances     #-}
 {-# LANGUAGE GADTs                 #-}
 {-# LANGUAGE LambdaCase            #-}
+{-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE RankNTypes            #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
 {-# LANGUAGE TemplateHaskell       #-}
@@ -365,12 +366,12 @@ instance IsArrayInstr (ArrayInstr benv) where
   matchArrayInstr (Parameter v1) (Parameter v2) | Just Refl <- matchVar v1 v2 = Just Refl
   matchArrayInstr _              _              = Nothing
 
-  encodeArrayInstr (Index v)     = intHost $(hashQ "Index")     <> encodeGroundVar v
-  encodeArrayInstr (Parameter v) = intHost $(hashQ "Parameter") <> encodeExpVar v
+  encodeArrayInstr (Index v)     = intHost $(hashQ ("Index" :: String))     <> encodeGroundVar v
+  encodeArrayInstr (Parameter v) = intHost $(hashQ ("Parameter" :: String)) <> encodeExpVar v
 
 encodeGroundR :: GroundR t -> Builder
-encodeGroundR (GroundRscalar tp) = intHost $(hashQ "Scalar")    <> encodeScalarType tp
-encodeGroundR (GroundRbuffer tp) = intHost $(hashQ "Buffer")    <> encodeScalarType tp
+encodeGroundR (GroundRscalar tp) = intHost $(hashQ ("Scalar" :: String))    <> encodeScalarType tp
+encodeGroundR (GroundRbuffer tp) = intHost $(hashQ ("Buffer" :: String))    <> encodeScalarType tp
 
 encodeGroundsR :: GroundsR t -> Builder
 encodeGroundsR = encodeTupR encodeGroundR

@@ -60,7 +60,8 @@ import Data.Array.Accelerate.Type
 import Data.Primitive.Vec
 import Data.Primitive.Types
 import Data.Primitive.ByteArray
-import Text.Printf (printf)
+import Formatting hiding (int)
+import Data.Text.Lazy.Builder
 import Data.Array.Accelerate.Representation.Elt
 import Data.Array.Accelerate.Representation.Vec
 import Data.Array.Accelerate.Trafo.Exp.Substitution
@@ -487,8 +488,9 @@ run _ = unsafePerformIO execute
 -- Debugging
 -- ---------
 
-phase :: String -> (Double -> Double -> String) -> IO a -> IO a
-phase n fmt = Debug.timed Debug.dump_phases (\wall cpu -> printf "phase %s: %s" n (fmt wall cpu))
+phase :: Builder -> Format Builder (Double -> Double -> Builder) -> IO a -> IO a
+phase n fmt go = Debug.timed Debug.dump_phases (now ("phase " <> n <> ": ") % fmt) go
+
 
 
 

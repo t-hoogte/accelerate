@@ -20,7 +20,7 @@ module Data.Array.Accelerate.AST.IdxSet (
   IdxSet(..),
   member, varMember, intersect, union, unions, (\\), (>>=), insert, insertVar, skip, skip',
   push, empty, isEmpty, drop, drop', remove, fromList, fromList', fromVarList, fromVars, map,
-  singleton, singletonVar,
+  singleton, singletonVar, first,
   toList) where
 
 import Prelude hiding (drop, (>>=), map)
@@ -117,6 +117,12 @@ singleton idx = IdxSet $ partialEnvSingleton idx Present
 
 singletonVar :: Var s env t -> IdxSet env
 singletonVar (Var _ idx) = singleton idx
+
+first :: IdxSet env -> Maybe (Exists (Idx env))
+first (IdxSet (PPush _ _))                  = Just $ Exists ZeroIdx
+first (IdxSet (PNone env))
+  | Just (Exists idx) <- first (IdxSet env) = Just $ Exists $ SuccIdx idx
+first _                                     = Nothing
 
 instance Show (IdxSet env) where
   showsPrec p = showsPrec p . fmap (\(Exists idx) -> idxToInt idx) . toList

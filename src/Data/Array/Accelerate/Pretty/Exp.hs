@@ -501,9 +501,6 @@ prj :: Idx env t -> Val env -> Adoc
 prj ZeroIdx      (Push _ v)   = v
 prj (SuccIdx ix) (Push env _) = prj ix env
 
-top :: Val (env, t) -> Adoc
-top (Push _ v) = v
-
 -- Utilities
 -- ---------
 

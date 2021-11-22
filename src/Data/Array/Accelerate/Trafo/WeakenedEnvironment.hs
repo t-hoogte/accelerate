@@ -8,7 +8,7 @@
 {-# OPTIONS_HADDOCK hide #-}
 {-# LANGUAGE PatternSynonyms #-}
 -- |
--- Module      : Data.Array.Accelerate.AST.Environment
+-- Module      : Data.Array.Accelerate.AST.WeakenedEnvironment
 -- Copyright   : [2008..2020] The Accelerate Team
 -- License     : BSD3
 --
@@ -23,6 +23,7 @@ module Data.Array.Accelerate.Trafo.WeakenedEnvironment
 
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Idx
+import Data.Array.Accelerate.AST.IdxSet (IdxSet(..))
 import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.Error

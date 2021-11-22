@@ -2,6 +2,8 @@
 {-# LANGUAGE EmptyCase           #-}
 {-# LANGUAGE FlexibleInstances   #-}
 {-# LANGUAGE GADTs               #-}
+{-# LANGUAGE LambdaCase          #-}
+{-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell     #-}
 {-# LANGUAGE TypeApplications    #-}
@@ -28,11 +30,11 @@ import Data.Array.Accelerate.Representation.Elt
 import Data.Array.Accelerate.Representation.Shape                   hiding ( zip )
 import Data.Array.Accelerate.Representation.Type
 
-import Language.Haskell.TH
-import Language.Haskell.TH.Syntax
-import System.IO.Unsafe
 import Data.List                                                    ( intersperse )
 import Data.Maybe                                                   ( isJust )
+import Formatting
+import Language.Haskell.TH.Extra
+import System.IO.Unsafe
 import Text.Show                                                    ( showListWith )
 import Prelude                                                      hiding ( (!!) )
 import qualified Data.Vector.Unboxed                                as U
@@ -67,15 +69,25 @@ data ArrayR a where
             }
          -> ArrayR (Array sh e)
 
+type ArraysR = TupR ArrayR
+
 instance Show (ArrayR a) where
   show (ArrayR shR tp) = "Array DIM" ++ show (rank shR) ++ " " ++ show tp
 
-type ArraysR = TupR ArrayR
+formatArrayR :: Format r (ArrayR a -> r)
+formatArrayR = later $ \case
+  ArrayR shR eR -> bformat ("Array DIM" % int % " " % formatTypeR) (rank shR) eR
 
 instance Show (TupR ArrayR e) where
   show TupRunit           = "()"
   show (TupRsingle aR)    = show aR
   show (TupRpair aR1 aR2) = "(" ++ show aR1 ++ "," ++ show aR2 ++ ")"
+
+formatArraysR :: Format r (TupR ArrayR e -> r)
+formatArraysR = later $ \case
+  TupRunit         -> "()"
+  TupRsingle aR    -> bformat formatArrayR aR
+  TupRpair aR1 aR2 -> bformat (parenthesised (formatArraysR % "," % formatArraysR)) aR1 aR2
 
 showArraysR :: ArraysR a -> ShowS
 showArraysR = shows
@@ -189,13 +201,13 @@ linearIndexArray tp (Array _ buffers) = indexBuffers tp buffers
 
 showArray :: (e -> ShowS) -> ArrayR (Array sh e) -> Array sh e -> String
 showArray f arrR@(ArrayR shR _) arr@(Array sh _) = case shR of
-  ShapeRz                         -> "Scalar Z "                       ++ list
-  ShapeRsnoc ShapeRz              -> "Vector (" ++ shapeString ++ ") " ++ list
+  ShapeRz                         -> "Scalar Z "                       ++ xs
+  ShapeRsnoc ShapeRz              -> "Vector (" ++ shapeString ++ ") " ++ xs
   ShapeRsnoc (ShapeRsnoc ShapeRz) -> "Matrix (" ++ shapeString ++ ") " ++ showMatrix f arrR arr
-  _                               -> "Array ("  ++ shapeString ++ ") " ++ list
+  _                               -> "Array ("  ++ shapeString ++ ") " ++ xs
   where
     shapeString = showShape shR sh
-    list        = showListWith f (toList arrR arr) ""
+    xs          = showListWith f (toList arrR arr) ""
 
 showArrayShort :: Int -> (e -> ShowS) -> ArrayR (Array sh e) -> Array sh e -> String
 showArrayShort n f arrR arr = '[' : go 0 (toList arrR arr)
@@ -305,21 +317,21 @@ rnfArraysR TupRunit           ()      = ()
 rnfArraysR (TupRsingle arrR)  arr     = rnfArray arrR arr
 rnfArraysR (TupRpair aR1 aR2) (a1,a2) = rnfArraysR aR1 a1 `seq` rnfArraysR aR2 a2
 
-liftArrayR :: ArrayR a -> Q (TExp (ArrayR a))
+liftArrayR :: ArrayR a -> CodeQ (ArrayR a)
 liftArrayR (ArrayR shR tp) = [|| ArrayR $$(liftShapeR shR) $$(liftTypeR tp) ||]
 
-liftArraysR :: ArraysR arrs -> Q (TExp (ArraysR arrs))
+liftArraysR :: ArraysR arrs -> CodeQ (ArraysR arrs)
 liftArraysR TupRunit          = [|| TupRunit ||]
 liftArraysR (TupRsingle repr) = [|| TupRsingle $$(liftArrayR repr) ||]
 liftArraysR (TupRpair a b)    = [|| TupRpair $$(liftArraysR a) $$(liftArraysR b) ||]
 
-liftArray :: forall sh e. ArrayR (Array sh e) -> Array sh e -> Q (TExp (Array sh e))
+liftArray :: forall sh e. ArrayR (Array sh e) -> Array sh e -> CodeQ (Array sh e)
 liftArray (ArrayR shR tp) (Array sh buffers) =
   [|| Array $$(liftElt (shapeType shR) sh) $$(liftBuffers sz tp buffers) ||] `at` [t| Array $(liftTypeQ (shapeType shR)) $(liftTypeQ tp) |]
   where
     sz :: Int
     sz = size shR sh
 
-    at :: Q (TExp t) -> Q Type -> Q (TExp t)
-    at e t = unsafeTExpCoerce $ sigE (unTypeQ e) t
+    at :: CodeQ t -> Q Type -> CodeQ t
+    at e t = unsafeCodeCoerce $ sigE (unTypeCode e) t
 

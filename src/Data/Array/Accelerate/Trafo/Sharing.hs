@@ -6,6 +6,7 @@
 {-# LANGUAGE GADTs               #-}
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE OverloadedLists     #-}
+{-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE PatternGuards       #-}
 {-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -45,7 +46,7 @@ module Data.Array.Accelerate.Trafo.Sharing (
 
 ) where
 
-import Data.Array.Accelerate.AST                                    hiding ( PreOpenAcc(..), OpenAcc(..), Acc, ArrayInstr(..), PreOpenExp(..), OpenExp, Exp, Boundary(..), HasArraysR(..), showPreAccOp )
+import Data.Array.Accelerate.AST                                    hiding ( PreOpenAcc(..), OpenAcc(..), Acc, ArrayInstr(..), PreOpenExp(..), OpenExp, Exp, Boundary(..), HasArraysR(..), formatPreAccOp )
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.LeftHandSide
@@ -54,7 +55,7 @@ import Data.Array.Accelerate.Analysis.Match
 import Data.Array.Accelerate.Debug.Internal.Flags                   as Debug
 import Data.Array.Accelerate.Debug.Internal.Trace                   as Debug
 import Data.Array.Accelerate.Error
-import Data.Array.Accelerate.Representation.Array                   ( Array, ArraysR, ArrayR(..), showArraysR )
+import Data.Array.Accelerate.Representation.Array                   ( Array, ArraysR, ArrayR(..), formatArraysR )
 import Data.Array.Accelerate.Representation.Ground                  ( GFunctionR(..), DesugaredAfun, desugarArraysR, desugaredAfunIsBody )
 import Data.Array.Accelerate.Representation.Shape                   hiding ( zip )
 import Data.Array.Accelerate.Representation.Stencil
@@ -73,21 +74,23 @@ import qualified Data.Array.Accelerate.Representation.Stencil       as R
 import qualified Data.Array.Accelerate.Sugar.Array                  as Sugar
 
 import Control.Applicative                                          hiding ( Const )
-import Lens.Micro                                                 ( over, mapped, _1, _2 )
 import Control.Monad.Fix
 import Data.Function                                                ( on )
 import Data.Hashable
-import Data.List                                                    ( elemIndex, findIndex, groupBy, intercalate, partition )
+import Data.List                                                    ( elemIndex, findIndex, groupBy, partition )
 import Data.Maybe
 import Data.Monoid                                                  ( Any(..) )
+import Data.Text.Lazy.Builder
+import Formatting
+import Lens.Micro                                                   ( over, mapped, _1, _2 )
 import System.IO.Unsafe                                             ( unsafePerformIO )
 import System.Mem.StableName
-import Text.Printf
 import qualified Data.HashMap.Strict                                as Map
 import qualified Data.HashSet                                       as Set
 import qualified Data.HashTable.IO                                  as Hash
 import qualified Data.IntMap                                        as IntMap
-import Prelude
+import qualified Formatting.Buildable                               as F
+import Prelude                                                      hiding ( unlines )
 
 
 -- Layouts
@@ -114,28 +117,26 @@ type ArrayLayout = Layout ArrayR
 -- case of failure.
 --
 prjIdx :: forall s t env env1. HasCallStack
-       => String
-       -> (forall t'. TupR s t' -> ShowS)
+       => Builder
+       -> (forall r t'. Format r (TupR s t' -> r))
        -> (forall u v. TupR s u -> TupR s v -> Maybe (u :~: v))
        -> TupR s t
        -> Int
        -> Layout s env env1
        -> Vars s env t
-prjIdx context showTp matchTp tp = go
+prjIdx context formatTp matchTp tp = go
   where
     go :: forall env'. HasCallStack => Int -> Layout s env env' -> Vars s env t
-    go _ EmptyLayout                        = no "environment does not contain index"
+    go _ EmptyLayout                = no "environment does not contain index"
     go 0 (PushLayout _ lhs vars)
-      | Just Refl <- matchTp tp tp'         = vars
-      | otherwise                           = no $ printf "couldn't match expected type `%s' with actual type `%s'"
-                                                          (showTp tp  "")
-                                                          (showTp tp' "")
+      | Just Refl <- matchTp tp tp' = vars
+      | otherwise                   = no $ bformat ("couldn't match expected type `" % formatTp % "' with actual type `" % formatTp % "'") tp tp'
       where
         tp' = lhsToTupR lhs
-    go n (PushLayout l _ _)                 = go (n-1) l
+    go n (PushLayout l _ _)         = go (n-1) l
 
-    no :: HasCallStack => String -> a
-    no reason = internalError (printf "%s\nin the context: %s" reason context)
+    no :: HasCallStack => Builder -> a
+    no reason = internalError (builder % "\nin the context: " % builder) reason context
 
 -- Add an entry to a layout, incrementing all indices
 --
@@ -267,15 +268,15 @@ convertSharingAcc
 convertSharingAcc _ alyt aenv (ScopedAcc lams (AvarSharing sa repr))
   | Just i <- findIndex (matchStableAcc sa) aenv'
   = avarsIn AST.OpenAcc
-  $ prjIdx (ctxt ++ "; i = " ++ show i) showArraysR matchArraysR repr i alyt
+  $ prjIdx (bformat (builder % "; i = " % int) ctxt i) formatArraysR matchArraysR repr i alyt
   | null aenv'
   = error $ "Cyclic definition of a value of type 'Acc' (sa = " ++ show (hashStableNameHeight sa) ++ ")"
   | otherwise
-  = internalError err
+  = internalError builder err
   where
     aenv' = lams ++ aenv
-    ctxt = "shared 'Acc' tree with stable name " ++ show (hashStableNameHeight sa)
-    err  = "inconsistent valuation @ " ++ ctxt ++ ";\n  aenv = " ++ show aenv'
+    ctxt  = bformat ("shared 'Acc' tree with stable name " % formatStableNameHeight) sa
+    err   = bformat ("inconsistent valuation @ " % builder % ";\n  aenv = " % list formatStableSharingAcc) ctxt aenv'
 
 convertSharingAcc config alyt aenv (ScopedAcc lams (AletSharing sa@(StableSharingAcc (_ :: StableAccName as) boundAcc) bodyAcc))
   = case declareVars $ AST.arraysR bound of
@@ -323,7 +324,7 @@ convertSharingAcc config alyt aenv (ScopedAcc lams (AccSharing _ preAcc))
     case preAcc of
 
       Atag repr i
-        -> let AST.OpenAcc a = avarsIn AST.OpenAcc $ prjIdx ("de Bruijn conversion tag " ++ show i) showArraysR matchArraysR repr i alyt
+        -> let AST.OpenAcc a = avarsIn AST.OpenAcc $ prjIdx (bformat ("de Bruijn conversion tag " % int) i) formatArraysR matchArraysR repr i alyt
            in  a
 
       Pipe reprA reprB reprC (afun1 :: SmartAcc as -> ScopedAcc bs) (afun2 :: SmartAcc bs -> ScopedAcc cs) acc
@@ -706,14 +707,14 @@ convertSharingExp config lyt alyt env aenv exp@(ScopedExp lams _) = cvt exp
 
     cvt :: HasCallStack => ScopedExp t' -> AST.OpenExp env aenv t'
     cvt (ScopedExp _ (VarSharing se tp))
-      | Just i <- findIndex (matchStableExp se) env' = expVars (prjIdx (ctx i) shows matchTypeR tp i lyt)
-      | otherwise                                    = internalError msg
+      | Just i <- findIndex (matchStableExp se) env' = expVars (prjIdx (ctx i) formatTypeR matchTypeR tp i lyt)
+      | otherwise                                    = internalError (unlined @[] builder) msg
       where
-        ctx i = printf "shared 'Exp' tree with stable name %d; i=%d" (hashStableNameHeight se) i
-        msg   = unlines
+        ctx i = bformat ("shared 'Exp' tree with stable name " % formatStableNameHeight % "; i=" % int) se i
+        msg   =
           [ if null env'
-               then printf "cyclic definition of a value of type 'Exp' (sa=%d)" (hashStableNameHeight se)
-               else printf "inconsistent valuation at shared 'Exp' tree (sa=%d; env=%s)" (hashStableNameHeight se) (show env')
+               then bformat ("cyclic definition of a value of type 'Exp' (sa=" % formatStableNameHeight % ")") se
+               else bformat ("inconsistent valuation at shared 'Exp' tree (sa=" % formatStableNameHeight % "; env=" % list formatStableSharingExp % ")") se env'
           , ""
           , "Note that this error usually arises due to the presence of nested data"
           , "parallelism; when a parallel computation attempts to initiate new parallel"
@@ -761,7 +762,7 @@ convertSharingExp config lyt alyt env aenv exp@(ScopedExp lams _) = cvt exp
           AST.Let lhs (cvt (ScopedExp [] boundExp)) (convertSharingExp config lyt' alyt (se:env') aenv bodyExp)
     cvt (ScopedExp _ (ExpSharing _ pexp))
       = case pexp of
-          Tag tp i              -> expVars $ prjIdx ("de Bruijn conversion tag " ++ show i) shows matchTypeR tp i lyt
+          Tag tp i              -> expVars $ prjIdx ("de Bruijn conversion tag " <> F.build i) formatTypeR matchTypeR tp i lyt
           Match _ e             -> cvt e  -- XXX: this should probably be an error
           Const tp v            -> AST.Const tp v
           Undef tp              -> AST.Undef tp
@@ -1044,7 +1045,7 @@ data StableASTName c where
   StableASTName :: StableName (c t) -> StableASTName c
 
 instance Show (StableASTName c) where
-  show (StableASTName sn) = show $ hashStableName sn
+  show (StableASTName sn) = show (hashStableName sn)
 
 instance Eq (StableASTName c) where
   StableASTName sn1 == StableASTName sn2 = eqStableName sn1 sn2
@@ -1054,6 +1055,9 @@ instance Hashable (StableASTName c) where
 
 makeStableAST :: c t -> IO (StableName (c t))
 makeStableAST e = e `seq` makeStableName e
+
+formatStableName :: Format r (StableName a -> r)
+formatStableName = later $ bformat int . hashStableName
 
 -- Stable name for an AST node including the height of the AST representing the array computation.
 --
@@ -1067,6 +1071,10 @@ StableNameHeight _ h1 `higherSNH` StableNameHeight _ h2 = h1 > h2
 
 hashStableNameHeight :: StableNameHeight t -> Int
 hashStableNameHeight (StableNameHeight sn _) = hashStableName sn
+
+formatStableNameHeight :: Format r (StableNameHeight t -> r)
+formatStableNameHeight = later $ \case
+  StableNameHeight sn _ -> bformat formatStableName sn
 
 -- Mutable occurrence map
 -- ----------------------
@@ -1116,7 +1124,7 @@ freezeOccMap :: OccMapHash c -> IO (OccMap c)
 freezeOccMap oc
   = do
       ocl <- Hash.toList oc
-      traceChunk "OccMap" (show ocl)
+      traceChunk "OccMap" (fromString (show ocl))
 
       return . IntMap.fromList
              . map (\kvs -> (key (head kvs), kvs))
@@ -1197,11 +1205,15 @@ data StableSharingAcc where
                    -> StableSharingAcc
 
 instance Show StableSharingAcc where
-  show (StableSharingAcc sn _) = show $ hashStableNameHeight sn
+  show (StableSharingAcc sn _) = show (hashStableNameHeight sn)
 
 instance Eq StableSharingAcc where
   StableSharingAcc (StableNameHeight sn1 _) _ == StableSharingAcc (StableNameHeight sn2 _) _
     = eqStableName sn1 sn2
+
+formatStableSharingAcc :: Format r (StableSharingAcc -> r)
+formatStableSharingAcc = later $ \case
+  StableSharingAcc sn _ -> bformat formatStableNameHeight sn
 
 higherSSA :: StableSharingAcc -> StableSharingAcc -> Bool
 StableSharingAcc sn1 _ `higherSSA` StableSharingAcc sn2 _ = sn1 `higherSNH` sn2
@@ -1268,11 +1280,15 @@ data StableSharingExp where
   StableSharingExp :: StableExpName t -> SharingExp ScopedAcc ScopedExp t -> StableSharingExp
 
 instance Show StableSharingExp where
-  show (StableSharingExp sn _) = show $ hashStableNameHeight sn
+  show (StableSharingExp sn _) = show (hashStableNameHeight sn)
 
 instance Eq StableSharingExp where
   StableSharingExp (StableNameHeight sn1 _) _ == StableSharingExp (StableNameHeight sn2 _) _ =
     eqStableName sn1 sn2
+
+formatStableSharingExp :: Format r (StableSharingExp -> r)
+formatStableSharingExp = later $ \case
+  StableSharingExp sn _ -> bformat formatStableNameHeight sn
 
 higherSSE :: StableSharingExp -> StableSharingExp -> Bool
 StableSharingExp sn1 _ `higherSSE` StableSharingExp sn2 _ = sn1 `higherSNH` sn2
@@ -1469,11 +1485,11 @@ makeOccMapSharingAcc config accOccMap = traverseAcc
           sn                         <- makeStableAST acc
           heightIfRepeatedOccurrence <- enterOcc accOccMap (StableASTName sn) height
 
-          traceLine (showPreAccOp pacc) $ do
-            let hash = show (hashStableName sn)
+          traceLine (bformat formatPreAccOp pacc) $ do
+            let hash = hashStableName sn
             case heightIfRepeatedOccurrence of
-              Just height -> "REPEATED occurrence (sn = " ++ hash ++ "; height = " ++ show height ++ ")"
-              Nothing     -> "first occurrence (sn = " ++ hash ++ ")"
+              Just height -> bformat ("REPEATED occurrence (sn = " % int % "; height = " % int % ")") hash height
+              Nothing     -> bformat ("first occurrence (sn = " % int % ")") hash
 
           -- Reconstruct the computation in shared form.
           --
@@ -1819,11 +1835,11 @@ makeOccMapSharingExp config accOccMap expOccMap = travE
           sn                         <- makeStableAST exp
           heightIfRepeatedOccurrence <- enterOcc expOccMap (StableASTName sn) height
 
-          traceLine (showPreExpOp pexp) $ do
-            let hash = show (hashStableName sn)
+          traceLine (bformat formatPreExpOp pexp) $ do
+            let hash = hashStableName sn
             case heightIfRepeatedOccurrence of
-              Just height -> "REPEATED occurrence (sn = " ++ hash ++ "; height = " ++ show height ++ ")"
-              Nothing     -> "first occurrence (sn = " ++ hash ++ ")"
+              Just height -> bformat ("REPEATED occurrence (sn = " % int % "; height = " % int % ")") hash height
+              Nothing     -> bformat ("first occurrence (sn = " % int % ")") hash
 
           -- Reconstruct the computation in shared form.
           --
@@ -2112,6 +2128,11 @@ data NodeCount = AccNodeCount StableSharingAcc Int
                -- SeqNodeCount StableSharingSeq Int
                deriving Show
 
+formatNodeCount :: Format r (NodeCount -> r)
+formatNodeCount = later $ \case
+  AccNodeCount n c -> bformat ("AccNodeCount " % formatStableSharingAcc % " " % int) n c
+  ExpNodeCount n c -> bformat ("ExpNodeCount " % formatStableSharingExp % " " % int) n c
+
 -- Empty node counts
 --
 noNodeCounts :: NodeCounts
@@ -2237,19 +2258,18 @@ buildInitialEnvAcc tags sas = map (lookupSA sas) tags
       = case filter hasTag sas of
           []   -> noStableSharing    -- tag is not used in the analysed expression
           [sa] -> sa                 -- tag has a unique occurrence
-          sas2 -> internalError ("Encountered duplicate 'ATag's\n  " ++ intercalate ", " (map showSA sas2))
+          sas2 -> internalError ("Encountered duplicate 'ATag's\n  " % commaSpaceSep (later showSA)) sas2
       where
         hasTag (StableSharingAcc _ (AccSharing _ (Atag _ tag2))) = tag1 == tag2
         hasTag sa
-          = internalError ("Encountered a node that is not a plain 'Atag'\n  " ++ showSA sa)
+          = internalError ("Encountered a node that is not a plain 'Atag'\n  " % builder) (showSA sa)
 
         noStableSharing :: StableSharingAcc
         noStableSharing = StableSharingAcc noStableAccName (undefined :: SharingAcc acc exp ())
 
-    showSA (StableSharingAcc _ (AccSharing  sn acc)) = show (hashStableNameHeight sn) ++ ": " ++
-                                                       showPreAccOp acc
-    showSA (StableSharingAcc _ (AvarSharing sn _))   = "AvarSharing " ++ show (hashStableNameHeight sn)
-    showSA (StableSharingAcc _ (AletSharing sa _))   = "AletSharing " ++ show sa ++ "..."
+    showSA (StableSharingAcc _ (AccSharing  sn acc)) = bformat (formatStableNameHeight % ": " % formatPreAccOp) sn acc
+    showSA (StableSharingAcc _ (AvarSharing sn _))   = bformat ("AvarSharing " % formatStableNameHeight) sn
+    showSA (StableSharingAcc _ (AletSharing sa _))   = bformat ("AletSharing " % formatStableSharingAcc % "...") sa
 
 -- Build an initial environment for the tag values given in the first argument for traversing a
 -- scalar expression.  The 'StableSharingExp's for all tags /actually used/ in the expressions are
@@ -2270,19 +2290,18 @@ buildInitialEnvExp tags ses = map (lookupSE ses) tags
       = case filter hasTag ses of
           []   -> noStableSharing    -- tag is not used in the analysed expression
           [se] -> se                 -- tag has a unique occurrence
-          ses2 -> internalError ("Encountered a duplicate 'Tag'\n  " ++ intercalate ", " (map showSE ses2))
+          ses2 -> internalError ("Encountered a duplicate 'Tag'\n  " % commaSpaceSep (later showSE)) ses2
       where
         hasTag (StableSharingExp _ (ExpSharing _ (Tag _ tag2))) = tag1 == tag2
         hasTag se
-          = internalError ("Encountered a node that is not a plain 'Tag'\n  " ++ showSE se)
+          = internalError ("Encountered a node that is not a plain 'Tag'\n  " % builder) (showSE se)
 
         noStableSharing :: StableSharingExp
         noStableSharing = StableSharingExp noStableExpName (undefined :: SharingExp acc exp ())
 
-    showSE (StableSharingExp _ (ExpSharing sn exp)) = show (hashStableNameHeight sn) ++ ": " ++
-                                                      showPreExpOp exp
-    showSE (StableSharingExp _ (VarSharing sn _ ))  = "VarSharing " ++ show (hashStableNameHeight sn)
-    showSE (StableSharingExp _ (LetSharing se _ ))  = "LetSharing " ++ show se ++ "..."
+    showSE (StableSharingExp _ (ExpSharing sn exp)) = bformat (formatStableNameHeight % ": " % formatPreExpOp) sn exp
+    showSE (StableSharingExp _ (VarSharing sn _ ))  = bformat ("VarSharing " % formatStableNameHeight) sn
+    showSE (StableSharingExp _ (LetSharing se _ ))  = bformat ("LetSharing " % formatStableSharingExp % "...") se
 
 -- Determine whether a 'NodeCount' is for an 'Atag' or 'Tag', which represent free variables.
 --
@@ -2319,7 +2338,7 @@ determineScopesAcc config fvs accOccMap rootAcc
     in
     if all isFreeVar counts
        then (sharingAcc, buildInitialEnvAcc fvs [sa | AccNodeCount sa _ <- counts])
-       else internalError ("unbound shared subtrees" ++ show unboundTrees)
+       else internalError ("unbound shared subtrees " % list formatNodeCount) unboundTrees
 
 
 determineScopesSharingAcc
@@ -2543,18 +2562,18 @@ determineScopesSharingAcc config accOccMap = scopesAcc
               -- occurrences
           = let thisCount = StableSharingAcc sn (AccSharing sn newAcc) `insertAccNode` noNodeCounts
             in
-            tracePure "FREE" (show thisCount)
+            tracePure "FREE" (fromString (show thisCount))
             (ScopedAcc [] (AvarSharing sn tp), thisCount)
         reconstruct newAcc subCount
               -- shared subtree => replace by a sharing variable (if 'recoverAccSharing' enabled)
           | accOccCount > 1 && acc_sharing `member` options config
           = let allCount = (StableSharingAcc sn sharingAcc `insertAccNode` newCount)
             in
-            tracePure ("SHARED" ++ completed) (show allCount)
+            tracePure ("SHARED" <> completed) (fromString (show allCount))
             (ScopedAcc [] (AvarSharing sn $ Smart.arraysR newAcc), allCount)
               -- neither shared nor free variable => leave it as it is
           | otherwise
-          = tracePure ("Normal" ++ completed) (show newCount)
+          = tracePure ("Normal" <> completed) (fromString (show newCount))
             (ScopedAcc [] sharingAcc, newCount)
           where
               -- Determine the bindings that need to be attached to the current node...
@@ -2566,7 +2585,7 @@ determineScopesSharingAcc config accOccMap = scopesAcc
 
               -- trace support
             completed | null bindHere = ""
-                      | otherwise     = "(" ++ show (length bindHere) ++ " lets)"
+                      | otherwise     = bformat (parenthesised (int % " lets")) (length bindHere)
 
         -- Extract *leading* nodes that have a complete node count (i.e., their node count is equal
         -- to the number of occurrences of that node in the overall expression).
@@ -2721,7 +2740,7 @@ determineScopesSharingExp config accOccMap expOccMap = scopesExp
         :: HasCallStack
         => (SmartExp a -> UnscopedExp b)
         -> (SmartExp a -> ScopedExp b, NodeCounts)
-    scopesFun1 f = tracePure ("LAMBDA " ++ show ssa) (show counts) (const (ScopedExp ssa body'), (counts',graph))
+    scopesFun1 f = tracePure (bformat ("LAMBDA " % list formatStableSharingExp) ssa) (bformat (list formatNodeCount) counts) (const (ScopedExp ssa body'), (counts',graph))
       where
         body@(UnscopedExp fvs _)              = f undefined
         (ScopedExp [] body', (counts, graph)) = scopesExp body
@@ -2866,18 +2885,18 @@ determineScopesSharingExp config accOccMap expOccMap = scopesExp
               -- occurrences
           = let thisCount = StableSharingExp sn (ExpSharing sn newExp) `insertExpNode` noNodeCounts
             in
-            tracePure "FREE" (show thisCount)
+            tracePure "FREE" (fromString (show thisCount))
             (ScopedExp [] (VarSharing sn tp), thisCount)
         reconstruct newExp subCount
               -- shared subtree => replace by a sharing variable (if 'recoverExpSharing' enabled)
           | expOccCount > 1 && exp_sharing `member` options config
           = let allCount = StableSharingExp sn sharingExp `insertExpNode` newCount
             in
-            tracePure ("SHARED" ++ completed) (show allCount)
+            tracePure ("SHARED" <> completed) (fromString (show allCount))
             (ScopedExp [] (VarSharing sn $ typeR newExp), allCount)
               -- neither shared nor free variable => leave it as it is
           | otherwise
-          = tracePure ("Normal" ++ completed) (show newCount)
+          = tracePure ("Normal" <> completed) (fromString (show newCount))
             (ScopedExp [] sharingExp, newCount)
           where
               -- Determine the bindings that need to be attached to the current node...
@@ -2889,7 +2908,7 @@ determineScopesSharingExp config accOccMap expOccMap = scopesExp
 
               -- trace support
             completed | null bindHere = ""
-                      | otherwise     = "(" ++ show (length bindHere) ++ " lets)"
+                      | otherwise     = bformat (parenthesised (int % " lets")) (length bindHere)
 
         -- Extract *leading* nodes that have a complete node count (i.e., their node count is equal
         -- to the number of occurrences of that node in the overall expression).
@@ -3054,7 +3073,7 @@ determineScopesSharingSeq config accOccMap _seqOccMap = scopesSeq
         producer newSeq subCount
           = let allCount = StableSharingSeq sn (SeqSharing sn newSeq) `insertSeqNode` subCount
             in
-            tracePure "Producer" (show allCount)
+            tracePure "Producer" (fromString (show allCount))
             (ScopedSeq (SvarSharing sn), allCount)
 
         -- Consumers cannot be shared.
@@ -3063,7 +3082,7 @@ determineScopesSharingSeq config accOccMap _seqOccMap = scopesSeq
                  -> NodeCounts
                  -> (ScopedSeq t, NodeCounts)
         consumer newSeq subCount
-          = tracePure "Consumer" (show subCount)
+          = tracePure "Consumer" (fromString (show subCount))
             (ScopedSeq (SeqSharing sn newSeq), subCount)
 --}
 
@@ -3149,18 +3168,12 @@ recoverSharingSeq config seq
 -- Debugging
 -- ---------
 
-traceLine :: String -> String -> IO ()
-traceLine header msg
-  = Debug.traceIO Debug.dump_sharing
-  $ header ++ ": " ++ msg
+traceLine :: Builder -> Builder -> IO ()
+traceLine = Debug.traceM Debug.dump_sharing (builder % ": " % builder)
 
-traceChunk :: String -> String -> IO ()
-traceChunk header msg
-  = Debug.traceIO Debug.dump_sharing
-  $ header ++ "\n      " ++ msg
+traceChunk :: Builder -> Builder -> IO ()
+traceChunk = Debug.traceM Debug.dump_sharing (builder % ":\n" % indented 4 builder)
 
-tracePure :: String -> String -> a -> a
-tracePure header msg
-  = Debug.trace Debug.dump_sharing
-  $ header ++ ": " ++ msg
+tracePure :: Builder -> Builder -> a -> a
+tracePure header msg = Debug.trace Debug.dump_sharing (bformat (builder % ": " % builder) header msg)
 

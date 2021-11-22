@@ -38,6 +38,7 @@ module Data.Array.Accelerate.Analysis.Hash.Exp (
   encodeIntegralType,
   hashQ,
   Builder,
+  intHost,
 
 ) where
 
