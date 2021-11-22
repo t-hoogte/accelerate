@@ -61,6 +61,15 @@ twoMaps = map (+1) . map (*2)-- . use $ fromList (Z :. 10) [1..]
 
 foo (a :: Acc (Vector Int)) = map (*2) $ if (a ! I1 0) == 2 then map (+1) a else a
 
+-- Neither of the backpermutes is allowed to fuse with the map: otherwise the other backpermute cannot be computed.
+-- Fusing both is possible, but only with work duplication (we still choose to never do that for now).
+-- The backpermutes _are_ allowed to fuse with each other: This should however 1. not be rewarded 2. supported in codegen
+difficult :: Acc (Array DIM1 Int) -> Acc (Array DIM1 Int, Array DIM1 Int)
+difficult acc = T2 (backpermute sh (\(I1 x) -> I1 (x `div` 2)) x) (backpermute sh (\(I1 x) -> I1 (x - 1)) x)
+  where
+    x = map (+3) acc
+    sh = I1 10
+
 main :: P.IO ()
-main = P.putStrLn (test @UniformScheduleFun @InterpretKernel iffy)
+main = P.putStrLn (test @UniformScheduleFun @InterpretKernel $ difficult) 
 

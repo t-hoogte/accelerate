@@ -69,7 +69,7 @@ import Unsafe.Coerce (unsafeCoerce)
 import Control.Monad.ST
 import Data.Bits
 import Data.Array.Accelerate.Trafo.Operation.LiveVars
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP (..), Information (Info), Var (BackendSpecific), (-?>), fused, infusibleEdges) 
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP (..), Information (Info), Var (BackendSpecific), (-?>), fused, infusibleEdges, manifest) 
 import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Graph
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
 import qualified Data.Set as S
@@ -90,6 +90,7 @@ import Data.Functor.Identity ( Identity(Identity) )
 import Data.Array.Accelerate.AST.Schedule.Uniform (UniformScheduleFun)
 import Data.Array.Accelerate.Trafo.Schedule.Uniform ()
 import Data.Array.Accelerate.Pretty.Schedule.Uniform ()
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (impliesBinary, negateBinary)
 
 -- Overly simplistic datatype: We simply ignore all the functions that don't make sense (e.g. for non-array, non-generate args, or non-input args).
 data BackpermutedArg env t = BPA (Arg env t) (Int -> Int)
@@ -265,7 +266,14 @@ instance SLVOperation InterpretOp where
       -> ShrunkOperation IMap (ArgFun (subTupFun subTup f) :>: input :>: output :>: ArgsNil)
     _ `SubArgsLive` _ `SubArgsLive` SubArgsDead _ -> internalError "At least one output should be preserved"
 
-  slvOperation _ = Nothing
+  slvOperation IBackpermute = Just $ ShrinkOperation $ \subArgs args@(f :>: ArgArray In (ArrayR shr r) sh buf :>: output :>: ArgsNil) _ -> case subArgs of
+    SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgsNil
+      -> ShrunkOperation IBackpermute args
+    SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgOut s `SubArgsLive` SubArgsNil
+      -> ShrunkOperation IBackpermute (f :>: ArgArray In (ArrayR shr (subTupR s r)) sh (subTupDBuf s buf) :>: output :>: ArgsNil)
+    _ `SubArgsLive` _ `SubArgsLive` SubArgsDead _ -> internalError "At least one output should be preserved"
+  
+  slvOperation _ = Nothing -- TODO write for all constructors, and also, remind @IVO to make SLV support Nothing
 
 data InterpretKernel env where
   InterpretKernel :: Cluster InterpretOp args -> Args env args -> InterpretKernel env
@@ -290,9 +298,9 @@ instance PrettyKernel InterpretKernel where
 data OrderV = OrderIn  Label
             | OrderOut Label
   deriving (Eq, Ord, Show, Read)
-pattern InVar, OutVar :: Label -> Graph.Var InterpretOp
-pattern InVar  l = BackendSpecific (OrderIn l)
-pattern OutVar l = BackendSpecific (OrderOut l)
+pattern InDir, OutDir :: Label -> Graph.Var InterpretOp
+pattern InDir  l = BackendSpecific (OrderIn l)
+pattern OutDir l = BackendSpecific (OrderOut l)
 
 instance MakesILP InterpretOp where
   type BackendVar InterpretOp = OrderV
@@ -301,28 +309,29 @@ instance MakesILP InterpretOp where
     Info
       mempty
       (  inputDirectionConstraint l lIn
-      <> c (InVar l) .==. int i) -- enforce that the backpermute follows its own rules, but the output can be anything
+      <> c (InDir l) .==. int i -- enforce that the backpermute follows its own rules, but the output can be anything
+      <> manifest lIn `impliesBinary` fused lIn l) -- Backpermute cannot diagonally fuse with its input: if you are manifest, you cannot be fused
       (inOutBounds l)
-  mkGraph IGenerate _ l = Info mempty mempty (lower (-2) (OutVar l))
+  mkGraph IGenerate _ l = Info mempty mempty (lower (-2) (OutDir l))
   mkGraph IMap (_ :>: L _ (_, S.toList -> ~[lIn]) :>: _ :>: ArgsNil) l =
     Info
       mempty
       (  inputDirectionConstraint l lIn
-      <> c (InVar l) .==. c (OutVar l))
+      <> c (InDir l) .==. c (OutDir l))
       (inOutBounds l)
   mkGraph IPermute (_ :>: L _ (_, S.toList -> ~[lTarget]) :>: _ :>: L _ (_, S.toList -> ~[lIn]) :>: ArgsNil) l =
     Info
       (mempty & infusibleEdges .~ S.singleton (lTarget -?> l)) -- Cannot fuse with the producer of the target array
       (  inputDirectionConstraint l lIn
-      <> c (OutVar l) .==. int (-3)) -- convention meaning infusible
-      (lower (-2) (InVar l))
+      <> c (OutDir l) .==. int (-3)) -- convention meaning infusible
+      (lower (-2) (InDir l))
 
 
 -- | If l and lIn are fused, the out-order of lIn and the in-order of l should match
 inputDirectionConstraint :: Label -> Label -> Constraint InterpretOp
 inputDirectionConstraint l lIn =
-                timesN (fused lIn l) .>=. c (InVar l) .-. c (OutVar lIn)
-    <> (-1) .*. timesN (fused lIn l) .<=. c (InVar l) .-. c (OutVar lIn)
+                timesN (fused lIn l) .>=. c (InDir l) .-. c (OutDir lIn)
+    <> (-1) .*. timesN (fused lIn l) .<=. c (InDir l) .-. c (OutDir lIn)
 
 inOutBounds :: Label -> Bounds InterpretOp
 inOutBounds l = lower (-2) (BackendSpecific $ OrderIn l) <> lower (-2) (BackendSpecific $ OrderOut l)

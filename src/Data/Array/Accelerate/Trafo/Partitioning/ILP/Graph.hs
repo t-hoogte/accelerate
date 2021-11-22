@@ -118,6 +118,8 @@ deriving instance Read (BackendVar op) => Read (Var op)
 -- convenience synonyms
 pi :: Label -> Expression op
 pi l      = c $ Pi l
+manifest :: Label -> Expression op
+manifest l = c $ ManifestOutput l
 -- | Safe constructor for Fused variables
 fused :: Label -> Label -> Expression op
 fused x y = let x' :-> y' = x -?> y

@@ -32,7 +32,7 @@ module Data.Array.Accelerate.Trafo.LiveVars
   , SubTupR(..), subTupR, subTupUnit, DeclareSubVars(..), declareSubVars
   , LVAnalysis(..), LVAnalysisFun(..), LVAnalysis'(..), allDead, expectJust
   , subTupExp, subTupFun
-  ,composeSubTupR,subTup) where
+  ,composeSubTupR,subTup,subTupDBuf) where
 
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Exp
@@ -51,6 +51,7 @@ import Data.Array.Accelerate.Error
 import Data.List (foldl')
 import Data.Maybe
 import Data.Type.Equality
+import Data.Array.Accelerate.Array.Buffer
 
 data ReEnv env subenv where
   ReEnvEnd  :: ReEnv () ()
@@ -457,3 +458,9 @@ subTupExp s      expr
 subTupFun :: IsArrayInstr arr => SubTupR t t' -> PreOpenFun arr env (s -> t) -> PreOpenFun arr env (s -> t')
 subTupFun s (Lam lhs (Body body)) = Lam lhs $ Body $ subTupExp s body
 subTupFun _      _                     = internalError "Function impossible"
+
+subTupDBuf :: SubTupR t t' -> TupR s (Distribute Buffer t) -> TupR s (Distribute Buffer t')
+subTupDBuf SubTupRskip         _                = TupRunit
+subTupDBuf SubTupRkeep         t                = t
+subTupDBuf (SubTupRpair s1 s2) (TupRpair t1 t2) = subTupDBuf s1 t1 `TupRpair` subTupDBuf s2 t2
+subTupDBuf _                   _                = internalError "Tuple mismatch"
