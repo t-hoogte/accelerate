@@ -48,7 +48,7 @@ import Data.Array.Accelerate.Trafo.Substitution
 import Data.Array.Accelerate.Trafo.SkipEnvironment
 import Data.Array.Accelerate.Error
 
-import Data.List (foldl')
+import Data.List (foldl', mapAccumR)
 import Data.Maybe
 import Data.Type.Equality
 
@@ -104,22 +104,22 @@ instance SEnvValue Liveness where
 
   strengthenSEnvValue :: forall env1 env2 t. SEnv Liveness env1 -> Skip env1 env2 -> Liveness env1 t -> Liveness env2 t
   strengthenSEnvValue _   _    Live        = Live
-  strengthenSEnvValue env skip (Unknown s) = Unknown $ go s
+  strengthenSEnvValue env skip (Unknown s) = Unknown $ skipStrengthenIdxSet skip $ go s IdxSet.empty
     where
       skip' = skipReverse skip
 
-      go :: IdxSet env1 -> IdxSet env2
-      go set
-        = IdxSet.union remaining
-        $ dropped IdxSet.>>= go'
+      go :: IdxSet env1 -> IdxSet env1 -> IdxSet env1
+      go set accum = foldl' (flip go') accum' $ IdxSet.toList dropped
         where
-          dropped = skipTakeIdxSet' skip' set
-          remaining = skipStrengthenIdxSet skip set
+          accum' = IdxSet.union accum set
+          -- Find the indices in the set which will be removed when strengthening
+          -- from env1 to env2
+          dropped = skipTakeIdxSet' skip' set IdxSet.\\ accum
 
-      go' :: Idx env1 t' -> IdxSet env2
-      go' idx = case sprj idx env of
-        Live -> IdxSet.empty
-        Unknown set -> go set
+      go' :: Exists (Idx env1) -> IdxSet env1 -> IdxSet env1
+      go' (Exists idx) accum = case sprj idx env of
+        Live -> accum
+        Unknown set -> go set accum
 
 newtype LivenessEnv env = LivenessEnv (SEnv Liveness env)
 -- TODO: Instead of using Env, use a specialized Env which makes it cheaper to
@@ -172,13 +172,21 @@ strengthenLiveness env k (Unknown implies) = Unknown implies'
 strengthenLiveness _   _ Live = Live
 
 strengthenReturnImplications :: forall env' env t. LivenessEnv env' -> env' :?> env -> ReturnImplication env' t -> ReturnImplication env t
-strengthenReturnImplications (LivenessEnv env) k (ReturnImplication implies) = ReturnImplication $ implies IdxSet.>>= go
+strengthenReturnImplications (LivenessEnv env) k (ReturnImplication implies) = ReturnImplication $ snd $ goSet IdxSet.empty implies
   where
-    go :: Idx env' s -> IdxSet env
-    go idx
-      | Just idx' <- k idx = IdxSet.singleton idx'
-      | Unknown implies' <- sprj idx env = implies' IdxSet.>>= go
-      | otherwise = IdxSet.empty
+    go :: IdxSet env' -> Idx env' s -> (IdxSet env', IdxSet env)
+    go visited idx
+      | Just idx' <- k idx = (visited, IdxSet.singleton idx')
+      | Unknown implies' <- sprj idx env = goSet visited implies'
+      | otherwise = (visited, IdxSet.empty)
+
+    goSet :: IdxSet env' -> IdxSet env' -> (IdxSet env', IdxSet env)
+    goSet visited set = (visited'', IdxSet.unions implied)
+      where
+        set' = set IdxSet.\\ visited
+        visited' = visited `IdxSet.union` set
+        (visited'', implied) = mapAccumR (\v (Exists idx) -> go v idx) visited' (IdxSet.toList set')
+
 
 droppedReturnImplications :: LeftHandSide s t env env' -> ReturnImplication env' v -> ReturnImplication env' v
 droppedReturnImplications lhs (ReturnImplication implies) = ReturnImplication $ IdxSet.intersect implies $ lhsIndices lhs
@@ -254,7 +262,7 @@ reEnvImpliedLiveness (SPush env (Unknown implied)) (ReEnvKeep re) skip
 reEnvImpliedLiveness (SPush env Live)              (ReEnvKeep re) skip
   -- Variable was already live, no need to propagate new liveness information
   = reEnvImpliedLiveness env re skip
-reEnvImpliedLiveness SEmpty                        ReEnvEnd       skip = IdxSet.empty
+reEnvImpliedLiveness SEmpty                        ReEnvEnd       _    = IdxSet.empty
 
 lhsMarkLive :: IdxSet env' -> LHSLiveness s t env env' -> (IdxSet env, LHSLiveness s t env env')
 lhsMarkLive (IdxSet PEnd) lhs
@@ -450,10 +458,10 @@ expectJust Nothing  = internalError "Substitution in live variable analysis fail
 subTupExp :: IsArrayInstr arr => SubTupR t t' -> PreOpenExp arr env t -> PreOpenExp arr env t'
 subTupExp SubTupRkeep expr = expr
 subTupExp SubTupRskip _    = Nil
-subTupExp subTup      expr
-  | DeclareSubVars lhs _ vars <- declareSubVars (expType expr) subTup
+subTupExp subTup'     expr
+  | DeclareSubVars lhs _ vars <- declareSubVars (expType expr) subTup'
   = Let lhs expr $ expVars $ vars weakenId
 
 subTupFun :: IsArrayInstr arr => SubTupR t t' -> PreOpenFun arr env (s -> t) -> PreOpenFun arr env (s -> t')
-subTupFun subTup (Lam lhs (Body body)) = Lam lhs $ Body $ subTupExp subTup body
-subTupFun _      _                     = internalError "Function impossible"
+subTupFun subTup' (Lam lhs (Body body)) = Lam lhs $ Body $ subTupExp subTup' body
+subTupFun _       _                     = internalError "Function impossible"
