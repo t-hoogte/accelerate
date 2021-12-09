@@ -69,7 +69,7 @@ data Cluster op args where
           -> Cluster op args
 
 -- | Internal AST of `Cluster`, simply a list of let-bindings.
--- Note that all environments hold scalar values, not arrays!
+-- Note that all environments hold scalar values, not arrays! (aside from Mut)
 data ClusterAST op env result where
   None :: ClusterAST op env env
   -- `Bind _ x y` reads as `do x; in the resulting environment, do y`

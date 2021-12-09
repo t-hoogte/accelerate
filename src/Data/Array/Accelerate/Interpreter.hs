@@ -235,20 +235,22 @@ makeBackpermuteArg args env (Cluster io ast) = let o = getOutputEnv io args
 -- evalLHS = _
 
 data InterpretOp args where
-  IMap         :: InterpretOp (Fun' (s -> t) -> In sh s -> Out sh t -> ())
+  IMap         :: InterpretOp (Fun' (s -> t)    -> In sh s -> Out sh  t -> ())
   IBackpermute :: InterpretOp (Fun' (sh' -> sh) -> In sh t -> Out sh' t -> ())
-  IGenerate    :: InterpretOp (Fun' (sh -> t) -> Out sh t -> ())
+  IGenerate    :: InterpretOp (Fun' (sh -> t)              -> Out sh  t -> ())
   IPermute     :: InterpretOp (Fun' (e -> e -> e)
                               -> Mut sh' e
                               -> Fun' (sh -> PrimMaybe sh')
                               -> In sh e
                               -> ())
+  IFold1       :: InterpretOp (Fun' (e -> e -> e) -> In (sh, Int) e -> Out sh e -> ())
 
 instance DesugarAcc InterpretOp where
   mkMap         a b c   = Exec IMap         (a :>: b :>: c :>:       ArgsNil)
   mkBackpermute a b c   = Exec IBackpermute (a :>: b :>: c :>:       ArgsNil)
   mkGenerate    a b     = Exec IGenerate    (a :>: b :>:             ArgsNil)
   mkPermute     a b c d = Exec IPermute     (a :>: b :>: c :>: d :>: ArgsNil)
+  mkFold        a Nothing b c = Exec IFold1 (a :>: b :>: c :>:       ArgsNil)
   -- etc, but the rest piggybacks off of Generate for now (see Desugar.hs)
 
 instance SLVOperation InterpretOp where
@@ -309,7 +311,7 @@ instance MakesILP InterpretOp where
     Info
       mempty
       (  inputDirectionConstraint l lIn
-      <> c (InDir l) .==. int i -- enforce that the backpermute follows its own rules, but the output can be anything
+      <> c (InDir l) .==. int i) -- enforce that the backpermute follows its own rules, but the output can be anything
       -- <> manifest lIn `impliesBinary` fused lIn l) -- Backpermute cannot diagonally fuse with its input: if you are manifest, you cannot be fused
       -- ^ is not strong enough, see my paper draft :p
       -- Instead, we need restrictions on _every_ Op saying that manifest => order < 0 (and make sure that every order which guarantees full evaluation is < 0).
