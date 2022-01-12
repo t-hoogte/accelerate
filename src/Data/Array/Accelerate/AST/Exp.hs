@@ -121,7 +121,7 @@ data PreOpenExp arr env t where
                 -> PreOpenExp arr env' body_t
                 -> PreOpenExp arr env  body_t
 
-  -- Variable index, ranging only over scalars
+  -- Variable index, ranging _only_ over scalars
   Evar          :: ExpVar env t
                 -> PreOpenExp arr env t
 
