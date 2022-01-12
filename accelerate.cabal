@@ -509,7 +509,7 @@ library
         Data.Array.Accelerate.Pretty.Schedule
         Data.Array.Accelerate.Pretty.Schedule.Uniform
         Data.Array.Accelerate.Pretty.Type
-        Data.Array.Accelerate.Trafo.Algebra
+        Data.Array.Accelerate.Trafo.Exp.Algebra
         Data.Array.Accelerate.Trafo.Environment
         Data.Array.Accelerate.Trafo.Operation.Substitution
         Data.Array.Accelerate.Trafo.Operation.LiveVars

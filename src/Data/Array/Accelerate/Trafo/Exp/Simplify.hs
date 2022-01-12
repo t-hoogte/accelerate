@@ -42,7 +42,7 @@ import Data.Array.Accelerate.Analysis.Match
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Shape                   ( ShapeR(..), shapeToList )
 import Data.Array.Accelerate.Representation.Type
-import Data.Array.Accelerate.Trafo.Algebra
+import Data.Array.Accelerate.Trafo.Exp.Algebra
 import Data.Array.Accelerate.Trafo.Environment
 import Data.Array.Accelerate.Trafo.Shrink
 import Data.Array.Accelerate.Trafo.Substitution

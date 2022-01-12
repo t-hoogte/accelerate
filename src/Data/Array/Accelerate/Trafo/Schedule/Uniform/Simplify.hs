@@ -49,6 +49,7 @@ import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
+import Data.Array.Accelerate.Trafo.Exp.Simplify             ( simplifyExp )
 import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Data.Array.Accelerate.Trafo.Operation.Substitution   ( strengthenArrayInstr, weakenArrayInstr )
 import Data.Array.Accelerate.Trafo.Substitution             hiding ( weakenArrayInstr )
@@ -159,14 +160,18 @@ simplify' env (Alet lhs binding next) = (mapMaybe (strengthenImplication lhs) im
     binding' = case binding of
       RefRead{} -> binding -- We don't have to apply the substitution here, as the substitution doesn't affect references
       _ -> weaken (substitute env) binding
-    
-    env' = bindingEnv lhs binding' env
+
+    binding'' = case binding' of
+      Compute e -> Compute $ simplifyExp e
+      _ -> binding'
+
+    env' = bindingEnv lhs binding'' env
 
     (implications, next') = simplify' env' next
 
-    schedule = case binding' of
-      Compute e -> bindExp lhs e next'
-      _ -> Alet lhs binding' next'
+    schedule = case binding'' of
+      Compute e -> bindExp lhs (simplifyExp e) next'
+      _ -> Alet lhs binding'' next'
 -- Control flow
 simplify' _ Return = ([], Return)
 simplify' env (Acond condition true false next)
@@ -245,6 +250,10 @@ bindingEnv (LeftHandSideSingle _ `LeftHandSidePair` LeftHandSideSingle _) (NewRe
   = InfoEnv (wpush2 env (InfoRef Nothing) (InfoRefWrite $ Just $ SuccIdx ZeroIdx)) awaitedSignals'
   where
     awaitedSignals' = IdxSet.skip $ IdxSet.skip awaitedSignals
+bindingEnv (LeftHandSideSingle (BaseRground (GroundRscalar tp))) (Compute (ArrayInstr (Parameter var) Nil)) (InfoEnv env awaitedSignals)
+  = InfoEnv (wpush env (InfoScalar tp $ Just $ SuccIdx $ varIdx var)) awaitedSignals'
+  where
+    awaitedSignals' = IdxSet.skip awaitedSignals
 bindingEnv lhs _ env = bindEnv lhs env
 
 propagate :: forall env. [SignalImplication env] -> InfoEnv env -> InfoEnv env
