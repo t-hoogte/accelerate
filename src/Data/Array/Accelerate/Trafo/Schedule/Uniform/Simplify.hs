@@ -367,6 +367,9 @@ refWrite env _ _ = env
 
 refRead :: forall env t. InfoEnv env -> Idx env (Ref t) -> Idx env t -> InfoEnv env
 refRead env@(InfoEnv env' awaitedSignals) ref lhs
+  -- If we know which value (variable) was written to this ref,
+  -- then replace all occurences of the lhs with that variable.
+  --
   | InfoRef (Just value) <- infoFor ref env
   = let
       f :: Info env t -> Info env t
@@ -375,7 +378,12 @@ refRead env@(InfoEnv env' awaitedSignals) ref lhs
       f info              = info
     in
       InfoEnv (wupdate f lhs env') awaitedSignals
-refRead env _ _ = env
+  -- Otherwise, we store in the environment that this variable
+  -- contains the content of this ref. If the program reads from this ref
+  -- again, then we can substitute that variable with this one.
+  --
+  | otherwise
+  = InfoEnv (wupdate (const $ InfoRef $ Just lhs) ref env') awaitedSignals
 
 -- Substitutions for scalars and buffers, caused by aliasing through writing to
 -- a reference. This substitution doesn't affect signal (resolvers) and
