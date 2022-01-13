@@ -236,9 +236,7 @@ bindEnv lhs (InfoEnv env' awaitedSignals) = InfoEnv (go lhs $ weaken k env') $ I
       BaseRrefWrite _                -> InfoRefWrite Nothing
       BaseRground (GroundRbuffer _)  -> InfoBuffer Nothing
       BaseRground (GroundRscalar tp) -> InfoScalar tp Nothing
-    go (LeftHandSidePair l1 l2) env1
-      | env2 <- go l1 env1
-      = go l2 env2
+    go (LeftHandSidePair l1 l2) env1 = go l2 $ go l1 env1
 
 bindingEnv :: BLeftHandSide t env env' -> Binding env t -> InfoEnv env -> InfoEnv env'
 bindingEnv lhs@(LeftHandSideSingle _) (RefRead ref) env = refRead (bindEnv lhs env) (weaken (weakenSucc weakenId) $ varIdx ref) ZeroIdx

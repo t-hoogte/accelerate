@@ -41,7 +41,8 @@ module Data.Array.Accelerate.Trafo.Exp.Substitution (
   RebuildableExp(..), rebuildLHS,
   lhsFullVars, lhsVars, lhsIndices,
 
-  RebuildArrayInstr, rebuildArrayInstrMap,
+  RebuildArrayInstr, rebuildArrayInstrOpenExp, rebuildArrayInstrFun,
+  rebuildArrayInstrMap,
   rebuildNoArrayInstr, mapArrayInstr, mapArrayInstrFun,
   arrayInstrs, arrayInstrsFun,
 

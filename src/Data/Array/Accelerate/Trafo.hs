@@ -50,6 +50,7 @@ import qualified Data.Array.Accelerate.Trafo.LetSplit     as LetSplit
 import qualified Data.Array.Accelerate.Trafo.Exp.Simplify as Rewrite
 import qualified Data.Array.Accelerate.Trafo.Sharing      as Sharing
 import qualified Data.Array.Accelerate.Trafo.Operation.LiveVars as Operation
+import qualified Data.Array.Accelerate.Trafo.Operation.Simplify as Operation
 -- import qualified Data.Array.Accelerate.Trafo.Vectorise    as Vectorise
 
 import Control.DeepSeq
@@ -85,16 +86,18 @@ test f
   ++ Pretty.renderForTerminal (Pretty.prettySchedule schedule)
   where
     operation
-      = Operation.stronglyLiveVariablesFun
+      = Operation.simplifyFun
+      $ Operation.stronglyLiveVariablesFun
+      $ Operation.simplifyFun
       $ desugarAfun @(KernelOperation kernel)
       $ LetSplit.convertAfun 
       $ Sharing.convertAfunWith defaultOptions f
 
-    partitioned = NewNewFusion.convertAfun operation
+    partitioned = Operation.simplifyFun $ NewNewFusion.convertAfun operation
 
-    slvpartitioned = Operation.stronglyLiveVariablesFun partitioned
+    slvpartitioned = Operation.simplifyFun $ Operation.stronglyLiveVariablesFun partitioned
 
-    schedule = convertScheduleFun @sched @kernel partitioned
+    schedule = convertScheduleFun @sched @kernel slvpartitioned
 
 -- HOAS -> de Bruijn conversion
 -- ----------------------------
@@ -117,9 +120,10 @@ convertAccWith
   -> sched kernel () (ScheduleOutput sched (DesugaredArrays (ArraysR arrs)) -> ())
 convertAccWith config
   = phase' "codegen"     rnfSchedule convertSchedule
-  . phase  "array-fusion"           (NewNewFusion.convertAccWith config)
-  . phase  "operation-live-vars"    Operation.stronglyLiveVariables
-  . phase  "desugar"                desugar
+  . phase  "partition-live-vars"    (Operation.simplify . Operation.stronglyLiveVariables)
+  . phase  "array-fusion"           (Operation.simplify . NewNewFusion.convertAccWith config)
+  . phase  "operation-live-vars"    (Operation.simplify . Operation.stronglyLiveVariables)
+  . phase  "desugar"                (Operation.simplify . desugar)
   . phase  "array-split-lets"       LetSplit.convertAcc
   -- phase "vectorise-sequences"    Vectorise.vectoriseSeqAcc `when` vectoriseSequences
   . phase  "sharing-recovery"       (Sharing.convertAccWith config)
@@ -143,9 +147,10 @@ convertAfunWith
   -> sched kernel () (Scheduled sched (DesugaredAfun (ArraysFunctionR f)))
 convertAfunWith config
   = phase' "codegen"     rnfSchedule convertScheduleFun
-  . phase  "array-fusion"           (NewNewFusion.convertAfunWith config)
-  . phase  "operation-live-vars"    Operation.stronglyLiveVariablesFun
-  . phase  "desugar"                desugarAfun
+  . phase  "partition-live-vars"    (Operation.simplifyFun . Operation.stronglyLiveVariablesFun)
+  . phase  "array-fusion"           (Operation.simplifyFun . NewNewFusion.convertAfunWith config)
+  . phase  "operation-live-vars"    (Operation.simplifyFun . Operation.stronglyLiveVariablesFun)
+  . phase  "desugar"                (Operation.simplifyFun . desugarAfun)
   . phase  "array-split-lets"       LetSplit.convertAfun
   -- phase "vectorise-sequences"    Vectorise.vectoriseSeqAfun  `when` vectoriseSequences
   . phase  "sharing-recovery"       (Sharing.convertAfunWith config)

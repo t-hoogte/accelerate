@@ -511,6 +511,7 @@ library
         Data.Array.Accelerate.Pretty.Type
         Data.Array.Accelerate.Trafo.Exp.Algebra
         Data.Array.Accelerate.Trafo.Environment
+        Data.Array.Accelerate.Trafo.Operation.Simplify
         Data.Array.Accelerate.Trafo.Operation.Substitution
         Data.Array.Accelerate.Trafo.Operation.LiveVars
         Data.Array.Accelerate.Trafo.Shrink
