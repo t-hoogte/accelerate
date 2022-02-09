@@ -5,7 +5,9 @@
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE GADTs               #-}
 {-# LANGUAGE InstanceSigs        #-}
+{-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE MagicHash           #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE PatternGuards       #-}
 {-# LANGUAGE PatternSynonyms     #-}
@@ -68,6 +70,7 @@ import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Unsafe.Coerce (unsafeCoerce)
 import Control.Monad.ST
 import Data.Bits
+import Data.Array.Accelerate.Backend
 import Data.Array.Accelerate.Trafo.Operation.LiveVars
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP (..), Information (Info), Var (BackendSpecific), (-?>), fused, infusibleEdges)
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
@@ -78,17 +81,29 @@ import qualified Data.Array.Accelerate.Sugar.Array as Sugar
 import qualified Data.Array.Accelerate.Smart as Smart
 import System.IO.Unsafe (unsafePerformIO)
 import Control.DeepSeq (($!!))
-import qualified Data.Array.Accelerate.AST.Environment as Env
 import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Pretty.Operation ( PrettyOp(..) )
 import Data.Array.Accelerate.Pretty.Partitioned ()
 import Data.Array.Accelerate.Pretty.Schedule
+import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.LeftHandSide (lhsToTupR)
 import Data.Functor.Identity ( Identity(Identity) )
+import Data.Array.Accelerate.AST.Schedule
+import Data.Array.Accelerate.AST.Execute
+import qualified Data.Array.Accelerate.AST.Schedule.Uniform as S
+
+import Control.Concurrent (forkIO)
+import Data.IORef
+import Control.Concurrent.MVar
 
 import Data.Array.Accelerate.AST.Schedule.Uniform (UniformScheduleFun)
 import Data.Array.Accelerate.Trafo.Schedule.Uniform ()
 import Data.Array.Accelerate.Pretty.Schedule.Uniform ()
+
+data Interpreter
+instance Backend Interpreter where
+  type Schedule Interpreter = UniformScheduleFun
+  type Kernel Interpreter = InterpretKernel
 
 -- Overly simplistic datatype: We simply ignore all the functions that don't make sense (e.g. for non-array, non-generate args, or non-input args).
 data BackpermutedArg env t = BPA (Arg env t) (Int -> Int)
@@ -335,7 +350,130 @@ instance PrettyOp InterpretOp where
   prettyOp IGenerate    = "generate"
   prettyOp IPermute     = "permute"
 
-fromArgs :: Int -> Env.Val env -> Args env args -> FromIn env args
+instance Execute UniformScheduleFun InterpretKernel where
+  executeAfunSchedule = const $ executeScheduleFun Empty
+
+executeScheduleFun :: Val env -> UniformScheduleFun InterpretKernel env t -> IOFun t
+executeScheduleFun env (S.Sbody schedule) = executeSchedule env schedule
+executeScheduleFun env (S.Slam lhs fun) = \input -> executeScheduleFun (env `push` (lhs, input)) fun
+
+executeSchedule :: Val env -> S.UniformSchedule InterpretKernel env -> IO ()
+executeSchedule !env = \case
+  S.Return -> return ()
+  S.Alet lhs binding body -> do
+    value <- executeBinding env binding
+    let env' = env `push` (lhs, value)
+    executeSchedule env' body
+  S.Effect effect next -> do
+    executeEffect env effect
+    executeSchedule env next
+  S.Acond var true false next -> do
+    let value = prj (varIdx var) env
+    let branch = if value == 1 then true else false
+    executeSchedule env branch
+    executeSchedule env next
+  S.Awhile io step input next -> do
+    executeAwhile env io step (prjVars input env)
+    executeSchedule env next
+  S.Fork a b -> do
+    _ <- forkIO (executeSchedule env b)
+    executeSchedule env a
+
+executeBinding :: Val env -> S.Binding env t -> IO t
+executeBinding env = \case
+  S.Compute expr ->
+    return $ evalExp expr env
+  S.NewSignal -> do
+    mvar <- newEmptyMVar
+    return (S.Signal mvar, S.SignalResolver mvar)
+  S.NewRef _ -> do
+    ioref <- newIORef $ internalError "Illegal schedule: Read from ref without value. Some synchronization might be missing."
+    return (S.Ref ioref, S.OutputRef ioref)
+  S.Alloc shr tp sh -> do
+    let n = size shr $ prjVars sh env
+    MutableBuffer buffer <- newBuffer tp n
+    return $ Buffer buffer
+  S.Use _ _ buffer ->
+    return buffer
+  S.Unit (Var tp ix) -> do
+    mbuffer@(MutableBuffer buffer) <- newBuffer tp 1
+    writeBuffer tp mbuffer 0 $ prj ix env
+    return $ Buffer buffer
+  S.RefRead ref -> do
+    let S.Ref ioref = prj (varIdx ref) env
+    readIORef ioref
+
+executeEffect :: forall env. Val env -> S.Effect InterpretKernel env -> IO ()
+executeEffect env = \case
+  S.Exec kernelFun args ->
+    executeKernelFun env Empty kernelFun args
+  S.SignalAwait signals -> mapM_ await signals
+  S.SignalResolve signals -> mapM_ resolve signals
+  S.RefWrite ref valueVar -> do
+    let S.OutputRef ioref = prj (varIdx ref) env
+    let value = prj (varIdx valueVar) env
+    writeIORef ioref value
+  where
+    await :: Idx env S.Signal -> IO ()
+    await idx = do
+      let S.Signal mvar = prj idx env
+      readMVar mvar
+
+    resolve :: Idx env S.SignalResolver -> IO ()
+    resolve idx = do
+      let S.SignalResolver mvar = prj idx env
+      putMVar mvar ()
+
+executeKernelFun :: Val env -> Val kenv -> OpenKernelFun InterpretKernel kenv t -> S.SArgs env t -> IO ()
+executeKernelFun env kernelEnv (KernelFunLam KernelArgRscalar{} fun) (S.SArgScalar var :>: args)
+  = executeKernelFun env (Push' kernelEnv (prj (varIdx var) env)) fun args
+executeKernelFun env kernelEnv (KernelFunLam KernelArgRbuffer{} fun) (S.SArgBuffer _ var :>: args)
+  = executeKernelFun env (Push' kernelEnv (prj (varIdx var) env)) fun args
+executeKernelFun _   kernelEnv (KernelFunBody (InterpretKernel cluster args)) ArgsNil = evalCluster cluster args kernelEnv
+
+executeAwhile
+  :: Val env
+  -> S.InputOutputR input output
+  -> UniformScheduleFun InterpretKernel env (input -> S.Output PrimBool -> output -> ())
+  -> input
+  -> IO ()
+executeAwhile env io step input = do
+  -- Set up the output variables for this iteration (and the input for the next)
+  (S.Signal mvarCondition, signalResolverCondition) <- executeBinding env S.NewSignal
+  (S.Ref iorefCondition, outputRefCondition) <- executeBinding env $ S.NewRef $ GroundRscalar scalarType
+  (output, nextInput) <- bindAwhileIO io
+
+  -- Execute a step
+  executeScheduleFun env step input (signalResolverCondition, outputRefCondition) output
+
+  -- Check condition
+  readMVar mvarCondition
+  condition <- readIORef iorefCondition
+  if condition == 1 then
+    executeAwhile env io step nextInput
+  else
+    return ()
+
+bindAwhileIO :: S.InputOutputR input output -> IO (output, input)
+bindAwhileIO S.InputOutputRsignal = do
+  mvar <- newEmptyMVar
+  return (S.SignalResolver mvar, S.Signal mvar)
+bindAwhileIO S.InputOutputRref = do
+  ioref <- newIORef $ internalError "Illegal schedule: Read from ref without value. Some synchronization might be missing."
+  return (S.OutputRef ioref, S.Ref ioref)
+bindAwhileIO (S.InputOutputRpair io1 io2) = do
+  (output1, input1) <- bindAwhileIO io1
+  (output2, input2) <- bindAwhileIO io2
+  return ((output1, output2), (input1, input2))
+bindAwhileIO S.InputOutputRunit =
+  return ((), ())
+
+prjVars :: Vars s env t -> Val env -> t
+prjVars TupRunit         _   = ()
+prjVars (TupRpair v1 v2) env = (prjVars v1 env, prjVars v2 env)
+prjVars (TupRsingle var) env = prj (varIdx var) env
+
+fromArgs :: Int -> Val env -> Args env args -> FromIn env args
 fromArgs _ _ ArgsNil = ()
 fromArgs i env (ArgVar v :>: args) = (fromArgs i env args, v)
 fromArgs i env (ArgExp e :>: args) = (fromArgs i env args, e)
@@ -374,20 +512,19 @@ evalOp i IPermute     env (PushBPFA _ comb (PushBPFA _ target (PushBPFA _ f (Pus
     _ -> error "PrimMaybe's tag was non-zero and non-one" 
 
 
-evalCluster :: Cluster InterpretOp args -> Args env args -> Val env -> IO (Val env)
+evalCluster :: Cluster InterpretOp args -> Args env args -> Val env -> IO ()
 evalCluster c@(Cluster io ast) args env = do
   let bp = makeBackpermuteArg args env c
   doNTimes 
     undefined -- TODO get the total iteration size of this cluster - just looking at one of the arguments should suffice
-    (\n env' -> do i <- evalIO1 n io bp env'
-                   o <- evalAST n ast env' i
-                   evalIO2 n io args env' o)
-    env
+    (\n -> do i <- evalIO1 n io bp env
+              o <- evalAST n ast env i
+              evalIO2 n io args env o)
 
-doNTimes :: Monad m => Int -> (Int -> a -> m a) -> a -> m a
-doNTimes n f x
-  | n == 0 = pure x
-  | otherwise = f n x >>= doNTimes (n-1) f
+doNTimes :: Monad m => Int -> (Int -> m ()) -> m ()
+doNTimes n f
+  | n == 0 = pure ()
+  | otherwise = f n >> doNTimes (n-1) f
 
 evalIO1 :: Int -> ClusterIO args i o -> BackpermutedArgs env args -> Val env -> IO (BPFromArg env i)
 evalIO1 _ P.Empty                                         ArgsNil    _ = pure Empty
@@ -401,8 +538,8 @@ evalIO1 n (ExpPut'    io) (BPA (ArgExp e)              f :>: args) env = PushBPF
 evalIO1 n (ExpPut'    io) (BPA (ArgVar e)              f :>: args) env = PushBPFA f e                                             <$> evalIO1 n io args env
 evalIO1 n (ExpPut'    io) (BPA (ArgFun e)              f :>: args) env = PushBPFA f e                                             <$> evalIO1 n io args env
 
-evalIO2 :: Int -> ClusterIO args i o -> Args env args -> Val env -> Env (FromArg' env) o -> IO (Val env)
-evalIO2 _ P.Empty ArgsNil env Empty = pure env
+evalIO2 :: Int -> ClusterIO args i o -> Args env args -> Val env -> Env (FromArg' env) o -> IO ()
+evalIO2 _ P.Empty ArgsNil _ Empty = pure ()
 evalIO2 n (Vertical t _ io) (_ :>: args) env (take' t -> (_, o)) = evalIO2 n io args env o
 evalIO2 n (Input      io) (_ :>: args) env (PushFA _ o) = evalIO2 n io args env o
 evalIO2 n (MutPut     io) (_ :>: args) env (PushFA _ o) = evalIO2 n io args env o
@@ -448,16 +585,16 @@ evalLHS2 (Ignr   lhs) (PushBPFA f x i) env           o  = PushBPFA f x    (evalL
 -- | Run a complete embedded array program using the reference interpreter.
 --
 
-run :: forall a. (HasCallStack, Sugar.Arrays a) => Smart.Acc a -> a
-run _ = unsafePerformIO execute
-  where
-    acc :: PartitionedAcc InterpretOp () (DesugaredArrays (Sugar.ArraysR a))
-    !acc    = undefined -- convertAcc a
-    execute = do
-      Debug.dumpGraph $!! acc
-      Debug.dumpSimplStats
-      res <- phase "execute" Debug.elapsed $ undefined
-      return $ Sugar.toArr $ snd res
+-- run :: forall a. (HasCallStack, Sugar.Arrays a) => Smart.Acc a -> a
+-- run _ = unsafePerformIO execute
+--   where
+--     acc :: PartitionedAcc InterpretOp () (DesugaredArrays (Sugar.ArraysR a))
+--     !acc    = undefined -- convertAcc a
+--     execute = do
+--       Debug.dumpGraph $!! acc
+--       Debug.dumpSimplStats
+--       res <- phase "execute" Debug.elapsed $ undefined
+--       return $ Sugar.toArr $ snd res
 
 -- -- | This is 'runN' specialised to an array program of one argument.
 -- --
@@ -695,14 +832,8 @@ evalOpenExp pexp env aenv =
           | toBool (p x) = go (f x)
           | otherwise    = x
 
-    ArrayInstr (Index acc) ix   -> let (TupRsingle repr, a) = undefined acc
-                                   in (repr, a) ! evalE ix
-    ArrayInstr (Parameter x) ix -> undefined x ix
-    -- ArrayInstr (LinearIndex acc) i
-    --                             -> let (TupRsingle repr, a) = evalA acc
-    --                                    ix   = fromIndex (arrayRshape repr) (shape a) (evalE i)
-    --                                in (repr, a) ! ix
-    -- ArrayInstr (Shape acc) _    -> shape $ snd $ evalA acc
+    ArrayInstr (Index buffer) ix -> indexBuffer (groundRelt $ varType buffer) (prj (varIdx buffer) aenv) (evalE ix)
+    ArrayInstr (Parameter var) _ -> prj (varIdx var) aenv
     ShapeSize shr sh            -> size shr (evalE sh)
     Foreign _ _ f e             -> evalOpenFun (rebuildNoArrayInstr f) Empty Empty $ evalE e
     Coerce t1 t2 e              -> evalCoerceScalar t1 t2 (evalE e)

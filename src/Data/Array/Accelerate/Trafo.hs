@@ -41,7 +41,7 @@ import Data.Array.Accelerate.Sugar.Elt                    ( EltR )
 import Data.Array.Accelerate.Smart
 import Data.Array.Accelerate.Trafo.Config
 -- import Data.Array.Accelerate.Trafo.Delayed
-import Data.Array.Accelerate.Trafo.Sharing                ( Afunction, ArraysFunctionR, Function, EltFunctionR )
+import Data.Array.Accelerate.Trafo.Sharing                ( Afunction, AfunctionR, ArraysFunctionR, Function, EltFunctionR )
 import qualified Data.Array.Accelerate.AST                as AST
 import Data.Array.Accelerate.AST.Kernel
 import Data.Array.Accelerate.AST.Schedule

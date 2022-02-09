@@ -34,6 +34,10 @@ data GroundR a where
   GroundRbuffer :: ScalarType e -> GroundR (Buffer e)
   GroundRscalar :: ScalarType e -> GroundR e
 
+instance Distributes GroundR where
+  reprIsSingle (GroundRbuffer _)  = Refl
+  reprIsSingle (GroundRscalar tp) = reprIsSingle tp
+
 -- | Tuples of ground values
 --
 type GroundsR = TupR GroundR
@@ -59,6 +63,21 @@ buffersR TupRunit           = TupRunit
 buffersR (TupRsingle tp)
   | Refl <- reprIsSingle @ScalarType @e @Buffer tp = TupRsingle (GroundRbuffer tp)
 buffersR (TupRpair t1 t2)   = buffersR t1 `TupRpair` buffersR t2
+
+-- | Utilities for working with GroundsR
+typeRtoGroundsR :: TypeR t -> GroundsR t
+typeRtoGroundsR = mapTupR GroundRscalar
+
+bufferImpossible :: ScalarType (Buffer e) -> a
+bufferImpossible (SingleScalarType (NumSingleType (IntegralNumType tp))) = case tp of {}
+bufferImpossible (SingleScalarType (NumSingleType (FloatingNumType tp))) = case tp of {}
+
+groundFunctionImpossible :: GroundsR (s -> t) -> a
+groundFunctionImpossible (TupRsingle (GroundRscalar t)) = functionImpossible (TupRsingle t)
+
+groundRelt :: GroundR (Buffer t) -> ScalarType t
+groundRelt (GroundRbuffer tp) = tp
+groundRelt (GroundRscalar tp) = bufferImpossible tp
 
 type family DesugaredArrays a where
   DesugaredArrays ()           = ()

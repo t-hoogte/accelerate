@@ -34,14 +34,19 @@ module Data.Array.Accelerate.AST.Schedule (
   convertSchedule,
   Scheduled,
   reprIsBody,
+  IOFun, FullIOFun, FullIOFun',
+  flattenIOFun, unsafePerformIOFun
 ) where
 
 import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.AST.Kernel
 import Data.Array.Accelerate.Type
+import Data.Array.Accelerate.Representation.Ground
 import Data.Array.Accelerate.Representation.Type
 import Data.Typeable                                                ( (:~:)(..) )
 import Data.Array.Accelerate.AST.Operation
+import Control.Monad
+import System.IO.Unsafe
 
 class IsSchedule sched where
   -- 'a' is a ground type (ie, can be represented using GroundR)
@@ -54,6 +59,11 @@ class IsSchedule sched where
     :: IsKernel kernel
     => PartitionedAfun (KernelOperation kernel) () t -> sched kernel () (Scheduled sched t)
 
+  -- Note that we could drop 'IO' here, as IOFun already introduces an IO at
+  -- the return type of that function. By including IO here it's just easier to
+  -- implement this function.
+  --
+  callScheduledFun :: GFunctionR t -> IOFun (Scheduled sched t) -> FullIOFun t
 
 convertSchedule
   :: forall sched kernel t.
@@ -66,7 +76,7 @@ type family Scheduled sched a where
   Scheduled sched (a -> b) = ScheduleInput  sched a -> Scheduled sched b
   Scheduled sched a        = ScheduleOutput sched a -> ()
 
-reprIsBody :: forall sched t. GroundsR t -> Scheduled sched t :~: (ScheduleOutput sched t -> ())
+reprIsBody :: forall sched t. GroundsR t -> (Scheduled sched t, IOFun t, FullIOFun t) :~: (ScheduleOutput sched t -> (), IO t, IO t)
 reprIsBody TupRunit = Refl
 reprIsBody TupRpair{} = Refl
 reprIsBody (TupRsingle (GroundRbuffer _)) = Refl
@@ -85,3 +95,23 @@ reprIsBody (TupRsingle (GroundRscalar (SingleScalarType (NumSingleType t)))) = c
   FloatingNumType TypeHalf   -> Refl
   FloatingNumType TypeFloat  -> Refl
   FloatingNumType TypeDouble -> Refl
+
+type family IOFun f where
+  IOFun (a -> b) = a -> IOFun b
+  IOFun t        = IO t
+
+type FullIOFun f = IO (FullIOFun' f)
+
+type family FullIOFun' f where
+  FullIOFun' (a -> b) = a -> FullIOFun b
+  FullIOFun' t        = t
+
+flattenIOFun :: GFunctionR f -> FullIOFun f -> IOFun f
+flattenIOFun (GFunctionRlam _ funR) fun = \a -> flattenIOFun funR (join $ fun <*> pure a)
+flattenIOFun (GFunctionRbody tp)    fun
+  | Refl <- reprIsBody tp = fun
+
+unsafePerformIOFun :: GFunctionR f -> IOFun f -> f
+unsafePerformIOFun (GFunctionRlam _ funR) fun = unsafePerformIOFun funR . fun
+unsafePerformIOFun (GFunctionRbody tp)    body
+  | Refl <- reprIsBody tp = unsafePerformIO body

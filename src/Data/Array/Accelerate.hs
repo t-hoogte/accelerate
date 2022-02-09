@@ -430,9 +430,10 @@ module Data.Array.Accelerate (
   CShort, CUShort, CInt, CUInt, CLong, CULong, CLLong, CULLong,
   CChar, CSChar, CUChar,
 
-  test
+  test, module Data.Array.Accelerate.Backend
 ) where
 
+import Data.Array.Accelerate.Backend
 import Data.Array.Accelerate.Classes.Bounded
 import Data.Array.Accelerate.Classes.Enum
 import Data.Array.Accelerate.Classes.Eq
