@@ -325,10 +325,12 @@ instance MakesILP InterpretOp where
       (inOutBounds l)
   mkGraph IPermute (_ :>: L _ (_, S.toList -> ~[lTarget]) :>: _ :>: L _ (_, S.toList -> ~[lIn]) :>: ArgsNil) l =
     Info
-      (mempty & infusibleEdges .~ S.singleton (lTarget -?> l)) -- Cannot fuse with the producer of the target array
-      (  inputDirectionConstraint l lIn
-      <> c (OutDir l) .==. int (-3)) -- convention meaning infusible
-      (lower (-2) (InDir l))
+      (  mempty & infusibleEdges .~ S.singleton (lTarget -?> l)) -- Cannot fuse with the producer of the target array
+      (  inputDirectionConstraint l lIn)
+      (  lower (-2) (InDir l)
+      <> upper (OutDir l) (-3)) -- convention meaning infusible
+
+  mkGraph IFold1 _ _ = undefined
 
 
 -- | If l and lIn are fused, the out-order of lIn and the in-order of l should match
@@ -338,7 +340,7 @@ inputDirectionConstraint l lIn =
     <> (-1) .*. timesN (fused lIn l) .<=. c (InDir l) .-. c (OutDir lIn)
 
 inOutBounds :: Label -> Bounds InterpretOp
-inOutBounds l = lower (-2) (BackendSpecific $ OrderIn l) <> lower (-2) (BackendSpecific $ OrderOut l)
+inOutBounds l = lower (-2) (InDir l) <> lower (-2) (OutDir l)
 
 instance NFData' InterpretOp where
   rnf' = error "todo"
