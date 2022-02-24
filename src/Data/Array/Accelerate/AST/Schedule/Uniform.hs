@@ -20,7 +20,7 @@
 module Data.Array.Accelerate.AST.Schedule.Uniform (
   UniformSchedule(..), UniformScheduleFun(..),
   SArg(..), SArgs,
-  Input, Output, inputSingle, inputR, outputR, InputOutputR(..),
+  Input, Output, inputSingle, outputSingle, inputR, outputR, InputOutputR(..),
   Binding(..), Effect(..),
   BaseR(..), BasesR, BaseVar, BaseVars, BLeftHandSide,
   Signal(..), SignalResolver(..), Ref(..), OutputRef(..),
@@ -161,13 +161,30 @@ outputR (TupRsingle ground)
   -- t is not () or (a, b).
   | Refl <- inputSingle ground = TupRsingle BaseRsignalResolver `TupRpair` TupRsingle (BaseRrefWrite ground)
 
+outputSingle :: GroundR t -> Output t :~: (SignalResolver, OutputRef t)
+outputSingle (GroundRbuffer _) = Refl
+outputSingle (GroundRscalar (VectorScalarType _)) = Refl
+outputSingle (GroundRscalar (SingleScalarType tp)) = case tp of
+  NumSingleType (IntegralNumType t) -> case t of
+    TypeInt    -> Refl
+    TypeInt8   -> Refl
+    TypeInt16  -> Refl
+    TypeInt32  -> Refl
+    TypeInt64  -> Refl
+    TypeWord   -> Refl
+    TypeWord8  -> Refl
+    TypeWord16 -> Refl
+    TypeWord32 -> Refl
+    TypeWord64 -> Refl
+  NumSingleType (FloatingNumType t) -> case t of
+    TypeHalf   -> Refl
+    TypeFloat  -> Refl
+    TypeDouble -> Refl
+
 -- Relation between input and output
 data InputOutputR input output where
   InputOutputRsignal  :: InputOutputR Signal SignalResolver
-  -- The next iteration of the loop may signal that it wants to release the buffer,
-  -- such that the previous iteration can free that buffer (or release it for other operations).
-  InputOutputRrelease :: InputOutputR SignalResolver Signal
-  InputOutputRref     :: InputOutputR (Ref f) (OutputRef t)
+  InputOutputRref     :: InputOutputR (Ref t) (OutputRef t)
   InputOutputRpair    :: InputOutputR i1 o1
                       -> InputOutputR i2 o2
                       -> InputOutputR (i1, i2) (o1, o2)

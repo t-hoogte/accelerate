@@ -41,6 +41,7 @@ import Data.Array.Accelerate.AST.Schedule.Uniform
 import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Array
+import Data.Array.Accelerate.Representation.Ground
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Trafo.Exp.Substitution
@@ -64,6 +65,10 @@ import Prelude hiding (id, (.), read)
 import Control.Category
 import Control.DeepSeq
 import qualified Data.Array.Accelerate.AST.Environment as Env
+import Control.Concurrent
+import Control.Concurrent.MVar
+import Data.IORef
+import System.IO.Unsafe (unsafePerformIO)
 
 import Data.Array.Accelerate.Pretty.Operation
 
@@ -79,6 +84,53 @@ instance IsSchedule UniformScheduleFun where
 
   rnfSchedule (Slam lhs s) = rnfLeftHandSide rnfBaseR lhs `seq` rnfSchedule s
   rnfSchedule (Sbody s) = rnfSchedule' s
+
+  callScheduledFun (GFunctionRbody repr) f
+    | Refl <- reprIsBody @UniformScheduleFun repr = do
+      (output, result) <- bindOutput repr
+      f output
+      return result
+    where
+      bindOutput :: GroundsR t -> IO (Output t, t)
+      bindOutput TupRunit = return ((), ())
+      bindOutput (TupRpair tp1 tp2) = do
+        (out1, result1) <- bindOutput tp1
+        (out2, result2) <- bindOutput tp2
+        return ((out1, out2), (result1, result2))
+      bindOutput (TupRsingle tp)
+        | Refl <- outputSingle tp = do
+          ref <- newIORef $ internalError "Illegal schedule: Read from ref without value. Some synchronization might be missing."
+          mvar <- newEmptyMVar
+          -- We return the result lazily, as the value is not yet available
+          let value = unsafePerformIO $ do
+                readMVar mvar
+                readIORef ref
+          return ((SignalResolver mvar, OutputRef ref), value)
+  callScheduledFun (GFunctionRlam arg ret) f = do
+    return $ \a -> do
+      input <- bindInput arg a
+      callScheduledFun @UniformScheduleFun ret $ f input
+    where
+      bindInput :: GroundsR t -> t -> IO (Input t)
+      bindInput TupRunit _ = return ()
+      bindInput (TupRpair tp1 tp2) (val1, val2) = do
+        in1 <- bindInput tp1 val1
+        in2 <- bindInput tp2 val2
+        return (in1, in2)
+      bindInput (TupRsingle tp) value
+        | Refl <- inputSingle tp = do
+          ref <- newIORef $ internalError "Illegal schedule: Read from ref without value. Some synchronization might be missing."
+          mvar <- newEmptyMVar
+          -- We consume the result lazily. The computation can already start
+          -- asynchronously, and some parts/threads of the computation may at
+          -- some point block on the input to be available.
+          forkIO $ do
+            -- In a separate thread, evaluate to WHNF
+            value `seq` return ()
+            -- and write value to reference and resolve signal
+            writeIORef ref value
+            putMVar mvar ()
+          return (Signal mvar, Ref ref)
 
 rnfSchedule' :: NFData' kernel => UniformSchedule kernel env -> ()
 rnfSchedule' Return                        = ()

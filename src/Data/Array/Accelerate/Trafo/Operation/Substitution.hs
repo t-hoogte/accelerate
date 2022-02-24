@@ -32,6 +32,7 @@ module Data.Array.Accelerate.Trafo.Operation.Substitution (
   pair, pair', pairUnique, alet, aletUnique, alet',
   weakenArrayInstr,
   strengthenArrayInstr,
+  extractParams,
 
   reindexVar, reindexVars,
 ) where
@@ -160,8 +161,11 @@ alet' (LeftHandSideWildcard TupRunit) _ (Return TupRunit) a = a
 alet' (LeftHandSideWildcard TupRunit) _ (Compute Nil) a = a
 alet' lhs@(LeftHandSideWildcard TupRunit) _ bnd a = Alet lhs TupRunit bnd a
 alet' lhs _ (Return vars)      a = weaken (substituteLHS lhs vars) a
-alet' lhs _ (Compute e)        a
+alet' lhs us (Compute e)       a
   | Just vars <- extractParams e = weaken (substituteLHS lhs vars) a
+  | LeftHandSidePair l1 l2 <- lhs
+  , TupRpair u1 u2 <- us
+  , Pair e1 e2 <- e = alet' l1 u1 (Compute e1) $ alet' l2 u2 (weaken (weakenWithLHS l1) $ Compute e2) a
 alet' lhs us bnd               a = Alet lhs us bnd a
 
 extractParams :: OpenExp env benv t -> Maybe (ExpVars benv t)

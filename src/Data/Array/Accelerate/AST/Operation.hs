@@ -327,16 +327,6 @@ instance HasGroundsR (GroundVars env) where
 instance HasGroundsR (OpenExp env benv) where
   groundsR = typeRtoGroundsR . expType
 
-typeRtoGroundsR :: TypeR t -> GroundsR t
-typeRtoGroundsR = mapTupR GroundRscalar
-
-bufferImpossible :: ScalarType (Buffer e) -> a
-bufferImpossible (SingleScalarType (NumSingleType (IntegralNumType tp))) = case tp of {}
-bufferImpossible (SingleScalarType (NumSingleType (FloatingNumType tp))) = case tp of {}
-
-groundFunctionImpossible :: GroundsR (s -> t) -> a
-groundFunctionImpossible (TupRsingle (GroundRscalar t)) = functionImpossible (TupRsingle t)
-
 type OpenExp env benv = PreOpenExp (ArrayInstr benv) env
 type OpenFun env benv = PreOpenFun (ArrayInstr benv) env
 type Fun benv = OpenFun () benv

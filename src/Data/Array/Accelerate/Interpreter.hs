@@ -5,7 +5,9 @@
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE GADTs               #-}
 {-# LANGUAGE InstanceSigs        #-}
+{-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE MagicHash           #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE PatternGuards       #-}
 {-# LANGUAGE PatternSynonyms     #-}
@@ -69,6 +71,7 @@ import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Unsafe.Coerce (unsafeCoerce)
 import Control.Monad.ST
 import Data.Bits
+import Data.Array.Accelerate.Backend
 import Data.Array.Accelerate.Trafo.Operation.LiveVars
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP (..), Information (Info), Var (BackendSpecific), (-?>), fused, infusibleEdges, manifest) 
 import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Graph
@@ -80,13 +83,20 @@ import qualified Data.Array.Accelerate.Sugar.Array as Sugar
 import qualified Data.Array.Accelerate.Smart as Smart
 import System.IO.Unsafe (unsafePerformIO)
 import Control.DeepSeq (($!!))
-import qualified Data.Array.Accelerate.AST.Environment as Env
 import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Pretty.Operation ( PrettyOp(..) )
 import Data.Array.Accelerate.Pretty.Partitioned ()
 import Data.Array.Accelerate.Pretty.Schedule
+import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.LeftHandSide (lhsToTupR)
 import Data.Functor.Identity ( Identity(Identity) )
+import Data.Array.Accelerate.AST.Schedule
+import Data.Array.Accelerate.AST.Execute
+import qualified Data.Array.Accelerate.AST.Schedule.Uniform as S
+
+import Control.Concurrent (forkIO)
+import Data.IORef
+import Control.Concurrent.MVar
 
 import Data.Array.Accelerate.AST.Schedule.Uniform (UniformScheduleFun)
 import Data.Array.Accelerate.Trafo.Schedule.Uniform ()
@@ -481,7 +491,7 @@ prjVars TupRunit         _   = ()
 prjVars (TupRpair v1 v2) env = (prjVars v1 env, prjVars v2 env)
 prjVars (TupRsingle var) env = prj (varIdx var) env
 
-fromArgs :: Int -> Env.Val env -> Args env args -> FromIn env args
+fromArgs :: Int -> Val env -> Args env args -> FromIn env args
 fromArgs _ _ ArgsNil = ()
 fromArgs i env (ArgVar v :>: args) = (fromArgs i env args, v)
 fromArgs i env (ArgExp e :>: args) = (fromArgs i env args, e)
@@ -520,20 +530,19 @@ evalOp i IPermute     env (PushBPFA _ comb (PushBPFA _ target (PushBPFA _ f (Pus
     _ -> error "PrimMaybe's tag was non-zero and non-one" 
 
 
-evalCluster :: Cluster InterpretOp args -> Args env args -> Val env -> IO (Val env)
+evalCluster :: Cluster InterpretOp args -> Args env args -> Val env -> IO ()
 evalCluster c@(Cluster io ast) args env = do
   let bp = makeBackpermuteArg args env c
   doNTimes 
     undefined -- TODO get the total iteration size of this cluster - just looking at one of the arguments should suffice
-    (\n env' -> do i <- evalIO1 n io bp env'
-                   o <- evalAST n ast env' i
-                   evalIO2 n io args env' o)
-    env
+    (\n -> do i <- evalIO1 n io bp env
+              o <- evalAST n ast env i
+              evalIO2 n io args env o)
 
-doNTimes :: Monad m => Int -> (Int -> a -> m a) -> a -> m a
-doNTimes n f x
-  | n == 0 = pure x
-  | otherwise = f n x >>= doNTimes (n-1) f
+doNTimes :: Monad m => Int -> (Int -> m ()) -> m ()
+doNTimes n f
+  | n == 0 = pure ()
+  | otherwise = f n >> doNTimes (n-1) f
 
 evalIO1 :: Int -> ClusterIO args i o -> BackpermutedArgs env args -> Val env -> IO (BPFromArg env i)
 evalIO1 _ P.Empty                                         ArgsNil    _ = pure Empty
@@ -547,8 +556,8 @@ evalIO1 n (ExpPut'    io) (BPA (ArgExp e)              f :>: args) env = PushBPF
 evalIO1 n (ExpPut'    io) (BPA (ArgVar e)              f :>: args) env = PushBPFA f e                                             <$> evalIO1 n io args env
 evalIO1 n (ExpPut'    io) (BPA (ArgFun e)              f :>: args) env = PushBPFA f e                                             <$> evalIO1 n io args env
 
-evalIO2 :: Int -> ClusterIO args i o -> Args env args -> Val env -> Env (FromArg' env) o -> IO (Val env)
-evalIO2 _ P.Empty ArgsNil env Empty = pure env
+evalIO2 :: Int -> ClusterIO args i o -> Args env args -> Val env -> Env (FromArg' env) o -> IO ()
+evalIO2 _ P.Empty ArgsNil _ Empty = pure ()
 evalIO2 n (Vertical t _ io) (_ :>: args) env (take' t -> (_, o)) = evalIO2 n io args env o
 evalIO2 n (Input      io) (_ :>: args) env (PushFA _ o) = evalIO2 n io args env o
 evalIO2 n (MutPut     io) (_ :>: args) env (PushFA _ o) = evalIO2 n io args env o
@@ -594,16 +603,16 @@ evalLHS2 (Ignr   lhs) (PushBPFA f x i) env           o  = PushBPFA f x    (evalL
 -- | Run a complete embedded array program using the reference interpreter.
 --
 
-run :: forall a. (HasCallStack, Sugar.Arrays a) => Smart.Acc a -> a
-run _ = unsafePerformIO execute
-  where
-    acc :: PartitionedAcc InterpretOp () (DesugaredArrays (Sugar.ArraysR a))
-    !acc    = undefined -- convertAcc a
-    execute = do
-      Debug.dumpGraph $!! acc
-      Debug.dumpSimplStats
-      res <- phase "execute" Debug.elapsed $ undefined
-      return $ Sugar.toArr $ snd res
+-- run :: forall a. (HasCallStack, Sugar.Arrays a) => Smart.Acc a -> a
+-- run _ = unsafePerformIO execute
+--   where
+--     acc :: PartitionedAcc InterpretOp () (DesugaredArrays (Sugar.ArraysR a))
+--     !acc    = undefined -- convertAcc a
+--     execute = do
+--       Debug.dumpGraph $!! acc
+--       Debug.dumpSimplStats
+--       res <- phase "execute" Debug.elapsed $ undefined
+--       return $ Sugar.toArr $ snd res
 
 -- -- | This is 'runN' specialised to an array program of one argument.
 -- --
@@ -841,14 +850,8 @@ evalOpenExp pexp env aenv =
           | toBool (p x) = go (f x)
           | otherwise    = x
 
-    ArrayInstr (Index acc) ix   -> let (TupRsingle repr, a) = undefined acc
-                                   in (repr, a) ! evalE ix
-    ArrayInstr (Parameter x) ix -> undefined x ix
-    -- ArrayInstr (LinearIndex acc) i
-    --                             -> let (TupRsingle repr, a) = evalA acc
-    --                                    ix   = fromIndex (arrayRshape repr) (shape a) (evalE i)
-    --                                in (repr, a) ! ix
-    -- ArrayInstr (Shape acc) _    -> shape $ snd $ evalA acc
+    ArrayInstr (Index buffer) ix -> indexBuffer (groundRelt $ varType buffer) (prj (varIdx buffer) aenv) (evalE ix)
+    ArrayInstr (Parameter var) _ -> prj (varIdx var) aenv
     ShapeSize shr sh            -> size shr (evalE sh)
     Foreign _ _ f e             -> evalOpenFun (rebuildNoArrayInstr f) Empty Empty $ evalE e
     Coerce t1 t2 e              -> evalCoerceScalar t1 t2 (evalE e)

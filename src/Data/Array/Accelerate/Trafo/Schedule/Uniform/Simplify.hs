@@ -43,6 +43,7 @@ import Data.Array.Accelerate.AST.Schedule.Uniform
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Type
+import Data.Array.Accelerate.Trafo.Exp.Simplify             ( simplifyExp )
 import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Data.Array.Accelerate.Trafo.Operation.Substitution   ( weakenArrayInstr )
 import Data.Array.Accelerate.Trafo.Substitution             hiding ( weakenArrayInstr )
@@ -154,14 +155,18 @@ simplify' env (Alet lhs binding next) = (mapMaybe (strengthenImplication lhs) im
     binding' = case binding of
       RefRead{} -> binding -- We don't have to apply the substitution here, as the substitution doesn't affect references
       _ -> weaken (substitute env) binding
-    
-    env' = bindingEnv lhs binding' env
+
+    binding'' = case binding' of
+      Compute e -> Compute $ simplifyExp e
+      _ -> binding'
+
+    env' = bindingEnv lhs binding'' env
 
     (implications, next') = simplify' env' next
 
-    schedule = case binding' of
-      Compute e -> bindExp lhs e next'
-      _ -> Alet lhs binding' next'
+    schedule = case binding'' of
+      Compute e -> bindExp lhs (simplifyExp e) next'
+      _ -> Alet lhs binding'' next'
 -- Control flow
 simplify' _ Return = ([], Return)
 simplify' env (Acond condition true false next)
@@ -226,9 +231,7 @@ bindEnv lhs (InfoEnv env' awaitedSignals) = InfoEnv (go lhs $ weaken k env') $ I
       BaseRrefWrite _                -> InfoRefWrite Nothing
       BaseRground (GroundRbuffer _)  -> InfoBuffer Nothing
       BaseRground (GroundRscalar tp) -> InfoScalar tp Nothing
-    go (LeftHandSidePair l1 l2) env1
-      | env2 <- go l1 env1
-      = go l2 env2
+    go (LeftHandSidePair l1 l2) env1 = go l2 $ go l1 env1
 
 bindingEnv :: BLeftHandSide t env env' -> Binding env t -> InfoEnv env -> InfoEnv env'
 bindingEnv lhs@(LeftHandSideSingle _) (RefRead ref) env = refRead (bindEnv lhs env) (weaken (weakenSucc weakenId) $ varIdx ref) ZeroIdx
@@ -240,6 +243,10 @@ bindingEnv (LeftHandSideSingle _ `LeftHandSidePair` LeftHandSideSingle _) (NewRe
   = InfoEnv (wpush2 env (InfoRef Nothing) (InfoRefWrite $ Just $ SuccIdx ZeroIdx)) awaitedSignals'
   where
     awaitedSignals' = IdxSet.skip $ IdxSet.skip awaitedSignals
+bindingEnv (LeftHandSideSingle (BaseRground (GroundRscalar tp))) (Compute (ArrayInstr (Parameter var) Nil)) (InfoEnv env awaitedSignals)
+  = InfoEnv (wpush env (InfoScalar tp $ Just $ SuccIdx $ varIdx var)) awaitedSignals'
+  where
+    awaitedSignals' = IdxSet.skip awaitedSignals
 bindingEnv lhs _ env = bindEnv lhs env
 
 propagate :: forall env. [SignalImplication env] -> InfoEnv env -> InfoEnv env
@@ -362,6 +369,9 @@ refWrite env _ _ = env
 
 refRead :: forall env t. InfoEnv env -> Idx env (Ref t) -> Idx env t -> InfoEnv env
 refRead env@(InfoEnv env' awaitedSignals) ref lhs
+  -- If we know which value (variable) was written to this ref,
+  -- then replace all occurences of the lhs with that variable.
+  --
   | InfoRef (Just value) <- infoFor ref env
   = let
       f :: Info env t -> Info env t
@@ -370,7 +380,12 @@ refRead env@(InfoEnv env' awaitedSignals) ref lhs
       f info              = info
     in
       InfoEnv (wupdate f lhs env') awaitedSignals
-refRead env _ _ = env
+  -- Otherwise, we store in the environment that this variable
+  -- contains the content of this ref. If the program reads from this ref
+  -- again, then we can substitute that variable with this one.
+  --
+  | otherwise
+  = InfoEnv (wupdate (const $ InfoRef $ Just lhs) ref env') awaitedSignals
 
 -- Substitutions for scalars and buffers, caused by aliasing through writing to
 -- a reference. This substitution doesn't affect signal (resolvers) and

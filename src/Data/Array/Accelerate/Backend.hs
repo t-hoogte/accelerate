@@ -49,6 +49,7 @@ import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Partition
 import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
 import Data.Kind
 import Data.Type.Equality
+import System.IO.Unsafe (unsafePerformIO)
 
 class
   ( Desugar.DesugarAcc (Operation backend)
@@ -72,7 +73,7 @@ run = runWith @backend defaultOptions
 
 runWith :: forall backend t. (Sugar.Arrays t, Backend backend) => Config -> Smart.Acc t -> t
 runWith config acc
-  = Sugar.toArr $ sugarArrays repr $ executeAcc (desugarArraysR repr) schedule
+  = Sugar.toArr $ sugarArrays repr $ unsafePerformIO $ executeAcc (desugarArraysR repr) schedule
   where
     repr = Sugar.arraysR @t
     schedule = convertAccWith @(Schedule backend) @(Kernel backend) config acc
@@ -112,10 +113,11 @@ runNWith config f = sugarFunction (afunctionRepr @f) $ executeAfun (afunctionGro
 sugarFunction
   :: forall f.
      AfunctionRepr f (AfunctionR f) (ArraysFunctionR f)
-  -> DesugaredAfun (ArraysFunctionR f)
+  -> IOFun (DesugaredAfun (ArraysFunctionR f))
   -> AfunctionR f
 sugarFunction AfunctionReprBody a
-  | Refl <- desugaredAfunIsBody repr = Sugar.toArr $ sugarArrays repr $ a
+  | Refl <- desugaredAfunIsBody repr
+  , Refl <- reprIsBody (desugarArraysR repr) = Sugar.toArr $ sugarArrays repr $ unsafePerformIO a
   where
     repr = Sugar.arraysR @(AfunctionR f)
 sugarFunction (AfunctionReprLam r) f = \x -> sugarFunction r $ f $ desugarArrays repr $ Sugar.fromArr x

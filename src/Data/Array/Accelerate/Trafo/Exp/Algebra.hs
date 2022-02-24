@@ -9,7 +9,7 @@
 {-# LANGUAGE TypeOperators       #-}
 {-# LANGUAGE ViewPatterns        #-}
 -- |
--- Module      : Data.Array.Accelerate.Trafo.Algebra
+-- Module      : Data.Array.Accelerate.Trafo.Exp.Algebra
 -- Copyright   : [2012..2020] The Accelerate Team
 -- License     : BSD3
 --
@@ -21,7 +21,7 @@
 -- and using algebraic properties of particular operator-operand combinations.
 --
 
-module Data.Array.Accelerate.Trafo.Algebra (
+module Data.Array.Accelerate.Trafo.Exp.Algebra (
 
   evalPrimApp,
 
@@ -300,6 +300,11 @@ untup2 exp
   | Pair a b <- exp = Just (a, b)
   | otherwise       = Nothing
 
+-- If the two arguments are the same, then it will evaluate to that argument
+evalIfSameArguments :: (a,a) :-> a
+evalIfSameArguments (untup2 -> Just (x,y)) _
+  | Just Refl <- matchOpenExp x y = Just $ x
+evalIfSameArguments _ _ = Nothing
 
 pprFun :: Text -> PrimFun f -> Text
 pprFun rule f
@@ -649,12 +654,36 @@ evalNEq (NumSingleType (IntegralNumType ty)) | IntegralDict <- integralDict ty =
 evalNEq (NumSingleType (FloatingNumType ty)) | FloatingDict <- floatingDict ty = bool2 (/=)
 
 evalMax :: SingleType a -> (a,a) :-> a
-evalMax ty@(NumSingleType (IntegralNumType ty')) | IntegralDict <- integralDict ty' = eval2 ty max
-evalMax ty@(NumSingleType (FloatingNumType ty')) | FloatingDict <- floatingDict ty' = eval2 ty max
+evalMax ty args env
+  | Just arg <- evalIfSameArguments args env
+  = Stats.ruleFired "max x x" $ Just arg
+
+  | NumSingleType (IntegralNumType ty') <- ty
+  , IntegralDict <- integralDict ty'
+  = eval2 ty max args env
+
+  | NumSingleType (FloatingNumType ty') <- ty
+  , FloatingDict <- floatingDict ty'
+  = eval2 ty max args env
+
+  | otherwise
+  = Nothing
 
 evalMin :: SingleType a -> (a,a) :-> a
-evalMin ty@(NumSingleType (IntegralNumType ty')) | IntegralDict <- integralDict ty' = eval2 ty min
-evalMin ty@(NumSingleType (FloatingNumType ty')) | FloatingDict <- floatingDict ty' = eval2 ty min
+evalMin ty args env
+  | Just arg <- evalIfSameArguments args env
+  = Stats.ruleFired "min x x" $ Just arg
+
+  | NumSingleType (IntegralNumType ty') <- ty
+  , IntegralDict <- integralDict ty'
+  = eval2 ty min args env
+
+  | NumSingleType (FloatingNumType ty') <- ty
+  , FloatingDict <- floatingDict ty'
+  = eval2 ty min args env
+
+  | otherwise
+  = Nothing
 
 -- Logical operators
 -- -----------------

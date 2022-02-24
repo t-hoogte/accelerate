@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleContexts     #-}
 {-# LANGUAGE FlexibleInstances    #-}
 {-# LANGUAGE GADTs                #-}
+{-# LANGUAGE LambdaCase           #-}
 {-# LANGUAGE OverloadedStrings    #-}
 {-# LANGUAGE OverloadedStrings    #-}
 {-# LANGUAGE PatternGuards        #-}
@@ -13,6 +14,7 @@
 {-# LANGUAGE TypeOperators        #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE ViewPatterns         #-}
+{-# OPTIONS_HADDOCK hide #-}
 -- |
 -- Module      : Data.Array.Accelerate.Trafo.Exp.Simplify
 -- Copyright   : [2012..2020] The Accelerate Team
@@ -40,7 +42,7 @@ import Data.Array.Accelerate.Analysis.Match
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Shape                   ( ShapeR(..), shapeToList )
 import Data.Array.Accelerate.Representation.Type
-import Data.Array.Accelerate.Trafo.Algebra
+import Data.Array.Accelerate.Trafo.Exp.Algebra
 import Data.Array.Accelerate.Trafo.Environment
 import Data.Array.Accelerate.Trafo.Shrink
 import Data.Array.Accelerate.Trafo.Substitution
@@ -338,6 +340,13 @@ simplifyOpenExp env = first getAny . cvtE
             -> (Any, PreOpenExp arr env Int)
     toIndex _ (_,sh) (_,FromIndex _ sh' ix)
       | Just Refl <- matchOpenExp sh sh' = Stats.ruleFired "toIndex/fromIndex" $ yes ix
+    toIndex ShapeRz _ _                  = Stats.ruleFired "toIndex DIM0" $ yes $ Const scalarTypeInt 0
+    toIndex (ShapeRsnoc ShapeRz) _ (_, Pair _ ix)
+                                         = Stats.ruleFired "toIndex DIM1" $ yes ix
+    toIndex (ShapeRsnoc ShapeRz) _ (_, ix)
+                                         = Stats.ruleFired "toIndex DIM1" $ yes
+                                         $ Let (LeftHandSidePair (LeftHandSideWildcard TupRunit) (LeftHandSideSingle scalarTypeInt))
+                                           ix $ Evar $ Var scalarTypeInt ZeroIdx
     toIndex shr sh ix                    = ToIndex shr <$> sh <*> ix
 
     fromIndex :: ShapeR sh
@@ -346,6 +355,9 @@ simplifyOpenExp env = first getAny . cvtE
               -> (Any, PreOpenExp arr env sh)
     fromIndex _ (_,sh) (_,ToIndex _ sh' ix)
       | Just Refl <- matchOpenExp sh sh' = Stats.ruleFired "fromIndex/toIndex" $ yes ix
+    fromIndex ShapeRz _ _                = Stats.ruleFired "fromIndex DIM0" $ yes Nil
+    fromIndex (ShapeRsnoc ShapeRz) _ (_, ix)
+                                         = Stats.ruleFired "fromIndex DIM1" $ yes $ Pair Nil ix
     fromIndex shr sh ix                  = FromIndex shr <$> sh <*> ix
 
     first :: (a -> a') -> (a,b) -> (a',b)
