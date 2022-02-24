@@ -19,6 +19,7 @@
 {-# LANGUAGE TypeOperators       #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns        #-}
+{-# LANGUAGE LambdaCase        #-}
 
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 {-# OPTIONS_HADDOCK prune #-}
@@ -91,6 +92,12 @@ import Data.Array.Accelerate.AST.Schedule.Uniform (UniformScheduleFun)
 import Data.Array.Accelerate.Trafo.Schedule.Uniform ()
 import Data.Array.Accelerate.Pretty.Schedule.Uniform ()
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (impliesBinary, negateBinary)
+import qualified Data.Array.Accelerate.AST.Schedule.Uniform as S
+
+data Interpreter
+instance Backend Interpreter where
+  type Schedule Interpreter = UniformScheduleFun
+  type Kernel Interpreter = InterpretKernel
 
 -- Overly simplistic datatype: We simply ignore all the functions that don't make sense (e.g. for non-array, non-generate args, or non-input args).
 data BackpermutedArg env t = BPA (Arg env t) (Int -> Int)
@@ -350,6 +357,129 @@ instance PrettyOp InterpretOp where
   prettyOp IBackpermute = "backpermute"
   prettyOp IGenerate    = "generate"
   prettyOp IPermute     = "permute"
+
+instance Execute UniformScheduleFun InterpretKernel where
+  executeAfunSchedule = const $ executeScheduleFun Empty
+
+executeScheduleFun :: Val env -> UniformScheduleFun InterpretKernel env t -> IOFun t
+executeScheduleFun env (S.Sbody schedule) = executeSchedule env schedule
+executeScheduleFun env (S.Slam lhs fun) = \input -> executeScheduleFun (env `push` (lhs, input)) fun
+
+executeSchedule :: Val env -> S.UniformSchedule InterpretKernel env -> IO ()
+executeSchedule !env = \case
+  S.Return -> return ()
+  S.Alet lhs binding body -> do
+    value <- executeBinding env binding
+    let env' = env `push` (lhs, value)
+    executeSchedule env' body
+  S.Effect effect next -> do
+    executeEffect env effect
+    executeSchedule env next
+  S.Acond var true false next -> do
+    let value = prj (varIdx var) env
+    let branch = if value == 1 then true else false
+    executeSchedule env branch
+    executeSchedule env next
+  S.Awhile io step input next -> do
+    executeAwhile env io step (prjVars input env)
+    executeSchedule env next
+  S.Fork a b -> do
+    _ <- forkIO (executeSchedule env b)
+    executeSchedule env a
+
+executeBinding :: Val env -> S.Binding env t -> IO t
+executeBinding env = \case
+  S.Compute expr ->
+    return $ evalExp expr env
+  S.NewSignal -> do
+    mvar <- newEmptyMVar
+    return (S.Signal mvar, S.SignalResolver mvar)
+  S.NewRef _ -> do
+    ioref <- newIORef $ internalError "Illegal schedule: Read from ref without value. Some synchronization might be missing."
+    return (S.Ref ioref, S.OutputRef ioref)
+  S.Alloc shr tp sh -> do
+    let n = size shr $ prjVars sh env
+    MutableBuffer buffer <- newBuffer tp n
+    return $ Buffer buffer
+  S.Use _ _ buffer ->
+    return buffer
+  S.Unit (Var tp ix) -> do
+    mbuffer@(MutableBuffer buffer) <- newBuffer tp 1
+    writeBuffer tp mbuffer 0 $ prj ix env
+    return $ Buffer buffer
+  S.RefRead ref -> do
+    let S.Ref ioref = prj (varIdx ref) env
+    readIORef ioref
+
+executeEffect :: forall env. Val env -> S.Effect InterpretKernel env -> IO ()
+executeEffect env = \case
+  S.Exec kernelFun args ->
+    executeKernelFun env Empty kernelFun args
+  S.SignalAwait signals -> mapM_ await signals
+  S.SignalResolve signals -> mapM_ resolve signals
+  S.RefWrite ref valueVar -> do
+    let S.OutputRef ioref = prj (varIdx ref) env
+    let value = prj (varIdx valueVar) env
+    writeIORef ioref value
+  where
+    await :: Idx env S.Signal -> IO ()
+    await idx = do
+      let S.Signal mvar = prj idx env
+      readMVar mvar
+
+    resolve :: Idx env S.SignalResolver -> IO ()
+    resolve idx = do
+      let S.SignalResolver mvar = prj idx env
+      putMVar mvar ()
+
+executeKernelFun :: Val env -> Val kenv -> OpenKernelFun InterpretKernel kenv t -> S.SArgs env t -> IO ()
+executeKernelFun env kernelEnv (KernelFunLam KernelArgRscalar{} fun) (S.SArgScalar var :>: args)
+  = executeKernelFun env (Push' kernelEnv (prj (varIdx var) env)) fun args
+executeKernelFun env kernelEnv (KernelFunLam KernelArgRbuffer{} fun) (S.SArgBuffer _ var :>: args)
+  = executeKernelFun env (Push' kernelEnv (prj (varIdx var) env)) fun args
+executeKernelFun _   kernelEnv (KernelFunBody (InterpretKernel cluster args)) ArgsNil = evalCluster cluster args kernelEnv
+
+executeAwhile
+  :: Val env
+  -> S.InputOutputR input output
+  -> UniformScheduleFun InterpretKernel env (input -> S.Output PrimBool -> output -> ())
+  -> input
+  -> IO ()
+executeAwhile env io step input = do
+  -- Set up the output variables for this iteration (and the input for the next)
+  (S.Signal mvarCondition, signalResolverCondition) <- executeBinding env S.NewSignal
+  (S.Ref iorefCondition, outputRefCondition) <- executeBinding env $ S.NewRef $ GroundRscalar scalarType
+  (output, nextInput) <- bindAwhileIO io
+
+  -- Execute a step
+  executeScheduleFun env step input (signalResolverCondition, outputRefCondition) output
+
+  -- Check condition
+  readMVar mvarCondition
+  condition <- readIORef iorefCondition
+  if condition == 1 then
+    executeAwhile env io step nextInput
+  else
+    return ()
+
+bindAwhileIO :: S.InputOutputR input output -> IO (output, input)
+bindAwhileIO S.InputOutputRsignal = do
+  mvar <- newEmptyMVar
+  return (S.SignalResolver mvar, S.Signal mvar)
+bindAwhileIO S.InputOutputRref = do
+  ioref <- newIORef $ internalError "Illegal schedule: Read from ref without value. Some synchronization might be missing."
+  return (S.OutputRef ioref, S.Ref ioref)
+bindAwhileIO (S.InputOutputRpair io1 io2) = do
+  (output1, input1) <- bindAwhileIO io1
+  (output2, input2) <- bindAwhileIO io2
+  return ((output1, output2), (input1, input2))
+bindAwhileIO S.InputOutputRunit =
+  return ((), ())
+
+prjVars :: Vars s env t -> Val env -> t
+prjVars TupRunit         _   = ()
+prjVars (TupRpair v1 v2) env = (prjVars v1 env, prjVars v2 env)
+prjVars (TupRsingle var) env = prj (varIdx var) env
 
 fromArgs :: Int -> Env.Val env -> Args env args -> FromIn env args
 fromArgs _ _ ArgsNil = ()
