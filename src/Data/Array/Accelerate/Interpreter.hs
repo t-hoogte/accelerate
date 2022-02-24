@@ -191,7 +191,7 @@ makeBackpermuteArg args env (Cluster io ast) = let o = getOutputEnv io args
     fromInputEnv (Input    io) (Push env (BPE (ArrArg r sh buf) f)) = BPA (ArgArray In r sh buf) f :>: fromInputEnv io env
     fromInputEnv (Output _ s e io) (Push env (BPE (OutArg r sh buf) f)) = BPA (ArgArray Out (ArrayR (arrayRshape r) (subTupR s e)) sh (subTupR (onBuffers s) buf)) f :>: fromInputEnv io env
     fromInputEnv (MutPut   io) (Push env (BPE (Others arg) f)) = BPA arg f :>: fromInputEnv io env
-    fromInputEnv (ExpPut   io) (Push env (BPE (Others arg) f)) = BPA arg f :>: fromInputEnv io env
+    fromInputEnv (ExpPut'  io) (Push env (BPE (Others arg) f)) = BPA arg f :>: fromInputEnv io env
     fromInputEnv _ (Push _ (BPE (Others _) _)) = error "Array argument found in Other"
 
     onBuffers :: SubTupR e e' -> SubTupR (Buffers e) (Buffers e')
@@ -534,10 +534,26 @@ evalCluster :: Cluster InterpretOp args -> Args env args -> Val env -> IO ()
 evalCluster c@(Cluster io ast) args env = do
   let bp = makeBackpermuteArg args env c
   doNTimes 
-    undefined -- TODO get the total iteration size of this cluster - just looking at one of the arguments should suffice
+    (iterationsize io args env)
     (\n -> do i <- evalIO1 n io bp env
               o <- evalAST n ast env i
               evalIO2 n io args env o)
+
+-- TODO update when we add folds, reconsider when we add scans that add 1...
+iterationsize :: ClusterIO args i o -> Args env args -> Val env -> Int
+iterationsize io args env = case io of
+  P.Empty -> error "no size"
+  P.Vertical _ _ io' -> case args of -- skip past this one
+    ArgVar _ :>: args' -> iterationsize io' args' env
+  P.Input  _       -> case args of ArgArray In  (ArrayR shr _) sh _ :>: _ -> arrsize shr (varsGetVal sh env)
+  P.Output _ _ _ _ -> case args of ArgArray Out (ArrayR shr _) sh _ :>: _ -> arrsize shr (varsGetVal sh env)
+  P.MutPut _       -> case args of ArgArray Mut (ArrayR shr _) sh _ :>: _ -> arrsize shr (varsGetVal sh env)
+  P.ExpPut' io' -> case args of _ :>: args' -> iterationsize io' args' env -- skip past this one
+
+arrsize :: ShapeR sh -> sh -> Int
+arrsize ShapeRz () = 1
+arrsize (ShapeRsnoc shr) (sh,x) = x * arrsize shr sh
+
 
 doNTimes :: Monad m => Int -> (Int -> m ()) -> m ()
 doNTimes n f
