@@ -34,11 +34,12 @@ import Data.Char (ord)
 import Data.Maybe (mapMaybe)
 import Control.Monad.State
 import Control.Monad.Reader
+import qualified Debug.Trace
 
 
 
 instance (MakesILP op, MIP.IsSolver s IO) => ILPSolver s op where
-  solve s (ILP dir obj constr bnds n) = makeSolution names <$> MIP.solve s options problem
+  solve s (ILP dir obj constr bnds n) = Debug.Trace.traceShow problem $ makeSolution names <$> MIP.solve s options problem
     where
       options
         | M.size (fst names) > 255*26 = error "Too many variables: Fix Data.Array.Accelerate.Trafo.Partitioning.ILP.MIP/freshName"
@@ -133,7 +134,10 @@ unvar (fromVar -> name) = asks $ (M.!? name) . fst
 
 
 makeSolution :: MakesILP op => Names op -> MIP.Solution Scientific -> Maybe (Solution op)
-makeSolution names (MIP.Solution StatusOptimal _ m) = Just . M.fromList . mapMaybe (sequence' . bimap (\v -> runReader (unvar v) names) round) $ M.toList m
+--                                   ------- Matching on solutions with a value: If this is Nothing, the model was infeasable or unbounded.
+--                                   |    -- Instead matching on `MIP.Solution StatusOptimal often works too, but that doesn't work for
+--                                   v    -- the identity program (which has an empty ILP).
+makeSolution names (MIP.Solution _ (Just _) m) = Just . M.fromList . mapMaybe (sequence' . bimap (\v -> runReader (unvar v) names) round) $ M.toList m
 makeSolution _ _ = Nothing
 
 -- tuples traversable instance works on the second argument

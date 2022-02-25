@@ -2,6 +2,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
 module Data.Array.Accelerate.Trafo.Partitioning.ILP where
 
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
@@ -24,6 +25,7 @@ import Data.Maybe (fromJust)
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (Label)
 import Data.Map (Map)
 import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
+import Data.Function ((&))
 
 
 cbcFusion, gurobiFusion, cplexFusion, glpsolFusion, lpSolveFusion, scipFusion 
@@ -64,5 +66,7 @@ ilpFusion' k1 k2 s acc = fusedAcc
     interpreted                      = interpretSolution solution
     (labelClusters, labelClustersM)  = splitExecs interpreted constrM
     fusedAcc                         = k2 graph labelClusters labelClustersM constrM
-    solve' = fromJust . unsafePerformIO . solve s
+    solve' x = unsafePerformIO (solve s x) & \case
+      Nothing -> error "Accelerate: No ILP solution found"
+      Just y -> y
 
