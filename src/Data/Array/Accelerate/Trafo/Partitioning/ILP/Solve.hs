@@ -65,13 +65,13 @@ makeILP (Info
     -- The alternative is O(n^2) edges, so this is worth the trouble!
     --
     -- In the future, maybe we want this to be backend-dependent (add to MakesILP).
-    -- Also future: add IPU reward here.
+    -- Also future: add @IVO's IPU reward here.
     objFun :: Expression op
     objFun = foldl' (\f (i :-> j) -> f .+. fused i j)
                     (int 0)
                     (S.toList fuseEdges)
 
-    myConstraints = acyclic <> infusible <> manifestC
+    myConstraints = acyclic <> infusible <> manifestC <> finalize (S.toList nodes)
 
     -- x_ij <= pi_j - pi_i <= n*x_ij for all fusible edges
     acyclic = foldMap
@@ -85,8 +85,9 @@ makeILP (Info
                   nofuseEdges
 
     -- if (i :-> j) is not fused, i has to be manifest
+    -- TODO: final output is also manifest
     manifestC = foldMap
-                (\(i :-> j) -> fused i j `impliesBinary` manifest i)
+                (\(i :-> j) -> fused i j `impliesBinary` (int 1 .-. manifest i))
                 (fuseEdges <> nofuseEdges)
 
     myBounds :: Bounds op
