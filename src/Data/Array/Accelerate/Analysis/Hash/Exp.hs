@@ -54,7 +54,7 @@ import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Type
 import Data.Primitive.Vec
 
-import Crypto.Hash
+import Crypto.Hash.XKCP
 import Data.ByteString.Builder
 import Data.ByteString.Builder.Extra
 import Data.ByteString.Short.Internal                               ( ShortByteString(..) )
@@ -64,7 +64,7 @@ import Prelude                                                      hiding ( exp
 -- Hashing
 -- -------
 
-type Hash = Digest SHA3_256
+type Hash = SHA3_256
 
 data HashOptions = HashOptions
   { perfect :: Bool

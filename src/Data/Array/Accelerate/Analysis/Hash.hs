@@ -42,14 +42,14 @@ import Data.Array.Accelerate.Analysis.Hash.Exp
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Stencil
 import Data.Array.Accelerate.Representation.Type
+import Crypto.Hash.XKCP
 
-import Crypto.Hash
-import qualified Data.Hashable as Hashable
 import Data.ByteString.Builder
 import Data.Monoid
 import System.IO.Unsafe                                             ( unsafePerformIO )
 import System.Mem.StableName                                        ( hashStableName, makeStableName )
 import Prelude                                                      hiding ( exp )
+import qualified Data.Hashable                                      as Hashable
 
 {-# INLINEABLE hashPreOpenAcc #-}
 hashPreOpenAcc :: HasArraysR acc => EncodeAcc acc -> PreOpenAcc acc aenv a -> Hash
