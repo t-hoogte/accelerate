@@ -213,6 +213,10 @@ unique = mapTupR f
     f (GroundRbuffer _) = Unique
     f _                 = Shared
 
+rnfUniqueness :: Uniqueness t -> ()
+rnfUniqueness Unique = ()
+rnfUniqueness Shared = ()
+
 -- | The arguments to be passed to an operation of type `t`.
 -- This type is represented as a cons list, separated by (->) and ending
 -- in (). This function type represents the type of the operations.
@@ -533,9 +537,20 @@ class NFData' f where
   rnf' :: f a -> ()
 
 instance NFData' op => NFData (OperationAcc op env a) where
-  rnf = error "implement NFData on OperationAcc"
+  rnf (Exec op args)                = rnf' op `seq` rnfArgs args
+  rnf (Return vars)                 = rnfGroundVars vars
+  rnf (Compute expr)                = rnfOpenExp expr
+  rnf (Alet lhs us bnd a)           = rnfLeftHandSide rnfGroundR lhs `seq` rnfTupR rnfUniqueness us `seq` rnf bnd `seq` rnf a
+  rnf (Alloc shr tp sh)             = rnfShapeR shr `seq` rnfScalarType tp `seq` rnfTupR rnfExpVar sh
+  rnf (Use tp n buffer)             = n `seq` buffer `seq` rnfScalarType tp
+  rnf (Unit var)                    = rnfVar rnfScalarType var
+  rnf (Acond cond true false)       = rnfVar rnfScalarType cond `seq` rnf true `seq` rnf false
+  rnf (Awhile us cond step initial) = rnfTupR rnfUniqueness us `seq` rnf cond `seq` rnf step `seq` rnfGroundVars initial
+
 instance NFData' op => NFData (OperationAfun op env a) where
-  rnf = error "implement NFData on OperationAfun"
+  rnf (Abody a) = rnf a
+  rnf (Alam lhs f) = rnfLeftHandSide rnfGroundR lhs `seq` rnf f
+
 
 data GroundRWithUniqueness t where
   GroundRWithUniqueness :: GroundR t -> Uniqueness t -> GroundRWithUniqueness t

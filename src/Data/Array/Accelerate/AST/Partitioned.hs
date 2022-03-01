@@ -38,14 +38,15 @@ import Data.Array.Accelerate.AST.Operation
 import Prelude hiding ( take )
 import Data.Bifunctor
 import Data.Array.Accelerate.Trafo.Desugar (ArrayDescriptor(..))
-import Data.Array.Accelerate.Representation.Array (Array, Buffers, ArrayR (ArrayR), arrayRtype)
+import Data.Array.Accelerate.Representation.Array (Array, Buffers, ArrayR (ArrayR), arrayRtype, rnfArrayR)
 import qualified Data.Array.Accelerate.AST.Environment as Env
 import Data.Array.Accelerate.Representation.Shape (ShapeR)
 import Data.Type.Equality
 import Unsafe.Coerce (unsafeCoerce)
 import Data.Array.Accelerate.Trafo.Operation.LiveVars
-import Data.Array.Accelerate.Representation.Type (TypeR)
-
+import Data.Array.Accelerate.Representation.Type (TypeR, rnfTypeR)
+import Control.DeepSeq (NFData (rnf))
+ 
 -- In this model, every thread has one input element per input array,
 -- and one output element per output array. That works perfectly for
 -- a Map, Generate, ZipWith - but the rest requires some fiddling:
@@ -89,7 +90,8 @@ data LeftHandSideArgs body env scope where
   -- Because of `Ignr`, we could also give this the type `LeftHandSideArgs () () ()`.
   Base :: LeftHandSideArgs () () ()
   -- The body has an input array
-  Reqr :: Take (Value sh e) eenv env -> Take (Value sh e) escope scope
+  Reqr :: Take (Value sh e) eenv env
+       -> Take (Value sh e) escope scope
        -> LeftHandSideArgs              body   env             scope
        -> LeftHandSideArgs (In  sh e -> body) eenv            escope
   -- The body creates an array
@@ -119,7 +121,8 @@ data ClusterIO args input output where
   Input  :: ClusterIO              args   input               output
          -> ClusterIO (In  sh e -> args) (input, Value sh e) (output, Value sh e)
   Output :: Take (Value sh e) eoutput output
-         -> SubTupR e e' -> TypeR e
+         -> SubTupR e e'
+         -> TypeR e
          -> ClusterIO              args   input               output
          -> ClusterIO (Out sh e' -> args) (input, Sh sh e)    eoutput
   MutPut :: ClusterIO              args   input             output
@@ -308,19 +311,36 @@ data Value sh e = Value e (Sh sh e)
 -- e is phantom
 data Sh sh e    = Shape (ShapeR sh) sh
 
--- instance NFData (Cluster op args) where
---   rnf = _
--- instance NFData (ClusterAST op env result) where
---   rnf = _
--- instance NFData (LeftHandSideArgs body env scope) where
---   rnf = _
--- instance NFData (ClusterIO args input output) where
---   rnf = _
-
-
 instance NFData' op => NFData' (Cluster op) where
-  rnf' = error "todo"
+  rnf' (Cluster io ast) = rnf io `seq` rnf ast
 
+instance NFData (ClusterIO args input output) where
+  rnf Empty = ()
+  rnf (Vertical take repr io) = rnf take `seq` rnfArrayR repr `seq` rnf io
+  rnf (Input io) = rnf io
+  rnf (Output take subTupR tp io) = rnf take `seq` rnf subTupR `seq` rnfTypeR tp `seq` rnf io
+  rnf (MutPut io) = rnf io
+  rnf (ExpPut io) = rnf io
+  rnf (VarPut io) = rnf io
+  rnf (FunPut io) = rnf io
+
+instance NFData (Take x xargs args) where
+  rnf Here = ()
+  rnf (There take) = rnf take
+
+instance NFData' op => NFData (ClusterAST op env result) where
+  rnf None = ()
+  rnf (Bind lhsArgs op ast) = rnf lhsArgs `seq` rnf' op `seq` rnf ast
+
+instance NFData (LeftHandSideArgs body env scope) where
+  rnf Base = ()
+  rnf (Reqr take1 take2 args) = rnf take1 `seq` rnf take2 `seq` rnf args
+  rnf (Make take args) = rnf take `seq` rnf args
+  rnf (Adju args) = rnf args
+  rnf (Ignr args) = rnf args
+  rnf (EArg args) = rnf args
+  rnf (VArg args) = rnf args
+  rnf (FArg args) = rnf args
 
 instance SLVOperation (Cluster op) where
   slvOperation (Cluster io ast :: Cluster op args) = Just $ ShrinkOperation shrinkOperation

@@ -342,7 +342,10 @@ var :: BackendVar InterpretOp -> Expression InterpretOp
 var = c . BackendSpecific
 
 instance NFData' InterpretOp where
-  rnf' = error "todo"
+  -- InterpretOp is an enumeration without fields,
+  -- so WHNF is also normal form.
+  --
+  rnf' a = a `seq` ()
 
 instance PrettyOp InterpretOp where
   prettyOp IMap         = "map"

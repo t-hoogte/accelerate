@@ -48,6 +48,7 @@ import Data.Array.Accelerate.Trafo.Substitution
 import Data.Array.Accelerate.Trafo.SkipEnvironment
 import Data.Array.Accelerate.Error
 
+import Control.DeepSeq (NFData (rnf))
 import Data.List (foldl', mapAccumR)
 import Data.Maybe
 import Data.Type.Equality
@@ -396,6 +397,11 @@ data SubTupR t t' where
   SubTupRpair :: SubTupR t1 t1'
               -> SubTupR t2 t2'
               -> SubTupR (t1, t2) (t1', t2')
+
+instance NFData (SubTupR t t') where
+  rnf SubTupRskip = ()
+  rnf SubTupRkeep = ()
+  rnf (SubTupRpair s1 s2) = rnf s1 `seq` rnf s2
 
 composeSubTupR :: SubTupR b c -> SubTupR a b -> SubTupR a c
 composeSubTupR bc SubTupRkeep = bc
