@@ -9,6 +9,7 @@
 
 {-# OPTIONS_GHC -fno-warn-orphans #-} -- Shame on me!
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE TupleSections #-}
 
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.MIP (
   -- Exports default paths to 6 solvers, as well as an instance to ILPSolver for all of them
@@ -33,21 +34,26 @@ import Data.Char (ord)
 import Data.Maybe (mapMaybe)
 import Control.Monad.State
 import Control.Monad.Reader
+import qualified Debug.Trace
+
+
 
 instance (MakesILP op, MIP.IsSolver s IO) => ILPSolver s op where
-  solve s (ILP dir obj constr bnds n) = makeSolution names <$> MIP.solve s options problem
+  solve s (ILP dir obj constr bnds n) = Debug.Trace.traceShow problem $ makeSolution names <$> MIP.solve s options problem
     where
-      options = MIP.SolveOptions{ MIP.solveTimeLimit   = Nothing
+      options
+        | M.size (fst names) > 255*26 = error "Too many variables: Fix Data.Array.Accelerate.Trafo.Partitioning.ILP.MIP/freshName"
+        | otherwise = MIP.SolveOptions{ MIP.solveTimeLimit   = Nothing
                                 , MIP.solveLogger      = putStrLn . ("AccILPSolver: "      ++)
                                 , MIP.solveErrorLogger = putStrLn . ("AccILPSolverError: " ++) }
 
-      stateProblem = Problem (Just "AccelerateILP") <$> (mkFun dir <$> expr n obj) <*> cons n constr <*> pure [] <*> pure [] <*> vartypes <*> bounds bnds
+      stateProblem = Problem (Just "AccelerateILP") <$> (mkFun dir <$> expr n obj) <*> cons n constr <*> pure [] <*> pure [] <*> vartypes <*> (bounds bnds >>= finishBounds)
       (problem, names) = runState stateProblem (mempty, mempty)
 
       mkFun Maximise = ObjectiveFunction (Just "AccelerateObjective") OptMax
       mkFun Minimise = ObjectiveFunction (Just "AccelerateObjective") OptMin
 
-      vartypes = allIntegers bnds -- assuming that all variables have bounds
+      vartypes = allIntegers -- assuming that all variables have bounds
 
 -- MIP has a Num instance for expressions, but it's scary (because 
 -- you can't guarantee linearity with arbitrary multiplications).
@@ -73,18 +79,19 @@ bounds (LowerUpper l v u) = (`M.singleton` (Finite (fromIntegral l), Finite (fro
 bounds (x :<> y) = M.unionWith (\(l1, u1) (l2, u2) -> (max l1 l2, min u1 u2)) <$> bounds x <*> bounds y
 bounds NoBounds = pure mempty
 
--- make all variables that occur in the bounds have integer type.
-allIntegers :: MakesILP op => Bounds op -> STN op (M.Map MIP.Var VarType)
-allIntegers (Binary v)         = (`M.singleton` IntegerVariable) <$> var v
-allIntegers (Lower      _ v  ) = (`M.singleton` IntegerVariable) <$> var v
-allIntegers (     Upper   v _) = (`M.singleton` IntegerVariable) <$> var v
-allIntegers (LowerUpper _ v _) = (`M.singleton` IntegerVariable) <$> var v
-allIntegers (x :<> y) = (<>) <$> allIntegers x <*> allIntegers y
-allIntegers NoBounds = pure mempty
+-- For all variables not yet in bounds, we add infinite bounds. This is apparently required.
+-- Potentially, it's more efficient to simply make a bounds map giving (NegInf, PosInf) to all variables (like in `allIntegers`), and then use `unionWith const`?
+finishBounds :: M.Map MIP.Var (Extended Scientific, Extended Scientific) -> STN op (M.Map MIP.Var (Extended Scientific, Extended Scientific))
+finishBounds x = do
+  vars' <- gets $ map toVar . M.keys . fst
+  let y = M.keys x
+  return $ x <> (M.fromList . map (,(NegInf,PosInf)) . filter (not . (`elem` y)) $ vars')
+
+allIntegers :: STN op (M.Map MIP.Var VarType)
+allIntegers = gets $ M.fromList . map ((,IntegerVariable) . toVar) . M.keys . fst
 
 -- Apparently, solvers don't appreciate variable names longer than 255 characters!
 -- Instead, we generate small placeholders here and store their meaning :)
--- TODO: after debugging is done, can probably remove a lot of show/read instances that this used to use
 
 type Names op = (M.Map String (Graph.Var op), M.Map (Graph.Var op) String)
 type STN op = State (Names op)
@@ -95,6 +102,12 @@ freshName = do
     Nothing -> return "a"
     Just (name, _) -> return $ increment name
   where
+    -- "a" to "z", followed by "za" to "zz", then "zza" to "zzz", etc.
+    -- This method isn't _optimal_ in that all non-final letters are always 'z',
+    -- but at least `M.lookupMax` does work and we get 26 options per length.
+    -- I believe the limit is a variable name of 256 characters, which allows us
+    -- 6656 distinct variables at the moment. TODO improve once we get there,
+    -- by explicitly keeping track of the last name in the state.
     increment "" = "a"
     increment (char:cs)
       | ord char < ord 'z' = toEnum (ord char + 1) : cs
@@ -121,7 +134,10 @@ unvar (fromVar -> name) = asks $ (M.!? name) . fst
 
 
 makeSolution :: MakesILP op => Names op -> MIP.Solution Scientific -> Maybe (Solution op)
-makeSolution names (MIP.Solution StatusOptimal _ m) = Just . M.fromList . mapMaybe (sequence' . bimap (\v -> runReader (unvar v) names) round) $ M.toList m
+--                                   ------- Matching on solutions with a value: If this is Nothing, the model was infeasable or unbounded.
+--                                   |    -- Instead matching on `MIP.Solution StatusOptimal often works too, but that doesn't work for
+--                                   v    -- the identity program (which has an empty ILP).
+makeSolution names (MIP.Solution _ (Just _) m) = Just . M.fromList . mapMaybe (sequence' . bimap (\v -> runReader (unvar v) names) round) $ M.toList m
 makeSolution _ _ = Nothing
 
 -- tuples traversable instance works on the second argument

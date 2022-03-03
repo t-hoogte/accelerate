@@ -32,7 +32,7 @@ module Data.Array.Accelerate.Trafo.LiveVars
   , SubTupR(..), subTupR, subTupUnit, DeclareSubVars(..), declareSubVars
   , LVAnalysis(..), LVAnalysisFun(..), LVAnalysis'(..), allDead, expectJust
   , subTupExp, subTupFun
-  ,composeSubTupR,subTup) where
+  ,composeSubTupR,subTup,subTupDBuf) where
 
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Exp
@@ -52,6 +52,7 @@ import Control.DeepSeq (NFData (rnf))
 import Data.List (foldl', mapAccumR)
 import Data.Maybe
 import Data.Type.Equality
+import Data.Array.Accelerate.Array.Buffer
 
 data ReEnv env subenv where
   ReEnvEnd  :: ReEnv () ()
@@ -458,10 +459,16 @@ expectJust Nothing  = internalError "Substitution in live variable analysis fail
 subTupExp :: IsArrayInstr arr => SubTupR t t' -> PreOpenExp arr env t -> PreOpenExp arr env t'
 subTupExp SubTupRkeep expr = expr
 subTupExp SubTupRskip _    = Nil
-subTupExp subTup'     expr
-  | DeclareSubVars lhs _ vars <- declareSubVars (expType expr) subTup'
+subTupExp s      expr
+  | DeclareSubVars lhs _ vars <- declareSubVars (expType expr) s
   = Let lhs expr $ expVars $ vars weakenId
 
 subTupFun :: IsArrayInstr arr => SubTupR t t' -> PreOpenFun arr env (s -> t) -> PreOpenFun arr env (s -> t')
-subTupFun subTup' (Lam lhs (Body body)) = Lam lhs $ Body $ subTupExp subTup' body
-subTupFun _       _                     = internalError "Function impossible"
+subTupFun s (Lam lhs (Body body)) = Lam lhs $ Body $ subTupExp s body
+subTupFun _      _                     = internalError "Function impossible"
+
+subTupDBuf :: SubTupR t t' -> TupR s (Distribute Buffer t) -> TupR s (Distribute Buffer t')
+subTupDBuf SubTupRskip         _                = TupRunit
+subTupDBuf SubTupRkeep         t                = t
+subTupDBuf (SubTupRpair s1 s2) (TupRpair t1 t2) = subTupDBuf s1 t1 `TupRpair` subTupDBuf s2 t2
+subTupDBuf _                   _                = internalError "Tuple mismatch"

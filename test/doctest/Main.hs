@@ -30,8 +30,11 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE RebindableSyntax #-}
 {-# LANGUAGE LambdaCase #-}
+
+
+{-# LANGUAGE RebindableSyntax #-}
+
 module Main where
 
 import Data.Array.Accelerate
@@ -55,12 +58,39 @@ awhile' :: Acc (Vector Int) -> Acc (Vector Int)
 awhile' = awhile (\x -> unit ((x ! I1 0) == 0)) P.id
 
 iffy :: Acc (Vector Int) -> Acc (Vector Int)
-iffy acc = if size acc == 1 then twoMaps acc else reshape (Z_ ::. 1) (unit 1)
+iffy acc = if size acc == 20 then twoMaps acc else reshape (Z_ ::. 1) (unit 1)
 twoMaps :: Acc (Vector Int) -> Acc (Vector Int)
-twoMaps = map (+1) . map (*2)-- . use $ fromList (Z :. 10) [1..]
+twoMaps = map (+1) . map (*2)
 
 foo (a :: Acc (Vector Int)) = map (*2) $ if (a ! I1 0) == 2 then map (+1) a else a
 
-main :: P.IO ()
-main = P.putStrLn (test @UniformScheduleFun @InterpretKernel iffy)
+-- Neither of the backpermutes is allowed to fuse with the map: otherwise the other backpermute cannot be computed.
+-- Fusing both is possible, but only with work duplication (we still choose to never do that for now).
+-- The backpermutes _are_ allowed to fuse with each other: This should however 1. not be rewarded 2. supported in codegen
+difficult :: Acc (Array DIM1 Int) -> Acc (Array DIM1 (Int, Int))--Acc (Array DIM1 Int, Array DIM1 Int)
+difficult acc = zip (backpermute sh (\(I1 x) -> I1 (x `div` 2)) x) (backpermute sh (\(I1 x) -> I1 (x + 1)) x)
+  where
+    x = map (+3) acc
+    sh = I1 10
 
+main :: P.IO ()
+main = 
+  P.print $ run1 @Interpreter P.id $ fromList (Z:.20) [1::P.Int ..] -- wow, apparently the identity program fails to ILP
+
+
+-- import qualified Data.Array.Accelerate as A
+-- import qualified Data.Array.Accelerate.Interpreter as A
+-- main = do
+--   putStrLn $ A.test @A.UniformScheduleFun @A.InterpretKernel program
+--   print $ A.run1 @A.Interpreter program $ A.fromList (A.Z) [20 :: Int]
+--   where
+--     program = collatzIndex
+
+-- step :: A.Acc (A.Scalar Int, A.Scalar Int) -> A.Acc (A.Scalar Int, A.Scalar Int)
+-- step (A.T2 x' count') = A.T2 (A.ifThenElse (x `mod` 2 A.== 0) (A.unit $ x `div` 2) (A.unit $ x * 3 + 1)) (A.unit $ count + 1)
+--   where
+--     x = A.the x'
+--     count = A.the count'
+
+-- collatzIndex :: A.Acc (A.Scalar Int) -> A.Acc (A.Scalar Int)
+-- collatzIndex input = A.asnd $ A.awhile (A.unit . (A./= 1) . A.the . A.afst) step (A.T2 input $ A.unit 0)

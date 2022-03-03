@@ -53,8 +53,9 @@ makeILP (Info
                          (bnds <> backendbounds)
                          n
     -- n is used in some of the constraints, as an upperbound on the number of clusters.
+    -- We add a small constant to be safe, as some variables have ranges from -3 to number of nodes.
     n :: Int
-    n = S.size nodes
+    n = 5 + S.size nodes
 
     graphILP = ILP Minimise objFun myConstraints myBounds n
 
@@ -70,19 +71,23 @@ makeILP (Info
                     (int 0)
                     (S.toList fuseEdges)
 
-    myConstraints = acyclic <> infusible
+    myConstraints = acyclic <> infusible <> manifestC
 
     -- x_ij <= pi_j - pi_i <= n*x_ij for all fusible edges
     acyclic = foldMap
                 (\(i :-> j) -> between
-                              ( fused i j       )
-                              ( pi j .-. pi i   )
-                              ( timesN $ c (Fused i j )))
-                fuseEdges
+                              ( fused i j )
+                              ( pi j .-. pi i )
+                              ( timesN $ fused i j ))
+                (fuseEdges <> nofuseEdges)
+    infusible = foldMap
+                  (\(i :-> j) -> fused i j .==. int 1)
+                  nofuseEdges
 
-    -- pi_j - pi_i >= 1 for all infusible edges (i,j)
-    infusible = foldMap (\(i :-> j) -> pi j .-. pi i .>=. int 1)
-                        nofuseEdges
+    -- if (i :-> j) is not fused, i has to be manifest
+    manifestC = foldMap
+                (\(i :-> j) -> fused i j `impliesBinary` manifest i)
+                (fuseEdges <> nofuseEdges)
 
     myBounds :: Bounds op
     --            0 <= pi_i <= n
@@ -90,29 +95,38 @@ makeILP (Info
                   (S.toList nodes)
                <>  -- x_ij \in {0, 1}
                foldMap (\(i :-> j) -> binary $ Fused i j)
-                  (S.toList fuseEdges)
+                  (S.toList $ fuseEdges <> nofuseEdges)
+               <>
+               foldMap (\(i :-> j) -> binary (ManifestOutput i) <> binary (ManifestOutput j))
+                  (S.toList $ fuseEdges <> nofuseEdges)
 
+negateBinary :: Expression op -> Expression op
+negateBinary e = int 1 .-. e
+
+-- if a is 1, then b must be 1
+impliesBinary :: Expression op -> Expression op -> Constraint op
+impliesBinary a b = a .<=. b
 
 -- Extract the fusion information (ordered list of clusters of Labels) (head is the first cluster).
 -- Output has the top-level clusters in fst, and the rest in snd.
 interpretSolution :: MakesILP op => Solution op -> ([Labels], M.Map Label [Labels])
 interpretSolution =
-    (\(x:xs) -> 
+    (\(x:xs) ->
       ( x
-      , M.fromList $ 
+      , M.fromList $
             map
-            (\l -> 
+            (\l ->
               ( fromJust -- All labels in the Map will have a parent, only the top clusters can have Nothing as parent (depending on whether we have an Acc or an Afun)
-              . view parent 
+              . view parent
               . S.findMin -- `head` and `findMin` just to get _any_ element:
               . head      -- there is at least one and the parents are all identical
               $ l
               , l))
             xs))
-  . map 
-    ( map 
+  . map
+    ( map
       ( S.fromList
-      . map fst) 
+      . map fst)
     . partition snd)
   . partition (^. _1.parent)
   . mapMaybe (_1 fromPi)

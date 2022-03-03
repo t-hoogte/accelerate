@@ -21,6 +21,7 @@
 {-# LANGUAGE TypeOperators       #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns        #-}
+{-# LANGUAGE LambdaCase        #-}
 
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 {-# OPTIONS_HADDOCK prune #-}
@@ -72,7 +73,8 @@ import Control.Monad.ST
 import Data.Bits
 import Data.Array.Accelerate.Backend
 import Data.Array.Accelerate.Trafo.Operation.LiveVars
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP (..), Information (Info), Var (BackendSpecific), (-?>), fused, infusibleEdges)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP (..), Information (Info), Var (BackendSpecific), (-?>), fused, infusibleEdges, manifest) 
+import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Graph
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
 import qualified Data.Set as S
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
@@ -99,6 +101,8 @@ import Control.Concurrent.MVar
 import Data.Array.Accelerate.AST.Schedule.Uniform (UniformScheduleFun)
 import Data.Array.Accelerate.Trafo.Schedule.Uniform ()
 import Data.Array.Accelerate.Pretty.Schedule.Uniform ()
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (impliesBinary, negateBinary)
+import qualified Data.Array.Accelerate.AST.Schedule.Uniform as S
 
 data Interpreter
 instance Backend Interpreter where
@@ -187,7 +191,7 @@ makeBackpermuteArg args env (Cluster io ast) = let o = getOutputEnv io args
     fromInputEnv (Input    io) (Push env (BPE (ArrArg r sh buf) f)) = BPA (ArgArray In r sh buf) f :>: fromInputEnv io env
     fromInputEnv (Output _ s e io) (Push env (BPE (OutArg r sh buf) f)) = BPA (ArgArray Out (ArrayR (arrayRshape r) (subTupR s e)) sh (subTupR (onBuffers s) buf)) f :>: fromInputEnv io env
     fromInputEnv (MutPut   io) (Push env (BPE (Others arg) f)) = BPA arg f :>: fromInputEnv io env
-    fromInputEnv (ExpPut   io) (Push env (BPE (Others arg) f)) = BPA arg f :>: fromInputEnv io env
+    fromInputEnv (ExpPut'  io) (Push env (BPE (Others arg) f)) = BPA arg f :>: fromInputEnv io env
     fromInputEnv _ (Push _ (BPE (Others _) _)) = error "Array argument found in Other"
 
     onBuffers :: SubTupR e e' -> SubTupR (Buffers e) (Buffers e')
@@ -248,20 +252,22 @@ makeBackpermuteArg args env (Cluster io ast) = let o = getOutputEnv io args
 -- evalLHS = _
 
 data InterpretOp args where
-  IMap         :: InterpretOp (Fun' (s -> t) -> In sh s -> Out sh t -> ())
+  IMap         :: InterpretOp (Fun' (s -> t)    -> In sh s -> Out sh  t -> ())
   IBackpermute :: InterpretOp (Fun' (sh' -> sh) -> In sh t -> Out sh' t -> ())
-  IGenerate    :: InterpretOp (Fun' (sh -> t) -> Out sh t -> ())
+  IGenerate    :: InterpretOp (Fun' (sh -> t)              -> Out sh  t -> ())
   IPermute     :: InterpretOp (Fun' (e -> e -> e)
                               -> Mut sh' e
                               -> Fun' (sh -> PrimMaybe sh')
                               -> In sh e
                               -> ())
+  IFold1       :: InterpretOp (Fun' (e -> e -> e) -> In (sh, Int) e -> Out sh e -> ())
 
 instance DesugarAcc InterpretOp where
   mkMap         a b c   = Exec IMap         (a :>: b :>: c :>:       ArgsNil)
   mkBackpermute a b c   = Exec IBackpermute (a :>: b :>: c :>:       ArgsNil)
   mkGenerate    a b     = Exec IGenerate    (a :>: b :>:             ArgsNil)
   mkPermute     a b c d = Exec IPermute     (a :>: b :>: c :>: d :>: ArgsNil)
+  mkFold        a Nothing b c = Exec IFold1 (a :>: b :>: c :>:       ArgsNil)
   -- etc, but the rest piggybacks off of Generate for now (see Desugar.hs)
 
 instance SLVOperation InterpretOp where
@@ -279,7 +285,14 @@ instance SLVOperation InterpretOp where
       -> ShrunkOperation IMap (ArgFun (subTupFun subTup f) :>: input :>: output :>: ArgsNil)
     _ `SubArgsLive` _ `SubArgsLive` SubArgsDead _ -> internalError "At least one output should be preserved"
 
-  slvOperation _ = Nothing
+  slvOperation IBackpermute = Just $ ShrinkOperation $ \subArgs args@(f :>: ArgArray In (ArrayR shr r) sh buf :>: output :>: ArgsNil) _ -> case subArgs of
+    SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgsNil
+      -> ShrunkOperation IBackpermute args
+    SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgOut s `SubArgsLive` SubArgsNil
+      -> ShrunkOperation IBackpermute (f :>: ArgArray In (ArrayR shr (subTupR s r)) sh (subTupDBuf s buf) :>: output :>: ArgsNil)
+    _ `SubArgsLive` _ `SubArgsLive` SubArgsDead _ -> internalError "At least one output should be preserved"
+  
+  slvOperation _ = Nothing -- TODO write for all constructors, and also, remind @IVO to make SLV support Nothing
 
 data InterpretKernel env where
   InterpretKernel :: Cluster InterpretOp args -> Args env args -> InterpretKernel env
@@ -300,10 +313,13 @@ instance PrettyKernel InterpretKernel where
 -- -2 is left>right, -1 is right>left, n is 'according to computation n' (e.g. Backpermute) 
 -- (Note that Labels are uniquely identified by an Int, the parent just gives extra information)
 -- Use Output = -3 for 'cannot be fused with consumer', as that is more difficult to express (we don't know the consumer yet)
--- We restrict all the Inputs to (-2, PosInf).
+-- We restrict all the Inputs to >= -2.
 data OrderV = OrderIn  Label
             | OrderOut Label
   deriving (Eq, Ord, Show, Read)
+pattern InDir, OutDir :: Label -> Graph.Var InterpretOp
+pattern InDir  l = BackendSpecific (OrderIn l)
+pattern OutDir l = BackendSpecific (OrderOut l)
 
 instance MakesILP InterpretOp where
   type BackendVar InterpretOp = OrderV
@@ -312,34 +328,36 @@ instance MakesILP InterpretOp where
     Info
       mempty
       (  inputDirectionConstraint l lIn
-      <> var (OrderIn l) .==. int i) -- enforce that the backpermute follows its own rules
+      <> c (InDir l) .==. int i) -- enforce that the backpermute follows its own rules, but the output can be anything
+      -- <> manifest lIn `impliesBinary` fused lIn l) -- Backpermute cannot diagonally fuse with its input: if you are manifest, you cannot be fused
+      -- ^ is not strong enough, see my paper draft :p
+      -- Instead, we need restrictions on _every_ Op saying that manifest => order < 0 (and make sure that every order which guarantees full evaluation is < 0).
       (inOutBounds l)
-  mkGraph IGenerate _ l = Info mempty mempty (lower (-2) (BackendSpecific $ OrderOut l))
+  mkGraph IGenerate _ l = Info mempty mempty (lower (-2) (OutDir l))
   mkGraph IMap (_ :>: L _ (_, S.toList -> ~[lIn]) :>: _ :>: ArgsNil) l =
     Info
       mempty
       (  inputDirectionConstraint l lIn
-      <> var (OrderIn l) .==. var (OrderOut l))
+      <> c (InDir l) .==. c (OutDir l))
       (inOutBounds l)
   mkGraph IPermute (_ :>: L _ (_, S.toList -> ~[lTarget]) :>: _ :>: L _ (_, S.toList -> ~[lIn]) :>: ArgsNil) l =
     Info
-      (mempty & infusibleEdges .~ S.singleton (lTarget -?> l)) -- Cannot fuse with the producer of the target array
-      (  inputDirectionConstraint l lIn
-      <> var (OrderOut l) .==. int (-3)) -- convention meaning infusible
-      (lower (-2) (BackendSpecific $ OrderIn l))
+      (  mempty & infusibleEdges .~ S.singleton (lTarget -?> l)) -- Cannot fuse with the producer of the target array
+      (  inputDirectionConstraint l lIn)
+      (  lower (-2) (InDir l)
+      <> upper (OutDir l) (-3)) -- convention meaning infusible
+
+  mkGraph IFold1 _ _ = undefined
 
 
 -- | If l and lIn are fused, the out-order of lIn and the in-order of l should match
 inputDirectionConstraint :: Label -> Label -> Constraint InterpretOp
 inputDirectionConstraint l lIn =
-                timesN (fused lIn l) .>=. var (OrderIn l) .-. var (OrderOut lIn)
-    <> (-1) .*. timesN (fused lIn l) .<=. var (OrderIn l) .-. var (OrderOut lIn)
+                timesN (fused lIn l) .>=. c (InDir l) .-. c (OutDir lIn)
+    <> (-1) .*. timesN (fused lIn l) .<=. c (InDir l) .-. c (OutDir lIn)
 
 inOutBounds :: Label -> Bounds InterpretOp
-inOutBounds l = lower (-2) (BackendSpecific $ OrderIn l) <> lower (-2) (BackendSpecific $ OrderOut l)
-
-var :: BackendVar InterpretOp -> Expression InterpretOp
-var = c . BackendSpecific
+inOutBounds l = lower (-2) (InDir l) <> lower (-2) (OutDir l)
 
 instance NFData' InterpretOp where
   -- InterpretOp is an enumeration without fields,
@@ -519,10 +537,26 @@ evalCluster :: Cluster InterpretOp args -> Args env args -> Val env -> IO ()
 evalCluster c@(Cluster io ast) args env = do
   let bp = makeBackpermuteArg args env c
   doNTimes 
-    undefined -- TODO get the total iteration size of this cluster - just looking at one of the arguments should suffice
+    (iterationsize io args env)
     (\n -> do i <- evalIO1 n io bp env
               o <- evalAST n ast env i
               evalIO2 n io args env o)
+
+-- TODO update when we add folds, reconsider when we add scans that add 1...
+iterationsize :: ClusterIO args i o -> Args env args -> Val env -> Int
+iterationsize io args env = case io of
+  P.Empty -> error "no size"
+  P.Vertical _ _ io' -> case args of -- skip past this one
+    ArgVar _ :>: args' -> iterationsize io' args' env
+  P.Input  _       -> case args of ArgArray In  (ArrayR shr _) sh _ :>: _ -> arrsize shr (varsGetVal sh env)
+  P.Output _ _ _ _ -> case args of ArgArray Out (ArrayR shr _) sh _ :>: _ -> arrsize shr (varsGetVal sh env)
+  P.MutPut _       -> case args of ArgArray Mut (ArrayR shr _) sh _ :>: _ -> arrsize shr (varsGetVal sh env)
+  P.ExpPut' io' -> case args of _ :>: args' -> iterationsize io' args' env -- skip past this one
+
+arrsize :: ShapeR sh -> sh -> Int
+arrsize ShapeRz () = 1
+arrsize (ShapeRsnoc shr) (sh,x) = x * arrsize shr sh
+
 
 doNTimes :: Monad m => Int -> (Int -> m ()) -> m ()
 doNTimes n f

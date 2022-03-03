@@ -104,7 +104,7 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
                 -> Arg env (Out sh t)
                 -> OperationAcc op env ()
   mkShrink input@(ArgArray _ (ArrayR shr _) _ _) output = mkBackpermute (ArgFun $ identity $ shapeType shr) input output
- 
+
   -- Copies a buffer. This is used before passing a buffer to a 'Mut' argument,
   -- to make sure it is unique. This may be removed during fusion to facilitate
   -- in-place updates
@@ -119,12 +119,11 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
                 -> Arg env (In  sh e2)
                 -> Arg env (Out sh e3)
                 -> OperationAcc op env ()
-  mkZipWith (ArgFun f) (ArgArray _ repr1@(ArrayR shr _) sh1 buffers1) (ArgArray _ repr2 sh2 buffers2) output@(ArgArray _ (ArrayR _ tp) _ _)
-    | DeclareVars lhs _ value <- declareVars $ shapeType shr =
+  mkZipWith (ArgFun f) (ArgArray _ (ArrayR shr ty1) _ buf1)
+                       (ArgArray _ (ArrayR _   ty2) _ buf2) output@(ArgArray _ (ArrayR _ _) sh _) =
       let
-        ix = expVars $ value weakenId
-        g = Lam lhs $ Body $ apply2 tp f (index repr1 sh1 buffers1 ix) (index repr2 sh2 buffers2 ix)
-      in mkGenerate (ArgFun g) output
+        input = ArgArray In (ArrayR shr (TupRpair ty1 ty2)) sh (TupRpair buf1 buf2)
+      in mkMap (ArgFun $ uncurry' f) input output
 
   mkReplicate   :: SliceIndex slix sl co sh
                 -> Arg env (Var' slix)
@@ -467,7 +466,7 @@ desugarOpenAcc env = travA
               $ aletUnique lhsOut (desugarAlloc (ArrayR shrOut tpOut) (valueShOut weakenId))
               $ alet (LeftHandSideWildcard TupRunit) (mkTransform argIdxF argValF argIn argOut)
               $ Return (shOut `TupRpair` bfOut)
-      
+
       Named.Map _ (Lam lhs (Body e)) a
         | Just vars <- extractExpVars e
         , ArrayR shr oldTp <- Named.arrayR a
@@ -492,7 +491,7 @@ desugarOpenAcc env = travA
               $ aletUnique lhsOut (desugarAlloc (ArrayR shr tp) (valueSh kIn))
               $ alet (LeftHandSideWildcard TupRunit) (mkMap argF argIn argOut)
               $ Return (sh `TupRpair` valueOut weakenId)
-      
+
       Named.Backpermute shrOut shExp f a
         | ArrayR shrIn tp <- Named.arrayR a
         , DeclareVars lhsShIn  kShIn  valueShIn  <- declareVars $ mapTupR GroundRscalar $ shapeType shrIn
@@ -711,7 +710,7 @@ desugarOpenAcc env = travA
             shOut' = case valueShIn (kShOut .> kIn) of
               TupRpair sh _ -> TupRpair sh $ valueShOut weakenId
               _ -> error "Impossible pair"
-            
+
             k = kOut .> kShOut .> kIn .> kShIn
 
             argF   = ArgFun $ desugarFun (weakenBEnv k env) f
@@ -743,7 +742,7 @@ desugarOpenAcc env = travA
             shOut2 = case sh of
               TupRpair sh' _ -> sh'
               _ -> error "Impossible pair"
-            
+
             k = kOut2 .> kOut1 .> kIn .> kSh
 
             argF = ArgFun $ desugarFun (weakenBEnv k env) f
@@ -808,6 +807,7 @@ desugarOpenAcc env = travA
               $ aletUnique lhsOut (desugarAlloc (ArrayR shr tp3) (valueSh weakenId))
               $ alet (LeftHandSideWildcard TupRunit) (mkStencil2 sr1 sr2 argF b1' argIn1 b2' argIn2 argOut)
               $ Return (sh `TupRpair` valueOut weakenId)
+      Named.Atrace _ _ _ -> error "implement me"
 
 desugarAlloc :: forall benv op sh a. ArrayR (Array sh a) -> ExpVars benv sh -> OperationAcc op benv (Buffers a)
 desugarAlloc (ArrayR _   TupRunit        ) _  = Return TupRunit
@@ -1056,19 +1056,19 @@ stencilAccess' shr sr rf ix = case sr of
   -- _left-most_ index component
   --
   StencilRtup3 s1 s2 s3 ->
-    Nil `Pair` go s1 (-1) 
+    Nil `Pair` go s1 (-1)
         `Pair` go s2 0
         `Pair` go s3 1
 
   StencilRtup5 s1 s2 s3 s4 s5 ->
-    Nil `Pair` go s1 (-2) 
+    Nil `Pair` go s1 (-2)
         `Pair` go s2 (-1)
         `Pair` go s3 0
         `Pair` go s4 1
         `Pair` go s5 2
 
   StencilRtup7 s1 s2 s3 s4 s5 s6 s7 ->
-    Nil `Pair` go s1 (-3) 
+    Nil `Pair` go s1 (-3)
         `Pair` go s2 (-2)
         `Pair` go s3 (-1)
         `Pair` go s4 0
@@ -1077,7 +1077,7 @@ stencilAccess' shr sr rf ix = case sr of
         `Pair` go s7 3
 
   StencilRtup9 s1 s2 s3 s4 s5 s6 s7 s8 s9 ->
-    Nil `Pair` go s1 (-4) 
+    Nil `Pair` go s1 (-4)
         `Pair` go s2 (-3)
         `Pair` go s3 (-2)
         `Pair` go s4 (-1)
@@ -1186,7 +1186,7 @@ mkDefaultFoldStep1Function f def n1' argIn@(ArgArray _ (ArrayR (ShapeRsnoc shr) 
             Cond (mkBinary (PrimEq singleType) y' $ mkConstant (TupRsingle scalarTypeInt) 0)
             (weakenE weakenEmpty d)
             (index (ArrayR (ShapeRsnoc shr) tp) (sh' `TupRpair` n') buffers $ Pair x' $ mkBinary (PrimSub numType) y' $ mkConstant (TupRsingle scalarTypeInt) 1)
-      index' x' y' = 
+      index' x' y' =
             (index (ArrayR (ShapeRsnoc shr) tp) (sh' `TupRpair` n') buffers $ Pair x' y')
     in
       -- \(x, y) ->
@@ -1324,7 +1324,7 @@ mkDefaultFoldSegFunction itp (ArgFun f) def (ArgArray _ (ArrayR shr tp) sh input
       initial = case def of
         Just (ArgExp d) -> Pair (weakenE kSh d) start
         Nothing -> Pair (index (ArrayR shr tp) sh input $ Pair (expVars $ fst' $ valueSh weakenId) start) (mkBinary (PrimAdd numType) start $ mkConstant (TupRsingle scalarTypeInt) 1)
-      
+
       fst' :: ExpVars env (a, b) -> ExpVars env a
       fst' (TupRpair a _) = a
       fst' _ = error "Impossible pair"
@@ -1333,3 +1333,9 @@ mkDefaultFoldSegFunction itp (ArgFun f) def (ArgArray _ (ArrayR shr tp) sh input
         $ Body
         $ Let (lhsE `LeftHandSidePair` LeftHandSideWildcard (TupRsingle scalarTypeInt)) (While cond step initial)
         $ expVars $ valueE weakenId
+
+
+uncurry' :: Fun env (a -> b -> c) -> Fun env ((a, b) -> c)
+uncurry' (Lam lhs1 (Lam lhs2 f)) = Lam (LeftHandSidePair lhs1 lhs2) f
+uncurry' (Lam _ (Body _)) = error "impossible: Expression of function type"
+uncurry' (Body _) = error "impossible: Expression of function type"

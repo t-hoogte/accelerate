@@ -29,7 +29,6 @@ import qualified Data.Map as M
 import Unsafe.Coerce (unsafeCoerce)
 import qualified Data.Graph as G
 import qualified Data.Set as S
-import Data.Function (on)
 import Data.Array.Accelerate.AST.Operation
 import Data.Maybe (fromJust, fromMaybe)
 import Data.Type.Equality ( type (:~:)(Refl) )
@@ -37,7 +36,7 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (ClusterLs (Execs, Non
 import Data.Array.Accelerate.AST.Environment (Identity(runIdentity), weakenWithLHS)
 
 import Prelude hiding ( take )
-import Lens.Micro ((%~), _1, _3)
+import Lens.Micro (_1)
 import Lens.Micro.Extras (view)
 import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
 import Data.Array.Accelerate.Trafo.LiveVars (SubTupR(SubTupRkeep))
@@ -89,6 +88,7 @@ topSort :: Graph -> Labels -> ClusterL
 topSort _ (S.toList -> [l]) = ExecL [l]
 topSort (Graph _ fedges _) cluster = ExecL topsorted
   where
+    -- graphs are endomorphisms in the Kleisli category of the free semimodule monad
     (graph, getAdj, _) =
           G.graphFromEdges
           . map (\(a,b) -> (a,a,b))

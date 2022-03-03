@@ -103,6 +103,9 @@ data Var (op :: Type -> Type)
     -- ^ 0 is fused (same cluster), 1 is unfused. We do *not* have one of these for all pairs, only the ones we need for constraints and/or costs!
     -- Invariant: Like edges, both labels have to have the same parent: Either on top (Label _ Nothing) or as sub-computation of the same label (Label _ (Just x)).
     -- In fact, this is the Var-equivalent to Edge: an infusible edge has a constraint (== 1).
+  | ManifestOutput Label
+    -- ^ 0 means manifest, 1 is like a `delayed array`.
+    -- Binary variable; will we write the output to a manifest array, or is it fused away (i.e. all uses are in its cluster)?
   | BackendSpecific (BackendVar op)
     -- ^ Vars needed to express backend-specific fusion rules.
     -- This is what allows backends to specify how each of the operations can fuse.
@@ -115,6 +118,8 @@ deriving instance Read (BackendVar op) => Read (Var op)
 -- convenience synonyms
 pi :: Label -> Expression op
 pi l      = c $ Pi l
+manifest :: Label -> Expression op
+manifest l = c $ ManifestOutput l
 -- | Safe constructor for Fused variables
 fused :: Label -> Label -> Expression op
 fused x y = let x' :-> y' = x -?> y

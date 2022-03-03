@@ -51,19 +51,14 @@ import Control.DeepSeq (NFData (rnf))
 -- and one output element per output array. That works perfectly for
 -- a Map, Generate, ZipWith - but the rest requires some fiddling:
 --
--- - Folds, Scans and Stencils need to cooperate, and not every thread will
+-- - Folds and Scans need to cooperate, and not every thread will
 --   return a value. This makes them harder to squeeze into the interpreter,
 --   but the LLVM backends are used to such tricks.
 --
--- - Fusing Backpermute does not translate well to this composition of loop
+-- - Fusing Backpermute and Stencil does not translate well to this composition of loop
 --   bodies. Instead, we will need a pass (after construction of these clusters)
---   that propagates backpermutes to the start of each cluster (or the 
---    originating backpermute, if fused).
---
--- - I'm not sure how to handle Permute: It hints towards needing a constructor
---   that passes an entire mut array to all elements, like Exp' and friends.
---   It currently uses `Mut` in Desugar.hs, but in the fusion files that means
---   'somethat that is both input and output', e.g. an in-place Map.
+--   that propagates them to the start of each cluster (or the 
+--    originating generate, if fused).
 
 type PartitionedAcc  op = PreOpenAcc  (Cluster op)
 type PartitionedAfun op = PreOpenAfun (Cluster op)
@@ -75,7 +70,7 @@ data Cluster op args where
           -> Cluster op args
 
 -- | Internal AST of `Cluster`, simply a list of let-bindings.
--- Note that all environments hold scalar values, not arrays!
+-- Note that all environments hold scalar values, not arrays! (aside from Mut)
 data ClusterAST op env result where
   None :: ClusterAST op env env
   -- `Bind _ x y` reads as `do x; in the resulting environment, do y`
@@ -350,7 +345,7 @@ instance SLVOperation (Cluster op) where
 
       slvIO :: SubArgs a a' -> Args env a' -> Args env' a -> ClusterIO a i o -> ClusterIO a' i o
       slvIO SubArgsNil ArgsNil ArgsNil Empty = Empty
-      slvIO (SubArgsDead subargs) (ArgVar _ :>: args') (ArgArray Out (ArrayR shr r) _ _ :>: args) (Output t s te io') = Vertical t (ArrayR shr te) (slvIO subargs args' args io')
+      slvIO (SubArgsDead subargs) (ArgVar _ :>: args') (ArgArray Out (ArrayR shr _) _ _ :>: args) (Output t _ te io') = Vertical t (ArrayR shr te) (slvIO subargs args' args io')
       slvIO (SubArgsLive SubArgKeep subargs) (_ :>: (args' :: Args env a')) (_ :>: (args :: Args env' a)) io'
         = let k :: forall i o. ClusterIO a i o -> ClusterIO a' i o 
               k = slvIO subargs args' args in case io' of

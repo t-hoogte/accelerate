@@ -23,15 +23,7 @@ module Data.Array.Accelerate.Trafo.WeakenedEnvironment
 
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Idx
-import Data.Array.Accelerate.AST.IdxSet (IdxSet(..))
-import Data.Array.Accelerate.AST.Var
-import Data.Array.Accelerate.AST.LeftHandSide
-import Data.Array.Accelerate.Error
-import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Trafo.Substitution
-import Data.Typeable                                ((:~:)(..))
-import Data.Either
-import Data.List ( sortOn )
 
 -- Valuation for an environment
 --

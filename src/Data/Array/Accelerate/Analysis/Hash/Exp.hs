@@ -108,7 +108,7 @@ hashOpenFun
   . toLazyByteString
   . encodeOpenFun
 
-{-# INLINEABLE hashOpenExp #-}
+-- {-# INLINEABLE hashOpenExp #-} throws warnings
 hashOpenExp :: IsArrayInstr arr => PreOpenExp arr env t -> Hash
 hashOpenExp
   = hashlazy

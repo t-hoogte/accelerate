@@ -144,7 +144,7 @@ prettyArrayInstr env context (Index arr) ix
         , group (sep ["!!", ix context']) ]
   where
     context' = Context L R 9
-prettyArrayInstr env context (Parameter var) _ = prj (varIdx var) env
+prettyArrayInstr env _ (Parameter var) _ = prj (varIdx var) env
 
 -- LHS
 prettyGLhs :: Val' env -> GLeftHandSide t env env' -> (Val' env', Adoc)
