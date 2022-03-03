@@ -23,6 +23,7 @@ module Data.Array.Accelerate.Trafo.WeakenedEnvironment
 
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Idx
+import Data.Array.Accelerate.AST.IdxSet (IdxSet(..))
 import Data.Array.Accelerate.Trafo.Substitution
 
 -- Valuation for an environment
@@ -86,7 +87,7 @@ wremoveSet nil (IdxSet set) env = go set env
     go :: PartialEnv g env' -> WEnv' f env1 env' -> WEnv' f env1 env'
     go PEnd        e             = e
     go p           (WWeaken k e) = WWeaken k $ go p e
-    go (PNone p)   (WPushA e f)  = WPushA (go p e) nil
-    go (PNone p)   (WPushB e f)  = WPushB (go p e) nil
+    go (PNone p)   (WPushA e _)  = WPushA (go p e) nil
+    go (PNone p)   (WPushB e _)  = WPushB (go p e) nil
     go (PPush p _) (WPushA e f)  = WPushA (go p e) f
     go (PPush p _) (WPushB e f)  = WPushB (go p e) f
