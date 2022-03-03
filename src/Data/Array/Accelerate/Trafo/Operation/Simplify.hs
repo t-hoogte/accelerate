@@ -28,23 +28,27 @@ module Data.Array.Accelerate.Trafo.Operation.Simplify (
 
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Idx
+import Data.Array.Accelerate.AST.IdxSet                     ( IdxSet )
+import qualified Data.Array.Accelerate.AST.IdxSet           as IdxSet
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.AST.Operation
 import Data.Array.Accelerate.Error
+import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Representation.Type
 import qualified Data.Array.Accelerate.Trafo.Exp.Simplify   as Exp
 import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Data.Array.Accelerate.Trafo.Substitution             hiding ( weakenArrayInstr )
 import Data.Array.Accelerate.Trafo.WeakenedEnvironment
 import Data.Array.Accelerate.Trafo.Operation.Substitution
-import qualified Data.List as List ()
+import Data.Maybe                                           ( mapMaybe )
 
 data Info env t where
   InfoConst :: t         -> Info env t
   InfoAlias :: Idx env t -> Info env t
+  InfoUnit  :: Idx env t -> Info env (Buffer t)
   InfoNone  ::              Info env t
 
-newtype InfoEnv env = InfoEnv (WEnv Info env)
+newtype InfoEnv env = InfoEnv { unInfoEnv :: WEnv Info env }
 
 emptySimplifyEnv :: InfoEnv ()
 emptySimplifyEnv = InfoEnv wempty
@@ -52,6 +56,7 @@ emptySimplifyEnv = InfoEnv wempty
 instance Sink Info where
   weaken k (InfoAlias idx) = InfoAlias $ weaken k idx
   weaken _ (InfoConst c)   = InfoConst c
+  weaken k (InfoUnit idx)  = InfoUnit $ weaken k idx
   weaken _ InfoNone        = InfoNone
 
 infoFor :: Idx env t -> InfoEnv env -> Info env t
@@ -68,42 +73,71 @@ substitute env = Weaken $ \idx -> case infoFor idx env of
   _              -> idx
 
 simplifyFun :: OperationAfun op () t -> OperationAfun op () t
-simplifyFun = simplifyFun' emptySimplifyEnv
+simplifyFun = fst . simplifyFun' emptySimplifyEnv
 
-simplifyFun' :: InfoEnv env -> OperationAfun op env t -> OperationAfun op env t
-simplifyFun' env (Alam lhs f) = Alam lhs $ simplifyFun' env' f
+-- Returns the simplified function and a set of array variables which may have been written to
+simplifyFun' :: InfoEnv env -> OperationAfun op env t -> (OperationAfun op env t, IdxSet env)
+simplifyFun' env (Alam lhs f) = (Alam lhs f', IdxSet.drop' lhs set)
   where
     env' = bindEnv lhs env
-simplifyFun' env (Abody body)  = Abody $ simplify' env body
+    (f', set) = simplifyFun' env' f
+simplifyFun' env (Abody body)  = (Abody body', set)
+  where
+    (body', set) = simplify' env body
 
 simplify :: OperationAcc op () t -> OperationAcc op () t
-simplify = simplify' emptySimplifyEnv
+simplify = fst . simplify' emptySimplifyEnv
 
-simplify' :: InfoEnv env -> OperationAcc op env t -> OperationAcc op env t
+-- Returns the simplified program and a set of array variables which may have been written to
+simplify' :: InfoEnv env -> OperationAcc op env t -> (OperationAcc op env t, IdxSet env)
 simplify' env = \case
-  Exec op args -> Exec op $ mapArgs (simplifyArg env) args
-  Return vars -> Return $ mapTupR (weaken $ substitute env) vars
+  Exec op args ->
+    let
+      args' = mapArgs (simplifyArg env) args
+    in
+      (Exec op args', outputArrays args')
+  Return vars ->
+    -- Note that we do not need to check for writes to variables here.
+    -- This construct may cause aliassing of variables, but an aliassed
+    -- variable cannot be unique and thus we do not need to signal the
+    -- original variable as mutated if it's returned.
+    (Return $ mapTupR (weaken $ substitute env) vars, IdxSet.empty)
   Compute expr ->
     let expr' = simplifyExp env expr
     in
       if
-        | Just vars <- extractParams expr' -> Return $ mapTupR (\(Var tp ix) -> Var (GroundRscalar tp) ix) vars
-        | otherwise -> Compute expr'
+        | Just vars <- extractParams expr' ->
+          (Return $ mapTupR (\(Var tp ix) -> Var (GroundRscalar tp) ix) vars, IdxSet.empty)
+        | otherwise ->
+          (Compute expr', IdxSet.empty)
   Alet lhs us bnd body ->
     let
-      bnd' = simplify' env bnd
-      env' = bindingEnv lhs bnd' env
+      (bnd', setBnd) = simplify' env bnd
+      env' = bindingEnv lhs bnd' $ InfoEnv $ wremoveSet InfoNone setBnd $ unInfoEnv env
+      (body', setBody) = simplify' env' body
     in
-      bindLet lhs us bnd' (simplify' env' body)
-  Alloc shr tp sh -> Alloc shr tp $ mapTupR (weaken $ substitute env) sh
-  Use tp n buffer -> Use tp n buffer
-  Unit var -> Unit $ weaken (substitute env) var
-  Acond cond true false -> case infoFor (varIdx cond) env of
-    InfoConst 0  -> simplify' env false
-    InfoConst _  -> simplify' env true
-    InfoAlias ix -> Acond (cond{varIdx = ix}) (simplify' env true) (simplify' env false)
-    InfoNone     -> Acond cond                (simplify' env true) (simplify' env false)
-  Awhile us cond step initial -> Awhile us (simplifyFun' env cond) (simplifyFun' env step) (mapTupR (weaken $ substitute env) initial)
+      (bindLet lhs us bnd' body', setBnd `IdxSet.union` IdxSet.drop' lhs setBody)
+  Alloc shr tp sh -> (Alloc shr tp $ mapTupR (weaken $ substitute env) sh, IdxSet.empty)
+  Use tp n buffer -> (Use tp n buffer, IdxSet.empty)
+  Unit var -> (Unit $ weaken (substitute env) var, IdxSet.empty)
+  Acond cond true false ->
+    let
+      (true',  setT) = simplify' env true
+      (false', setF) = simplify' env false
+      set = IdxSet.union setT setF
+    in case infoFor (varIdx cond) env of
+        InfoConst 0  -> (false', setF)
+        InfoConst _  -> (true', setT)
+        InfoAlias ix -> (Acond (cond{varIdx = ix}) true' false', set)
+        InfoNone     -> (Acond cond                true' false', set)
+  Awhile us cond step initial ->
+    let
+      (cond', setC) = simplifyFun' env cond
+      (step', setS) = simplifyFun' env step
+      initial' = mapTupR (weaken $ substitute env) initial
+      -- Similar to Return, we don't need to track aliassing in 'initial' to find whether
+      -- variables may be mutated: aliassed buffers cannot be unique.
+    in (Awhile us cond' step' initial', setC `IdxSet.union` setS)
 
 bindLet :: forall env env' op t s. GLeftHandSide t env env' -> Uniquenesses t -> OperationAcc op env t -> OperationAcc op env' s -> OperationAcc op env s
 bindLet (LeftHandSidePair l1 l2) (TupRpair u1 u2) (Compute (Pair e1 e2))
@@ -148,7 +182,16 @@ bindingEnv lhs (Return variables) (InfoEnv environment) = InfoEnv $ weaken (weak
     go (LeftHandSidePair l1 l2) (TupRpair v1 v2)        env = go l2 v2 $ go l1 v1 env
     go (LeftHandSideWildcard _) _                       env = env
     go _                        _                       _   = internalError "Tuple mismatch"
+bindingEnv (LeftHandSideSingle _) (Unit (Var _ idx)) (InfoEnv env) = InfoEnv $ wpush env $ InfoUnit $ SuccIdx idx
 bindingEnv lhs _ env = bindEnv lhs env
+
+outputArrays :: Args env args -> IdxSet env
+outputArrays = IdxSet.fromList . mapMaybe f . argsVars
+  where
+    f :: Exists (Var AccessGroundR env) -> Maybe (Exists (Idx env))
+    f (Exists (Var (AccessGroundRbuffer In _) _)) = Nothing
+    f (Exists (Var (AccessGroundRbuffer _ _) idx)) = Just (Exists idx) -- Out or Mut
+    f _ = Nothing
 
 simplifyExp :: forall env t. InfoEnv env -> Exp env t -> Exp env t
 simplifyExp env = Exp.simplifyExp . runIdentity . rebuildArrayInstrOpenExp (simplifyArrayInstr env)
@@ -160,8 +203,16 @@ simplifyArrayInstr :: InfoEnv env -> RebuildArrayInstr Identity (ArrayInstr env)
 simplifyArrayInstr env instr@(Parameter (Var tp idx)) = case infoFor idx env of
   InfoAlias idx' -> simplifyArrayInstr env (Parameter $ Var tp idx')
   InfoConst c    -> Identity $ const $ Const tp c
+  InfoUnit _     -> bufferImpossible tp
   InfoNone       -> Identity $ \arg -> ArrayInstr instr arg
-simplifyArrayInstr _   instr = Identity $ \arg -> ArrayInstr instr arg
+simplifyArrayInstr env instr@(Index (Var tp idx)) = case infoFor idx env of
+  InfoAlias idx' -> simplifyArrayInstr env (Index $ Var tp idx')
+  InfoUnit idx'  -> Identity $ const $ runIdentity (simplifyArrayInstr env $ Parameter $ Var eltTp idx') Nil
+  _              -> Identity $ \arg -> ArrayInstr instr arg
+  where
+    eltTp = case tp of
+      GroundRscalar t -> bufferImpossible t
+      GroundRbuffer t -> t
 
 simplifyArg :: InfoEnv env -> Arg env t -> Arg env t
 simplifyArg env (ArgVar var)  = ArgVar $ mapTupR (weaken $ substitute env) var

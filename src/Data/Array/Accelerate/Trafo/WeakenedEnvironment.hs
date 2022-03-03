@@ -18,11 +18,12 @@
 --
 
 module Data.Array.Accelerate.Trafo.WeakenedEnvironment
-  ( WEnv, WEnv', wprj, wprj', wupdate, wempty, wpush, wpush2, wpush'
+  ( WEnv, WEnv', wprj, wprj', wupdate, wempty, wpush, wpush2, wpush', wremoveSet
   ) where
 
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Idx
+import Data.Array.Accelerate.AST.IdxSet (IdxSet(..))
 import Data.Array.Accelerate.Trafo.Substitution
 
 -- Valuation for an environment
@@ -79,3 +80,14 @@ wpush2 env t s = weaken (weakenSucc $ weakenSucc weakenId) env `WPushA` t `WPush
 
 wpush' :: WEnv' f env' env -> f env' t -> WEnv' f env' (env, t)
 wpush' = WPushA
+
+wremoveSet :: forall f env. (forall env' t. f env' t) -> IdxSet env -> WEnv f env -> WEnv f env
+wremoveSet nil (IdxSet set) env = go set env
+  where
+    go :: PartialEnv g env' -> WEnv' f env1 env' -> WEnv' f env1 env'
+    go PEnd        e             = e
+    go p           (WWeaken k e) = WWeaken k $ go p e
+    go (PNone p)   (WPushA e _)  = WPushA (go p e) nil
+    go (PNone p)   (WPushB e _)  = WPushB (go p e) nil
+    go (PPush p _) (WPushA e f)  = WPushA (go p e) f
+    go (PPush p _) (WPushB e f)  = WPushB (go p e) f

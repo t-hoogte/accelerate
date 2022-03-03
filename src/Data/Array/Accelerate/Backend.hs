@@ -106,7 +106,7 @@ runNWith
   => Config
   -> f
   -> AfunctionR f
-runNWith config f = sugarFunction (afunctionRepr @f) $ executeAfun (afunctionGroundR @f) schedule
+runNWith config f = schedule `seq` sugarFunction (afunctionRepr @f) $ executeAfun (afunctionGroundR @f) schedule
   where
     schedule = convertAfunWith @(Schedule backend) @(Kernel backend) config f
 

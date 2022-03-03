@@ -137,6 +137,12 @@ extra-source-files:
     CHANGELOG.md
     cbits/*.c
     cbits/*.h
+    -- XKCP
+    cbits/xkcp/*.c
+    cbits/xkcp/*.h
+    cbits/xkcp/*.macros
+    cbits/xkcp/*.inc
+    -- TRACY
     -- These are referenced directly using the FFI
     cbits/tracy/*.h
     cbits/tracy/*.hpp
@@ -153,8 +159,7 @@ extra-source-files:
     cbits/tracy/profiler/build/unix/Makefile
     cbits/tracy/profiler/build/unix/*.mk
     cbits/tracy/common/*.mk
-    -- The Makefiles fetch the source files from these Visual Studio project
-    -- files
+    -- The Makefiles fetch the source files from these Visual Studio project files
     cbits/tracy/capture/build/win32/capture.vcxproj
     cbits/tracy/capture/build/win32/capture.vcxproj.filters
     cbits/tracy/profiler/build/win32/Tracy.vcxproj
@@ -327,14 +332,13 @@ flag nofib
 
 library
   build-depends:
-          base                          >= 4.12 && < 4.16
+          base                          >= 4.12 && < 4.17
         , ansi-terminal                 >= 0.6.2
         , array                         >= 0.4
         , base-orphans                  >= 0.3
         , bytestring                    >= 0.10.2
         , composition
         , containers                    >= 0.3
-        , cryptonite                    >= 0.21
         , deepseq                       >= 1.3
         , directory                     >= 1.0
         , double-conversion             >= 2.0
@@ -351,8 +355,8 @@ library
         , microlens-mtl                 >= 0.2
         , MIP                           >= 0.1.1
         , mtl                           >= 2.0
-        , prettyprinter                 >= 1.6.1
-        , prettyprinter-ansi-terminal   >= 1.0
+        , prettyprinter                 >= 1.7
+        , prettyprinter-ansi-terminal   >= 1.1.2
         , primitive                     >= 0.6.4
         , scientific                    >= 0.3.6.2
         , tasty                         >= 0.11
@@ -462,6 +466,7 @@ library
         -- Other
         Data.BitSet
         Data.Primitive.Vec
+        Crypto.Hash.XKCP
 
   other-modules:
         Data.Array.Accelerate.Analysis.Hash.TH
@@ -597,7 +602,11 @@ library
   cc-options:
         -O3
         -Wall
-        -march=native
+
+  cxx-options:
+        -O3
+        -Wall
+        -std=c++11
 
   ghc-options:
         -O2
@@ -610,7 +619,12 @@ library
         -funbox-strict-fields
         -optc=-O3
         -optc=-Wall
-        -optc=-march=native
+
+  if impl(ghc >= 8.10)
+    ghc-options:
+        -optcxx=-O3
+        -optcxx=-Wall
+        -optcxx=-std=c++11
 
   ghc-prof-options:
         -caf-all
@@ -626,20 +640,24 @@ library
         -DTRACY_NO_SAMPLING
 
     cxx-options:
-        -O3
-        -Wall
-        -std=c++11
-        -march=native
         -DTRACY_ENABLE
         -DTRACY_NO_SAMPLING
 
-    ghc-options:
-        -optcxx=-O3
-        -optcxx=-Wall
-        -optcxx=-std=c++11
-        -optcxx=-march=native
+    if impl(ghc >= 8.10)
+      ghc-options:
         -optcxx=-DTRACY_ENABLE
         -optcxx=-DTRACY_NO_SAMPLING
+
+    -- Accelerate's backends may use dynamic linking to load compiled kernels
+    -- that directly call Tracy's functions. In that case these symbols need to
+    -- be available in the global namespace. @-rdynamic@ implies
+    -- @-Wl,--export-dynamic@, which adds every symbol to the dynamic symbol
+    -- table. There's also a @--export-dynamic-symbol=glob@ and a
+    -- @--export-dynamic-symbol-list=file@ but these seem to be less portable
+    -- between compilers.
+    if !os(windows)
+      ld-options:
+        -rdynamic
 
   if flag(bounds-checks)
     cpp-options:
@@ -654,11 +672,29 @@ library
         -DACCELERATE_INTERNAL_CHECKS
 
   if os(windows)
-    cpp-options:        -DWIN32
-    build-depends:      Win32
+    cc-options:
+        -- https://gcc.gnu.org/bugzilla/show_bug.cgi?id=65782
+        -fno-asynchronous-unwind-tables
+    ghc-options:
+        -optc=-fno-asynchronous-unwind-tables
+        -fexternal-interpreter
+    build-depends:
+        Win32
   else
-    cpp-options:        -DUNIX
-    build-depends:      unix
+    build-depends:
+        unix
+
+  -- https://stackoverflow.com/questions/65966969/why-does-march-native-not-work-on-apple-m1
+  if !(os(darwin) && arch(aarch64))
+    cc-options:
+        -march=native
+    cxx-options:
+        -march=native
+    ghc-options:
+        -optc=-march=native
+    if impl(ghc >= 8.10)
+      ghc-options:
+        -optcxx=-march=native
 
   -- Don't add the extensions list here. Instead, place individual LANGUAGE
   -- pragmas in the files that require a specific extension. This means the
@@ -672,6 +708,7 @@ test-suite doctest
   default-language:     Haskell2010
   hs-source-dirs:       test/doctest
   main-is:              Main.hs
+  other-modules:        Build_doctests
   autogen-modules:      Build_doctests
 
   build-depends:
@@ -687,6 +724,10 @@ test-suite doctest
   x-doctest-options:
         -freduction-depth=100
         -fspec-constr-count=50
+
+  if os(windows)
+    ghc-options:
+        -fexternal-interpreter
 
 
 test-suite nofib-interpreter
@@ -709,6 +750,10 @@ test-suite nofib-interpreter
         -rtsopts
         -with-rtsopts=-A128M
         -with-rtsopts=-n4M
+
+  if os(windows)
+    ghc-options:
+        -fexternal-interpreter
 
 
 executable tracy

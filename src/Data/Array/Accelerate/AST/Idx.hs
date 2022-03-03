@@ -92,6 +92,7 @@ matchIdx _           _           = Nothing
 --   SuccIdx :: Idx env t -> Idx (env, s) t
 --
 -- For performance, it uses an Int under the hood.
+--
 newtype Idx env t = UnsafeIdxConstructor { unsafeRunIdx :: Int } deriving ( Eq, Ord )
 
 {-# COMPLETE ZeroIdx, SuccIdx #-}
@@ -132,6 +133,7 @@ instance NFData (Idx env t) where
 
 -- | Despite the 'complete' pragma above, GHC can't infer that there is no
 -- pattern possible if the environment is empty. This can be used instead.
+--
 pattern VoidIdx :: forall env t a. (env ~ ()) => () => a -> Idx env t
 pattern VoidIdx a <- (\case{} -> a)
 

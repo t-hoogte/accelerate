@@ -48,6 +48,7 @@ import Data.Array.Accelerate.Trafo.Substitution
 import Data.Array.Accelerate.Trafo.SkipEnvironment
 import Data.Array.Accelerate.Error
 
+import Control.DeepSeq (NFData (rnf))
 import Data.List (foldl', mapAccumR)
 import Data.Maybe
 import Data.Type.Equality
@@ -123,12 +124,6 @@ instance SEnvValue Liveness where
         Unknown set -> go set accum
 
 newtype LivenessEnv env = LivenessEnv (SEnv Liveness env)
--- TODO: Instead of using Env, use a specialized Env which makes it cheaper to
--- weaken and strengthen the environment (with an LHS). This would require an
--- approach similar to WEnv, but with something like Skip instead of a (:>),
--- as the latter doesn't provide a way to strengthen.
--- Such environment prevents doing many maps over the entire environment.
---
 
 emptyLivenessEnv :: LivenessEnv ()
 emptyLivenessEnv = LivenessEnv SEmpty
@@ -403,6 +398,11 @@ data SubTupR t t' where
   SubTupRpair :: SubTupR t1 t1'
               -> SubTupR t2 t2'
               -> SubTupR (t1, t2) (t1', t2')
+
+instance NFData (SubTupR t t') where
+  rnf SubTupRskip = ()
+  rnf SubTupRkeep = ()
+  rnf (SubTupRpair s1 s2) = rnf s1 `seq` rnf s2
 
 composeSubTupR :: SubTupR b c -> SubTupR a b -> SubTupR a c
 composeSubTupR bc SubTupRkeep = bc

@@ -61,7 +61,7 @@ type Detail = ()
 -- import Data.List                                        ( nub, partition )
 -- import Data.Maybe
 -- import Data.String
--- import Data.Text.Prettyprint.Doc
+-- import Prettyprinter
 -- import Prelude                                          hiding ( exp )
 -- import qualified Data.HashSet                           as Set
 -- import qualified Data.Sequence                          as Seq

@@ -75,7 +75,7 @@ import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Error
 import Data.Typeable                                                ( (:~:)(..) )
 
-import Language.Haskell.TH                                          ( Q, Code )
+import Language.Haskell.TH.Extra                                    ( CodeQ )
 import Data.Kind (Type)
 import Control.DeepSeq (NFData (rnf))
 
@@ -211,6 +211,10 @@ unique = mapTupR f
     f :: GroundR s -> Uniqueness s
     f (GroundRbuffer _) = Unique
     f _                 = Shared
+
+rnfUniqueness :: Uniqueness t -> ()
+rnfUniqueness Unique = ()
+rnfUniqueness Shared = ()
 
 -- | The arguments to be passed to an operation of type `t`.
 -- This type is represented as a cons list, separated by (->) and ending
@@ -377,17 +381,17 @@ rnfGroundVar = rnfVar rnfGroundR
 rnfGroundVars :: GroundVars env t -> ()
 rnfGroundVars = rnfTupR rnfGroundVar
 
-liftGroundR :: GroundR t -> Code Q (GroundR t)
+liftGroundR :: GroundR t -> CodeQ (GroundR t)
 liftGroundR (GroundRscalar tp) = [|| GroundRscalar $$(liftScalarType tp) ||]
 liftGroundR (GroundRbuffer tp) = [|| GroundRbuffer $$(liftScalarType tp) ||]
 
-liftGroundsR :: GroundsR t -> Code Q (GroundsR t)
+liftGroundsR :: GroundsR t -> CodeQ (GroundsR t)
 liftGroundsR = liftTupR liftGroundR
 
-liftGroundVar :: GroundVar env t -> Code Q (GroundVar env t)
+liftGroundVar :: GroundVar env t -> CodeQ (GroundVar env t)
 liftGroundVar = liftVar liftGroundR
 
-liftGroundVars :: GroundVars env t -> Code Q (GroundVars env t)
+liftGroundVars :: GroundVars env t -> CodeQ (GroundVars env t)
 liftGroundVars = liftTupR liftGroundVar
 
 paramIn :: ScalarType e -> GroundVar benv e -> OpenExp env benv e
@@ -532,9 +536,20 @@ class NFData' f where
   rnf' :: f a -> ()
 
 instance NFData' op => NFData (OperationAcc op env a) where
-  rnf = error "implement NFData on OperationAcc"
+  rnf (Exec op args)                = rnf' op `seq` rnfArgs args
+  rnf (Return vars)                 = rnfGroundVars vars
+  rnf (Compute expr)                = rnfOpenExp expr
+  rnf (Alet lhs us bnd a)           = rnfLeftHandSide rnfGroundR lhs `seq` rnfTupR rnfUniqueness us `seq` rnf bnd `seq` rnf a
+  rnf (Alloc shr tp sh)             = rnfShapeR shr `seq` rnfScalarType tp `seq` rnfTupR rnfExpVar sh
+  rnf (Use tp n buffer)             = n `seq` buffer `seq` rnfScalarType tp
+  rnf (Unit var)                    = rnfVar rnfScalarType var
+  rnf (Acond cond true false)       = rnfVar rnfScalarType cond `seq` rnf true `seq` rnf false
+  rnf (Awhile us cond step initial) = rnfTupR rnfUniqueness us `seq` rnf cond `seq` rnf step `seq` rnfGroundVars initial
+
 instance NFData' op => NFData (OperationAfun op env a) where
-  rnf = error "implement NFData on OperationAfun"
+  rnf (Abody a) = rnf a
+  rnf (Alam lhs f) = rnfLeftHandSide rnfGroundR lhs `seq` rnf f
+
 
 data GroundRWithUniqueness t where
   GroundRWithUniqueness :: GroundR t -> Uniqueness t -> GroundRWithUniqueness t

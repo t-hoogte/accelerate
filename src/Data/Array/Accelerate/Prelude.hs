@@ -86,7 +86,7 @@ module Data.Array.Accelerate.Prelude (
   IfThenElse(..),
 
   -- ** Array-level
-  (?|),
+  (?|), awhileSpeculative, awhileAndOne,
 
   -- ** Expression-level
   (?), match,
@@ -490,7 +490,7 @@ zip7 :: (Shape sh, Elt a, Elt b, Elt c, Elt d, Elt e, Elt f, Elt g)
      -> Acc (Array sh (a, b, c, d, e, f, g))
 zip7 = zipWith7 T7
 
--- | Take seven arrays and return an array of seven-tuples, analogous to zip.
+-- | Take eight arrays and return an array of eight-tuples, analogous to zip.
 --
 zip8 :: (Shape sh, Elt a, Elt b, Elt c, Elt d, Elt e, Elt f, Elt g, Elt h)
      => Acc (Array sh a)
@@ -504,7 +504,7 @@ zip8 :: (Shape sh, Elt a, Elt b, Elt c, Elt d, Elt e, Elt f, Elt g, Elt h)
      -> Acc (Array sh (a, b, c, d, e, f, g, h))
 zip8 = zipWith8 T8
 
--- | Take seven arrays and return an array of seven-tuples, analogous to zip.
+-- | Take nine arrays and return an array of nine-tuples, analogous to zip.
 --
 zip9 :: (Shape sh, Elt a, Elt b, Elt c, Elt d, Elt e, Elt f, Elt g, Elt h, Elt i)
      => Acc (Array sh a)
@@ -2216,6 +2216,56 @@ instance Elt a => IfThenElse (Exp Bool) (Exp a) where
 instance Arrays a => IfThenElse (Exp Bool) (Acc a) where
   ifThenElse = acond
 
+-- | Variant of 'awhile' that speculatively executes one iteration ahead.
+-- The result of the (last) speculatively executed iteration is ignored if the
+-- condition evaluates to false, but if an error is thrown in the last
+-- iteration, then the loop fails. This variant may be beneficial for GPUs, as
+-- the GPU can already start the next iteration before the host has evaluated
+-- the condition and scheduled the new kernel calls. The result of
+-- 'awhileSpeculative' is the same as 'awhile' if the step-function doesn't
+-- throw an error.
+--
+-- If you want to do in-place updates with 'permute' in the loop, then you
+-- should use 'awhile' or 'awhileAndOne', as 'awhileSpeculative' doesn't have
+-- unique references to arrays.
+--
+awhileSpeculative
+  :: forall a. Arrays a
+  => (Acc a -> Acc (Scalar Bool))    -- ^ keep evaluating while this returns 'True'
+  -> (Acc a -> Acc a)                -- ^ function to apply
+  -> Acc a                           -- ^ initial value
+  -> Acc a
+awhileSpeculative condition step initial
+  -- Perform an awhile loop with the previous and current state as the state.
+  -- The condition can then be performed on the old state and the step on the
+  -- current. At the end we return the first element of the tuple.
+  --
+  = afst
+  $ awhile
+      (condition . afst)
+      (\(T2 _ current) -> T2 current $ step current)
+      (T2 initial $ step initial)
+
+-- | Variant of 'awhile' that executes one additional iteration after the
+-- condition evaluates to False. This may be beneficial for GPUs, as the GPU
+-- can already start the next iteration before the host has evaluated the
+-- condition and scheduled the new kernel calls. The result of
+-- 'awhileAndOne c f i' is equal to 'f $ awhile c f i', but the first is
+-- likely more performant.
+--
+awhileAndOne
+  :: forall a. Arrays a
+  => (Acc a -> Acc (Scalar Bool))    -- ^ keep evaluating while this returns 'True'
+  -> (Acc a -> Acc a)                -- ^ function to apply
+  -> Acc a                           -- ^ initial value
+  -> Acc a
+awhileAndOne condition step initial
+  -- 
+  = asnd
+  $ awhile
+      afst
+      (\(T2 _ state) -> T2 (condition state) (step state))
+      (T2 (unit True_) initial)
 
 -- | The 'match' operation is the core operation which enables embedded
 -- pattern matching. It is applied to an n-ary scalar function, and

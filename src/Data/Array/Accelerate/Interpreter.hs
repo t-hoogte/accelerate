@@ -364,7 +364,10 @@ inOutBounds :: Label -> Bounds InterpretOp
 inOutBounds l = lower (-2) (InDir l) <> lower (-2) (OutDir l)
 
 instance NFData' InterpretOp where
-  rnf' = error "todo"
+  -- InterpretOp is an enumeration without fields,
+  -- so WHNF is also normal form.
+  --
+  rnf' a = a `seq` ()
 
 instance PrettyOp InterpretOp where
   prettyOp IMap         = "map"

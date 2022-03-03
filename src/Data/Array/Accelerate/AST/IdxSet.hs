@@ -19,9 +19,11 @@
 module Data.Array.Accelerate.AST.IdxSet (
   IdxSet(..),
   member, varMember, intersect, union, unions, (\\), (>>=), insert, insertVar, skip, skip',
-  push, empty, isEmpty, drop, drop', remove, fromList, fromList', fromVarList, fromVars, map,
+  push, empty, isEmpty, drop, drop', remove, partialEnvRemoveSet,
+  fromList, fromList', fromVarList, fromVars, map,
   singleton, singletonVar, first,
-  toList) where
+  toList
+) where
 
 import Prelude hiding (drop, (>>=), map)
 
@@ -66,6 +68,9 @@ insertVar (Var _ idx) = insert idx
 
 remove :: Idx env t -> IdxSet env -> IdxSet env
 remove idx (IdxSet a) = IdxSet $ partialRemove idx a
+
+partialEnvRemoveSet :: IdxSet env -> PartialEnv f env -> PartialEnv f env
+partialEnvRemoveSet (IdxSet set) env = diffPartialEnv env set
 
 skip :: IdxSet env -> IdxSet (env, t)
 skip = IdxSet . PNone . unIdxSet
