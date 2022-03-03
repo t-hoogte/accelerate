@@ -326,26 +326,26 @@ pattern OutDir l = BackendSpecific (OrderOut l)
 instance MakesILP InterpretOp where
   type BackendVar InterpretOp = OrderV
   -- TODO add folds/scans/stencils, and solve problems: in particular, iteration size needs to be uniform
-  mkGraph IBackpermute (_ :>: ((L _ (_, S.toList -> ~[lIn])) :>: _)) l@(Label i _) =
+  mkGraph IBackpermute (_ :>: ((L _ (_, S.toList -> lIns)) :>: _)) l@(Label i _) =
     Info
       mempty
-      (  inputDirectionConstraint l lIn
+      (  inputDirectionConstraint l lIns
       <> c (InDir l) .==. int i) -- enforce that the backpermute follows its own rules, but the output can be anything
       -- <> manifest lIn `impliesBinary` fused lIn l) -- Backpermute cannot diagonally fuse with its input: if you are manifest, you cannot be fused
       -- ^ is not strong enough, see my paper draft :p
       -- Instead, we need restrictions on _every_ Op saying that manifest => order < 0 (and make sure that every order which guarantees full evaluation is < 0).
       (inOutBounds l)
   mkGraph IGenerate _ l = Info mempty mempty (lower (-2) (OutDir l))
-  mkGraph IMap (_ :>: L _ (_, S.toList -> ~[lIn]) :>: _ :>: ArgsNil) l =
+  mkGraph IMap (_ :>: L _ (_, S.toList -> lIns) :>: _ :>: ArgsNil) l =
     Info
       mempty
-      (  inputDirectionConstraint l lIn
+      (  inputDirectionConstraint l lIns
       <> c (InDir l) .==. c (OutDir l))
       (inOutBounds l)
-  mkGraph IPermute (_ :>: L _ (_, S.toList -> ~[lTarget]) :>: _ :>: L _ (_, S.toList -> ~[lIn]) :>: ArgsNil) l =
+  mkGraph IPermute (_ :>: L _ (_, S.toList -> ~[lTarget]) :>: _ :>: L _ (_, S.toList -> lIns) :>: ArgsNil) l =
     Info
       (  mempty & infusibleEdges .~ S.singleton (lTarget -?> l)) -- Cannot fuse with the producer of the target array
-      (  inputDirectionConstraint l lIn)
+      (  inputDirectionConstraint l lIns)
       (  lower (-2) (InDir l)
       <> upper (OutDir l) (-3)) -- convention meaning infusible
 
@@ -355,8 +355,8 @@ instance MakesILP InterpretOp where
   finalize = foldMap $ \l -> timesN (manifest l) .>. c (OutDir l)
 
 -- | If l and lIn are fused, the out-order of lIn and the in-order of l should match
-inputDirectionConstraint :: Label -> Label -> Constraint InterpretOp
-inputDirectionConstraint l lIn =
+inputDirectionConstraint :: Label -> [Label] -> Constraint InterpretOp
+inputDirectionConstraint l = foldMap $ \lIn ->
                 timesN (fused lIn l) .>=. c (InDir l) .-. c (OutDir lIn)
     <> (-1) .*. timesN (fused lIn l) .<=. c (InDir l) .-. c (OutDir lIn)
 

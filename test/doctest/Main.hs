@@ -76,8 +76,8 @@ difficult acc = zip (backpermute sh (\(I1 y) -> I1 (y `div` 2)) x) (backpermute 
 
 main :: P.IO ()
 main = 
-  P.print $ run1 @Interpreter difficult $ fromList (Z:.20) [1::P.Int ..]
-  -- P.putStrLn $ test @UniformScheduleFun @InterpretKernel $ difficult
+  -- P.print $ run1 @Interpreter difficult $ fromList (Z:.20) [1::P.Int ..]
+  P.putStrLn $ test @UniformScheduleFun @InterpretKernel $ let xs = generate (I2 10 10) (\(I2 x y) -> x+y) in zipWith @DIM2 @Int (*) xs xs
   -- doNTimes 10 P.print
 -- import qualified Data.Array.Accelerate as A
 -- import qualified Data.Array.Accelerate.Interpreter as A

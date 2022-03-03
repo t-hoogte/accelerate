@@ -41,6 +41,7 @@ import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Error
 import Data.Kind
+import Data.Maybe (isJust)
 
 type a $ b = a b
 infixr 0 $
@@ -103,7 +104,10 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
   mkShrink      :: Arg env (In  sh t)
                 -> Arg env (Out sh t)
                 -> OperationAcc op env ()
-  mkShrink input@(ArgArray _ (ArrayR shr _) _ _) output = mkBackpermute (ArgFun $ identity $ shapeType shr) input output
+  mkShrink input@( ArgArray _ (ArrayR shr _) sh1 _) 
+           output@(ArgArray _ _              sh2 _) = if isJust (matchVars sh1 sh2)
+             then error "got here" --mkCopy input output 
+             else mkBackpermute (ArgFun $ identity $ shapeType shr) input output
 
   -- Copies a buffer. This is used before passing a buffer to a 'Mut' argument,
   -- to make sure it is unique. This may be removed during fusion to facilitate
@@ -119,11 +123,34 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
                 -> Arg env (In  sh e2)
                 -> Arg env (Out sh e3)
                 -> OperationAcc op env ()
-  mkZipWith (ArgFun f) (ArgArray _ (ArrayR shr ty1) _ buf1)
-                       (ArgArray _ (ArrayR _   ty2) _ buf2) output@(ArgArray _ (ArrayR _ _) sh _) =
+  mkZipWith (ArgFun f) 
+            in1@(ArgArray _ (ArrayR _ ty1) _ _)
+            in2@(ArgArray _ (ArrayR _ ty2) _ _)
+                (ArgArray _ outR@(ArrayR shr _) sh buf)
+    | DeclareVars lhs w k <- declareVars $ buffersR (TupRpair ty1 ty2) =
       let
-        input = ArgArray In (ArrayR shr (TupRpair ty1 ty2)) sh (TupRpair buf1 buf2)
-      in mkMap (ArgFun $ uncurry' f) input output
+        typ = TupRpair ty1 ty2
+        zippedArg  = ArgArray Out (ArrayR shr typ) (weakenVars w sh) (k weakenId)
+        zippedArg' = ArgArray In  (ArrayR shr typ) (weakenVars w sh) (k weakenId) in
+      alet lhs (desugarAlloc (ArrayR shr typ) (fromGrounds sh)) $
+        alet LeftHandSideUnit
+          (mkZip (weaken w in1) (weaken w in2) zippedArg) $
+          mkMap (ArgFun . uncurry' $ weakenArrayInstr w f) zippedArg' $ ArgArray Out outR (weakenVars w sh) (weakenVars w buf)
+
+  mkZip :: Arg env (In sh e1)
+        -> Arg env (In sh e2)
+        -> Arg env (Out sh (e1, e2))
+        -> OperationAcc op env ()
+  mkZip in1@(ArgArray _ (ArrayR shr ty1) _ _)
+        in2@(ArgArray _ (ArrayR _   ty2) _ _) 
+            (ArgArray _ (ArrayR _ _) sh (TupRpair buf1 buf2)) =
+        alet LeftHandSideUnit
+          (mkShrink in1 (ArgArray Out (ArrayR shr ty1) sh buf1))
+          (mkShrink in2 (ArgArray Out (ArrayR shr ty2) sh buf2))
+
+
+  mkZip _ _ _ = error "out buffer to mkZip is not a pair"
+
 
   mkReplicate   :: SliceIndex slix sl co sh
                 -> Arg env (Var' slix)
@@ -552,24 +579,37 @@ desugarOpenAcc env = travA
         , DeclareVars lhsSh2  kSh2  valueSh2  <- declareVars $ shapeType shr
         , DeclareVars lhsIn2  kIn2  valueIn2  <- declareVars $ buffersR t2
         , DeclareVars lhsSh   kSh   valueSh   <- declareVars $ shapeType shr
-        , DeclareVars lhsOut  kOut  valueOut  <- declareVars $ buffersR tp ->
+        , DeclareVars lhsOut  kOut  valueOut  <- declareVars $ buffersR tp 
+        , DeclareVars lhsOut' kOut' valueOut' <- declareVars $ buffersR tp ->
           let
             lhs1    = LeftHandSidePair (mapLeftHandSide GroundRscalar lhsSh1) lhsIn1
             lhs2    = LeftHandSidePair (mapLeftHandSide GroundRscalar lhsSh2) lhsIn2
             sh1     = mapVars GroundRscalar $ valueSh1 $ kOut .> kSh .> kIn2 .> kSh2 .> kIn1
+            sh1'    = mapVars GroundRscalar $ valueSh1 $ kOut'       .> kIn2 .> kSh2 .> kIn1
             sh2     = mapVars GroundRscalar $ valueSh2 $ kOut .> kSh .> kIn2
+            sh2'    = mapVars GroundRscalar $ valueSh2 $ kOut'       .> kIn2
             sh      = mapVars GroundRscalar $ valueSh kOut
             argF    = ArgFun $ desugarFun (weakenBEnv (kOut .> kSh .> kIn2 .> kSh2 .> kIn1 .> kSh1) env) f
-            argIn1  = ArgArray In  (ArrayR shr t1) sh1 (valueIn1 $ kOut .> kSh .> kIn2 .> kSh2)
-            argIn2  = ArgArray In  (ArrayR shr t2) sh2 (valueIn2 $ kOut .> kSh)
-            argOut  = ArgArray Out (ArrayR shr tp) sh  (valueOut weakenId)
+            argF'   = ArgFun $ desugarFun (weakenBEnv (kOut'       .> kIn2 .> kSh2 .> kIn1 .> kSh1) env) f
+            argIn1  = ArgArray In  (ArrayR shr t1) sh1  (valueIn1 $ kOut .> kSh .> kIn2 .> kSh2)
+            argIn1' = ArgArray In  (ArrayR shr t1) sh1' (valueIn1 $ kOut'       .> kIn2 .> kSh2)
+            argIn2  = ArgArray In  (ArrayR shr t2) sh2  (valueIn2 $ kOut .> kSh)
+            argIn2' = ArgArray In  (ArrayR shr t2) sh2' (valueIn2 $ kOut')
+            argOut  = ArgArray Out (ArrayR shr tp) sh   (valueOut weakenId)
+            argOut' = ArgArray Out (ArrayR shr tp) sh1' (valueOut' weakenId)
           in
             alet lhs1 (travA a1)
               $ alet lhs2 (desugarOpenAcc (weakenBEnv (kIn1 .> kSh1) env) a2)
-              $ alet (mapLeftHandSide GroundRscalar lhsSh) (Compute $ mkIntersect shr (valueSh1 $ kIn2 .> kSh2 .> kIn1) (valueSh2 kIn2))
-              $ aletUnique lhsOut (desugarAlloc (ArrayR shr tp) (valueSh weakenId))
-              $ alet (LeftHandSideWildcard TupRunit) (mkZipWith argF argIn1 argIn2 argOut)
-              $ Return (sh `TupRpair` valueOut weakenId)
+              $ case matchVars (valueSh1 $ kIn2 .> kSh2 .> kIn1) (valueSh2 kIn2) of
+                Just Refl ->
+                    aletUnique lhsOut' (desugarAlloc (ArrayR shr tp) (valueSh2 kIn2))
+                  $ alet LeftHandSideUnit (mkZipWith argF' argIn1' argIn2' argOut')
+                  $ error "hello?" $ Return (sh1' `TupRpair` valueOut' weakenId)
+                Nothing ->
+                    alet (mapLeftHandSide GroundRscalar lhsSh) (Compute $ mkIntersect shr (valueSh1 $ kIn2 .> kSh2 .> kIn1) (valueSh2 kIn2))
+                  $ aletUnique lhsOut (desugarAlloc (ArrayR shr tp) (valueSh weakenId))
+                  $ alet LeftHandSideUnit (mkZipWith argF argIn1 argIn2 argOut)
+                  $ Return (sh `TupRpair` valueOut weakenId)
       Named.Slice sliceIx a slix
         | ArrayR shr tp <- Named.arrayR a
         , slr <- sliceShapeR sliceIx
@@ -1127,9 +1167,14 @@ uncons (ShapeRsnoc shr) (TupRpair v1 v3)
 uncons _ _ = internalError "Illegal shape tuple"
 
 mkIntersect :: ShapeR sh -> ExpVars benv sh -> ExpVars benv sh -> PreOpenExp (ArrayInstr benv) env sh
-mkIntersect ShapeRz          _                _                = Nil
-mkIntersect (ShapeRsnoc shr) (TupRpair s1 x1) (TupRpair s2 x2) = mkIntersect shr s1 s2 `Pair` mkBinary (PrimMin singleType) (paramsIn' x1) (paramsIn' x2)
-mkIntersect (ShapeRsnoc _)   _                _                = error "Impossible pair"
+mkIntersect shr x y
+  | Just Refl <- matchVars x y = paramsIn' x
+  | otherwise = mkIntersect' shr x y
+  where
+    mkIntersect' :: ShapeR sh -> ExpVars benv sh -> ExpVars benv sh -> PreOpenExp (ArrayInstr benv) env sh
+    mkIntersect' ShapeRz          _                _                = Nil
+    mkIntersect' (ShapeRsnoc shr) (TupRpair s1 x1) (TupRpair s2 x2) = mkIntersect' shr s1 s2 `Pair` mkBinary (PrimMin singleType) (paramsIn' x1) (paramsIn' x2)
+    mkIntersect' (ShapeRsnoc _)   _                _                = error "Impossible pair"
 
 -- Default implementation for the first step of a fold.
 -- The output of the inner dimension is guaranteed to
