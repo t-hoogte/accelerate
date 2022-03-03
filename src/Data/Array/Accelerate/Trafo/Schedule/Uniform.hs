@@ -1010,7 +1010,7 @@ convertEnvToSyncEnv = partialEnvFromList max . (`go` [])
     go _ accum = accum
 
 variablesToSyncEnv :: Uniquenesses t -> GroundVars genv t -> SyncEnv genv
-variablesToSyncEnv uniquenesses vars = partialEnvFromList (error "convertEnvToSyncEnv: Variable occurs multiple times") $ go uniquenesses vars []
+variablesToSyncEnv uniquenesses vars = partialEnvFromList combine $ go uniquenesses vars []
   where
     go :: Uniquenesses t -> GroundVars genv t -> [EnvBinding Sync genv] -> [EnvBinding Sync genv]
     go (TupRsingle Unique) (TupRsingle (Var (GroundRbuffer _) ix))
@@ -1020,6 +1020,10 @@ variablesToSyncEnv uniquenesses vars = partialEnvFromList (error "convertEnvToSy
     go u (TupRpair v1 v2) accum = go u1 v1 $ go u2 v2 accum
       where (u1, u2) = pairUniqueness u
     go _ _                accum = accum
+
+    combine :: Sync s -> Sync s -> Sync s
+    combine SyncRead SyncRead = SyncRead
+    combine _        _        = internalError "A writable buffer cannot be aliassed"
 
 pairUniqueness :: Uniquenesses (s, t) -> (Uniquenesses s, Uniquenesses t)
 pairUniqueness (TupRpair u1 u2)    = (u1, u2)

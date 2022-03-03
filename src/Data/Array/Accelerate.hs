@@ -209,7 +209,7 @@ module Data.Array.Accelerate (
 
   -- ** Composition
   -- *** Flow control
-  (?|), acond, awhile,
+  (?|), acond, awhile, awhileSpeculative, awhileAndOne,
   IfThenElse(..),
 
   -- *** Controlling execution
