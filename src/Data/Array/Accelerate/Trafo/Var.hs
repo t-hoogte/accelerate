@@ -23,6 +23,7 @@ import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Type
+import Data.Array.Accelerate.Trafo.Substitution
 
 
 data DeclareVars s t aenv where
@@ -80,3 +81,29 @@ identity :: TypeR a -> PreOpenFun arr env (a -> a)
 identity t
   | DeclareVars lhs _ value <- declareVars t
   = Lam lhs $ Body $ expVars $ value weakenId
+
+-- Used in various analyses
+data MaybeVar s env t where
+  NoVar     :: MaybeVar s env t
+  JustVar   :: Var s env t -> MaybeVar s env t
+type MaybeVars s env = TupR (MaybeVar s env)
+
+strengthenMaybeVar :: LeftHandSide s' t env env' -> MaybeVar s env' u -> MaybeVar s env u
+strengthenMaybeVar _ NoVar = NoVar
+strengthenMaybeVar (LeftHandSideWildcard _) v = v
+strengthenMaybeVar (LeftHandSideSingle _) (JustVar (Var t ix)) = case ix of
+  SuccIdx ix' -> JustVar $ Var t ix'
+  ZeroIdx     -> NoVar
+strengthenMaybeVar (LeftHandSidePair l1 l2) v = strengthenMaybeVar l1 $ strengthenMaybeVar l2 v
+
+strengthenMaybeVars :: LeftHandSide s' t env env' -> MaybeVars s env' u -> MaybeVars s env u
+strengthenMaybeVars lhs = mapTupR (strengthenMaybeVar lhs)
+
+instance Sink (MaybeVar s) where
+  weaken _ NoVar = NoVar
+  weaken k (JustVar var) = JustVar $ weaken k var
+
+lhsMaybeVars :: LeftHandSide s t env env' -> MaybeVars s env' t
+lhsMaybeVars (LeftHandSideWildcard tp) = mapTupR (const NoVar) tp
+lhsMaybeVars (LeftHandSidePair l1 l2)  = mapTupR (weaken $ weakenWithLHS l2) (lhsMaybeVars l1) `TupRpair` lhsMaybeVars l2
+lhsMaybeVars (LeftHandSideSingle tp)   = TupRsingle $ JustVar $ Var tp ZeroIdx

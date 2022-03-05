@@ -35,11 +35,14 @@ import Data.Array.Accelerate.AST.Operation
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Representation.Type
+import Data.Array.Accelerate.Analysis.Match
 import qualified Data.Array.Accelerate.Trafo.Exp.Simplify   as Exp
 import Data.Array.Accelerate.Trafo.Exp.Substitution
+import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Trafo.Substitution             hiding ( weakenArrayInstr )
 import Data.Array.Accelerate.Trafo.WeakenedEnvironment
 import Data.Array.Accelerate.Trafo.Operation.Substitution
+import Data.Array.Accelerate.Trafo.LiveVars                 ( SubTupR(..), subTupR, subTupRpair )
 import Data.Maybe                                           ( mapMaybe )
 
 data Info env t where
@@ -137,7 +140,7 @@ simplify' env = \case
       initial' = mapTupR (weaken $ substitute env) initial
       -- Similar to Return, we don't need to track aliassing in 'initial' to find whether
       -- variables may be mutated: aliassed buffers cannot be unique.
-    in (Awhile us cond' step' initial', setC `IdxSet.union` setS)
+    in (awhileSimplifyInvariant us cond' step' initial', setC `IdxSet.union` setS)
 
 bindLet :: forall env env' op t s. GLeftHandSide t env env' -> Uniquenesses t -> OperationAcc op env t -> OperationAcc op env' s -> OperationAcc op env s
 bindLet (LeftHandSidePair l1 l2) (TupRpair u1 u2) (Compute (Pair e1 e2))
@@ -230,3 +233,109 @@ bindEnv lhs (InfoEnv env') = InfoEnv $ go lhs $ weaken k env'
     go (LeftHandSideWildcard _) env1 = env1
     go (LeftHandSideSingle _)   env1 = wpush' env1 InfoNone
     go (LeftHandSidePair l1 l2) env1 = go l2 $ go l1 env1
+
+unionSubTupR :: SubTupR t s -> SubTupR t s' -> Exists (SubTupR t)
+unionSubTupR SubTupRskip s = Exists s
+unionSubTupR s SubTupRskip = Exists s
+unionSubTupR (SubTupRpair l1 r1) (SubTupRpair l2 r2)
+  | Exists l <- unionSubTupR l1 l2
+  , Exists r <- unionSubTupR r1 r2
+  = Exists $ subTupRpair l r
+unionSubTupR _ _ = Exists SubTupRkeep
+
+
+awhileSimplifyInvariant
+  :: Uniquenesses a
+  -> PreOpenAfun op env (a -> PrimBool)
+  -> PreOpenAfun op env (a -> a)
+  -> GroundVars     env a
+  -> PreOpenAcc  op env a
+awhileSimplifyInvariant us cond step initial = case awhileDropInvariantFun step of
+  Exists SubTupRkeep -> Awhile us cond step initial
+  Exists sub
+    | DeclareVars lhs k value <- declareVars $ subTupR sub tp ->
+      Alet lhs (subTupR sub us)
+        (Awhile (subTupR sub us)
+          (subTupFunctionArgument sub initial cond)
+          (subTupFunctionArgument sub initial $ subTupFunctionResult sub step)
+          (subTupR sub initial))
+        (Return $ subTupResult sub (mapTupR (weaken k) initial) (value weakenId))
+  where
+    tp = case cond of
+      Alam lhs _ -> lhsToTupR lhs
+      Abody body -> groundFunctionImpossible $ groundsR body
+
+awhileDropInvariantFun :: OperationAfun op env (t -> t) -> Exists (SubTupR t)
+awhileDropInvariantFun (Alam lhs (Abody body)) = awhileDropInvariant (lhsMaybeVars lhs) body
+awhileDropInvariantFun (Alam lhs (Alam _ _))   = groundFunctionImpossible (lhsToTupR lhs)
+awhileDropInvariantFun (Abody body)            = groundFunctionImpossible (groundsR body)
+
+awhileDropInvariant :: MaybeVars GroundR env t -> OperationAcc op env t -> Exists (SubTupR t)
+awhileDropInvariant argument = \case
+  Return vars
+    -> matchReturn argument vars
+  Alet (LeftHandSideWildcard _) _ _ body
+    -> awhileDropInvariant argument body
+  Alet lhs _ _ body
+    -> awhileDropInvariant (mapTupR (weaken $ weakenWithLHS lhs) argument) body
+  Acond _ t f
+    | Exists subTupT <- awhileDropInvariant argument t
+    , Exists subTupF <- awhileDropInvariant argument f
+    -> unionSubTupR subTupT subTupF
+  _ -> Exists SubTupRkeep -- No invariant variables
+  where
+    matchReturn :: MaybeVars GroundR env t' -> GroundVars env t' -> Exists (SubTupR t')
+    matchReturn (TupRpair a1 a2) (TupRpair v1 v2)
+      | Exists s1 <- matchReturn a1 v1
+      , Exists s2 <- matchReturn a2 v2
+      = Exists $ subTupRpair s1 s2
+    matchReturn (TupRsingle (JustVar arg)) (TupRsingle var)
+      | Just Refl <- matchVar arg var = Exists SubTupRskip
+    matchReturn _ _ = Exists SubTupRkeep
+
+subTupFunctionResult :: SubTupR t t' -> OperationAfun op env (ta -> t) -> OperationAfun op env (ta -> t')
+subTupFunctionResult sub (Alam lhs (Abody body)) = Alam lhs $ Abody $ subTupAcc sub body
+subTupFunctionResult _ _ = internalError "Illegal function"
+
+subTupAcc :: SubTupR t t' -> OperationAcc op env t -> OperationAcc op env t'
+subTupAcc sub = \case
+  Return vars -> Return $ subTupR sub vars
+  Alet lhs us bnd body -> Alet lhs us bnd $ subTupAcc sub body
+  Acond c t f -> Acond c (subTupAcc sub t) (subTupAcc sub f)
+  _ -> internalError "Cannot subTup this program"
+
+subTupFunctionArgument :: SubTupR t t' -> GroundVars env t -> OperationAfun op env (t -> tr) -> OperationAfun op env (t' -> tr)
+subTupFunctionArgument sub initial (Alam lhs body)
+  | SubTupSubstitution lhs' k <- subTupSubstitution sub lhs initial
+  = Alam lhs' $ weaken k body
+subTupFunctionArgument _ _ (Abody body) = groundFunctionImpossible $ groundsR body
+
+subTupResult :: SubTupR t t' -> GroundVars env t -> GroundVars env t' -> GroundVars env t
+subTupResult SubTupRkeep _ result = result
+subTupResult SubTupRskip initial _ = initial
+subTupResult (SubTupRpair s1 s2) (TupRpair i1 i2) (TupRpair r1 r2) = subTupResult s1 i1 r1 `TupRpair` subTupResult s2 i2 r2
+subTupResult _ _ _ = internalError "Tuple mismatch"
+
+data SubTupSubstitution env env1 t t' where
+  SubTupSubstitution
+    :: GLeftHandSide t' env1 env2
+    -> env :> env2
+    -> SubTupSubstitution env env1 t t'
+
+subTupSubstitution :: SubTupR t t' -> GLeftHandSide t env env' -> GroundVars env t -> SubTupSubstitution env' env t t'
+subTupSubstitution SubTupRskip lhs vars = SubTupSubstitution (LeftHandSideWildcard TupRunit) (go lhs vars weakenId)
+  where
+    go :: GLeftHandSide s env1 env2 -> GroundVars env s -> env1 :> env -> env2 :> env
+    go (LeftHandSideWildcard _) _ k = k
+    go (LeftHandSideSingle _)   (TupRsingle (Var _ ix)) k = Weaken $ \case
+      ZeroIdx -> ix
+      SuccIdx ix' -> k >:> ix'
+    go (LeftHandSidePair l1 l2) (TupRpair v1 v2) k = go l2 v2 $ go l1 v1 k
+    go _ _ _ = internalError "Tuple mismatch"
+subTupSubstitution SubTupRkeep lhs _ = SubTupSubstitution lhs weakenId
+subTupSubstitution (SubTupRpair s1 s2) (LeftHandSidePair l1 l2) (TupRpair v1 v2)
+  | SubTupSubstitution l1' k1 <- subTupSubstitution s1 l1 v1
+  , Exists l2'' <- rebuildLHS l2
+  , SubTupSubstitution l2' k2 <- subTupSubstitution s2 l2'' (mapTupR (weaken $ weakenWithLHS l1') v2)
+  = SubTupSubstitution (LeftHandSidePair l1' l2') (k2 .> sinkWithLHS l2 l2'' k1)
+subTupSubstitution _ _ _ = internalError "Tuple mismatch"

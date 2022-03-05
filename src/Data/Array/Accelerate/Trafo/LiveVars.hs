@@ -29,7 +29,7 @@ module Data.Array.Accelerate.Trafo.LiveVars
   , ReturnImplication(..), ReturnImplications, noReturnImplications
   , strengthenReturnImplications, droppedReturnImplications, propagateReturnLiveness
   , joinReturnImplications, joinReturnImplication
-  , SubTupR(..), subTupR, subTupUnit, DeclareSubVars(..), declareSubVars
+  , SubTupR(..), subTupR, subTupRpair, subTupUnit, DeclareSubVars(..), declareSubVars
   , LVAnalysis(..), LVAnalysisFun(..), LVAnalysis'(..), allDead, expectJust
   , subTupExp, subTupFun
   ,composeSubTupR,subTup,subTupDBuf) where
@@ -411,6 +411,10 @@ composeSubTupR SubTupRskip SubTupRskip = SubTupRskip
 composeSubTupR SubTupRskip _ = SubTupRskip
 composeSubTupR (SubTupRpair bc bc') (SubTupRpair ab ab') = SubTupRpair (composeSubTupR bc ab) (composeSubTupR bc' ab')
 
+subTupRpair :: SubTupR t1 t1'  -> SubTupR t2 t2' -> SubTupR (t1, t2) (t1', t2')
+subTupRpair SubTupRkeep SubTupRkeep = SubTupRkeep
+subTupRpair s t = SubTupRpair s t
+
 subTupR :: SubTupR t t' -> TupR s t -> TupR s t'
 subTupR SubTupRskip         _                = TupRunit
 subTupR SubTupRkeep         t                = t
@@ -421,7 +425,6 @@ subTup :: SubTupR t t' -> t -> t'
 subTup SubTupRskip _ = ()
 subTup SubTupRkeep t = t
 subTup (SubTupRpair l r) (t1, t2) = (subTup l t1, subTup r t2)
-
 
 subTupUnit :: SubTupR () t' -> t' :~: ()
 subTupUnit SubTupRskip = Refl
