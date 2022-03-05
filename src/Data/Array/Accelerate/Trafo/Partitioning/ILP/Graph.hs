@@ -135,7 +135,8 @@ class (Eq (BackendVar op), Ord (BackendVar op), Show (BackendVar op), Read (Back
   -- These can be 'strengthened' by adding a corresponding infusible edge, in which case the fusible edge will later be optimised away.
   mkGraph :: op args -> LabelledArgs env args -> Label -> Information op
 
-
+  -- allow the backend to add constraints/bounds for every node
+  finalize :: [Label] -> Constraint op
 -- Control flow cannot be fused, so we make separate ILPs for e.g.
 -- then-branch and else-branch. In the future, a possible optimisation is to
 -- generate code for the awhile-condition twice: once maybe fused after the body,
