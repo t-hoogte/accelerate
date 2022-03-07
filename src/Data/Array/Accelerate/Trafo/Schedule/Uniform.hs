@@ -2939,17 +2939,3 @@ environmentDropLHS :: PartialEnv f env1 -> LeftHandSide s t env env1 -> PartialE
 environmentDropLHS env (LeftHandSideWildcard _) = env
 environmentDropLHS env (LeftHandSideSingle _)   = partialEnvTail env
 environmentDropLHS env (LeftHandSidePair l1 l2) = environmentDropLHS (environmentDropLHS env l2) l1
-
--- TODO: Move matchGround(s)R to Analysis.Match (and refactor other things to prevent circular dependency)
-{-
-{-# INLINEABLE matchGroundsR #-}
-matchGroundsR :: GroundsR s -> GroundsR t -> Maybe (s :~: t)
-matchGroundsR = matchTupR matchGroundR
--}
-
-{-# INLINEABLE matchGroundR #-}
-matchGroundR :: GroundR s -> GroundR t -> Maybe (s :~: t)
-matchGroundR (GroundRscalar s) (GroundRscalar t) = matchScalarType s t
-matchGroundR (GroundRbuffer s) (GroundRbuffer t)
-  | Just Refl <- matchScalarType s t             = Just Refl
-matchGroundR _                 _                 = Nothing

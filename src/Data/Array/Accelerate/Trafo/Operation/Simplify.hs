@@ -23,7 +23,7 @@
 --
 
 module Data.Array.Accelerate.Trafo.Operation.Simplify (
-  simplify, simplifyFun
+  simplify, simplifyFun, SimplifyOperation(..), IdentityOperation(..), identityOperationsForArray
 ) where
 
 import Data.Array.Accelerate.AST.Environment
@@ -34,7 +34,9 @@ import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.AST.Operation
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Array.Buffer
+import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Representation.Type
+import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Analysis.Match
 import qualified Data.Array.Accelerate.Trafo.Exp.Simplify   as Exp
 import Data.Array.Accelerate.Trafo.Exp.Substitution
@@ -44,22 +46,54 @@ import Data.Array.Accelerate.Trafo.WeakenedEnvironment
 import Data.Array.Accelerate.Trafo.Operation.Substitution
 import Data.Array.Accelerate.Trafo.LiveVars                 ( SubTupR(..), subTupR, subTupRpair )
 import Data.Maybe                                           ( mapMaybe )
+import Data.List                                            ( foldl' )
+
+class SimplifyOperation op where
+  detectIdentity :: op f -> Args env f -> [IdentityOperation env]
+  detectIdentity _ _ = []
+
+data IdentityOperation env where
+  IdentityOperation
+    :: Idx env (Buffer t) -- input
+    -> Idx env (Buffer t) -- output
+    -> IdentityOperation env
+
+identityOperationsForArray :: forall env sh sh' t. Arg env (In sh t) -> Arg env (Out sh' t) -> [IdentityOperation env]
+identityOperationsForArray (ArgArray _ (ArrayR _ tp) _ input) (ArgArray _ _ _ output) = go tp input output []
+  where
+    go :: forall s. TypeR s -> GroundVars env (Buffers s) -> GroundVars env (Buffers s) -> [IdentityOperation env] -> [IdentityOperation env]
+    go (TupRpair t1 t2) (TupRpair i1 i2) (TupRpair o1 o2) = go t1 i1 o1 . go t2 i2 o2
+    go (TupRsingle t) (TupRsingle (Var _ input')) (TupRsingle (Var _ output'))
+      | Refl <- reprIsSingle @ScalarType @s @Buffer t = (IdentityOperation input' output' :)
+    go _ _ _ = id
+
 
 data Info env t where
-  InfoConst :: t         -> Info env t
-  InfoAlias :: Idx env t -> Info env t
-  InfoUnit  :: Idx env t -> Info env (Buffer t)
-  InfoNone  ::              Info env t
+  InfoConst    :: t         -> Info env t -- A constant scalar
+  InfoAlias    :: Idx env t -> Info env t
+  InfoBuffer   :: Maybe (Idx env t) -- In case of a Unit, the index of the scalar variable that it contains.
+               -- Copy of another buffer. This is similar to an alias, but a buffer may only
+               -- be a copy of another buffer temporarily. A write to the original or copy
+               -- causes that they aren't copies any more. Hence we also keep track in
+               -- InfoBuffer of the buffers it was copied to.
+               -> Maybe (Idx env (Buffer t))
+               -> [Idx env (Buffer t)] -- List of buffers where this buffer is copied to
+               -> Info env (Buffer t)
+  InfoNone     :: Info env t
 
 newtype InfoEnv env = InfoEnv { unInfoEnv :: WEnv Info env }
 
 emptySimplifyEnv :: InfoEnv ()
 emptySimplifyEnv = InfoEnv wempty
 
+copiedTo :: Info env t -> [Idx env t]
+copiedTo (InfoBuffer _ _ c) = c
+copiedTo _                  = []
+
 instance Sink Info where
   weaken k (InfoAlias idx) = InfoAlias $ weaken k idx
   weaken _ (InfoConst c)   = InfoConst c
-  weaken k (InfoUnit idx)  = InfoUnit $ weaken k idx
+  weaken k (InfoBuffer unitScalar copyOf copied) = InfoBuffer (fmap (weaken k) unitScalar) (fmap (weaken k) copyOf) (fmap (weaken k) copied)
   weaken _ InfoNone        = InfoNone
 
 infoFor :: Idx env t -> InfoEnv env -> Info env t
@@ -73,13 +107,14 @@ infoFor ix (InfoEnv env) = wprj ix env
 substitute :: InfoEnv env -> env :> env
 substitute env = Weaken $ \idx -> case infoFor idx env of
   InfoAlias idx' -> idx'
+  InfoBuffer _ (Just idx') _ -> idx'
   _              -> idx
 
-simplifyFun :: OperationAfun op () t -> OperationAfun op () t
+simplifyFun :: SimplifyOperation op => OperationAfun op () t -> OperationAfun op () t
 simplifyFun = fst . simplifyFun' emptySimplifyEnv
 
 -- Returns the simplified function and a set of array variables which may have been written to
-simplifyFun' :: InfoEnv env -> OperationAfun op env t -> (OperationAfun op env t, IdxSet env)
+simplifyFun' :: SimplifyOperation op => InfoEnv env -> OperationAfun op env t -> (OperationAfun op env t, IdxSet env)
 simplifyFun' env (Alam lhs f) = (Alam lhs f', IdxSet.drop' lhs set)
   where
     env' = bindEnv lhs env
@@ -88,11 +123,11 @@ simplifyFun' env (Abody body)  = (Abody body', set)
   where
     (body', set) = simplify' env body
 
-simplify :: OperationAcc op () t -> OperationAcc op () t
+simplify :: SimplifyOperation op => OperationAcc op () t -> OperationAcc op () t
 simplify = fst . simplify' emptySimplifyEnv
 
 -- Returns the simplified program and a set of array variables which may have been written to
-simplify' :: InfoEnv env -> OperationAcc op env t -> (OperationAcc op env t, IdxSet env)
+simplify' :: SimplifyOperation op => InfoEnv env -> OperationAcc op env t -> (OperationAcc op env t, IdxSet env)
 simplify' env = \case
   Exec op args ->
     let
@@ -116,8 +151,11 @@ simplify' env = \case
   Alet lhs us bnd body ->
     let
       (bnd', setBnd) = simplify' env bnd
-      env' = bindingEnv lhs bnd' $ InfoEnv $ wremoveSet InfoNone setBnd $ unInfoEnv env
-      (body', setBody) = simplify' env' body
+      env' = bindingEnv lhs bnd' env
+      (dropped, wenv) = wremovePrjSet InfoNone (IdxSet.skip' lhs setBnd) $ unInfoEnv env'
+      invalidatedCopies = dropped >>= \(Exists i) -> Exists <$> copiedTo i
+      env'' = InfoEnv $ wremoveSet InfoNone (IdxSet.fromList invalidatedCopies) wenv
+      (body', setBody) = simplify' env'' body
     in
       (bindLet lhs us bnd' body', setBnd `IdxSet.union` IdxSet.drop' lhs setBody)
   Alloc shr tp sh -> (Alloc shr tp $ mapTupR (weaken $ substitute env) sh, IdxSet.empty)
@@ -158,7 +196,7 @@ bindLet lhs@(LeftHandSideSingle _) us (Compute (ArrayInstr (Parameter (Var tp ix
   = Alet lhs us $ Return $ TupRsingle $ Var (GroundRscalar tp) ix
 bindLet lhs us bnd = Alet lhs us bnd
 
-bindingEnv :: forall op t env env'. GLeftHandSide t env env' -> OperationAcc op env t -> InfoEnv env -> InfoEnv env'
+bindingEnv :: forall op t env env'. SimplifyOperation op => GLeftHandSide t env env' -> OperationAcc op env t -> InfoEnv env -> InfoEnv env'
 bindingEnv lhs (Compute expr) (InfoEnv environment) = InfoEnv $ weaken (weakenWithLHS lhs) $ go lhs expr environment
   where
     go :: GLeftHandSide s env1 env2 -> Exp env s -> WEnv' Info env env1 -> WEnv' Info env env2
@@ -185,7 +223,15 @@ bindingEnv lhs (Return variables) (InfoEnv environment) = InfoEnv $ weaken (weak
     go (LeftHandSidePair l1 l2) (TupRpair v1 v2)        env = go l2 v2 $ go l1 v1 env
     go (LeftHandSideWildcard _) _                       env = env
     go _                        _                       _   = internalError "Tuple mismatch"
-bindingEnv (LeftHandSideSingle _) (Unit (Var _ idx)) (InfoEnv env) = InfoEnv $ wpush env $ InfoUnit $ SuccIdx idx
+bindingEnv (LeftHandSideSingle _) (Unit (Var _ idx)) (InfoEnv env) = InfoEnv $ wpush env $ InfoBuffer (Just $ SuccIdx idx) Nothing []
+bindingEnv (LeftHandSideWildcard _) (Exec op args)      env = foldl' addCopy env $ detectIdentity op args
+  where
+    addCopy :: InfoEnv env -> IdentityOperation env -> InfoEnv env
+    addCopy env' (IdentityOperation input output) = InfoEnv $ wupdate markCopy input $ wupdate (const $ InfoBuffer Nothing (Just input) []) output $ unInfoEnv env'
+      where
+        markCopy (InfoBuffer unitScalar copyOf list) = InfoBuffer unitScalar copyOf (output : list)
+        markCopy (InfoAlias _) = internalError "Operation contains aliased variable, which should be substituted already"
+        markCopy _ = (InfoBuffer Nothing Nothing [output])
 bindingEnv lhs _ env = bindEnv lhs env
 
 outputArrays :: Args env args -> IdxSet env
@@ -204,13 +250,14 @@ simplifyExpFun env = Exp.simplifyFun . runIdentity . rebuildArrayInstrFun (simpl
 
 simplifyArrayInstr :: InfoEnv env -> RebuildArrayInstr Identity (ArrayInstr env) (ArrayInstr env)
 simplifyArrayInstr env instr@(Parameter (Var tp idx)) = case infoFor idx env of
-  InfoAlias idx' -> simplifyArrayInstr env (Parameter $ Var tp idx')
-  InfoConst c    -> Identity $ const $ Const tp c
-  InfoUnit _     -> bufferImpossible tp
-  InfoNone       -> Identity $ \arg -> ArrayInstr instr arg
+  InfoAlias idx'   -> simplifyArrayInstr env (Parameter $ Var tp idx')
+  InfoConst c      -> Identity $ const $ Const tp c
+  InfoBuffer _ _ _ -> bufferImpossible tp
+  InfoNone         -> Identity $ \arg -> ArrayInstr instr arg
 simplifyArrayInstr env instr@(Index (Var tp idx)) = case infoFor idx env of
   InfoAlias idx' -> simplifyArrayInstr env (Index $ Var tp idx')
-  InfoUnit idx'  -> Identity $ const $ runIdentity (simplifyArrayInstr env $ Parameter $ Var eltTp idx') Nil
+  InfoBuffer (Just idx') _ _ -> Identity $ const $ runIdentity (simplifyArrayInstr env $ Parameter $ Var eltTp idx') Nil -- Unit
+  InfoBuffer _ (Just idx') _  -> simplifyArrayInstr env (Index $ Var tp idx') -- Copy
   _              -> Identity $ \arg -> ArrayInstr instr arg
   where
     eltTp = case tp of

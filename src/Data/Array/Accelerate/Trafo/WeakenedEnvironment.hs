@@ -18,12 +18,13 @@
 --
 
 module Data.Array.Accelerate.Trafo.WeakenedEnvironment
-  ( WEnv, WEnv', wprj, wprj', wupdate, wempty, wpush, wpush2, wpush', wremoveSet
+  ( WEnv, WEnv', wprj, wprj', wupdate, wempty, wpush, wpush2, wpush', wremoveSet, wremovePrjSet
   ) where
 
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.IdxSet (IdxSet(..))
+import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.Trafo.Substitution
 
 -- Valuation for an environment
@@ -91,3 +92,19 @@ wremoveSet nil (IdxSet set) env = go set env
     go (PNone p)   (WPushB e _)  = WPushB (go p e) nil
     go (PPush p _) (WPushA e f)  = WPushA (go p e) f
     go (PPush p _) (WPushB e f)  = WPushB (go p e) f
+
+wremovePrjSet :: forall f env. Sink f => (forall env' t. f env' t) -> IdxSet env -> WEnv f env -> ([Exists (f env)], WEnv f env)
+wremovePrjSet nil (IdxSet set) env = go weakenId set env
+  where
+    go :: env1 :> env -> PartialEnv g env' -> WEnv' f env1 env' -> ([Exists (f env)], WEnv' f env1 env')
+    go k PEnd        e             = ([], e)
+    go k p           (WWeaken k' e) = (l, WWeaken k' e')
+      where (l, e') = go (k .> k') p e
+    go k (PNone p)   (WPushA e f)  = (Exists (weaken k f) : l, WPushA e' nil)
+      where (l, e') = go k p e
+    go k (PNone p)   (WPushB e f)  = (Exists (weaken k f) : l, WPushB e' nil)
+      where (l, e') = go (weakenSucc k) p e
+    go k (PPush p _) (WPushA e f)  = (l, WPushA e' f)
+      where (l, e') = go k p e
+    go k (PPush p _) (WPushB e f)  = (l, WPushB e' f)
+      where (l, e') = go (weakenSucc k) p e

@@ -42,6 +42,7 @@ import Data.Array.Accelerate.Representation.Ground
 import Data.Array.Accelerate.Trafo
 import Data.Array.Accelerate.Trafo.Config
 import qualified Data.Array.Accelerate.Trafo.Operation.LiveVars as Operation
+import qualified Data.Array.Accelerate.Trafo.Operation.Simplify as Operation
 
 import Data.Array.Accelerate.Trafo.Sharing (Afunction(..), AfunctionRepr(..), afunctionGroundR, afunctionRepr)
 import qualified Data.Array.Accelerate.Trafo.Desugar as Desugar
@@ -54,6 +55,7 @@ import System.IO.Unsafe (unsafePerformIO)
 class
   ( Desugar.DesugarAcc (Operation backend)
   , Operation.SLVOperation (Operation backend)
+  , Operation.SimplifyOperation (Operation backend)
   , Partitioning.MakesILP (Operation backend)
   , IsSchedule (Schedule backend)
   , IsKernel (Kernel backend)

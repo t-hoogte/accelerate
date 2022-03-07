@@ -51,9 +51,11 @@ import qualified Data.Array.Accelerate.AST.Partitioned as P
 import Data.Array.Accelerate.AST.Operation
 import Data.Array.Accelerate.AST.Kernel
 import Data.Array.Accelerate.Trafo.Desugar
+import Data.Array.Accelerate.Trafo.Operation.Simplify (SimplifyOperation(..), identityOperationsForArray)
 import qualified Data.Array.Accelerate.Debug.Internal as Debug
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Error
+import Data.Array.Accelerate.Analysis.Match
 import Data.Array.Accelerate.Representation.Ground
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Representation.Shape
@@ -271,6 +273,14 @@ instance DesugarAcc InterpretOp where
   mkPermute     a b c d = Exec IPermute     (a :>: b :>: c :>: d :>: ArgsNil)
   mkFold        a Nothing b c = Exec IFold1 (a :>: b :>: c :>:       ArgsNil)
   -- etc, but the rest piggybacks off of Generate for now (see Desugar.hs)
+
+instance SimplifyOperation InterpretOp where
+  detectIdentity IBackpermute (ArgFun f :>: input :>: output :>: ArgsNil)
+    | Just Refl <- isIdentity f = identityOperationsForArray input output
+  detectIdentity IMap (ArgFun f :>: input@(ArgArray _ _ sh _) :>: output@(ArgArray _ _ sh' _) :>: ArgsNil)
+    | Just Refl <- matchVars sh sh'
+    , Just Refl <- isIdentity f = identityOperationsForArray input output
+  detectIdentity  _ _ = []
 
 instance SLVOperation InterpretOp where
   slvOperation IGenerate = Just $ ShrinkOperation $ \subArgs args@(ArgFun f :>: array :>: ArgsNil) _ -> case subArgs of
