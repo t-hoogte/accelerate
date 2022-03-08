@@ -110,6 +110,16 @@ substitute env = Weaken $ \idx -> case infoFor idx env of
   InfoBuffer _ (Just idx') _ -> idx'
   _              -> idx
 
+-- When reading from an array, we can read from another buffer with the same
+-- contents. The index of such copy is stored in InfoBuffer. When writing we
+-- cannot do that. Note that after a write, the information about the copy
+-- is removed in 'invalidate'.
+--
+substituteOutput :: InfoEnv env -> env :> env
+substituteOutput env = Weaken $ \idx -> case infoFor idx env of
+  InfoAlias idx' -> idx'
+  _              -> idx
+
 simplifyFun :: SimplifyOperation op => OperationAfun op () t -> OperationAfun op () t
 simplifyFun = fst . simplifyFun' emptySimplifyEnv
 
@@ -151,11 +161,8 @@ simplify' env = \case
   Alet lhs us bnd body ->
     let
       (bnd', setBnd) = simplify' env bnd
-      env' = bindingEnv lhs bnd' env
-      (dropped, wenv) = wremovePrjSet InfoNone (IdxSet.skip' lhs setBnd) $ unInfoEnv env'
-      invalidatedCopies = dropped >>= \(Exists i) -> Exists <$> copiedTo i
-      env'' = InfoEnv $ wremoveSet InfoNone (IdxSet.fromList invalidatedCopies) wenv
-      (body', setBody) = simplify' env'' body
+      env' = bindingEnv setBnd lhs bnd' (invalidate setBnd env)
+      (body', setBody) = simplify' env' body
     in
       (bindLet lhs us bnd' body', setBnd `IdxSet.union` IdxSet.drop' lhs setBody)
   Alloc shr tp sh -> (Alloc shr tp $ mapTupR (weaken $ substitute env) sh, IdxSet.empty)
@@ -196,8 +203,8 @@ bindLet lhs@(LeftHandSideSingle _) us (Compute (ArrayInstr (Parameter (Var tp ix
   = Alet lhs us $ Return $ TupRsingle $ Var (GroundRscalar tp) ix
 bindLet lhs us bnd = Alet lhs us bnd
 
-bindingEnv :: forall op t env env'. SimplifyOperation op => GLeftHandSide t env env' -> OperationAcc op env t -> InfoEnv env -> InfoEnv env'
-bindingEnv lhs (Compute expr) (InfoEnv environment) = InfoEnv $ weaken (weakenWithLHS lhs) $ go lhs expr environment
+bindingEnv :: forall op t env env'. SimplifyOperation op => IdxSet env -> GLeftHandSide t env env' -> OperationAcc op env t -> InfoEnv env -> InfoEnv env'
+bindingEnv _ lhs (Compute expr) (InfoEnv environment) = InfoEnv $ weaken (weakenWithLHS lhs) $ go lhs expr environment
   where
     go :: GLeftHandSide s env1 env2 -> Exp env s -> WEnv' Info env env1 -> WEnv' Info env env2
     go (LeftHandSideSingle _) e env
@@ -216,23 +223,46 @@ bindingEnv lhs (Compute expr) (InfoEnv environment) = InfoEnv $ weaken (weakenWi
     goUnknown (LeftHandSideSingle _)   env = wpush' env InfoNone
     goUnknown (LeftHandSideWildcard _) env = env
     goUnknown (LeftHandSidePair l1 l2) env = goUnknown l2 $ goUnknown l1 env
-bindingEnv lhs (Return variables) (InfoEnv environment) = InfoEnv $ weaken (weakenWithLHS lhs) $ go lhs variables environment
+bindingEnv _ lhs (Return variables) (InfoEnv environment) = InfoEnv $ weaken (weakenWithLHS lhs) $ go lhs variables environment
   where
     go :: GLeftHandSide s env1 env2 -> GroundVars env s -> WEnv' Info env env1 -> WEnv' Info env env2
     go (LeftHandSideSingle _)   (TupRsingle (Var _ ix)) env = wpush' env $ InfoAlias ix
     go (LeftHandSidePair l1 l2) (TupRpair v1 v2)        env = go l2 v2 $ go l1 v1 env
     go (LeftHandSideWildcard _) _                       env = env
     go _                        _                       _   = internalError "Tuple mismatch"
-bindingEnv (LeftHandSideSingle _) (Unit (Var _ idx)) (InfoEnv env) = InfoEnv $ wpush env $ InfoBuffer (Just $ SuccIdx idx) Nothing []
-bindingEnv (LeftHandSideWildcard _) (Exec op args)      env = foldl' addCopy env $ detectIdentity op args
+bindingEnv _ (LeftHandSideSingle _) (Unit (Var _ idx)) (InfoEnv env) = InfoEnv $ wpush env $ InfoBuffer (Just $ SuccIdx idx) Nothing []
+bindingEnv outputs (LeftHandSideWildcard _) (Exec op args)      env = foldl' addCopy env $ detectIdentity op args
   where
     addCopy :: InfoEnv env -> IdentityOperation env -> InfoEnv env
-    addCopy env' (IdentityOperation input output) = InfoEnv $ wupdate markCopy input $ wupdate (const $ InfoBuffer Nothing (Just input) []) output $ unInfoEnv env'
+    addCopy env' (IdentityOperation input output)
+      | input `IdxSet.member` outputs = env' -- The operation both reads and writes to 'input'. We cannot register input and output as copies, as input will get different values
+      | otherwise = InfoEnv $ wupdate markCopy input $ wupdate (const $ InfoBuffer Nothing (Just input) []) output $ unInfoEnv env'
       where
         markCopy (InfoBuffer unitScalar copyOf list) = InfoBuffer unitScalar copyOf (output : list)
         markCopy (InfoAlias _) = internalError "Operation contains aliased variable, which should be substituted already"
         markCopy _ = (InfoBuffer Nothing Nothing [output])
-bindingEnv lhs _ env = bindEnv lhs env
+bindingEnv _ lhs _ env = bindEnv lhs env
+
+invalidate :: IdxSet env -> InfoEnv env -> InfoEnv env
+invalidate indices (InfoEnv env1) = InfoEnv env4
+  where
+    (dropped, env2) = wremovePrjSet InfoNone indices env1
+    invalidatedCopies = dropped >>= \(Exists i) -> Exists <$> copiedTo i
+    invalidatedCopiedFrom = dropped >>= \case
+      Exists (InfoBuffer _ (Just idx) _) -> [Exists idx]
+      _ -> []
+    -- Remove copies of modified buffers
+    env3 = wremoveSet InfoNone (IdxSet.fromList invalidatedCopies) env2
+    -- The 'is-copy-of' relation is stored on both sides. If a copy is changed
+    -- we must thus update the Info stored in the original buffer to remove the
+    -- link between these buffers.
+    env4 = wupdateSetWeakened
+            (\k -> \case
+              InfoBuffer unitScalar copyOf copiedTo -> InfoBuffer unitScalar copyOf $ filter (\idx -> k >:> idx `IdxSet.member` indices) copiedTo
+              i -> i
+            )
+            (IdxSet.fromList invalidatedCopiedFrom)
+            env3
 
 outputArrays :: Args env args -> IdxSet env
 outputArrays = IdxSet.fromList . mapMaybe f . argsVars
@@ -269,7 +299,12 @@ simplifyArg env (ArgVar var)  = ArgVar $ mapTupR (weaken $ substitute env) var
 simplifyArg env (ArgExp expr) = ArgExp $ simplifyExp env expr
 simplifyArg env (ArgFun fun)  = ArgFun $ simplifyExpFun env fun
 simplifyArg env (ArgArray m repr sh buffers)
-  = ArgArray m repr (mapTupR (weaken $ substitute env) sh) (mapTupR (weaken $ substitute env) buffers)
+  = ArgArray m repr (mapTupR (weaken $ substitute env) sh) (mapTupR (weaken $ substituteBuffer env) buffers)
+  where
+    -- Output buffers may not be substituted by buffers with the same content.
+    substituteBuffer
+      | In <- m = substitute
+      | otherwise = substituteOutput
 
 bindEnv :: GLeftHandSide t env env' -> InfoEnv env -> InfoEnv env'
 bindEnv lhs (InfoEnv env') = InfoEnv $ go lhs $ weaken k env'
