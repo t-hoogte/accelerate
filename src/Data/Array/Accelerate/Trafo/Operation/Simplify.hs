@@ -1,3 +1,4 @@
+{-# LANGUAGE EmptyCase           #-}
 {-# LANGUAGE FlexibleInstances   #-}
 {-# LANGUAGE GADTs               #-}
 {-# LANGUAGE KindSignatures      #-}
@@ -23,7 +24,7 @@
 --
 
 module Data.Array.Accelerate.Trafo.Operation.Simplify (
-  simplify, simplifyFun, SimplifyOperation(..), IdentityOperation(..), identityOperationsForArray
+  simplify, simplifyFun, SimplifyOperation(..), IdentityOperation(..), identityOperationsForArray, detectMapIdentities
 ) where
 
 import Data.Array.Accelerate.AST.Environment
@@ -47,6 +48,7 @@ import Data.Array.Accelerate.Trafo.Operation.Substitution
 import Data.Array.Accelerate.Trafo.LiveVars                 ( SubTupR(..), subTupR, subTupRpair )
 import Data.Maybe                                           ( mapMaybe )
 import Data.List                                            ( foldl' )
+import Control.Monad
 
 class SimplifyOperation op where
   detectIdentity :: op f -> Args env f -> [IdentityOperation env]
@@ -66,6 +68,40 @@ identityOperationsForArray (ArgArray _ (ArrayR _ tp) _ input) (ArgArray _ _ _ ou
     go (TupRsingle t) (TupRsingle (Var _ input')) (TupRsingle (Var _ output'))
       | Refl <- reprIsSingle @ScalarType @s @Buffer t = (IdentityOperation input' output' :)
     go _ _ _ = id
+
+detectMapIdentities :: forall genv sh t s. Fun genv (t -> s) -> Arg genv (In sh t) -> Arg genv (Out sh s) -> [IdentityOperation genv]
+detectMapIdentities (Lam lhs (Body body)) (ArgArray _ _ _ input) (ArgArray _ _ _ output)
+  = detectMapIdentities' lhs body input output
+detectMapIdentities _ _ _ = internalError "Function impossible"
+
+detectMapIdentities' :: forall genv env t s. ELeftHandSide t () env -> OpenExp env genv s -> GroundVars genv (Buffers t) -> GroundVars genv (Buffers s) -> [IdentityOperation genv]
+detectMapIdentities' lhs body input output = go Just body output []
+  where
+    go :: forall env' s'. env' :?> env -> OpenExp env' genv s' -> GroundVars genv (Buffers s') -> [IdentityOperation genv] -> [IdentityOperation genv]
+    go k (Pair e1 e2) (TupRpair o1 o2) = go k e1 o1 . go k e2 o2
+    go k (Let lhs' _ expr) output'     = go (strengthenWithLHS lhs' >=> k) expr output'
+    go k (Evar (Var tp idx)) (TupRsingle (Var _ output'))
+      | Just idx' <- k idx -- Check if index is bound by the function (opposed to local binding)
+      , Refl <- reprIsSingle @ScalarType @s' @Buffer tp
+      = (IdentityOperation (findInput idx') output' :)
+    go _ _ _ = id
+
+    findInput :: Idx env t' -> Idx genv (Buffer t')
+    findInput idx = case findInput' lhs input idx of
+      Right buffer -> buffer
+      Left idx' -> case idx' of {}
+
+    findInput' :: forall u env1 env2 t'. ELeftHandSide u env1 env2 -> GroundVars genv (Buffers u) -> Idx env2 t' -> Either (Idx env1 t') (Idx genv (Buffer t'))
+    findInput' (LeftHandSideWildcard _) _ idx = Left idx
+    findInput' (LeftHandSideSingle tp) (TupRsingle (Var _ buffer)) idx = case idx of
+      SuccIdx idx' -> Left idx'
+      ZeroIdx
+        | Refl <- reprIsSingle @ScalarType @u @Buffer tp -> Right buffer
+    findInput' (LeftHandSidePair l1 l2) (TupRpair in1 in2) idx = case findInput' l2 in2 idx of
+      Left idx' -> findInput' l1 in1 idx'
+      Right buffer -> Right buffer
+    findInput' _ _ _ = internalError "Tuple mismatch"
+
 
 
 data Info env t where
@@ -258,7 +294,7 @@ invalidate indices (InfoEnv env1) = InfoEnv env4
     -- link between these buffers.
     env4 = wupdateSetWeakened
             (\k -> \case
-              InfoBuffer unitScalar copyOf copiedTo -> InfoBuffer unitScalar copyOf $ filter (\idx -> k >:> idx `IdxSet.member` indices) copiedTo
+              InfoBuffer unitScalar copyOf copiedTo' -> InfoBuffer unitScalar copyOf $ filter (\idx -> k >:> idx `IdxSet.member` indices) copiedTo'
               i -> i
             )
             (IdxSet.fromList invalidatedCopiedFrom)
