@@ -275,9 +275,9 @@ instance DesugarAcc InterpretOp where
   -- etc, but the rest piggybacks off of Generate for now (see Desugar.hs)
 
 instance SimplifyOperation InterpretOp where
-  detectIdentity IBackpermute (ArgFun f :>: input :>: output :>: ArgsNil)
+  detectIdentity IMap (ArgFun f :>: input :>: output :>: ArgsNil)
     | Just Refl <- isIdentity f = identityOperationsForArray input output
-  detectIdentity IMap (ArgFun f :>: input@(ArgArray _ _ sh _) :>: output@(ArgArray _ _ sh' _) :>: ArgsNil)
+  detectIdentity IBackpermute (ArgFun f :>: input@(ArgArray _ _ sh _) :>: output@(ArgArray _ _ sh' _) :>: ArgsNil)
     | Just Refl <- matchVars sh sh'
     , Just Refl <- isIdentity f = identityOperationsForArray input output
   detectIdentity  _ _ = []
