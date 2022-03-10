@@ -339,7 +339,7 @@ instance NFData (LeftHandSideArgs body env scope) where
   rnf (FArg args) = rnf args
 
 instance SimplifyOperation op => SimplifyOperation (Cluster op) where
-  -- TODO: Propagate detectIdentity of operations in cluster?
+  -- TODO: Propagate detectCopy of operations in cluster?
 
 instance SLVOperation (Cluster op) where
   slvOperation (Cluster io ast :: Cluster op args) = Just $ ShrinkOperation shrinkOperation

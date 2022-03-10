@@ -24,7 +24,7 @@
 --
 
 module Data.Array.Accelerate.Trafo.Operation.Simplify (
-  simplify, simplifyFun, SimplifyOperation(..), IdentityOperation(..), identityOperationsForArray, detectMapIdentities
+  simplify, simplifyFun, SimplifyOperation(..), CopyOperation(..), copyOperationsForArray, detectMapCopies
 ) where
 
 import Data.Array.Accelerate.AST.Environment
@@ -51,39 +51,39 @@ import Data.List                                            ( foldl' )
 import Control.Monad
 
 class SimplifyOperation op where
-  detectIdentity :: op f -> Args env f -> [IdentityOperation env]
-  detectIdentity _ _ = []
+  detectCopy :: op f -> Args env f -> [CopyOperation env]
+  detectCopy _ _ = []
 
-data IdentityOperation env where
-  IdentityOperation
+data CopyOperation env where
+  CopyOperation
     :: Idx env (Buffer t) -- input
     -> Idx env (Buffer t) -- output
-    -> IdentityOperation env
+    -> CopyOperation env
 
-identityOperationsForArray :: forall env sh sh' t. Arg env (In sh t) -> Arg env (Out sh' t) -> [IdentityOperation env]
-identityOperationsForArray (ArgArray _ (ArrayR _ tp) _ input) (ArgArray _ _ _ output) = go tp input output []
+copyOperationsForArray :: forall env sh sh' t. Arg env (In sh t) -> Arg env (Out sh' t) -> [CopyOperation env]
+copyOperationsForArray (ArgArray _ (ArrayR _ tp) _ input) (ArgArray _ _ _ output) = go tp input output []
   where
-    go :: forall s. TypeR s -> GroundVars env (Buffers s) -> GroundVars env (Buffers s) -> [IdentityOperation env] -> [IdentityOperation env]
+    go :: forall s. TypeR s -> GroundVars env (Buffers s) -> GroundVars env (Buffers s) -> [CopyOperation env] -> [CopyOperation env]
     go (TupRpair t1 t2) (TupRpair i1 i2) (TupRpair o1 o2) = go t1 i1 o1 . go t2 i2 o2
     go (TupRsingle t) (TupRsingle (Var _ input')) (TupRsingle (Var _ output'))
-      | Refl <- reprIsSingle @ScalarType @s @Buffer t = (IdentityOperation input' output' :)
+      | Refl <- reprIsSingle @ScalarType @s @Buffer t = (CopyOperation input' output' :)
     go _ _ _ = id
 
-detectMapIdentities :: forall genv sh t s. Fun genv (t -> s) -> Arg genv (In sh t) -> Arg genv (Out sh s) -> [IdentityOperation genv]
-detectMapIdentities (Lam lhs (Body body)) (ArgArray _ _ _ input) (ArgArray _ _ _ output)
-  = detectMapIdentities' lhs body input output
-detectMapIdentities _ _ _ = internalError "Function impossible"
+detectMapCopies :: forall genv sh t s. Fun genv (t -> s) -> Arg genv (In sh t) -> Arg genv (Out sh s) -> [CopyOperation genv]
+detectMapCopies (Lam lhs (Body body)) (ArgArray _ _ _ input) (ArgArray _ _ _ output)
+  = detectMapCopies' lhs body input output
+detectMapCopies _ _ _ = internalError "Function impossible"
 
-detectMapIdentities' :: forall genv env t s. ELeftHandSide t () env -> OpenExp env genv s -> GroundVars genv (Buffers t) -> GroundVars genv (Buffers s) -> [IdentityOperation genv]
-detectMapIdentities' lhs body input output = go Just body output []
+detectMapCopies' :: forall genv env t s. ELeftHandSide t () env -> OpenExp env genv s -> GroundVars genv (Buffers t) -> GroundVars genv (Buffers s) -> [CopyOperation genv]
+detectMapCopies' lhs body input output = go Just body output []
   where
-    go :: forall env' s'. env' :?> env -> OpenExp env' genv s' -> GroundVars genv (Buffers s') -> [IdentityOperation genv] -> [IdentityOperation genv]
+    go :: forall env' s'. env' :?> env -> OpenExp env' genv s' -> GroundVars genv (Buffers s') -> [CopyOperation genv] -> [CopyOperation genv]
     go k (Pair e1 e2) (TupRpair o1 o2) = go k e1 o1 . go k e2 o2
     go k (Let lhs' _ expr) output'     = go (strengthenWithLHS lhs' >=> k) expr output'
     go k (Evar (Var tp idx)) (TupRsingle (Var _ output'))
       | Just idx' <- k idx -- Check if index is bound by the function (opposed to local binding)
       , Refl <- reprIsSingle @ScalarType @s' @Buffer tp
-      = (IdentityOperation (findInput idx') output' :)
+      = (CopyOperation (findInput idx') output' :)
     go _ _ _ = id
 
     findInput :: Idx env t' -> Idx genv (Buffer t')
@@ -267,10 +267,10 @@ bindingEnv _ lhs (Return variables) (InfoEnv environment) = InfoEnv $ weaken (we
     go (LeftHandSideWildcard _) _                       env = env
     go _                        _                       _   = internalError "Tuple mismatch"
 bindingEnv _ (LeftHandSideSingle _) (Unit (Var _ idx)) (InfoEnv env) = InfoEnv $ wpush env $ InfoBuffer (Just $ SuccIdx idx) Nothing []
-bindingEnv outputs (LeftHandSideWildcard _) (Exec op args)      env = foldl' addCopy env $ detectIdentity op args
+bindingEnv outputs (LeftHandSideWildcard _) (Exec op args)      env = foldl' addCopy env $ detectCopy op args
   where
-    addCopy :: InfoEnv env -> IdentityOperation env -> InfoEnv env
-    addCopy env' (IdentityOperation input output)
+    addCopy :: InfoEnv env -> CopyOperation env -> InfoEnv env
+    addCopy env' (CopyOperation input output)
       | input `IdxSet.member` outputs = env' -- The operation both reads and writes to 'input'. We cannot register input and output as copies, as input will get different values
       | otherwise = InfoEnv $ wupdate markCopy input $ wupdate (const $ InfoBuffer Nothing (Just input) []) output $ unInfoEnv env'
       where

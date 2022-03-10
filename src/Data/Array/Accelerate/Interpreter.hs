@@ -51,7 +51,7 @@ import qualified Data.Array.Accelerate.AST.Partitioned as P
 import Data.Array.Accelerate.AST.Operation
 import Data.Array.Accelerate.AST.Kernel
 import Data.Array.Accelerate.Trafo.Desugar
-import Data.Array.Accelerate.Trafo.Operation.Simplify (SimplifyOperation(..), identityOperationsForArray, detectMapIdentities)
+import Data.Array.Accelerate.Trafo.Operation.Simplify (SimplifyOperation(..), copyOperationsForArray, detectMapCopies)
 import qualified Data.Array.Accelerate.Debug.Internal as Debug
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Error
@@ -269,12 +269,12 @@ instance DesugarAcc InterpretOp where
   -- etc, but the rest piggybacks off of Generate for now (see Desugar.hs)
 
 instance SimplifyOperation InterpretOp where
-  detectIdentity IMap (ArgFun f :>: input :>: output :>: ArgsNil)
-    = detectMapIdentities f input output
-  detectIdentity IBackpermute (ArgFun f :>: input@(ArgArray _ _ sh _) :>: output@(ArgArray _ _ sh' _) :>: ArgsNil)
+  detectCopy IMap (ArgFun f :>: input :>: output :>: ArgsNil)
+    = detectMapCopies f input output
+  detectCopy IBackpermute (ArgFun f :>: input@(ArgArray _ _ sh _) :>: output@(ArgArray _ _ sh' _) :>: ArgsNil)
     | Just Refl <- matchVars sh sh'
-    , Just Refl <- isIdentity f = identityOperationsForArray input output
-  detectIdentity  _ _ = []
+    , Just Refl <- isIdentity f = copyOperationsForArray input output
+  detectCopy  _ _ = []
 
 instance SLVOperation InterpretOp where
   slvOperation IGenerate = Just $ ShrinkOperation $ \subArgs args@(ArgFun f :>: array :>: ArgsNil) _ -> case subArgs of
