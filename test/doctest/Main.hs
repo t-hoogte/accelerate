@@ -67,8 +67,8 @@ foo (a :: Acc (Vector Int)) = map (*2) $ if (a ! I1 0) == 2 then map (+1) a else
 -- Neither of the backpermutes is allowed to fuse with the map: otherwise the other backpermute cannot be computed.
 -- Fusing both is possible, but only with work duplication (we still choose to never do that for now).
 -- The backpermutes _are_ allowed to fuse with each other: This should however 1. not be rewarded 2. supported in codegen
--- Currently; the implementation in Interpreter 1. does reward it 2. gives the wrong answer, as it doesn't duplicate the reads
-difficult :: Acc (Array DIM1 Int) -> Acc (Array DIM1 (Int, Int))--Acc (Array DIM1 Int, Array DIM1 Int)
+-- Currently; the implementation and interpreter 1. does reward it (BAD) 2. gives the correct result (GOOD)
+difficult :: Acc (Array DIM1 Int) -> Acc (Array DIM1 (Int, Int))
 difficult acc = zip (backpermute sh (\(I1 y) -> I1 (y `div` 2)) x) (backpermute sh (\(I1 y) -> I1 (y + 1)) x)
   where
     x = map (+3) acc
@@ -76,8 +76,8 @@ difficult acc = zip (backpermute sh (\(I1 y) -> I1 (y `div` 2)) x) (backpermute 
 
 main :: P.IO ()
 main = 
-  -- P.print $ run1 @Interpreter difficult $ fromList (Z:.20) [1::P.Int ..]
-  P.putStrLn $ test @UniformScheduleFun @InterpretKernel $ let xs = generate (I2 10 10) (\(I2 x y) -> x+y) in zipWith @DIM2 @Int (*) xs xs
+  P.print $ run1 @Interpreter difficult $ fromList (Z:.20) [1::P.Int ..]
+  -- P.putStrLn $ test @UniformScheduleFun @InterpretKernel $ let xs = generate (I2 10 10) (\(I2 x y) -> x+y) in zipWith @DIM2 @Int (*) xs xs
   -- doNTimes 10 P.print
 -- import qualified Data.Array.Accelerate as A
 -- import qualified Data.Array.Accelerate.Interpreter as A

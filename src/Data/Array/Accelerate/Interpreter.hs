@@ -73,16 +73,12 @@ import Control.Monad.ST
 import Data.Bits
 import Data.Array.Accelerate.Backend
 import Data.Array.Accelerate.Trafo.Operation.LiveVars
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP (..), Information (Info), Var (BackendSpecific), (-?>), fused, infusibleEdges, manifest) 
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP (..), Information (Info), Var (BackendSpecific), (-?>), fused, infusibleEdges, manifest, LabelledArgOp (LOp)) 
 import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Graph
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
 import qualified Data.Set as S
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
 import Lens.Micro ((.~), (&))
-import qualified Data.Array.Accelerate.Sugar.Array as Sugar
-import qualified Data.Array.Accelerate.Smart as Smart
-import System.IO.Unsafe (unsafePerformIO)
-import Control.DeepSeq (($!!))
 import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Pretty.Operation ( PrettyOp(..) )
 import Data.Array.Accelerate.Pretty.Partitioned ()
@@ -101,9 +97,7 @@ import Control.Concurrent.MVar
 import Data.Array.Accelerate.AST.Schedule.Uniform (UniformScheduleFun)
 import Data.Array.Accelerate.Trafo.Schedule.Uniform ()
 import Data.Array.Accelerate.Pretty.Schedule.Uniform ()
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (impliesBinary, negateBinary)
-import qualified Data.Array.Accelerate.AST.Schedule.Uniform as S
-import qualified Debug.Trace
+import qualified Data.Map as M
 
 data Interpreter
 instance Backend Interpreter where
@@ -131,7 +125,7 @@ pattern PushFA x env = Push env (FromArg x)
 type BackpermutedEnv env = Env (BackpermutedEnvElem env)
 data BackpermutedEnvElem env a = BPE (ToArg env a) (Int -> Int)
 
-
+-- binary tree instead of a list?
 makeBackpermuteArg :: Args env args -> Val env -> Cluster InterpretOp args -> BackpermutedArgs env args
 makeBackpermuteArg args env (Cluster io ast) = let o = getOutputEnv io args
                                                    i = fromAST ast o env
@@ -325,6 +319,7 @@ pattern OutDir l = BackendSpecific (OrderOut l)
 
 instance MakesILP InterpretOp where
   type BackendVar InterpretOp = OrderV
+  type BackendArg InterpretOp = Maybe Int 
   -- TODO add folds/scans/stencils, and solve problems: in particular, iteration size needs to be uniform
   mkGraph IBackpermute (_ :>: ((L _ (_, S.toList -> lIns)) :>: _)) l@(Label i _) =
     Info
@@ -351,6 +346,13 @@ instance MakesILP InterpretOp where
 
   mkGraph IFold1 _ _ = undefined
 
+  -- each array argument gets labelled with its order,
+  -- this ensures that e.g. multiple inputs of the same array
+  -- in different orders won't fuse horizontally, and that
+  -- the correct one will be used by each consumer
+  labelLabelledArg solution l (L arg@(ArgArray In  _ _ _) al) = LOp arg al . Just $ solution M.! OrderIn  l
+  labelLabelledArg solution l (L arg@(ArgArray Out _ _ _) al) = LOp arg al . Just $ solution M.! OrderOut l
+  labelLabelledArg _ _ (L arg al) = LOp arg al Nothing
 
   finalize = foldMap $ \l -> timesN (manifest l) .>. c (OutDir l)
 
@@ -589,9 +591,7 @@ evalIO2 n (Output t s _ io) (ArgArray Out (arrayRtype -> r) _ buf :>: args) env 
 
 evalAST :: forall i o env. Int -> ClusterAST InterpretOp i o -> Val env -> BPFromArg env i -> IO (Env (FromArg' env) o)
 evalAST _ None _ Empty = pure Empty
-evalAST n None env (PushBPFA f x i) 
-  -- | n /= f n = error $ "toch even kijken wat dit doet" ++ show n ++ " " ++ show (f n)
-  | otherwise = Debug.Trace.trace (show n ++ "   " ++ show (f n)) $ flip Push (FromArg x) <$> evalAST n None env i
+evalAST n None env (PushBPFA _ x i) = flip Push (FromArg x) <$> evalAST n None env i
 evalAST n (Bind lhs op ast) env i = do
   let i' = evalLHS1 lhs i env
   o' <- evalOp n op env i'

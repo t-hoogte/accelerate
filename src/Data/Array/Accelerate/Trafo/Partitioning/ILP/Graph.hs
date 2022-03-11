@@ -53,6 +53,7 @@ import Data.Maybe (isJust, fromJust)
 import Data.Array.Accelerate.Representation.Type (TupR)
 import Data.Array.Accelerate.AST.LeftHandSide (LeftHandSide (LeftHandSideSingle, LeftHandSideWildcard, LeftHandSidePair, LeftHandSideUnit))
 import Data.Array.Accelerate.Representation.Shape (ShapeR)
+import Data.Bifunctor (first, Bifunctor (second))
 
 
 -- | Directed edge (a :-> b): `b` depends on `a`.
@@ -125,15 +126,36 @@ fused :: Label -> Label -> Expression op
 fused x y = let x' :-> y' = x -?> y
             in c $ Fused x' y'
 
-class (Eq (BackendVar op), Ord (BackendVar op), Show (BackendVar op), Read (BackendVar op)) => MakesILP op where
+data LabelledArgOp op env a = LOp (Arg env a) (ALabels a) (BackendArg op)
+type LabelledArgsOp op env = PreArgs (LabelledArgOp op env)
+
+reindexLabelledArgOp :: Applicative f => ReindexPartial f env env' -> LabelledArgOp op env t -> f (LabelledArgOp op env' t)
+reindexLabelledArgOp k (LOp (ArgVar vars               ) l o) = (\x -> LOp x l o)  .   ArgVar          <$> reindexVars k vars
+reindexLabelledArgOp k (LOp (ArgExp e                  ) l o) = (\x -> LOp x l o)  .   ArgExp          <$> reindexExp k e
+reindexLabelledArgOp k (LOp (ArgFun f                  ) l o) = (\x -> LOp x l o)  .   ArgFun          <$> reindexExp k f
+reindexLabelledArgOp k (LOp (ArgArray m repr sh buffers) l o) = (\x -> LOp x l o) <$> (ArgArray m repr <$> reindexVars k sh <*> reindexVars k buffers)
+
+reindexLabelledArgsOp :: Applicative f => ReindexPartial f env env' -> LabelledArgsOp op env t -> f (LabelledArgsOp op env' t)
+reindexLabelledArgsOp = reindexPreArgs reindexLabelledArgOp
+
+unLabelOp :: LabelledArgsOp op env args -> Args env args
+unLabelOp ArgsNil              = ArgsNil
+unLabelOp (LOp arg _ _ :>: args) = arg :>: unLabelOp args
+
+class (Eq (BackendVar op), Ord (BackendVar op), Eq (BackendArg op)) => MakesILP op where
   -- Vars needed to express backend-specific fusion rules.
   type BackendVar op
+  -- Information that the backend attaches to the argument
+  type BackendArg op
 
   -- | This function only needs to do the backend-specific things, that is, things which depend on the definition of @op@.
   -- That includes "BackendVar op's" and all their constraints/bounds, but also some (in)fusible edges.
   -- As a conveniece, fusible edges have already been made from all (non-Out) labels in the LabelArgs to the current label.
   -- These can be 'strengthened' by adding a corresponding infusible edge, in which case the fusible edge will later be optimised away.
   mkGraph :: op args -> LabelledArgs env args -> Label -> Information op
+
+  -- using the ILP solution, attach the required information to each argument
+  labelLabelledArg :: M.Map (BackendVar op) Int -> Label -> LabelledArg env a -> LabelledArgOp op env a
 
   -- allow the backend to add constraints/bounds for every node
   finalize :: [Label] -> Constraint op
@@ -179,7 +201,7 @@ data FullGraphResult op = FGRes
   , _l_res   :: Maybe Label    -- result
   , _construc :: Map Label (Construction op)
   }
--- Unlawful instances, but useful shorthand
+-- Unlawful instances, but useful shorthand. Putting these convenience functions in the typeclass allows use of functions like <>~
 instance Semigroup (FullGraphResult op) where
   FGRes x _ z <> FGRes x' _ z' = FGRes (x <> x') Nothing (M.unionWith (error "constrconflict") z z')
 instance Monoid (FullGraphResult op) where
@@ -231,36 +253,47 @@ createLHS (LHSPair l r)   env k =
 -- which helps to re-index into the new environment later.
 -- next iteration might want to use 'dependant-map', to store some type information at type level.
 data Construction (op :: Type -> Type) where
-  CExe :: LabelEnv env -> LabelledArgs env args -> op args                              -> Construction op
-  CUse ::                 ScalarType e -> Int -> Buffer e                               -> Construction op
-  CITE :: LabelEnv env -> ExpVar env PrimBool -> Label -> Label                         -> Construction op
-  CWhl :: LabelEnv env -> Label -> Label -> GroundVars env a          -> Uniquenesses a -> Construction op
-  CLHS ::                 MyGLHS a -> Label                           -> Uniquenesses a -> Construction op
-  CFun ::                 MyGLHS a -> Label                                             -> Construction op
-  CBod ::                                                                                  Construction op
-  CRet :: LabelEnv env -> GroundVars env a                                              -> Construction op
-  CCmp :: LabelEnv env -> Exp env a                                                     -> Construction op
-  CAlc :: LabelEnv env -> ShapeR sh -> ScalarType e -> ExpVars env sh                   -> Construction op
-  CUnt :: LabelEnv env -> ExpVar env e                                                  -> Construction op
-instance Show (Construction op) where
-  show CExe{} = "CExe{}"
-  show CUse{} = "CUse{}"
-  show CITE{} = "CITE{}"
-  show CWhl{} = "CWhl{}"
-  show CLHS{} = "CLHS{}"
-  show CFun{} = "CFun{}"
-  show CBod{} = "CBod{}"
-  show CRet{} = "CRet{}"
-  show CCmp{} = "CCmp{}"
-  show CAlc{} = "CAlc{}"
-  show CUnt{} = "CUnt{}"
+  -- small ugly thing: We make CExe' in this file, then translate it into CExe using the ILP solution.
+  -- Duplicating the entire datatype is overkill, and passing the solution to the consumer of Construction
+  -- is also ugly.
+  CExe' :: LabelEnv env -> LabelledArgs      env args -> op args                         -> Construction op
+  CExe  :: LabelEnv env -> LabelledArgsOp op env args -> op args                         -> Construction op
+  CUse  ::                 ScalarType e -> Int -> Buffer e                               -> Construction op
+  CITE  :: LabelEnv env -> ExpVar env PrimBool -> Label -> Label                         -> Construction op
+  CWhl  :: LabelEnv env -> Label -> Label -> GroundVars env a          -> Uniquenesses a -> Construction op
+  CLHS  ::                 MyGLHS a -> Label                           -> Uniquenesses a -> Construction op
+  CFun  ::                 MyGLHS a -> Label                                             -> Construction op
+  CBod  ::                                                                                  Construction op
+  CRet  :: LabelEnv env -> GroundVars env a                                              -> Construction op
+  CCmp  :: LabelEnv env -> Exp env a                                                     -> Construction op
+  CAlc  :: LabelEnv env -> ShapeR sh -> ScalarType e -> ExpVars env sh                   -> Construction op
+  CUnt  :: LabelEnv env -> ExpVar env e                                                  -> Construction op
 
--- strips underscores
+backendConstruc :: forall op. (MakesILP op) => Solution op -> Map Label (Construction op) -> Map Label (Construction op)
+backendConstruc sol = M.mapWithKey f
+  where
+    f :: Label -> Construction op -> Construction op
+    f l con = case con of
+      CExe{} -> error "already converted???"
+      CExe' lenv largs op -> CExe lenv (g l largs) op
+      _ -> con
+    g :: Label -> LabelledArgs env args -> LabelledArgsOp op env args
+    g _ ArgsNil = ArgsNil
+    g l (arg :>: args) = labelLabelledArg smallermap l arg :>: g l args
+    -- using toAscList and fromAscList is probably slightly faster
+    smallermap :: Map (BackendVar op) Int
+    smallermap = M.fromList . map (first (\(BackendSpecific x) -> x)) . filter ((\case
+                                                        BackendSpecific{} -> True
+                                                        _ -> False) . fst) $ M.toList sol
+
+-- strips underscores from constructor names
 makeLenses ''FullGraphState
 makeLenses ''FullGraphResult
 makeLenses ''Graph
 makeLenses ''Information
 
+-- The below functions use the combination of lenses and the state monad, it seemed the most clear and maintainable
+-- solution. Stare at Lens.Micro.Mtl for a while if it doesn't make sense. 
 
 makeFullGraph :: (MakesILP op)
               => PreOpenAcc op () a
@@ -292,7 +325,7 @@ mkFullGraph (Exec op args) = do
                     & graphI.fusibleEdges <>~ fuseedges
                     & graphI.infusibleEdges <>~ nonfuseedges)
                  Nothing
-                 (M.singleton l $ CExe env labelledArgs op)
+                 (M.singleton l $ CExe' env labelledArgs op)
 
 mkFullGraph (Alet LeftHandSideUnit _ bnd scp) = do
   -- Note that this does not store any LeftHandSides. Instead, in the reconstruction, we will manually insert a LeftHandSideUnit on top of Executes.
@@ -462,7 +495,7 @@ zoomState lhs l f = do
     zoomStateLens env' changeToScpState bndState = (lenv %~ weakLhsEnv lhs) <$> changeToScpState (bndState & lenv .~ env')
 
 
-
+-- TODO do these get used anywhere?
 constructExe :: LabelEnv env' -> LabelEnv env
              -> Args env args -> op args
              -> Maybe (PreOpenAcc op env' ())

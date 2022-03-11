@@ -6,7 +6,7 @@
 module Data.Array.Accelerate.Trafo.Partitioning.ILP where
 
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
-    ( MakesILP, Information(Info), makeFullGraph, Construction, makeFullGraphF, Graph ) 
+    ( MakesILP, Information(Info), makeFullGraph, Construction, makeFullGraphF, Graph, backendConstruc ) 
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve
     ( interpretSolution, makeILP, splitExecs, ClusterLs ) 
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering
@@ -21,7 +21,6 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.MIP
     ( cbc, cplex, glpsol, gurobiCl, lpSolve, scip )
 
 import System.IO.Unsafe (unsafePerformIO)
-import Data.Maybe (fromJust)
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (Label)
 import Data.Map (Map)
 import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
@@ -60,12 +59,13 @@ ilpFusion' :: (MakesILP op, ILPSolver s op)
            -> y
 ilpFusion' k1 k2 s acc = fusedAcc
   where
-    (info@(Info graph _ _), constrM) = k1 acc
-    ilp                              = makeILP info
-    solution                         = solve' ilp
-    interpreted                      = interpretSolution solution
-    (labelClusters, labelClustersM)  = splitExecs interpreted constrM
-    fusedAcc                         = k2 graph labelClusters labelClustersM constrM
+    (info@(Info graph _ _), constrM') = k1 acc
+    constrM = backendConstruc solution constrM'
+    ilp                               = makeILP info
+    solution                          = solve' ilp
+    interpreted                       = interpretSolution solution
+    (labelClusters, labelClustersM)   = splitExecs interpreted constrM
+    fusedAcc                          = k2 graph labelClusters labelClustersM constrM
     solve' x = unsafePerformIO (solve s x) & \case
       Nothing -> error "Accelerate: No ILP solution found"
       Just y -> y

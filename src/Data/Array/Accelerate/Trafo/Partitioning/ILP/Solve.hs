@@ -154,6 +154,7 @@ splitExecs (xs, xM) constrM = (f xs, M.map f xM)
     f = concatMap (\ls -> filter (/= Execs mempty) $ map NonExec (S.toList $ S.filter isNonExec ls) ++ [Execs (S.filter isExec ls)])
 
     isExec l = case constrM M.!? l of
-      Just CExe{} -> True
+      Just CExe{}  -> True
+      Just CExe'{} -> True
       _ -> False
     isNonExec l = not $ isExec l

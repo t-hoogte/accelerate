@@ -1,21 +1,22 @@
+{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE KindSignatures #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE LambdaCase #-}
 
 -- _Significantly_ speeds up compilation of this file, but at an obvious cost!
--- TODO: test the need of this in a GHC version with Lower Your Guards (starting 9.0.1)
+-- Even in GHC 9.0.1, which has Lower Your Guards, these checks take some time (though no longer as long).
+-- Recommended to disable these options when working on this file, and restore them when you're done.
 {-# OPTIONS_GHC 
   -Wno-overlapping-patterns 
   -Wno-incomplete-patterns 
 #-}
-{-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE FlexibleContexts #-}
 
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering where
 
@@ -61,14 +62,14 @@ Data.Graph (containers) has a nice topological sort.
 -- Note that the return type `a` is not existentially qualified: The caller of this function tells
 -- us what the result type should be (namely, what it was before fusion). We use unsafe tricks to
 -- fulfill this contract: if something goes wrong during fusion or at the caller, bad things happen.
-reconstruct :: forall op a. Pretty.PrettyOp (Cluster op) =>Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> PreOpenAcc (Cluster op) () a
+reconstruct :: forall op a. MakesILP op => Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> PreOpenAcc (Cluster op) () a
 reconstruct a b c d = case openReconstruct LabelEnvNil a b c d of
           -- see [NOTE unsafeCoerce result type]
           Exists res -> unsafeCoerce @(PartitionedAcc op () _)
                                      @(PartitionedAcc op () a)
                                      res
 
-reconstructF :: forall op a. Pretty.PrettyOp (Cluster op) =>Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> PreOpenAfun (Cluster op) () a
+reconstructF :: forall op a. MakesILP op => Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> PreOpenAfun (Cluster op) () a
 reconstructF a b c d = case openReconstructF LabelEnvNil a b (Label 1 Nothing) c d of
           -- see [NOTE unsafeCoerce result type]
           Exists res -> unsafeCoerce @(PartitionedAfun op () _)
@@ -100,14 +101,16 @@ topSort (Graph _ fedges _) cluster = ExecL topsorted
           $ cluster
     topsorted = map (view _1 . getAdj) $ G.topSort graph 
 
-openReconstruct   :: Pretty.PrettyOp (Cluster op) => LabelEnv aenv
+openReconstruct   :: MakesILP op
+                  => LabelEnv aenv
                   -> Graph
                   -> [ClusterLs]
                   -> M.Map Label [ClusterLs]
                   -> M.Map Label (Construction op)
                   -> Exists (PreOpenAcc (Cluster op) aenv)
 openReconstruct  a b c d e = (\(Left x) -> x) $ openReconstruct' a b c Nothing d e
-openReconstructF  :: Pretty.PrettyOp (Cluster op) => LabelEnv aenv
+openReconstructF  :: MakesILP op
+                  => LabelEnv aenv
                   -> Graph
                   -> [ClusterLs]
                   -> Label
@@ -116,7 +119,7 @@ openReconstructF  :: Pretty.PrettyOp (Cluster op) => LabelEnv aenv
                   -> Exists (PreOpenAfun (Cluster op) aenv)
 openReconstructF a b c l d e= (\(Right x) -> x) $ openReconstruct' a b c (Just l) d e
 
-openReconstruct' :: forall op aenv. Pretty.PrettyOp (Cluster op) => LabelEnv aenv -> Graph -> [ClusterLs] -> Maybe Label -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> Either (Exists (PreOpenAcc (Cluster op) aenv)) (Exists (PreOpenAfun (Cluster op) aenv))
+openReconstruct' :: forall op aenv. MakesILP op => LabelEnv aenv -> Graph -> [ClusterLs] -> Maybe Label -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> Either (Exists (PreOpenAcc (Cluster op) aenv)) (Exists (PreOpenAfun (Cluster op) aenv))
 openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = case mlab of
   Just l  -> Right $ makeASTF labelenv l mempty
   Nothing -> Left $ makeAST labelenv clusters mempty
@@ -130,10 +133,11 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
     makeAST :: forall env. LabelEnv env -> [ClusterL] -> M.Map Label (Exists (PreOpenAcc (Cluster op) env)) -> Exists (PreOpenAcc (Cluster op) env)
     makeAST _ [] _ = error "empty AST"
     makeAST env [cluster] prev = case makeCluster env cluster of
-      Fold     c (unLabel -> args) -> Exists $ Exec c args
-      InitFold o (unLabel -> args) -> Exists $ Exec (unfused o args) args
+      Fold     c (unLabelOp -> args) -> Exists $ Exec c args
+      InitFold o (unLabelOp -> args) -> Exists $ Exec (unfused o args) args
       NotFold con -> case con of
          CExe {}    -> error "should be Fold/InitFold!"
+         CExe'{}    -> error "should be Fold/InitFold!"
          CUse se  n be             -> Exists $ Use se n be
          CITE env' c t f   -> case (makeAST env (subcluster t) prev, makeAST env (subcluster f) prev) of
             (Exists tacc, Exists facc) -> Exists $ Acond
@@ -146,7 +150,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
                             @(PreOpenAcc (Cluster op) env _)
                             facc)
          CWhl env' c b i u -> case (subcluster c, subcluster b) of
-           ([NonExecL c'], [NonExecL b']) -> case (makeASTF env c' prev, makeASTF env b' prev) of
+           (~[NonExecL c'], ~[NonExecL b']) -> case (makeASTF env c' prev, makeASTF env b' prev) of
             (Exists cfun, Exists bfun) -> Exists $ Awhile
               u
               -- [See NOTE unsafeCoerce result type]
@@ -182,15 +186,13 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
         _ -> let res = makeAST env [cluster] prev in case cluster of
                 ExecL _ -> case (res, makeAST env ctail prev) of
                   (Exists exec@Exec{}, Exists scp) -> Exists $ Alet LeftHandSideUnit (shared TupRunit) exec scp
+                  _ -> error "nope"
                 NonExecL _ -> makeAST env ctail $ foldC (`M.insert` res) prev cluster
       _   -> let res = makeAST env [cluster] prev in case cluster of
                 ExecL _ -> case (res, makeAST env ctail prev) of
                   (Exists exec@Exec{}, Exists scp) -> Exists $ Alet LeftHandSideUnit (shared TupRunit) exec scp
+                  _ -> error "nope"
                 NonExecL _ -> makeAST env ctail $ foldC (`M.insert` res) prev cluster
-
-    makeUniqueness :: forall env env' t. GLeftHandSide t env env' -> PreOpenAcc (Cluster op) env t -> Uniquenesses t
-    makeUniqueness LeftHandSideSingle{} Alloc{} = TupRsingle Unique
-    makeUniqueness lhs _ = mapTupR (const Shared) $ lhsToTupR lhs
 
     makeASTF :: forall env. LabelEnv env -> Label -> M.Map Label (Exists (PreOpenAcc (Cluster op) env)) -> Exists (PreOpenAfun (Cluster op) env)
     makeASTF env l prev = case makeCluster env (NonExecL l) of
@@ -218,10 +220,9 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
                               -- At first thought, this `fromJust` might error if we fuse an array away.
                               -- It does not: The array will still be in the environment, but after we finish
                               -- the `foldr1`, the input argument will dissapear. The output argument does not:
-                              -- If the array is never read from in later clusters (vertical instead of diagonal fusion),
-                              -- we will need to clean it up afterwards with a separate dead-array removal pass,
-                              -- which should also delete the corresponding allocation. TODO
-                              CExe env' args op -> InitFold op $ fromJust $ reindexLabelledArgs (mkReindexPartial env' env) args --labelled env env' args
+                              -- we clean that up in the SLV pass, if this was vertical fusion. If this is diagonal fusion,
+                              -- it stays.
+                              CExe env' args op -> InitFold op $ fromJust $ reindexLabelledArgsOp (mkReindexPartial env' env) args --labelled env env' args
                               _                 -> error "avoid this next refactor" -- c -> NotFold c
                           ) ls
     makeCluster _ (NonExecL l) = NotFold $ construct M.! l
@@ -229,7 +230,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
     fuseCluster :: FoldType op env -> FoldType op env -> FoldType op env
     fuseCluster (Fold cluster1 largs1) (InitFold op2 largs2) =
       consCluster largs1 largs2 cluster1 op2 $ \c largs -> Fold c largs
-    fuseCluster (InitFold op largs) x = fuseCluster (Fold (unfused op (unLabel largs)) largs) x
+    fuseCluster (InitFold op largs) x = fuseCluster (Fold (unfused op (unLabelOp largs)) largs) x
     fuseCluster Fold{} Fold{} = error "fuseCluster got non-leaf as second argument" -- Should never happen
     fuseCluster NotFold{}   _ = error "fuseCluster encountered NotFold" -- Should only occur in singleton clusters
     fuseCluster _   NotFold{} = error "fuseCluster encountered NotFold" -- Should only occur in singleton clusters
@@ -241,19 +242,30 @@ weakenAcc lhs =  runIdentity . reindexAcc (weakenReindex $ weakenWithLHS lhs)
 -- | Internal datatype for `makeCluster`.
 
 data FoldType op env
-  = forall args. Fold (Cluster op args) (LabelledArgs env args)
-  | forall args. InitFold (op args) (LabelledArgs env args) -- like Fold, but without a Swap
+  = forall args. Fold (Cluster op args) (LabelledArgsOp op env args)
+  | forall args. InitFold (op args) (LabelledArgsOp op env args) -- like Fold, but without a Swap
   | NotFold (Construction op)
 
 
 
-
+-- TODO: use the typeclass for `op`, or move order variables into the default ILP
+-- either way: make each array arg also know its order, and check for them in the
+-- happy paths for fusion. This ensures that we properly duplicate the arguments.
+-- TOTHINK: this makes work duplication a bit trickier still: the ILP solution interpreter
+-- would need to do nontrivial stuff to actually duplicate the entire Exec node?
+-- Then again, maybe we already need to put operations that could be duplicated in the ILP twice,
+-- and have a simple decision variable that indicates whether they are identical.
+-- Then, the ILP solution interpreter would only need to combine non-duplicated nodes, which seems easier.
+-- Question: How do we _find_ nodes that can be duplicated, and how do we duplicate them in the ILP formulation?
+-- And if there is a 5*5 stencil after a map, do we really add 25 versions of this map to the ILP?
+-- #futurework
 consCluster :: forall env args extra op r
-             . LabelledArgs env args
-            -> LabelledArgs env extra
+             . MakesILP op
+            => LabelledArgsOp op env args
+            -> LabelledArgsOp op env extra
             -> Cluster op args
             -> op extra
-            -> (forall args'. Cluster op args' -> LabelledArgs env args' -> r)
+            -> (forall args'. Cluster op args' -> LabelledArgsOp op env args' -> r)
             -> r
 consCluster largs lextra (Cluster cIO cAST) op k =
   mkReverse lextra $ \rev lartxe->
@@ -269,28 +281,33 @@ consCluster largs lextra (Cluster cIO cAST) op k =
 
     -- We simply recurse down the `toAdd` args until `toAdd ~ ()` and
     -- `added ~ extra`, when we can use the extra operation to construct
-    -- the total cluster.
+    -- the total cluster. All results are passed in these accumulating parameters.
 
     -- In each step, we check whether the argument array is already mentioned
     -- in the operations that follow it: If so, we fuse them (making both arguments
     -- point to the same place in the environment), otherwise we simply add a new one. 
-    consCluster' :: LabelledArgs env total
+
+    -- note that this function has a lot of type safety (recursing wrongly is very difficult),
+    -- except for two details: Whether or not to fuse is a choice, and the call to `k`
+    -- works with any cluster/args. The first requires diligence, the second occurs
+    -- only in the very first line (which is, visually, correct).
+    consCluster' :: LabelledArgsOp op env total
                  -> Reverse' extra added toAdd
-                 -> LabelledArgs env toAdd
+                 -> LabelledArgsOp op env toAdd
                  -> ClusterAST op scope result
                  -> LeftHandSideArgs added i scope
                  -> ClusterIO total i result
                  -> r
     consCluster' ltot Ordered ArgsNil ast lhs io = k (Cluster io (Bind lhs op ast)) ltot
     consCluster' ltot (Revert r) (a :>: toAdd) ast lhs io = case a of
-      L (ArgArray In _ _ _) _ ->
+      LOp (ArgArray In _ _ _) _ _ ->
         maybe
           (addInput ast io $ \ast' io' -> -- New input, don't fuse
             consCluster' (a :>: ltot) r toAdd ast' (Reqr Here Here lhs) io')
           (\lhs' -> -- Existing input, fuse horizontally
             consCluster'        ltot  r toAdd ast                  lhs' io)
           (fuseInput a ltot lhs io)
-      L (ArgArray Out (arrayRtype -> r') _ _) _ ->
+      LOp (ArgArray Out (arrayRtype -> r') _ _) _ _ ->
         fromMaybe
           (addOutput r' ast io $ \ast' io' -> -- new output
             consCluster' (a :>: ltot) r toAdd ast' (Make Here lhs) io')
@@ -298,16 +315,17 @@ consCluster largs lextra (Cluster cIO cAST) op k =
             -- note that we prepend 'a': The fused cluster only outputs this arg
             consCluster' (a :>: foo take' ltot) r toAdd ast lhs' io')
       -- non-array arguments
-      L (ArgExp _) _ -> addExp ast io ExpPut $ \ast' io' ->
+      LOp (ArgExp _) _ _ -> addExp ast io ExpPut $ \ast' io' ->
         consCluster' (a :>: ltot) r toAdd ast' (EArg lhs) io'
-      L (ArgVar _) _ -> addExp ast io VarPut $ \ast' io' ->
+      LOp (ArgVar _) _ _ -> addExp ast io VarPut $ \ast' io' ->
         consCluster' (a :>: ltot) r toAdd ast' (VArg lhs) io'
-      L (ArgFun _) _ -> addExp ast io FunPut $ \ast' io' ->
+      LOp (ArgFun _) _ _ -> addExp ast io FunPut $ \ast' io' ->
         consCluster' (a :>: ltot) r toAdd ast' (FArg lhs) io'
-      L (ArgArray Mut _ _ _) _ -> addExp ast io MutPut $ \ast' io' ->
+      LOp (ArgArray Mut _ _ _) _ _ -> addExp ast io MutPut $ \ast' io' ->
         consCluster' (a :>: ltot) r toAdd ast' (Adju lhs) io'
 
-foo :: Take' (x sh e) total total' -> LabelledArgs env total -> PreArgs (LabelledArg env) total'
+-- remove an argument
+foo :: Take' (x sh e) total total' -> LabelledArgsOp op env total -> PreArgs (LabelledArgOp op env) total'
 foo Here' (_ :>: as) = as
 foo (There' t) (a :>: as) = a :>: foo t as
 
@@ -326,23 +344,24 @@ data Reverse' tot acc rev where
   Revert  :: Reverse' tot (a -> x)      y
           -> Reverse' tot       x (a -> y)
 
-mkReverse :: forall env xs r
-           . LabelledArgs env xs
-          -> (forall sx. Reverse xs sx -> LabelledArgs env sx -> r)
+mkReverse :: forall env xs op r
+           . LabelledArgsOp op env xs
+          -> (forall sx. Reverse xs sx -> LabelledArgsOp op env sx -> r)
           -> r
 mkReverse xs k = rev Ordered ArgsNil xs
   where
     rev :: Reverse' xs ys zs
-        -> LabelledArgs env zs
-        -> LabelledArgs env ys
+        -> LabelledArgsOp op env zs
+        -> LabelledArgsOp op env ys
         -> r
     rev a zs ArgsNil = k a zs
     rev a zs (arg :>: args) = rev (Revert a) (arg :>: zs) args
 
 -- Takes care of fusion in the case where we add an input that is already an 
 -- input: horizontal fusion
-fuseInput :: LabelledArg env (In sh e)
-          -> LabelledArgs  env total
+fuseInput :: MakesILP op 
+          => LabelledArgOp op env (In sh e)
+          -> LabelledArgsOp op  env total
           -> LeftHandSideArgs added i scope
           -> ClusterIO total i result
           -> Maybe (LeftHandSideArgs (In sh e -> added) i scope)
@@ -350,11 +369,12 @@ fuseInput :: LabelledArg env (In sh e)
 fuseInput _ ArgsNil _ Empty = Nothing
 -- The happy path: Fusion!
 fuseInput
-  (L _ (a1, _))
-  ((ArgArray In _ _ _ `L` (a2, _)) :>: _)
+  (LOp _ (a1, _) o1)
+  (LOp (ArgArray In _ _ _) (a2, _) o2 :>: _)
   (Ignr lhs)
   (Input _)
-  | Just Refl <- matchALabel a1 a2 =
+  | Just Refl <- matchALabel a1 a2
+  , o1 == o2 =
     Just $ Reqr Here Here lhs
 -- The rest are recursive cases
 fuseInput x (_ :>: as) (Make t lhs) (Output _ _ _ io) =
@@ -391,16 +411,16 @@ fuseInput x (_ :>: as) (Ignr lhs) (Vertical _ _ io) =
   (\(Reqr a b c) -> Reqr (There a) (There b) (Ignr c))
   <$> fuseInput x as lhs io
 
-removeInput :: forall env total e i i' result r sh
-             . LabelledArgs  env total
+removeInput :: forall op env total e i i' result r sh
+             . LabelledArgsOp op  env total
             -> Take (Value sh e) i i'
             -> ClusterIO total i result
             -> (forall total' result'
-               . LabelledArgs env total'
+               . LabelledArgsOp op env total'
               -> ClusterIO total' i' result'
               -> Take (Value sh e) result result'
               -> Take' (In sh e) total total'
-              -> LabelledArg env (In sh e)
+              -> LabelledArgOp op env (In sh e)
               -> r)
             -> r
 removeInput (a :>: xs) Here (Input io) k =
@@ -434,9 +454,9 @@ restoreInput :: ClusterIO total' i' result'
              -> Take' (In sh e) total total'
              -> Take (Value sh e) i i'
              -> Take (Value sh e) result result'
-             -> LabelledArg env (In sh e)
+             -> LabelledArgOp op env (In sh e)
              -> ClusterIO total i result
-restoreInput cio Here' Here Here (ArgArray In  _ _ _ `L` _) = Input cio
+restoreInput cio Here' Here Here (LOp (ArgArray In  _ _ _) _ _) = Input cio
 restoreInput (Input    cio) (There' tt) (There ti) (There tr) x =
   Input     $ restoreInput cio tt ti tr x
 restoreInput (ExpPut   cio) (There' tt) (There ti) (There tr) x =
@@ -475,8 +495,9 @@ addExp (Bind lhs op ast) io constructor k =
     k (Bind (Ignr lhs) op ast') io'
 
 -- Takes care of fusion where we add an output that is later used as input: vertical and diagonal fusion
-fuseOutput :: LabelledArg env (Out sh e)
-           -> LabelledArgs  env total
+fuseOutput :: MakesILP op
+           => LabelledArgOp op env (Out sh e)
+           -> LabelledArgsOp op  env total
            -> LeftHandSideArgs added i scope
            -> ClusterIO total i result
            -> (forall total' i'
@@ -490,12 +511,13 @@ fuseOutput :: LabelledArg env (Out sh e)
 fuseOutput _ ArgsNil Base Empty _ = Nothing
 -- Fusion!
 fuseOutput
-  (L _ (a1, _))
-  (ArgArray In r _ _ `L` (a2, _) :>: _)
+  (LOp _ (a1, _) o1)
+  (LOp (ArgArray In r _ _) (a2, _) o2 :>: _)
   (Ignr lhs)
   (Input io)
   k
-  | Just Refl <- matchALabel a1 a2 =
+  | Just Refl <- matchALabel a1 a2
+  , o1 == o2 =
     Just $ k Here' (Make Here lhs) (Output Here SubTupRkeep (arrayRtype r) io) Here
 
 -- Make case
