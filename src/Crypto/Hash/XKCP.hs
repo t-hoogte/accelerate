@@ -151,14 +151,14 @@ keccak_HashFinal_SHA3_256 (Keccak_HashInstance hash_instance#) =
 --
 #ifndef __GHCIDE__
 
-foreign import ccall unsafe "SHA3_256" c_sha3_256 :: MutableByteArray# RealWorld -> Ptr Word8 -> CSize -> IO CInt
+foreign import ccall unsafe "SHA3_256" c_sha3_256                            :: MutableByteArray# RealWorld -> Ptr Word8 -> CSize -> IO CInt
 foreign import ccall unsafe "Keccak_HashInitialize" c_keccak_hash_initialise :: MutableByteArray# RealWorld -> CUInt -> CUInt -> CUInt -> CUChar -> IO CInt
-foreign import ccall unsafe "Keccak_HashUpdate" c_keccak_hash_update :: MutableByteArray# RealWorld -> Ptr Word8 -> CSize -> IO CInt
-foreign import ccall unsafe "Keccak_HashFinal" c_keccak_hash_final :: MutableByteArray# RealWorld -> MutableByteArray# RealWorld -> IO CInt
+foreign import ccall unsafe "Keccak_HashUpdate" c_keccak_hash_update         :: MutableByteArray# RealWorld -> Ptr Word8 -> CSize -> IO CInt
+foreign import ccall unsafe "Keccak_HashFinal" c_keccak_hash_final           :: MutableByteArray# RealWorld -> MutableByteArray# RealWorld -> IO CInt
 
 #else
 
-c_sha3_256 :: Ptr Word8 -> Ptr Word8 -> CSize -> IO CInt
+c_sha3_256 :: MutableByteArray# RealWorld -> Ptr Word8 -> CSize -> IO CInt
 c_sha3_256 = undefined
 
 c_keccak_hash_initialise :: MutableByteArray# RealWorld -> CUInt -> CUInt -> CUInt -> CUChar -> IO CInt
