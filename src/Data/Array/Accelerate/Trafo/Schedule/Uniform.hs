@@ -760,59 +760,43 @@ instance HasGroundsR (PartialSchedule kernel genv) where
   groundsR (PartialAcond _ _ p _) = groundsR p
   groundsR (PartialAwhile _ _ _ _ vars) = groundsR vars
 
-data MaybeVar genv t where
-  NoVars    :: MaybeVar genv t
-  ReturnVar :: GroundVar genv t -> MaybeVar genv t
-type MaybeVars genv = TupR (MaybeVar genv)
-
-weakenMaybeVar :: LeftHandSide s t genv genv' -> MaybeVar genv' u -> MaybeVar genv u
-weakenMaybeVar _ NoVars = NoVars
-weakenMaybeVar (LeftHandSideWildcard _) v = v
-weakenMaybeVar (LeftHandSideSingle _) (ReturnVar (Var t ix)) = case ix of
-  SuccIdx ix' -> ReturnVar $ Var t ix'
-  ZeroIdx     -> NoVars
-weakenMaybeVar (LeftHandSidePair l1 l2) v = weakenMaybeVar l1 $ weakenMaybeVar l2 v
-
-weakenMaybeVars :: LeftHandSide s t genv genv' -> MaybeVars genv' u -> MaybeVars genv u
-weakenMaybeVars lhs = mapTupR (weakenMaybeVar lhs)
-
 -- We can only reuse the resulting address of a variable if the local binding is not used elsewhere.
 -- For instance, we may reuse the return address for x in `let x = .. in x`,
 -- but that is not allowed in `let x = .. in let y = .. x .. in (x, y)`
 -- or `let x = .. in (x, x)`.
 -- This function removes a set of variables and can be used to remove for instance the set of variables
 -- used in another binding or effect.
-removeMaybeVars :: forall genv u. MaybeVars genv u -> IdxSet genv -> MaybeVars genv u
+removeMaybeVars :: forall genv u. MaybeVars GroundR genv u -> IdxSet genv -> MaybeVars GroundR genv u
 removeMaybeVars vars remove = mapTupR f vars
   where
-    f :: MaybeVar genv t -> MaybeVar genv t
-    f var@(ReturnVar (Var _ idx))
-      | idx `IdxSet.member` remove = NoVars
+    f :: MaybeVar GroundR genv t -> MaybeVar GroundR genv t
+    f var@(JustVar (Var _ idx))
+      | idx `IdxSet.member` remove = NoVar
       | otherwise         = var
-    f NoVars = NoVars
+    f NoVar = NoVar
 
-lhsDestination :: GLeftHandSide t genv genv' -> MaybeVars genv' u -> TupR (Destination u) t
-lhsDestination (LeftHandSidePair l1 l2) vars = lhsDestination l1 (weakenMaybeVars l2 vars) `TupRpair` lhsDestination l2 vars
+lhsDestination :: GLeftHandSide t genv genv' -> MaybeVars GroundR genv' u -> TupR (Destination u) t
+lhsDestination (LeftHandSidePair l1 l2) vars = lhsDestination l1 (strengthenMaybeVars l2 vars) `TupRpair` lhsDestination l2 vars
 lhsDestination (LeftHandSideWildcard t) _    = mapTupR (const DestinationNew) t
 lhsDestination (LeftHandSideSingle _)   vars = case findVar vars of
     Just ix -> TupRsingle $ DestinationReuse ix
     Nothing -> TupRsingle DestinationNew
   where
-    findVar :: MaybeVars (env, t) s -> Maybe (TupleIdx s t)
+    findVar :: MaybeVars GroundR (env, t) s -> Maybe (TupleIdx s t)
     findVar (TupRpair a b) = case (findVar a, findVar b) of
       (Just i , _     ) -> Just $ TupleIdxLeft i
       (Nothing, Just i) -> Just $ TupleIdxRight i
       _                 -> Nothing
-    findVar (TupRsingle (ReturnVar (Var _ ZeroIdx))) = Just TupleIdxSelf
+    findVar (TupRsingle (JustVar (Var _ ZeroIdx))) = Just TupleIdxSelf
     findVar _ = Nothing
 
-joinVars :: MaybeVars genv t -> MaybeVars genv t -> MaybeVars genv t
-joinVars m@(TupRsingle (ReturnVar (Var _ x))) (TupRsingle (ReturnVar (Var _ y)))
+joinVars :: MaybeVars GroundR genv t -> MaybeVars GroundR genv t -> MaybeVars GroundR genv t
+joinVars m@(TupRsingle (JustVar (Var _ x))) (TupRsingle (JustVar (Var _ y)))
   | x == y = m
 joinVars (TupRpair x1 x2) (TupRpair y1 y2) = joinVars x1 y1 `TupRpair` joinVars x2 y2
 joinVars TupRunit         _                = TupRunit
 joinVars _                TupRunit         = TupRunit
-joinVars _                _                = TupRsingle NoVars
+joinVars _                _                = TupRsingle NoVar
 
 data Exists' (a :: (Type -> Type -> Type) -> Type) where
   Exists' :: a m -> Exists' a
@@ -820,7 +804,7 @@ data Exists' (a :: (Type -> Type -> Type) -> Type) where
 partialSchedule :: forall kernel genv1 t1. IsKernel kernel => C.PartitionedAcc (KernelOperation kernel) genv1 t1 -> (PartialSchedule kernel genv1 t1, IdxSet genv1)
 partialSchedule = (\(s, used, _) -> (s, used)) . travA (TupRsingle Shared)
   where
-    travA :: forall genv t. Uniquenesses t -> C.PartitionedAcc (KernelOperation kernel) genv t -> (PartialSchedule kernel genv t, IdxSet genv, MaybeVars genv t)
+    travA :: forall genv t. Uniquenesses t -> C.PartitionedAcc (KernelOperation kernel) genv t -> (PartialSchedule kernel genv t, IdxSet genv, MaybeVars GroundR genv t)
     travA _  (C.Exec op args)
       | Exists env <- convertEnvFromList $ map (foldr1 combineMod') $ groupBy (\(Exists v1) (Exists v2) -> isJust $ matchIdx (varIdx v1) (varIdx v2)) $ argsVars args -- TODO: Remove duplicates more efficiently
       , Reads reEnv k inputBindings <- readRefs $ convertEnvRefs env
@@ -852,10 +836,10 @@ partialSchedule = (\(s, used, _) -> (s, used)) . travA (TupRsingle Shared)
       where
         duplicates = map head $ filter (\g -> length g >= 2) $ group $ sort $ map (\(Exists (Var _ ix)) -> idxToInt ix) $ flattenTupR vars
 
-        f :: GroundVar genv t' -> MaybeVar genv t'
+        f :: GroundVar genv t' -> MaybeVar GroundR genv t'
         f v@(Var _ idx)
-          | idxToInt idx `elem` duplicates = NoVars
-          | otherwise = ReturnVar v
+          | idxToInt idx `elem` duplicates = NoVar
+          | otherwise = JustVar v
     travA _  (C.Compute e)    = partialLift (mapTupR GroundRscalar $ expType e) f (expGroundVars e)
       where
         f :: genv :?> fenv -> Maybe (Binding fenv t)
@@ -866,7 +850,7 @@ partialSchedule = (\(s, used, _) -> (s, used)) . travA (TupRsingle Shared)
         used = used1 `IdxSet.union` IdxSet.drop' lhs used2
         (bnd', used1, _) = travA us' bnd
         (a', used2, vars) = travA us a
-        vars' = weakenMaybeVars lhs vars `removeMaybeVars` used
+        vars' = strengthenMaybeVars lhs vars `removeMaybeVars` used
     travA _  (C.Alloc shr tp sh) = partialLift1 (TupRsingle $ GroundRbuffer tp) (Alloc shr tp) sh
     travA _  (C.Use tp n buffer) = partialLift1 (TupRsingle $ GroundRbuffer tp) (const $ Use tp n buffer) TupRunit
     travA _  (C.Unit var@(Var tp _)) = partialLift1 (TupRsingle $ GroundRbuffer tp) f (TupRsingle var)
@@ -879,7 +863,7 @@ partialSchedule = (\(s, used, _) -> (s, used)) . travA (TupRsingle Shared)
         (t', used1, vars1) = travA us t
         (f', used2, vars2) = travA us f
         vars = joinVars vars1 vars2
-    travA _  (C.Awhile us c f vars) = (partialAwhile us c' f' vars, used1 `IdxSet.union` used2 `IdxSet.union` IdxSet.fromVarList (flattenTupR vars), TupRsingle NoVars)
+    travA _  (C.Awhile us c f vars) = (partialAwhile us c' f' vars, used1 `IdxSet.union` used2 `IdxSet.union` IdxSet.fromVarList (flattenTupR vars), TupRsingle NoVar)
       where
         (c', used1) = partialScheduleFun c
         (f', used2) = partialScheduleFun f
@@ -892,7 +876,7 @@ partialScheduleFun (C.Abody b)    = (Pbody b', used)
   where
     (b', used) = partialSchedule b
 
-partialLift1 :: GroundsR s -> (forall fenv. ExpVars fenv t -> Binding fenv s) -> ExpVars genv t -> (PartialSchedule kernel genv s, IdxSet genv, MaybeVars genv s)
+partialLift1 :: GroundsR s -> (forall fenv. ExpVars fenv t -> Binding fenv s) -> ExpVars genv t -> (PartialSchedule kernel genv s, IdxSet genv, MaybeVars GroundR genv s)
 partialLift1 tp f vars = partialLift tp (\k -> f <$> strengthenVars k vars) (expVarsList vars)
 
 expVarsList :: ExpVars genv t -> [Exists (GroundVar genv)]
@@ -908,7 +892,7 @@ strengthenVars _ TupRunit                = pure TupRunit
 strengthenVars k (TupRsingle (Var t ix)) = TupRsingle . Var t <$> k ix
 strengthenVars k (TupRpair v1 v2)        = TupRpair <$> strengthenVars k v1 <*> strengthenVars k v2
 
-partialLift :: forall kernel genv s. GroundsR s -> (forall fenv. genv :?> fenv -> Maybe (Binding fenv s)) -> [Exists (GroundVar genv)] -> (PartialSchedule kernel genv s, IdxSet genv, MaybeVars genv s)
+partialLift :: forall kernel genv s. GroundsR s -> (forall fenv. genv :?> fenv -> Maybe (Binding fenv s)) -> [Exists (GroundVar genv)] -> (PartialSchedule kernel genv s, IdxSet genv, MaybeVars GroundR genv s)
 partialLift tp f vars
   | DefineOutput doOutput _ varsOut <- defineOutput @() @s tp $ unique tp
   , Exists env <- convertEnvReadonlyFromList $ nubBy (\(Exists v1) (Exists v2) -> isJust $ matchVar v1 v2) vars -- TODO: Remove duplicates more efficiently
@@ -927,7 +911,7 @@ partialLift tp f vars
           $ resolve resolvers
           $ writeOutput doOutput (varsOut (k' .> k .> convertEnvWeaken env)) (value weakenId)
       , IdxSet.fromList $ convertEnvToList env
-      , mapTupR (const NoVars) tp
+      , mapTupR (const NoVar) tp
       )
 partialLift _ _ _ = internalError "PartialLift failed. Was the list of used variables missing some variable?"
 
@@ -2955,17 +2939,3 @@ environmentDropLHS :: PartialEnv f env1 -> LeftHandSide s t env env1 -> PartialE
 environmentDropLHS env (LeftHandSideWildcard _) = env
 environmentDropLHS env (LeftHandSideSingle _)   = partialEnvTail env
 environmentDropLHS env (LeftHandSidePair l1 l2) = environmentDropLHS (environmentDropLHS env l2) l1
-
--- TODO: Move matchGround(s)R to Analysis.Match (and refactor other things to prevent circular dependency)
-{-
-{-# INLINEABLE matchGroundsR #-}
-matchGroundsR :: GroundsR s -> GroundsR t -> Maybe (s :~: t)
-matchGroundsR = matchTupR matchGroundR
--}
-
-{-# INLINEABLE matchGroundR #-}
-matchGroundR :: GroundR s -> GroundR t -> Maybe (s :~: t)
-matchGroundR (GroundRscalar s) (GroundRscalar t) = matchScalarType s t
-matchGroundR (GroundRbuffer s) (GroundRbuffer t)
-  | Just Refl <- matchScalarType s t             = Just Refl
-matchGroundR _                 _                 = Nothing

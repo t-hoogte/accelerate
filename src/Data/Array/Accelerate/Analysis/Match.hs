@@ -29,9 +29,10 @@ module Data.Array.Accelerate.Analysis.Match (
   matchPrimFun,  matchPrimFun',
 
   -- auxiliary
-  matchIdx, matchVar, matchVars, matchArrayR, matchArraysR, matchTypeR, matchShapeR,
-  matchShapeType, matchIntegralType, matchFloatingType, matchNumType, matchScalarType,
-  matchLeftHandSide, matchALeftHandSide, matchELeftHandSide, matchSingleType, matchTupR
+  matchIdx, matchVar, matchVars, matchArrayR, matchArraysR, matchGroundR,
+  matchGroundsR, matchTypeR, matchShapeR, matchShapeType, matchIntegralType,
+  matchFloatingType, matchNumType, matchScalarType, matchLeftHandSide,
+  matchALeftHandSide, matchELeftHandSide, matchSingleType, matchTupR
 
 ) where
 
@@ -45,6 +46,7 @@ import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Slice
 import Data.Array.Accelerate.Representation.Stencil
 import Data.Array.Accelerate.Representation.Type
+import Data.Array.Accelerate.Representation.Ground
 import Data.Array.Accelerate.Type
 import Data.Primitive.Vec
 import qualified Data.Array.Accelerate.Sugar.Shape      as Sugar
@@ -420,6 +422,16 @@ matchArrayR (ArrayR shr1 tp1) (ArrayR shr2 tp2)
   , Just Refl <- matchTypeR tp1 tp2 = Just Refl
 matchArrayR _ _ = Nothing
 
+{-# INLINEABLE matchGroundsR #-}
+matchGroundsR :: GroundsR s -> GroundsR t -> Maybe (s :~: t)
+matchGroundsR = matchTupR matchGroundR
+
+{-# INLINEABLE matchGroundR #-}
+matchGroundR :: GroundR s -> GroundR t -> Maybe (s :~: t)
+matchGroundR (GroundRscalar s) (GroundRscalar t) = matchScalarType s t
+matchGroundR (GroundRbuffer s) (GroundRbuffer t)
+  | Just Refl <- matchScalarType s t = Just Refl
+matchGroundR _ _ = Nothing
 
 -- Compute the congruence of two scalar expressions. Two nodes are congruent if
 -- either:

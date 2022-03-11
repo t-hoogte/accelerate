@@ -51,9 +51,11 @@ import qualified Data.Array.Accelerate.AST.Partitioned as P
 import Data.Array.Accelerate.AST.Operation
 import Data.Array.Accelerate.AST.Kernel
 import Data.Array.Accelerate.Trafo.Desugar
+import Data.Array.Accelerate.Trafo.Operation.Simplify (SimplifyOperation(..), copyOperationsForArray, detectMapCopies)
 import qualified Data.Array.Accelerate.Debug.Internal as Debug
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Error
+import Data.Array.Accelerate.Analysis.Match
 import Data.Array.Accelerate.Representation.Ground
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Representation.Shape
@@ -76,7 +78,7 @@ import Data.Array.Accelerate.Trafo.Operation.LiveVars
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP (..), Information (Info), Var (BackendSpecific), (-?>), fused, infusibleEdges, manifest, LabelledArgOp (LOp)) 
 import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Graph
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
-import qualified Data.Set as S
+import qualified Data.Set as Set
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
 import Lens.Micro ((.~), (&))
 import Data.Array.Accelerate.Array.Buffer
@@ -88,7 +90,6 @@ import Data.Array.Accelerate.AST.LeftHandSide (lhsToTupR)
 import Data.Functor.Identity ( Identity(Identity) )
 import Data.Array.Accelerate.AST.Schedule
 import Data.Array.Accelerate.AST.Execute
-import qualified Data.Array.Accelerate.AST.Schedule.Uniform as S
 
 import Control.Concurrent (forkIO)
 import Data.IORef
@@ -98,6 +99,7 @@ import Data.Array.Accelerate.AST.Schedule.Uniform (UniformScheduleFun)
 import Data.Array.Accelerate.Trafo.Schedule.Uniform ()
 import Data.Array.Accelerate.Pretty.Schedule.Uniform ()
 import qualified Data.Map as M
+import qualified Data.Array.Accelerate.AST.Schedule.Uniform as S
 
 data Interpreter
 instance Backend Interpreter where
@@ -266,6 +268,14 @@ instance DesugarAcc InterpretOp where
   mkFold        a Nothing b c = Exec IFold1 (a :>: b :>: c :>:       ArgsNil)
   -- etc, but the rest piggybacks off of Generate for now (see Desugar.hs)
 
+instance SimplifyOperation InterpretOp where
+  detectCopy IMap (ArgFun f :>: input :>: output :>: ArgsNil)
+    = detectMapCopies f input output
+  detectCopy IBackpermute (ArgFun f :>: input@(ArgArray _ _ sh _) :>: output@(ArgArray _ _ sh' _) :>: ArgsNil)
+    | Just Refl <- matchVars sh sh'
+    , Just Refl <- isIdentity f = copyOperationsForArray input output
+  detectCopy  _ _ = []
+
 instance SLVOperation InterpretOp where
   slvOperation IGenerate = Just $ ShrinkOperation $ \subArgs args@(ArgFun f :>: array :>: ArgsNil) _ -> case subArgs of
     SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgsNil
@@ -321,7 +331,7 @@ instance MakesILP InterpretOp where
   type BackendVar InterpretOp = OrderV
   type BackendArg InterpretOp = Maybe Int 
   -- TODO add folds/scans/stencils, and solve problems: in particular, iteration size needs to be uniform
-  mkGraph IBackpermute (_ :>: ((L _ (_, S.toList -> lIns)) :>: _)) l@(Label i _) =
+  mkGraph IBackpermute (_ :>: ((L _ (_, Set.toList -> lIns)) :>: _)) l@(Label i _) =
     Info
       mempty
       (  inputDirectionConstraint l lIns
@@ -331,15 +341,15 @@ instance MakesILP InterpretOp where
       -- Instead, we need restrictions on _every_ Op saying that manifest => order < 0 (and make sure that every order which guarantees full evaluation is < 0).
       (inOutBounds l)
   mkGraph IGenerate _ l = Info mempty mempty (lower (-2) (OutDir l))
-  mkGraph IMap (_ :>: L _ (_, S.toList -> lIns) :>: _ :>: ArgsNil) l =
+  mkGraph IMap (_ :>: L _ (_, Set.toList -> lIns) :>: _ :>: ArgsNil) l =
     Info
       mempty
       (  inputDirectionConstraint l lIns
       <> c (InDir l) .==. c (OutDir l))
       (inOutBounds l)
-  mkGraph IPermute (_ :>: L _ (_, S.toList -> ~[lTarget]) :>: _ :>: L _ (_, S.toList -> lIns) :>: ArgsNil) l =
+  mkGraph IPermute (_ :>: L _ (_, Set.toList -> ~[lTarget]) :>: _ :>: L _ (_, Set.toList -> lIns) :>: ArgsNil) l =
     Info
-      (  mempty & infusibleEdges .~ S.singleton (lTarget -?> l)) -- Cannot fuse with the producer of the target array
+      (  mempty & infusibleEdges .~ Set.singleton (lTarget -?> l)) -- Cannot fuse with the producer of the target array
       (  inputDirectionConstraint l lIns)
       (  lower (-2) (InDir l)
       <> upper (OutDir l) (-3)) -- convention meaning infusible
@@ -376,6 +386,7 @@ instance PrettyOp InterpretOp where
   prettyOp IBackpermute = "backpermute"
   prettyOp IGenerate    = "generate"
   prettyOp IPermute     = "permute"
+  prettyOp IFold1       = "fold1"
 
 instance Execute UniformScheduleFun InterpretKernel where
   executeAfunSchedule = const $ executeScheduleFun Empty

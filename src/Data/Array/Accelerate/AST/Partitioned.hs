@@ -46,6 +46,7 @@ import Unsafe.Coerce (unsafeCoerce)
 import Data.Array.Accelerate.Trafo.Operation.LiveVars
 import Data.Array.Accelerate.Representation.Type (TypeR, rnfTypeR)
 import Control.DeepSeq (NFData (rnf))
+import Data.Array.Accelerate.Trafo.Operation.Simplify (SimplifyOperation(..))
  
 -- In this model, every thread has one input element per input array,
 -- and one output element per output array. That works perfectly for
@@ -336,6 +337,9 @@ instance NFData (LeftHandSideArgs body env scope) where
   rnf (EArg args) = rnf args
   rnf (VArg args) = rnf args
   rnf (FArg args) = rnf args
+
+instance SimplifyOperation op => SimplifyOperation (Cluster op) where
+  -- TODO: Propagate detectCopy of operations in cluster?
 
 instance SLVOperation (Cluster op) where
   slvOperation (Cluster io ast :: Cluster op args) = Just $ ShrinkOperation shrinkOperation

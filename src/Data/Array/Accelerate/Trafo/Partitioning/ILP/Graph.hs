@@ -53,7 +53,7 @@ import Data.Maybe (isJust, fromJust)
 import Data.Array.Accelerate.Representation.Type (TupR)
 import Data.Array.Accelerate.AST.LeftHandSide (LeftHandSide (LeftHandSideSingle, LeftHandSideWildcard, LeftHandSidePair, LeftHandSideUnit))
 import Data.Array.Accelerate.Representation.Shape (ShapeR)
-import Data.Bifunctor (first, Bifunctor (second))
+import Data.Bifunctor (first)
 
 
 -- | Directed edge (a :-> b): `b` depends on `a`.

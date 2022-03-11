@@ -34,7 +34,6 @@ import Data.Char (ord)
 import Data.Maybe (mapMaybe)
 import Control.Monad.State
 import Control.Monad.Reader
-import qualified Debug.Trace
 
 
 instance (MakesILP op, MIP.IsSolver s IO) => ILPSolver s op where
