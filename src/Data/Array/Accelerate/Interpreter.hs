@@ -107,6 +107,9 @@ instance Backend Interpreter where
   type Kernel Interpreter = InterpretKernel
 
 -- Overly simplistic datatype: We simply ignore all the functions that don't make sense (e.g. for non-array, non-generate args, or non-input args).
+-- We also just use Int->Int for the interpreter now, but should be able to use some type families to construct actual Fun (sh -> sh') functions that match up
+-- to the shapes of the array arguments instead. That's not trivial, but it is doable and almost required for the code-generating backends. 
+-- Another advantage would be increased typesafety (more obviously correct, etc): Int->Int is horrible in that aspect!
 data BackpermutedArg env t = BPA (Arg env t) (Int -> Int)
 type BackpermutedArgs env = PreArgs (BackpermutedArg env)
 type ToBP' f = Env (BP f)
@@ -127,7 +130,7 @@ pattern PushFA x env = Push env (FromArg x)
 type BackpermutedEnv env = Env (BackpermutedEnvElem env)
 data BackpermutedEnvElem env a = BPE (ToArg env a) (Int -> Int)
 
--- binary tree instead of a list?
+-- Pushes backpermute information through the cluster and stores it in the arguments, for use at the start of the loop (indexing) and in generates.
 makeBackpermuteArg :: Args env args -> Val env -> Cluster InterpretOp args -> BackpermutedArgs env args
 makeBackpermuteArg args env (Cluster io ast) = let o = getOutputEnv io args
                                                    i = fromAST ast o env
@@ -197,58 +200,6 @@ makeBackpermuteArg args env (Cluster io ast) = let o = getOutputEnv io args
     onBuffers SubTupRkeep = SubTupRkeep
     onBuffers (SubTupRpair l r) = SubTupRpair (onBuffers l) (onBuffers r)
 
--- Conceptually, this computes the body of the fused loop
--- It only deals with scalar values - wrap it in a loop!
--- transform :: Monad m  -- The interpreter will want to use this with `m ~ Identity`, but other backends might not (e.g. `m ~ CodeGen PTX`)
---           => (forall body. op body -> Args env body -> ToIn body -> m (ToOut body)) -- function to handle primitives, might end up in the typeclass of `op` 
---           -> ClusterAST op i o -- Tree of fused primitives
---           -> i                 -- input
---           -> m o               -- output
--- transform tbody None i = return i
--- transform tbody (Bind lhs op c) i = tbody op (getIn lhs i) >>= transform tbody c . genOut lhs i
-
-
--- evalCluster :: Monad m
---             => (forall env body. Int -> op body -> Val env -> FromIn env body -> m (FromOut env body))
---             -> ClusterIO args i o
---             -> ClusterAST op i o
---             -> Args env args
---             -> Val env
---             -> i
---             -> m o
--- evalCluster k ci ca args env i = undefined
-
--- evalAST :: forall m op env args args'
---          . Monad m
---         => Int
---         -> (forall env body. Int -> op body -> Val env -> FromIn env body -> m (FromOut env body))
---         -> ClusterAST op (FromIn env args) (FromOut env args')
---         -> Args env args
---         -> Val env
---         -> FromIn env args
---         -> m (FromOut env args')
--- evalAST _ _ None _ _ i = pure i
--- evalAST n k (Bind lhs op ast) args env i = do
---   o <- k n op env _
---   evalLHS lhs args i o $ \args' refl scope -> case refl of
---     (Refl :: scope :~: FromIn env args'') -> (_ :: FromOut env args'' -> FromOut env args') <$> evalAST n k ast args' env scope
-
-
-  -- _ lhs (k n op env $ _ lhs i) (evalAST n k ast _ env _)
-
-
--- evalLHS :: LeftHandSideArgs body (FromIn env args) scope
---         -> Args env args
---         -> FromIn env args
---         -> FromOut env body
---         -> (forall args'
---            . Args env args'
---           -> scope :~: FromIn env args'
---           -> FromIn env args'
---           -> r)
---         -> r
--- evalLHS = _
-
 data InterpretOp args where
   IMap         :: InterpretOp (Fun' (s -> t)    -> In sh s -> Out sh  t -> ())
   IBackpermute :: InterpretOp (Fun' (sh' -> sh) -> In sh t -> Out sh' t -> ())
@@ -266,6 +217,7 @@ instance DesugarAcc InterpretOp where
   mkGenerate    a b     = Exec IGenerate    (a :>: b :>:             ArgsNil)
   mkPermute     a b c d = Exec IPermute     (a :>: b :>: c :>: d :>: ArgsNil)
   mkFold        a Nothing b c = Exec IFold1 (a :>: b :>: c :>:       ArgsNil)
+  mkFold        _ (Just _) _ _ = error "didn't implement this yet"
   -- etc, but the rest piggybacks off of Generate for now (see Desugar.hs)
 
 instance SimplifyOperation InterpretOp where
@@ -327,10 +279,21 @@ pattern InDir, OutDir :: Label -> Graph.Var InterpretOp
 pattern InDir  l = BackendSpecific (OrderIn l)
 pattern OutDir l = BackendSpecific (OrderOut l)
 
+
+-- TODO add parallelity (number of virtual threads, or perhaps number of dimensions per thread (0 = one element per thread, 1 = one row per thread, 2= one matrix per thread, etc)) to the backendvar.
+-- Assuming statically known array sizes for a moment:
+-- Cost function should reward parallelity == array size, or dimensions=0, or ideally dimensions <= min_dimensions_to_saturate_threads which depends on concrete sizes
+-- like order, parallelity of arguments need to match for fusion
+-- fusing map after fold is possible but costly (if the work of the map is big)
+-- fusing backpermute after fold is possible and free, so cost function shouldn't care about parallelity for backpermutes
+-- 'number of threads' model also expresses exclusive scans, whereas 'dimensions per thread' is much clearer in every other case.
+-- Or can we keep this total size `n` for an exclusive scan from `n` to `n+1` elements? E.g. by returning in the format of scanl' (T2 (init res) last res)).
+-- That actually sounds quite neat; follow-up question: Can we fuse the cost of that abstraction away?
+
+-- We will also need to know the total iteration size for a cluster, to evaluate it :)
 instance MakesILP InterpretOp where
   type BackendVar InterpretOp = OrderV
   type BackendArg InterpretOp = Maybe Int 
-  -- TODO add folds/scans/stencils, and solve problems: in particular, iteration size needs to be uniform
   mkGraph IBackpermute (_ :>: ((L _ (_, Set.toList -> lIns)) :>: _)) l@(Label i _) =
     Info
       mempty
@@ -527,7 +490,7 @@ fromArgs i env (ArgArray Out (ArrayR shr _) sh _ :>: args) = (fromArgs i env arg
 evalOp :: Int -> InterpretOp args -> Val env -> BPFromArg env (InArgs args) -> IO (Env (FromArg' env) (OutArgs args))
 evalOp _ IMap         env (PushBPFA _ f    (PushBPFA _ (Value x (Shape shr sh)) _)) = pure $ PushFA (Value (evalFun f env x) (Shape shr sh)) Empty
 evalOp _ IBackpermute _   (PushBPFA _ _    (PushBPFA _ (Value x _) (PushBPFA _ sh _))) = pure $ PushFA (Value x sh) Empty -- We evaluated the backpermute at the start already, now simply relabel the shape info
-evalOp i IGenerate    env (PushBPFA f' f   (PushBPFA _ (Shape shr sh) _)) = pure $ PushFA (Value (evalFun f env $ fromIndex shr sh (f' i)) (Shape shr sh)) Empty
+evalOp i IGenerate    env (PushBPFA f' f   (PushBPFA _ (Shape shr sh) _)) = pure $ PushFA (Value (evalFun f env $ fromIndex shr sh (f' i)) (Shape shr sh)) Empty -- apply f', the Int->Int backpermute function, to our index before evaluating the generate function.
 evalOp i IPermute     env (PushBPFA _ comb (PushBPFA _ target (PushBPFA _ f (PushBPFA _ (Value (e :: e) (Shape shr sh)) _)))) =
   let typer = case comb of
         Lam lhs _ -> lhsToTupR lhs

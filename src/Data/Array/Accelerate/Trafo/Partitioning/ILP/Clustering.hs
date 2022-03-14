@@ -359,6 +359,8 @@ mkReverse xs k = rev Ordered ArgsNil xs
 
 -- Takes care of fusion in the case where we add an input that is already an 
 -- input: horizontal fusion
+-- Note that we assume that it can occur at most once: We uphold this invariant
+-- by correctly fusing in every step.
 fuseInput :: MakesILP op 
           => LabelledArgOp op env (In sh e)
           -> LabelledArgsOp op  env total
@@ -495,6 +497,8 @@ addExp (Bind lhs op ast) io constructor k =
     k (Bind (Ignr lhs) op ast') io'
 
 -- Takes care of fusion where we add an output that is later used as input: vertical and diagonal fusion
+-- Note that we assume that it can occur at most once: We uphold this invariant
+-- by correctly fusing in every step.
 fuseOutput :: MakesILP op
            => LabelledArgOp op env (Out sh e)
            -> LabelledArgsOp op  env total
