@@ -99,8 +99,8 @@ import Control.Concurrent.MVar
 import Data.Array.Accelerate.AST.Schedule.Uniform (UniformScheduleFun)
 import Data.Array.Accelerate.Trafo.Schedule.Uniform ()
 import Data.Array.Accelerate.Pretty.Schedule.Uniform ()
-import qualified Data.Map as M
 import qualified Data.Array.Accelerate.AST.Schedule.Uniform as S
+import qualified Data.Map as M
 
 data Interpreter
 instance Backend Interpreter where
@@ -222,12 +222,12 @@ instance DesugarAcc InterpretOp where
   -- etc, but the rest piggybacks off of Generate for now (see Desugar.hs)
 
 instance SimplifyOperation InterpretOp where
-  detectCopy IMap (ArgFun f :>: input :>: output :>: ArgsNil)
+  detectCopy _ IMap (ArgFun f :>: input :>: output :>: ArgsNil)
     = detectMapCopies f input output
-  detectCopy IBackpermute (ArgFun f :>: input@(ArgArray _ _ sh _) :>: output@(ArgArray _ _ sh' _) :>: ArgsNil)
-    | Just Refl <- matchVars sh sh'
+  detectCopy matchVars' IBackpermute (ArgFun f :>: input@(ArgArray _ _ sh _) :>: output@(ArgArray _ _ sh' _) :>: ArgsNil)
+    | Just Refl <- matchVars'  sh sh'
     , Just Refl <- isIdentity f = copyOperationsForArray input output
-  detectCopy  _ _ = []
+  detectCopy _ _ _ = []
 
 instance SLVOperation InterpretOp where
   slvOperation IGenerate = Just $ ShrinkOperation $ \subArgs args@(ArgFun f :>: array :>: ArgsNil) _ -> case subArgs of

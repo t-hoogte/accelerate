@@ -51,8 +51,8 @@ import Data.List                                            ( foldl' )
 import Control.Monad
 
 class SimplifyOperation op where
-  detectCopy :: op f -> Args env f -> [CopyOperation env]
-  detectCopy _ _ = []
+  detectCopy :: (forall t t'. GroundVars env t -> GroundVars env t' -> Maybe (t :~: t')) -> op f -> Args env f -> [CopyOperation env]
+  detectCopy _ _ _ = []
 
 data CopyOperation env where
   CopyOperation
@@ -103,7 +103,6 @@ detectMapCopies' lhs body input output = go Just body output []
     findInput' _ _ _ = internalError "Tuple mismatch"
 
 
-
 data Info env t where
   InfoConst    :: t         -> Info env t -- A constant scalar
   InfoAlias    :: Idx env t -> Info env t
@@ -125,6 +124,28 @@ emptySimplifyEnv = InfoEnv wempty
 copiedTo :: Info env t -> [Idx env t]
 copiedTo (InfoBuffer _ _ c) = c
 copiedTo _                  = []
+
+matchVars' :: InfoEnv env -> GroundVars env t -> GroundVars env t' -> Maybe (t :~: t')
+matchVars' env = matchTupR (matchVar' env)
+
+matchVar' :: InfoEnv env -> GroundVar env t -> GroundVar env t' -> Maybe (t :~: t')
+matchVar' env v1 v2
+  | Just Refl <- matchVar v1 v2 = Just Refl
+  | InfoConst c1 <- infoFor (varIdx v1) env
+  , InfoConst c2 <- infoFor (varIdx v2) env
+  , GroundRscalar tp1 <- varType v1
+  , GroundRscalar tp2 <- varType v2
+  , Just Refl <-  matchScalarType tp1 tp2
+  = case tp1 of
+      SingleScalarType t
+        | SingleDict <- singleDict t -- Gives 'Eq t'
+        , c1 == c2 -> Just Refl
+      VectorScalarType (VectorType _ t)
+        | SingleDict <- singleDict t
+        , c1 == c2 -> Just Refl
+      _ -> Nothing
+  | otherwise = Nothing
+
 
 instance Sink Info where
   weaken k (InfoAlias idx) = InfoAlias $ weaken k idx
@@ -267,7 +288,7 @@ bindingEnv _ lhs (Return variables) (InfoEnv environment) = InfoEnv $ weaken (we
     go (LeftHandSideWildcard _) _                       env = env
     go _                        _                       _   = internalError "Tuple mismatch"
 bindingEnv _ (LeftHandSideSingle _) (Unit (Var _ idx)) (InfoEnv env) = InfoEnv $ wpush env $ InfoBuffer (Just $ SuccIdx idx) Nothing []
-bindingEnv outputs (LeftHandSideWildcard _) (Exec op args)      env = foldl' addCopy env $ detectCopy op args
+bindingEnv outputs (LeftHandSideWildcard _) (Exec op args)      env = foldl' addCopy env $ detectCopy (matchVars' env) op args
   where
     addCopy :: InfoEnv env -> CopyOperation env -> InfoEnv env
     addCopy env' (CopyOperation input output)
