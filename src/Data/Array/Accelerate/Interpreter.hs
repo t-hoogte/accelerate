@@ -76,7 +76,7 @@ import Control.Monad.ST
 import Data.Bits
 import Data.Array.Accelerate.Backend
 import Data.Array.Accelerate.Trafo.Operation.LiveVars
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP (..), Information (Info), Var (BackendSpecific), (-?>), fused, infusibleEdges, manifest, LabelledArgOp (LOp)) 
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP (..), Information (Info), Var (BackendSpecific), (-?>), fused, infusibleEdges, manifest, LabelledArgOp (LOp))
 import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Graph
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
 import qualified Data.Set as Set
@@ -101,6 +101,7 @@ import Data.Array.Accelerate.Trafo.Schedule.Uniform ()
 import Data.Array.Accelerate.Pretty.Schedule.Uniform ()
 import qualified Data.Array.Accelerate.AST.Schedule.Uniform as S
 import qualified Data.Map as M
+import Control.Monad (when)
 
 data Interpreter
 instance Backend Interpreter where
@@ -120,7 +121,7 @@ pattern PushBP :: () => (env' ~ (env, x)) => (Int -> Int) -> x -> ToBP env -> To
 pattern PushBP f x env = Push env (BP (Identity x) f)
 {-# COMPLETE Empty, PushBP #-}
 type BPFromArg env = ToBP' (FromArg' env)
-newtype FromArg' env a = FromArg (FromArg env a) 
+newtype FromArg' env a = FromArg (FromArg env a)
 pattern PushBPFA :: () => (e' ~ (e, x)) => (Int -> Int) -> FromArg env x -> BPFromArg env e -> BPFromArg env e'
 pattern PushBPFA f x env = Push env (BP (FromArg x) f)
 {-# COMPLETE Empty, PushBPFA #-}
@@ -139,7 +140,7 @@ makeBackpermuteArg args env (Cluster' io ast) = let o = getOutputEnv io args
   where
     fromAST :: ClusterAST InterpretOp i o -> BackpermutedEnv env o -> Val env -> BackpermutedEnv env i
     fromAST None o _ = o
-    fromAST (Bind lhs op ast) o env = let o' = fromAST ast o env 
+    fromAST (Bind lhs op ast) o env = let o' = fromAST ast o env
                                       in lhsArgsEnv lhs o' (onOp op (lhsEnvArgs lhs o') env)
 
     onOp :: InterpretOp args -> BackpermutedArgs env args -> Val env -> BackpermutedArgs env args
@@ -250,7 +251,7 @@ instance SLVOperation InterpretOp where
     SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgOut s `SubArgsLive` SubArgsNil
       -> ShrunkOperation IBackpermute (f :>: ArgArray In (ArrayR shr (subTupR s r)) sh (subTupDBuf s buf) :>: output :>: ArgsNil)
     _ `SubArgsLive` _ `SubArgsLive` SubArgsDead _ -> internalError "At least one output should be preserved"
-  
+
   slvOperation _ = Nothing -- TODO write for all constructors, and also, remind @IVO to make SLV support Nothing
 
 data InterpretKernel env where
@@ -346,7 +347,8 @@ instance MakesILP InterpretOp where
 
   finalize = foldMap $ \l -> timesN (manifest l) .>. c (OutDir l)
 
-
+instance NFData' (BackendClusterArg InterpretOp) where
+  rnf' TODO = ()
 
 instance ShrinkArg (BackendClusterArg InterpretOp) where
   shrinkArg _ _ = TODO
@@ -473,10 +475,8 @@ executeAwhile env io step input = do
   -- Check condition
   readMVar mvarCondition
   condition <- readIORef iorefCondition
-  if condition == 1 then
+  when (condition == 1) $
     executeAwhile env io step nextInput
-  else
-    return ()
 
 bindAwhileIO :: S.InputOutputR input output -> IO (output, input)
 bindAwhileIO S.InputOutputRsignal = do
@@ -517,7 +517,7 @@ evalOp i IGenerate    env (PushBPFA f' f   (PushBPFA _ (Shape shr sh) _)) = pure
 evalOp i IPermute     env (PushBPFA _ comb (PushBPFA _ target (PushBPFA _ f (PushBPFA _ (Value (e :: e) (Shape shr sh)) _)))) =
   let typer = case comb of
         Lam lhs _ -> lhsToTupR lhs
-        _ -> error "impossible; is a function" 
+        _ -> error "impossible; is a function"
   in
   case evalFun f env (fromIndex shr sh i) of
     -- TODO double check: Is 0 Nothing?
@@ -533,13 +533,13 @@ evalOp i IPermute     env (PushBPFA _ comb (PushBPFA _ target (PushBPFA _ f (Pus
         writeBuffers typer buf' j x'
         return $ PushFA target Empty
     -- How do tags work again? If 'e' is a sum type, does the tag get combined, or does it get its own tag?
-    _ -> error "PrimMaybe's tag was non-zero and non-one" 
+    _ -> error "PrimMaybe's tag was non-zero and non-one"
 evalOp _ IFold1 _ _ = undefined
 
 evalCluster :: Cluster InterpretOp args -> Args env args -> Val env -> IO ()
 evalCluster (Cluster todoFoldInformation c@(Cluster' io ast)) args env = do
   let bp = makeBackpermuteArg args env c
-  doNTimes 
+  doNTimes
     (iterationsize io args env)
     (\n -> do i <- evalIO1 n io bp env
               o <- evalAST n ast env i
@@ -569,8 +569,8 @@ doNTimes n f
 evalIO1 :: Int -> ClusterIO args i o -> BackpermutedArgs env args -> Val env -> IO (BPFromArg env i)
 evalIO1 _ P.Empty                                         ArgsNil    _ = pure Empty
 evalIO1 n (Vertical _ r io) (BPA (ArgVar vars          ) f :>: args) env = PushBPFA f (Shape (arrayRshape r) (varsGetVal vars env)) <$> evalIO1 n io args env
-evalIO1 n (Input      io) (BPA (ArgArray In r sh buf ) f :>: args) env = PushBPFA f <$> value                                     <*> evalIO1 n io args env 
-  where value = Value <$> indexBuffers' (arrayRtype  r) (varsGetVal buf env) (f n) 
+evalIO1 n (Input      io) (BPA (ArgArray In r sh buf ) f :>: args) env = PushBPFA f <$> value                                     <*> evalIO1 n io args env
+  where value = Value <$> indexBuffers' (arrayRtype  r) (varsGetVal buf env) (f n)
                       <*> pure (Shape   (arrayRshape r) (varsGetVal sh  env))
 evalIO1 n (Output _ _ _ io) (BPA (ArgArray Out r sh   _) f :>: args) env = PushBPFA f (Shape (arrayRshape r) (varsGetVal sh env))   <$> evalIO1 n io args env
 evalIO1 n (MutPut     io) (BPA (ArgArray Mut r sh buf) f :>: args) env = PushBPFA f (ArrayDescriptor (arrayRshape r) sh buf)      <$> evalIO1 n io args env
@@ -616,9 +616,6 @@ evalLHS2 (VArg   lhs) (PushBPFA f e i) env           o  = PushBPFA f e    (evalL
 evalLHS2 (Adju   lhs) (PushBPFA f _ i) env (PushFA m o) = PushBPFA f m    (evalLHS2 lhs i  env o)
 evalLHS2 (Ignr   lhs) (PushBPFA f x i) env           o  = PushBPFA f x    (evalLHS2 lhs i  env o)
 
-
-instance NFData' (Cluster InterpretOp) where
-  --TODO
 
 -- Program execution
 -- -----------------
@@ -667,7 +664,7 @@ instance NFData' (Cluster InterpretOp) where
 -- ---------
 
 phase :: Builder -> Format Builder (Double -> Double -> Builder) -> IO a -> IO a
-phase n fmt go = Debug.timed Debug.dump_phases (now ("phase " <> n <> ": ") % fmt) go
+phase n fmt = Debug.timed Debug.dump_phases (now ("phase " <> n <> ": ") % fmt)
 
 
 
@@ -682,85 +679,6 @@ fromFunction' repr sh f = (TupRsingle repr, fromFunction repr sh f)
 
 
 
--- Array primitives
--- ----------------
-
-unitOp :: TypeR e -> e -> WithReprs (Scalar e)
-unitOp tp e = fromFunction' (ArrayR ShapeRz tp) () (const e)
-
-
-generateOp
-    :: ArrayR (Array sh e)
-    -> sh
-    -> (sh -> e)
-    -> WithReprs (Array sh e)
-generateOp = fromFunction'
-
-
-reshapeOp
-    :: HasCallStack
-    => ShapeR sh
-    -> sh
-    -> WithReprs (Array sh' e)
-    -> WithReprs (Array sh  e)
-reshapeOp newShapeR newShape (TupRsingle (ArrayR shr tp), Array sh adata)
-  = boundsCheck "shape mismatch" (size newShapeR newShape == size shr sh)
-    ( TupRsingle (ArrayR newShapeR tp)
-    , Array newShape adata
-    )
-
-
-replicateOp
-    :: SliceIndex slix sl co sh
-    -> slix
-    -> WithReprs (Array sl e)
-    -> WithReprs (Array sh e)
-replicateOp slice slix (TupRsingle repr@(ArrayR _ tp), arr)
-  = fromFunction' repr' sh (\ix -> (repr, arr) ! pf ix)
-  where
-    repr' = ArrayR (sliceDomainR slice) tp
-    (sh, pf) = extend slice slix (shape arr)
-
-    extend :: SliceIndex slix sl co dim
-           -> slix
-           -> sl
-           -> (dim, dim -> sl)
-    extend SliceNil              ()        ()
-      = ((), const ())
-    extend (SliceAll sliceIdx)   (slx, ()) (sl, sz)
-      = let (dim', f') = extend sliceIdx slx sl
-        in  ((dim', sz), \(ix, i) -> (f' ix, i))
-    extend (SliceFixed sliceIdx) (slx, sz) sl
-      = let (dim', f') = extend sliceIdx slx sl
-        in  ((dim', sz), \(ix, _) -> f' ix)
-
-
-sliceOp
-    :: SliceIndex slix sl co sh
-    -> WithReprs (Array sh e)
-    -> slix
-    -> WithReprs (Array sl e)
-sliceOp slice (TupRsingle repr@(ArrayR _ tp), arr) slix
-  = fromFunction' repr' sh' (\ix -> (repr, arr) ! pf ix)
-  where
-    repr' = ArrayR (sliceShapeR slice) tp
-    (sh', pf) = restrict slice slix (shape arr)
-
-    restrict
-        :: HasCallStack
-        => SliceIndex slix sl co sh
-        -> slix
-        -> sh
-        -> (sl, sl -> sh)
-    restrict SliceNil              ()        ()
-      = ((), const ())
-    restrict (SliceAll sliceIdx)   (slx, ()) (sl, sz)
-      = let (sl', f') = restrict sliceIdx slx sl
-        in  ((sl', sz), \(ix, i) -> (f' ix, i))
-    restrict (SliceFixed sliceIdx) (slx, i)  (sl, sz)
-      = let (sl', f') = restrict sliceIdx slx sl
-        in  indexCheck i sz $ (sl', \ix -> (f' ix, i))
-
 
 
 -- Scalar expression evaluation
@@ -769,12 +687,12 @@ sliceOp slice (TupRsingle repr@(ArrayR _ tp), arr) slix
 -- Evaluate a closed scalar expression
 --
 evalExp :: HasCallStack => Exp aenv t -> Val aenv -> t
-evalExp e aenv = evalOpenExp e Empty aenv
+evalExp e = evalOpenExp e Empty
 
 -- Evaluate a closed scalar function
 --
 evalFun :: HasCallStack => Fun aenv t -> Val aenv -> t
-evalFun f aenv = evalOpenFun f Empty aenv
+evalFun f = evalOpenFun f Empty
 
 -- Evaluate an open scalar function
 --

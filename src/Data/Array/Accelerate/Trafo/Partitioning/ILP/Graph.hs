@@ -142,7 +142,7 @@ unLabelOp :: LabelledArgsOp op env args -> Args env args
 unLabelOp ArgsNil              = ArgsNil
 unLabelOp (LOp arg _ _ :>: args) = arg :>: unLabelOp args
 
-type BackendCluster op args = PreArgs (BackendClusterArg op) args
+type BackendCluster op = PreArgs (BackendClusterArg op)
 
 class (Eq (BackendVar op), Ord (BackendVar op), Eq (BackendArg op)) => MakesILP op where
   -- Vars needed to express backend-specific fusion rules.
@@ -305,7 +305,7 @@ makeFullGraph :: (MakesILP op)
               => PreOpenAcc op () a
               -> (Information op, Map Label (Construction op))
 makeFullGraph acc = (i, constrM)
-  where 
+  where
     (FGRes i _ constrM, _) = runState (mkFullGraph acc) (FGState LabelEnvNil (Label 0 Nothing) 0)
 
 makeFullGraphF :: (MakesILP op)
@@ -409,7 +409,7 @@ mkFullGraph (Acond cond tacc facc) = do
   return $ (tRes <> fRes <> condres)
          & l_res    ?~ l_acond
          & info.graphI.graphNodes <>~ S.fromList [l_acond, l_true, l_false]
-         & construc %~ M.adjust (\(CITE _ _ _ _) -> CITE env cond l_true l_false) l_acond
+         & construc %~ M.adjust (\CITE{} -> CITE env cond l_true l_false) l_acond
 
 -- like Acond. The biggest difference is that 'cond' is a function instead of an expression here.
 -- For the graph, we use 'startvars' much like we used 'cond' in Acond, and we use
@@ -434,7 +434,7 @@ mkFullGraph (Awhile u cond bdy startvars) = do
   return $ (cRes <> bRes <> varsres)
          & l_res    ?~ l_while
          & info.graphI.graphNodes <>~ S.fromList [l_while, l_cond, l_body]
-         & construc %~ M.adjust (\(CWhl _ _ _ _ _) -> CWhl env l_cond l_body startvars u) l_while
+         & construc %~ M.adjust (\CWhl{} -> CWhl env l_cond l_body startvars u) l_while
 
 
 -- | Like mkFullGraph, but for @PreOpenAfun@.

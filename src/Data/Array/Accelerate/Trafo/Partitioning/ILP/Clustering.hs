@@ -20,7 +20,7 @@
 
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering where
 
-import Data.Array.Accelerate.AST.LeftHandSide ( Exists(..), LeftHandSide (..), lhsToTupR )
+import Data.Array.Accelerate.AST.LeftHandSide ( Exists(..), LeftHandSide (..) )
 import Data.Array.Accelerate.AST.Partitioned hiding (take')
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
@@ -39,7 +39,6 @@ import Data.Array.Accelerate.AST.Environment (Identity(runIdentity), weakenWithL
 import Prelude hiding ( take )
 import Lens.Micro (_1)
 import Lens.Micro.Extras (view)
-import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
 import Data.Array.Accelerate.Trafo.LiveVars (SubTupR(SubTupRkeep))
 import Data.Array.Accelerate.Representation.Array (arrayRtype)
 
@@ -267,7 +266,7 @@ consCluster :: forall env args extra op r
             -> op extra
             -> (forall args'. Cluster op args' -> LabelledArgsOp op env args' -> r)
             -> r
-consCluster largs lextra ((Cluster b (Cluster' cIO cAST))) op k =
+consCluster largs lextra ((Cluster _ (Cluster' cIO cAST))) op k = -- we can ignore the BackendCluster that is already present, because the same information is also in the `largs`
   mkReverse lextra $ \rev lartxe->
     consCluster' largs rev lartxe cAST (mkBase cIO) cIO
   where

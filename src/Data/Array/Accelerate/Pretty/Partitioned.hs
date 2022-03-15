@@ -21,7 +21,7 @@
 --
 
 module Data.Array.Accelerate.Pretty.Partitioned (
-  
+
 ) where
 
 import Data.Array.Accelerate.Pretty.Exp hiding (Val(..))
@@ -43,7 +43,7 @@ instance PrettyOp op => PrettyOp (Cluster' op) where
 
   prettyOpWithArgs env (Cluster' io ast) args = case ops of
     [op']      -> group $ hang 2 $ vsep [ annotate Execute "execute", op' ]
-    op' : ops' -> group $ hang 2 $ vsep $ [ annotate Execute "cluster", "{" <+> op'] ++ (map (separator <>) ops') ++ ["}"]
+    op' : ops' -> group $ hang 2 $ vsep $ [ annotate Execute "cluster", "{" <+> op'] ++ map (separator <>) ops' ++ ["}"]
     []         -> annotate Execute "cluster" <+> "{ }"
     where
       (inputEnv, outputEnv) = clusterEnv env io args
@@ -125,7 +125,7 @@ forward (Reqr t1 t2 lhs) fresh env out =
 forward (Make t lhs)     fresh (Pretty.Push env sh) out =
   ( fresh''
   , insertAt t name env'
-  , arg : args    
+  , arg : args
   )
   where
     (arg, name, fresh') = case pTakeAt t out of

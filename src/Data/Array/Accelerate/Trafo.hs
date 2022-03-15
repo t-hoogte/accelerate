@@ -41,7 +41,7 @@ import Data.Array.Accelerate.Sugar.Elt                    ( EltR )
 import Data.Array.Accelerate.Smart
 import Data.Array.Accelerate.Trafo.Config
 -- import Data.Array.Accelerate.Trafo.Delayed
-import Data.Array.Accelerate.Trafo.Sharing                ( Afunction, AfunctionR, ArraysFunctionR, Function, EltFunctionR )
+import Data.Array.Accelerate.Trafo.Sharing                ( Afunction, ArraysFunctionR, Function, EltFunctionR )
 import qualified Data.Array.Accelerate.AST                as AST
 import Data.Array.Accelerate.AST.Kernel
 import Data.Array.Accelerate.AST.Schedule
@@ -64,7 +64,7 @@ import qualified Data.Array.Accelerate.Pretty.Schedule    as Pretty
 import Data.Array.Accelerate.Pretty.Partitioned ()
 import Data.Text.Lazy.Builder
 import qualified Data.Array.Accelerate.AST.Operation as Operation
-import qualified Data.Array.Accelerate.AST.Partitioned as Partitioned
+import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Graph
 
 #ifdef ACCELERATE_DEBUG
 import Formatting
@@ -109,14 +109,14 @@ test f
 --
 convertAcc
   :: forall sched kernel arrs.
-     (DesugarAcc (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel, Operation.NFData' (Partitioned.Cluster (KernelOperation kernel)), Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))
+     (DesugarAcc (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel, Operation.NFData' (Graph.BackendClusterArg (KernelOperation kernel)),  Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))
   => Acc arrs
   -> sched kernel () (ScheduleOutput sched (DesugaredArrays (ArraysR arrs)) -> ())
 convertAcc = convertAccWith defaultOptions
 
 convertAccWith
   :: forall sched kernel arrs.
-     (DesugarAcc (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel, Operation.NFData' (Partitioned.Cluster (KernelOperation kernel)), Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))
+     (DesugarAcc (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel, Operation.NFData' (Graph.BackendClusterArg (KernelOperation kernel)),  Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))
   => Config
   -> Acc arrs
   -> sched kernel () (ScheduleOutput sched (DesugaredArrays (ArraysR arrs)) -> ())
@@ -136,14 +136,14 @@ convertAccWith config
 --
 convertAfun
   :: forall sched kernel f.
-     (Afunction f, DesugarAcc (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel, Operation.NFData' (Partitioned.Cluster (KernelOperation kernel)), Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))
+     (Afunction f, DesugarAcc (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel, Operation.NFData' (Graph.BackendClusterArg (KernelOperation kernel)),  Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))
   => f
   -> sched kernel () (Scheduled sched (DesugaredAfun (ArraysFunctionR f)))
 convertAfun = convertAfunWith defaultOptions
 
 convertAfunWith
   :: forall sched kernel f.
-     (Afunction f, DesugarAcc (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel, Operation.NFData' (Partitioned.Cluster (KernelOperation kernel)), Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))
+     (Afunction f, DesugarAcc (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel, Operation.NFData' (Graph.BackendClusterArg (KernelOperation kernel)),  Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))
   => Config
   -> f
   -> sched kernel () (Scheduled sched (DesugaredAfun (ArraysFunctionR f)))

@@ -304,7 +304,7 @@ untup2 exp
 -- If the two arguments are the same, then it will evaluate to that argument
 evalIfSameArguments :: (a,a) :-> a
 evalIfSameArguments (untup2 -> Just (x,y)) _
-  | Just Refl <- matchOpenExp x y = Just $ x
+  | Just Refl <- matchOpenExp x y = Just x
 evalIfSameArguments _ _ = Nothing
 
 pprFun :: Text -> PrimFun f -> Text
@@ -667,9 +667,6 @@ evalMax ty args env
   , FloatingDict <- floatingDict ty'
   = eval2 ty max args env
 
-  | otherwise
-  = Nothing
-
 evalMin :: SingleType a -> (a,a) :-> a
 evalMin ty args env
   | Just arg <- evalIfSameArguments args env
@@ -682,9 +679,6 @@ evalMin ty args env
   | NumSingleType (FloatingNumType ty') <- ty
   , FloatingDict <- floatingDict ty'
   = eval2 ty min args env
-
-  | otherwise
-  = Nothing
 
 -- Logical operators
 -- -----------------

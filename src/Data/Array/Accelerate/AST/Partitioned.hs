@@ -315,14 +315,17 @@ data Value sh e = Value e (Sh sh e)
 -- e is phantom
 data Sh sh e    = Shape (ShapeR sh) sh
 
+instance (NFData' (Cluster' op), NFData' (BackendCluster op)) => NFData' (Cluster op) where
+  rnf' (Cluster b c) = rnf' b `seq` rnf' c
+
 instance NFData' op => NFData' (Cluster' op) where
   rnf' (Cluster' io ast) = rnf io `seq` rnf ast
 
 instance NFData (ClusterIO args input output) where
   rnf Empty = ()
-  rnf (Vertical take repr io) = rnf take `seq` rnfArrayR repr `seq` rnf io
+  rnf (Vertical t repr io) = rnf t `seq` rnfArrayR repr `seq` rnf io
   rnf (Input io) = rnf io
-  rnf (Output take subTupR tp io) = rnf take `seq` rnf subTupR `seq` rnfTypeR tp `seq` rnf io
+  rnf (Output t s tp io) = rnf t `seq` rnf s `seq` rnfTypeR tp `seq` rnf io
   rnf (MutPut io) = rnf io
   rnf (ExpPut io) = rnf io
   rnf (VarPut io) = rnf io
@@ -330,7 +333,7 @@ instance NFData (ClusterIO args input output) where
 
 instance NFData (Take x xargs args) where
   rnf Here = ()
-  rnf (There take) = rnf take
+  rnf (There t) = rnf t
 
 instance NFData' op => NFData (ClusterAST op env result) where
   rnf None = ()
@@ -339,7 +342,7 @@ instance NFData' op => NFData (ClusterAST op env result) where
 instance NFData (LeftHandSideArgs body env scope) where
   rnf Base = ()
   rnf (Reqr take1 take2 args) = rnf take1 `seq` rnf take2 `seq` rnf args
-  rnf (Make take args) = rnf take `seq` rnf args
+  rnf (Make t args) = rnf t `seq` rnf args
   rnf (Adju args) = rnf args
   rnf (Ignr args) = rnf args
   rnf (EArg args) = rnf args

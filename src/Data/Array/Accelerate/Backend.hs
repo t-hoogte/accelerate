@@ -51,8 +51,8 @@ import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
 import Data.Kind
 import Data.Type.Equality
 import System.IO.Unsafe (unsafePerformIO)
-import qualified Data.Array.Accelerate.AST.Partitioned as Partitioning
 import qualified Data.Array.Accelerate.AST.Operation as Operation
+import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Graph
 
 class
   ( Desugar.DesugarAcc (Operation backend)
@@ -63,7 +63,7 @@ class
   , IsKernel (Kernel backend)
   , Pretty.PrettyOp (Operation backend)
   , Execute (Schedule backend) (Kernel backend)
-  , Operation.NFData' (Partitioning.Cluster (KernelOperation (Kernel backend)))
+  , Operation.NFData' (Graph.BackendClusterArg (KernelOperation (Kernel backend)))
   , Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation (Kernel backend)))
   ) => Backend backend where
 
@@ -126,7 +126,7 @@ sugarFunction AfunctionReprBody a
   , Refl <- reprIsBody (desugarArraysR repr) = Sugar.toArr $ sugarArrays repr $ unsafePerformIO a
   where
     repr = Sugar.arraysR @(AfunctionR f)
-sugarFunction (AfunctionReprLam r) f = \x -> sugarFunction r $ f $ desugarArrays repr $ Sugar.fromArr x
+sugarFunction (AfunctionReprLam r) f = sugarFunction r . f . desugarArrays repr . Sugar.fromArr
   where
     repr :: forall a b. f ~ (Smart.Acc a -> b) => ArraysR (Sugar.ArraysR a)
     repr = Sugar.arraysR @a
