@@ -46,7 +46,7 @@ class PrettyOp op where
   prettyOp :: op t -> Adoc
   
   -- Only used in OperationAcc, when printing a PartitionedAcc a cluster is printed using prettyOp.
-  -- The reason is that PrettyOp (Cluster op) instance defines prettyOpWithArgs in terms of prettyOp.
+  -- The reason is that PrettyOp (Cluster' op) instance defines prettyOpWithArgs in terms of prettyOp.
   --
   prettyOpWithArgs :: Val env -> op t -> Args env t -> Adoc
   prettyOpWithArgs env op args = hang 2 $ group $ vsep [annotate Execute "execute", prettyOp op, prettyArgs env args]

@@ -66,7 +66,6 @@ import Control.Category
 import Control.DeepSeq
 import qualified Data.Array.Accelerate.AST.Environment as Env
 import Control.Concurrent
-import Control.Concurrent.MVar
 import Data.IORef
 import System.IO.Unsafe (unsafePerformIO)
 

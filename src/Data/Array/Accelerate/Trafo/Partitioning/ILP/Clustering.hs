@@ -134,7 +134,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
     makeAST _ [] _ = error "empty AST"
     makeAST env [cluster] prev = case makeCluster env cluster of
       Fold     c (unLabelOp -> args) -> Exists $ Exec c args
-      InitFold o (unLabelOp -> args) -> Exists $ Exec (unfused o args) args
+      InitFold o args' -> let args = unLabelOp args' in Exists $ Exec (unfused o (mapArgs getClusterArg args') args) args
       NotFold con -> case con of
          CExe {}    -> error "should be Fold/InitFold!"
          CExe'{}    -> error "should be Fold/InitFold!"
@@ -222,7 +222,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
                               -- the `foldr1`, the input argument will dissapear. The output argument does not:
                               -- we clean that up in the SLV pass, if this was vertical fusion. If this is diagonal fusion,
                               -- it stays.
-                              CExe env' args op -> InitFold op $ fromJust $ reindexLabelledArgsOp (mkReindexPartial env' env) args --labelled env env' args
+                              CExe env' args op -> InitFold op (fromJust $ reindexLabelledArgsOp (mkReindexPartial env' env) args)
                               _                 -> error "avoid this next refactor" -- c -> NotFold c
                           ) ls
     makeCluster _ (NonExecL l) = NotFold $ construct M.! l
@@ -230,7 +230,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
     fuseCluster :: FoldType op env -> FoldType op env -> FoldType op env
     fuseCluster (Fold cluster1 largs1) (InitFold op2 largs2) =
       consCluster largs1 largs2 cluster1 op2 $ \c largs -> Fold c largs
-    fuseCluster (InitFold op largs) x = fuseCluster (Fold (unfused op (unLabelOp largs)) largs) x
+    fuseCluster (InitFold op largs) x = fuseCluster (Fold (unfused op (mapArgs getClusterArg largs) (unLabelOp largs)) largs) x
     fuseCluster Fold{} Fold{} = error "fuseCluster got non-leaf as second argument" -- Should never happen
     fuseCluster NotFold{}   _ = error "fuseCluster encountered NotFold" -- Should only occur in singleton clusters
     fuseCluster _   NotFold{} = error "fuseCluster encountered NotFold" -- Should only occur in singleton clusters
@@ -267,7 +267,7 @@ consCluster :: forall env args extra op r
             -> op extra
             -> (forall args'. Cluster op args' -> LabelledArgsOp op env args' -> r)
             -> r
-consCluster largs lextra (Cluster cIO cAST) op k =
+consCluster largs lextra ((Cluster b (Cluster' cIO cAST))) op k =
   mkReverse lextra $ \rev lartxe->
     consCluster' largs rev lartxe cAST (mkBase cIO) cIO
   where
@@ -298,7 +298,7 @@ consCluster largs lextra (Cluster cIO cAST) op k =
                  -> LeftHandSideArgs added i scope
                  -> ClusterIO total i result
                  -> r
-    consCluster' ltot Ordered ArgsNil ast lhs io = k (Cluster io (Bind lhs op ast)) ltot
+    consCluster' ltot Ordered ArgsNil ast lhs io = k (Cluster (mapArgs getClusterArg ltot) (Cluster' io (Bind lhs op ast))) ltot
     consCluster' ltot (Revert r) (a :>: toAdd) ast lhs io = case a of
       LOp (ArgArray In _ _ _) _ _ ->
         maybe

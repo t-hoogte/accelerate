@@ -12,7 +12,7 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering
     ( reconstruct, reconstructF )
 import Data.Array.Accelerate.AST.Partitioned
-    ( PartitionedAcc, PartitionedAfun, Cluster )
+    ( PartitionedAcc, PartitionedAfun, Cluster)
 import Data.Array.Accelerate.AST.Operation
     ( OperationAcc, OperationAfun )
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver

@@ -47,28 +47,36 @@ import Data.Array.Accelerate.Trafo.Operation.LiveVars
 import Data.Array.Accelerate.Representation.Type (TypeR, rnfTypeR)
 import Control.DeepSeq (NFData (rnf))
 import Data.Array.Accelerate.Trafo.Operation.Simplify (SimplifyOperation(..))
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (BackendCluster, MakesILP (BackendClusterArg))
  
 -- In this model, every thread has one input element per input array,
 -- and one output element per output array. That works perfectly for
 -- a Map, Generate, ZipWith - but the rest requires some fiddling:
 --
 -- - Folds and Scans need to cooperate, and not every thread will
---   return a value. This makes them harder to squeeze into the interpreter,
---   but the LLVM backends are used to such tricks.
+--   return a value. We can model the lack of a value somewhere in the interpreter/code generator, and
+--   ignore that in this representation. We do the same for cooperation: This representation suggests that
+--   each thread is independent, but they do not need to be.
 --
 -- - Fusing Backpermute and Stencil does not translate well to this composition of loop
 --   bodies. Instead, we will need a pass (after construction of these clusters)
 --   that propagates them to the start of each cluster (or the 
---    originating generate, if fused).
+--   originating generate, if fused). This is currently implemented (ugly-ly) in the Interpreter.
+--   There, we will treat Stencil as Backpermutes with a zipwith. In llvm backends, we should want to do better.
 
 type PartitionedAcc  op = PreOpenAcc  (Cluster op)
 type PartitionedAfun op = PreOpenAfun (Cluster op)
 
--- | A cluster of operations, in total having `args` as signature
 data Cluster op args where
-  Cluster :: ClusterIO args input output
-          -> ClusterAST op  input output
+  Cluster :: BackendCluster op args
+          -> Cluster' op args
           -> Cluster op args
+
+-- | A cluster of operations, in total having `args` as signature
+data Cluster' op args where
+  Cluster' :: ClusterIO args input output
+           -> ClusterAST op  input output
+           -> Cluster' op args
 
 -- | Internal AST of `Cluster`, simply a list of let-bindings.
 -- Note that all environments hold scalar values, not arrays! (aside from Mut)
@@ -170,8 +178,8 @@ takeIdx Here      = ZeroIdx
 takeIdx (There t) = SuccIdx $ takeIdx t
 
 -- A cluster from a single node
-unfused :: op args -> Args env args -> Cluster op args
-unfused op args = iolhs args $ \io lhs -> Cluster io (Bind lhs op None)
+unfused :: op args -> BackendCluster op args -> Args env args -> Cluster op args
+unfused op b args = iolhs args $ \io lhs -> Cluster b $ Cluster' io (Bind lhs op None)
 
 iolhs :: Args env args -> (forall x y. ClusterIO args x y -> LeftHandSideArgs args x y -> r) -> r
 iolhs ArgsNil                     f =                       f  Empty            Base
@@ -307,8 +315,8 @@ data Value sh e = Value e (Sh sh e)
 -- e is phantom
 data Sh sh e    = Shape (ShapeR sh) sh
 
-instance NFData' op => NFData' (Cluster op) where
-  rnf' (Cluster io ast) = rnf io `seq` rnf ast
+instance NFData' op => NFData' (Cluster' op) where
+  rnf' (Cluster' io ast) = rnf io `seq` rnf ast
 
 instance NFData (ClusterIO args input output) where
   rnf Empty = ()
@@ -340,12 +348,13 @@ instance NFData (LeftHandSideArgs body env scope) where
 
 instance SimplifyOperation op => SimplifyOperation (Cluster op) where
   -- TODO: Propagate detectCopy of operations in cluster?
+  -- currently this simplifies nothing!
 
-instance SLVOperation (Cluster op) where
-  slvOperation (Cluster io ast :: Cluster op args) = Just $ ShrinkOperation shrinkOperation
+instance ShrinkArg (BackendClusterArg op) => SLVOperation (Cluster op) where
+  slvOperation (Cluster b (Cluster' io ast :: Cluster' op args)) = Just $ ShrinkOperation shrinkOperation
     where
       shrinkOperation :: SubArgs args args' -> Args env args' -> Args env' args -> ShrunkOperation (Cluster op) env
-      shrinkOperation subArgs args' args = ShrunkOperation (Cluster (slvIO subArgs args' args io) ast) args'
+      shrinkOperation subArgs args' args = ShrunkOperation (Cluster (shrinkArgs subArgs b) $ Cluster' (slvIO subArgs args' args io) ast) args'
 
       slvIO :: SubArgs a a' -> Args env a' -> Args env' a -> ClusterIO a i o -> ClusterIO a' i o
       slvIO SubArgsNil ArgsNil ArgsNil Empty = Empty

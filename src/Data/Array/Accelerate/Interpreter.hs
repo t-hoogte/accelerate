@@ -3,6 +3,7 @@
 {-# LANGUAGE BlockArguments      #-}
 {-# LANGUAGE EmptyCase           #-}
 {-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE FlexibleInstances   #-}
 {-# LANGUAGE GADTs               #-}
 {-# LANGUAGE InstanceSigs        #-}
 {-# LANGUAGE LambdaCase          #-}
@@ -131,10 +132,10 @@ type BackpermutedEnv env = Env (BackpermutedEnvElem env)
 data BackpermutedEnvElem env a = BPE (ToArg env a) (Int -> Int)
 
 -- Pushes backpermute information through the cluster and stores it in the arguments, for use at the start of the loop (indexing) and in generates.
-makeBackpermuteArg :: Args env args -> Val env -> Cluster InterpretOp args -> BackpermutedArgs env args
-makeBackpermuteArg args env (Cluster io ast) = let o = getOutputEnv io args
-                                                   i = fromAST ast o env
-                                               in fromInputEnv io i
+makeBackpermuteArg :: Args env args -> Val env -> Cluster' InterpretOp args -> BackpermutedArgs env args
+makeBackpermuteArg args env (Cluster' io ast) = let o = getOutputEnv io args
+                                                    i = fromAST ast o env
+                                                in fromInputEnv io i
   where
     fromAST :: ClusterAST InterpretOp i o -> BackpermutedEnv env o -> Val env -> BackpermutedEnv env i
     fromAST None o _ = o
@@ -289,11 +290,25 @@ pattern OutDir l = BackendSpecific (OrderOut l)
 -- 'number of threads' model also expresses exclusive scans, whereas 'dimensions per thread' is much clearer in every other case.
 -- Or can we keep this total size `n` for an exclusive scan from `n` to `n+1` elements? E.g. by returning in the format of scanl' (T2 (init res) last res)).
 -- That actually sounds quite neat; follow-up question: Can we fuse the cost of that abstraction away?
+-- Alternatively, we could simply have one operation that takes an array and one value, and produces a 1-bigger array prefixed by that value.
+--    per inner row
+-- this operation would fuse perfectly, and then an exclusive scan is simply an inclusive scan followed by this thing.
+-- having a lot of those in one kernel would decrease occupancy a little, but that is okay.
+-- conclusion: scan is actually not hard at all, because I can just choose the primitives it consists of.
+-- TODO: look at the llvm scan kernels & the scan variations in our interface, and decide on the best combination of primitives
+-- candidates: with/without seed, including/excluding the total reduction (4 combinations)
+--             map, fold, append, prefix, suffix as auxiliary primitives
+
+-- random note: many utilities such as append/concat would fuse so much better when backed by a simple primitive than when expressed as a generate
 
 -- We will also need to know the total iteration size for a cluster, to evaluate it :)
+-- Also, adding some of the above options (append/prefix/suffix), a corollary is that every operation needs to know whether they're `on` for a certain index.
+-- i.e. if we fuse append into its two producing maps, the maps will be inactive for half the threads! If we fuse prefix with anything,
+-- then the other thing will be inactive for every thread that corresponds to the first element of a row! Unless we have dim/thread>0
 instance MakesILP InterpretOp where
   type BackendVar InterpretOp = OrderV
-  type BackendArg InterpretOp = Maybe Int 
+  type BackendArg InterpretOp = Maybe Int
+  data BackendClusterArg InterpretOp arg = TODO
   mkGraph IBackpermute (_ :>: ((L _ (_, Set.toList -> lIns)) :>: _)) l@(Label i _) =
     Info
       mempty
@@ -327,7 +342,15 @@ instance MakesILP InterpretOp where
   labelLabelledArg solution l (L arg@(ArgArray Out _ _ _) al) = LOp arg al . Just $ solution M.! OrderOut l
   labelLabelledArg _ _ (L arg al) = LOp arg al Nothing
 
+  getClusterArg _ = TODO
+
   finalize = foldMap $ \l -> timesN (manifest l) .>. c (OutDir l)
+
+
+
+instance ShrinkArg (BackendClusterArg InterpretOp) where
+  shrinkArg _ _ = TODO
+  deadArg _ = TODO
 
 -- | If l and lIn are fused, the out-order of lIn and the in-order of l should match
 inputDirectionConstraint :: Label -> [Label] -> Constraint InterpretOp
@@ -514,7 +537,7 @@ evalOp i IPermute     env (PushBPFA _ comb (PushBPFA _ target (PushBPFA _ f (Pus
 evalOp _ IFold1 _ _ = undefined
 
 evalCluster :: Cluster InterpretOp args -> Args env args -> Val env -> IO ()
-evalCluster c@(Cluster io ast) args env = do
+evalCluster (Cluster todoFoldInformation c@(Cluster' io ast)) args env = do
   let bp = makeBackpermuteArg args env c
   doNTimes 
     (iterationsize io args env)
@@ -594,7 +617,8 @@ evalLHS2 (Adju   lhs) (PushBPFA f _ i) env (PushFA m o) = PushBPFA f m    (evalL
 evalLHS2 (Ignr   lhs) (PushBPFA f x i) env           o  = PushBPFA f x    (evalLHS2 lhs i  env o)
 
 
-
+instance NFData' (Cluster InterpretOp) where
+  --TODO
 
 -- Program execution
 -- -----------------

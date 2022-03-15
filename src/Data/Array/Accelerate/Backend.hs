@@ -51,6 +51,8 @@ import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
 import Data.Kind
 import Data.Type.Equality
 import System.IO.Unsafe (unsafePerformIO)
+import qualified Data.Array.Accelerate.AST.Partitioned as Partitioning
+import qualified Data.Array.Accelerate.AST.Operation as Operation
 
 class
   ( Desugar.DesugarAcc (Operation backend)
@@ -61,6 +63,8 @@ class
   , IsKernel (Kernel backend)
   , Pretty.PrettyOp (Operation backend)
   , Execute (Schedule backend) (Kernel backend)
+  , Operation.NFData' (Partitioning.Cluster (KernelOperation (Kernel backend)))
+  , Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation (Kernel backend)))
   ) => Backend backend where
 
   type Schedule backend :: (Type -> Type) -> Type -> Type -> Type

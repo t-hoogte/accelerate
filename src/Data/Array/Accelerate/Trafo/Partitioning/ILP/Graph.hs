@@ -142,12 +142,16 @@ unLabelOp :: LabelledArgsOp op env args -> Args env args
 unLabelOp ArgsNil              = ArgsNil
 unLabelOp (LOp arg _ _ :>: args) = arg :>: unLabelOp args
 
+type BackendCluster op args = PreArgs (BackendClusterArg op) args
+
 class (Eq (BackendVar op), Ord (BackendVar op), Eq (BackendArg op)) => MakesILP op where
   -- Vars needed to express backend-specific fusion rules.
   type BackendVar op
-  -- Information that the backend attaches to the argument
+  -- Information that the backend attaches to the argument for reconstruction,
+  -- i.e. to identify when two instances of an array are to be fused.
   type BackendArg op
-
+  -- Information that the backend attaches to the cluster, for use in interpreting/code generation.
+  data BackendClusterArg op arg
   -- | This function only needs to do the backend-specific things, that is, things which depend on the definition of @op@.
   -- That includes "BackendVar op's" and all their constraints/bounds, but also some (in)fusible edges.
   -- As a conveniece, fusible edges have already been made from all (non-Out) labels in the LabelArgs to the current label.
@@ -156,6 +160,7 @@ class (Eq (BackendVar op), Ord (BackendVar op), Eq (BackendArg op)) => MakesILP 
 
   -- using the ILP solution, attach the required information to each argument
   labelLabelledArg :: M.Map (BackendVar op) Int -> Label -> LabelledArg env a -> LabelledArgOp op env a
+  getClusterArg :: LabelledArgOp op env a -> BackendClusterArg op a
 
   -- allow the backend to add constraints/bounds for every node
   finalize :: [Label] -> Constraint op
@@ -257,7 +262,7 @@ data Construction (op :: Type -> Type) where
   -- Duplicating the entire datatype is overkill, and passing the solution to the consumer of Construction
   -- is also ugly.
   CExe' :: LabelEnv env -> LabelledArgs      env args -> op args                         -> Construction op
-  CExe  :: LabelEnv env -> LabelledArgsOp op env args -> op args                         -> Construction op
+  CExe  :: LabelEnv env -> LabelledArgsOp op env args -> op args -> Construction op
   CUse  ::                 ScalarType e -> Int -> Buffer e                               -> Construction op
   CITE  :: LabelEnv env -> ExpVar env PrimBool -> Label -> Label                         -> Construction op
   CWhl  :: LabelEnv env -> Label -> Label -> GroundVars env a          -> Uniquenesses a -> Construction op
@@ -285,6 +290,7 @@ backendConstruc sol = M.mapWithKey f
     smallermap = M.fromList . map (first (\(BackendSpecific x) -> x)) . filter ((\case
                                                         BackendSpecific{} -> True
                                                         _ -> False) . fst) $ M.toList sol
+
 
 -- strips underscores from constructor names
 makeLenses ''FullGraphState

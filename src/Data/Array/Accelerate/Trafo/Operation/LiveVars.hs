@@ -28,7 +28,8 @@ module Data.Array.Accelerate.Trafo.Operation.LiveVars (
   stronglyLiveVariables, stronglyLiveVariablesFun,
 
   SLVOperation(..), ShrinkOperation(..), ShrunkOperation(..), SubArgs(..), SubArg(..),
-  reEnvArrayInstr
+  reEnvArrayInstr,
+  ShrinkArg(..), shrinkArgs
 ) where
 
 import Data.Array.Accelerate.AST.Idx
@@ -267,6 +268,14 @@ data SubArg t t' where
   SubArgOut  :: SubTupR e e'
              -> SubArg (Out sh e) (Out sh e')
 
+class ShrinkArg arg where
+  shrinkArg :: SubArg t t' -> arg t -> arg t'
+  deadArg :: arg (Out sh e) -> arg (Var' sh)
+
+shrinkArgs :: ShrinkArg arg => SubArgs f f' -> PreArgs arg f -> PreArgs arg f'
+shrinkArgs SubArgsNil ArgsNil = ArgsNil
+shrinkArgs (SubArgsDead sargs) (a:>:args) = deadArg a :>: shrinkArgs sargs args
+shrinkArgs (SubArgsLive sarg sargs) (a:>:args) = shrinkArg sarg a :>: shrinkArgs sargs args
 
 reEnvArrayInstr :: ReEnv env subenv -> ArrayInstr env t -> ArrayInstr subenv t
 reEnvArrayInstr re (Parameter var) = Parameter $ expectJust $ reEnvVar re var

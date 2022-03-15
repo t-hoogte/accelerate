@@ -34,14 +34,14 @@ import Data.Text.Prettyprint.Doc
 
 import Prelude hiding (exp)
 
-instance PrettyOp op => PrettyOp (Cluster op) where
-  prettyOp (Cluster _ ast) = "{" <+> align (fillSep $ opNames ast)
+instance PrettyOp op => PrettyOp (Cluster' op) where
+  prettyOp (Cluster' _ ast) = "{" <+> align (fillSep $ opNames ast)
     where
       opNames :: ClusterAST op env result -> [Adoc]
       opNames None             = ["}"]
       opNames (Bind _ op next) = prettyOp op : opNames next
 
-  prettyOpWithArgs env (Cluster io ast) args = case ops of
+  prettyOpWithArgs env (Cluster' io ast) args = case ops of
     [op']      -> group $ hang 2 $ vsep [ annotate Execute "execute", op' ]
     op' : ops' -> group $ hang 2 $ vsep $ [ annotate Execute "cluster", "{" <+> op'] ++ (map (separator <>) ops') ++ ["}"]
     []         -> annotate Execute "cluster" <+> "{ }"
@@ -50,6 +50,10 @@ instance PrettyOp op => PrettyOp (Cluster op) where
       (_, opsF) = prettyClusterAST outputEnv ast
       ops = opsF 0 inputEnv
       separator = "; "
+
+instance PrettyOp op => PrettyOp (Cluster op) where
+  prettyOp (Cluster _ c) = prettyOp c
+  prettyOpWithArgs env (Cluster _ c) = prettyOpWithArgs env c
 
 clusterEnv :: forall env f input output. Pretty.Val env -> ClusterIO f input output -> Args env f -> (Pretty.Val input, PartialVal output)
 clusterEnv env = \cio args -> (input cio args, output cio args)
