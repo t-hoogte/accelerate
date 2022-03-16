@@ -86,6 +86,7 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
     where
       ArrayR _ tp = argArrayR input
 
+  -- TODO why does this exist? Transform is an artifact of the old fusion, so should never occur (or should simply be a composition of map and backpermute, in any order)
   mkTransform   :: Arg env (Fun' (sh' -> sh))
                 -> Arg env (Fun' (s -> t))
                 -> Arg env (In sh s)

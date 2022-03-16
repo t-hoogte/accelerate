@@ -23,7 +23,7 @@ import Language.Haskell.TH.Extra
 import Data.Typeable                                                ( (:~:)(..) )
 
 
-data Var  s env t = Var { varType :: (s t), varIdx :: (Idx env t) }
+data Var  s env t = Var { varType :: s t, varIdx :: Idx env t }
 type Vars s env   = TupR (Var s env)
 
 varsType :: Vars s env t -> TupR s t

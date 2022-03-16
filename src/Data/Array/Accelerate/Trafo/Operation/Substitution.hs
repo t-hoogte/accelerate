@@ -35,7 +35,8 @@ module Data.Array.Accelerate.Trafo.Operation.Substitution (
   extractParams,
 
   reindexVar, reindexVars,
-) where
+  mkLHS, LHS(..),
+  ) where
 
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Var
@@ -188,3 +189,16 @@ strengthenArrayInstr k = rebuildArrayInstrPartial f
     f :: ArrayInstr benv (u -> s) -> Maybe (OpenExp env' benv' u -> OpenExp env' benv' s)
     f (Parameter (Var tp ix)) = ArrayInstr . Parameter . Var tp <$> k ix
     f (Index     (Var tp ix)) = ArrayInstr . Index     . Var tp <$> k ix
+
+
+data LHS s v env where
+  LHS :: LeftHandSide s v env env'
+      -> Vars s env' v
+      -> LHS s v env
+
+mkLHS :: TupR s v -> LHS s v env
+mkLHS TupRunit = LHS LeftHandSideUnit TupRunit
+mkLHS (TupRsingle x) = LHS (LeftHandSideSingle x) (TupRsingle $ Var x ZeroIdx)
+mkLHS (TupRpair x y) = case mkLHS x of
+  LHS lhsL varsL -> case mkLHS y of
+    LHS lhsR varsR -> LHS (LeftHandSidePair lhsL lhsR) (TupRpair (weakenVars (weakenWithLHS lhsR) varsL) varsR)

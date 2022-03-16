@@ -57,7 +57,7 @@ module Data.Array.Accelerate.AST.Operation (
   module Data.Array.Accelerate.AST.Exp,
 
   NFData'(..)
-,reindexAcc,toGrounds,fromGrounds) where
+,reindexAcc,toGrounds,fromGrounds,weakenThroughReindex,fuseArgs, Both(..)) where
 
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Exp
@@ -226,6 +226,13 @@ data PreArgs a t where
   ArgsNil :: PreArgs a ()
   (:>:)   :: a s -> PreArgs a t -> PreArgs a (s -> t)
 infixr 7 :>:
+
+data Both a b x where
+  Both :: a x -> b x -> Both a b x
+
+fuseArgs :: PreArgs a t -> PreArgs b t -> PreArgs (Both a b) t
+fuseArgs ArgsNil ArgsNil = ArgsNil
+fuseArgs (a :>: as) (b :>: bs) = Both a b :>: fuseArgs as bs
 
 argsToList :: PreArgs a t -> [Exists a]
 argsToList ArgsNil = []
@@ -475,6 +482,9 @@ reindexLHS r (LeftHandSidePair left right) k = reindexLHS r left $ \left' r' ->
 
 weakenReindex :: benv :> benv' -> ReindexPartial Identity benv benv'
 weakenReindex k = Identity . (k >:>)
+
+weakenThroughReindex :: (benv :> benv') -> (ReindexPartial Identity benv benv' -> x -> Identity y) -> x -> y
+weakenThroughReindex w k x = runIdentity $ k (weakenReindex w) x
 
 data AccessGroundR tp where
   AccessGroundRscalar :: ScalarType tp -> AccessGroundR tp

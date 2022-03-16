@@ -35,7 +35,6 @@ import qualified Data.Array.Accelerate.Debug.Internal.Tracy         as Tracy
 #endif
 
 import Data.Atomic                                                  ( Atomic )
-import qualified Data.Atomic                                        as Atomic
 
 import Data.Char
 import Foreign.C.String

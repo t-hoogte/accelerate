@@ -74,10 +74,19 @@ difficult acc = zip (backpermute sh (\(I1 y) -> I1 (y `div` 2)) x) (backpermute 
     x = map (+3) acc
     sh = I1 10
 
+runningExample :: Acc (Array (Z :. Int) Int) -> Acc (Array (Z :. Int) Int, Array (Z :. Int) Int)
+runningExample xs = let
+  as = map (`div` 2) xs
+  bs = map (`div` 3) xs
+  cs = map (\a -> bs ! I1 a) as
+  ds = map (\b -> as ! I1 b) bs
+  in T2 cs ds
+
 main :: P.IO ()
-main = 
+main =
+  P.putStrLn $ test @UniformScheduleFun @InterpretKernel $ runningExample
   -- P.print $ run1 @Interpreter (permute (+) (use $ fromList (Z:.10) (P.repeat @P.Int 0)) (\(I1 x) -> Just_ (I1 (x `div` 2)))) $ fromList (Z :. 10) [1..]
-  P.putStrLn $ test @UniformScheduleFun @InterpretKernel $ permute (+) (use $ fromList (Z:.10) (P.repeat @P.Int 0)) (\(I1 x) -> Just_ (I1 (x `div` 2)))
+  -- P.putStrLn $ test @UniformScheduleFun @InterpretKernel $ permute (+) (use $ fromList (Z:.10) (P.repeat @P.Int 0)) (\(I1 x) -> Just_ (I1 (x `div` 2)))
   -- doNTimes 10 P.print
 -- import qualified Data.Array.Accelerate as A
 -- import qualified Data.Array.Accelerate.Interpreter as A
@@ -95,3 +104,8 @@ main =
 
 -- collatzIndex :: A.Acc (A.Scalar Int) -> A.Acc (A.Scalar Int)
 -- collatzIndex input = A.asnd $ A.awhile (A.unit . (A./= 1) . A.the . A.afst) step (A.T2 input $ A.unit 0)
+
+
+
+
+
