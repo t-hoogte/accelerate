@@ -48,6 +48,7 @@ import Data.Array.Accelerate.Trafo.Operation.Substitution
 import Data.Array.Accelerate.Trafo.LiveVars                 ( SubTupR(..), subTupR, subTupRpair )
 import Data.Maybe                                           ( mapMaybe )
 import Data.List                                            ( foldl' )
+import Data.Either                                          ( partitionEithers )
 import Control.Monad
 
 class SimplifyOperation op where
@@ -178,71 +179,109 @@ substituteOutput env = Weaken $ \idx -> case infoFor idx env of
   _              -> idx
 
 simplifyFun :: SimplifyOperation op => OperationAfun op () t -> OperationAfun op () t
-simplifyFun = fst . simplifyFun' emptySimplifyEnv
+simplifyFun fun = snd (simplifyFun' fun) emptySimplifyEnv
 
--- Returns the simplified function and a set of array variables which may have been written to
-simplifyFun' :: SimplifyOperation op => InfoEnv env -> OperationAfun op env t -> (OperationAfun op env t, IdxSet env)
-simplifyFun' env (Alam lhs f) = (Alam lhs f', IdxSet.drop' lhs set)
+-- Returns a set of array variables which may have been written to, and a the simplified function (given an InfoEnv)
+simplifyFun' :: SimplifyOperation op => OperationAfun op env t -> (IdxSet env, InfoEnv env -> OperationAfun op env t)
+simplifyFun' (Alam lhs f) = 
+  (IdxSet.drop' lhs set, \env -> Alam lhs $ f' $ bindEnv lhs env)
   where
-    env' = bindEnv lhs env
-    (f', set) = simplifyFun' env' f
-simplifyFun' env (Abody body)  = (Abody body', set)
+    (set, f') = simplifyFun' f
+simplifyFun' (Abody body)  = (set, \env -> Abody $ body' env)
   where
-    (body', set) = simplify' env body
+    (set, body') = simplify' (TupRsingle Shared) body
+
+simplifyFunWithUniqueness :: SimplifyOperation op => Uniquenesses t -> OperationAfun op env (t -> t) -> (IdxSet env, InfoEnv env -> OperationAfun op env (t -> t))
+simplifyFunWithUniqueness uniquenesses (Alam lhs (Abody body)) =
+  ( IdxSet.drop' lhs set
+  , \env -> Alam lhs $ Abody $ body' $ bindEnv lhs env
+  )
+  where
+    (set, body') = simplify' uniquenesses body
+simplifyFunWithUniqueness _ (Abody body) = groundFunctionImpossible $ groundsR body
+simplifyFunWithUniqueness _ (Alam lhs (Alam _ _)) = groundFunctionImpossible $ lhsToTupR lhs
 
 simplify :: SimplifyOperation op => OperationAcc op () t -> OperationAcc op () t
-simplify = fst . simplify' emptySimplifyEnv
+simplify acc = snd (simplify' (TupRsingle Shared) acc) emptySimplifyEnv
 
 -- Returns the simplified program and a set of array variables which may have been written to
-simplify' :: SimplifyOperation op => InfoEnv env -> OperationAcc op env t -> (OperationAcc op env t, IdxSet env)
-simplify' env = \case
+simplify' :: SimplifyOperation op => Uniquenesses t -> OperationAcc op env t -> (IdxSet env, InfoEnv env -> OperationAcc op env t)
+simplify' uniquenesses = \case
   Exec op args ->
-    let
-      args' = mapArgs (simplifyArg env) args
-    in
-      (Exec op args', outputArrays args')
+    (outputArrays args, \env -> Exec op $ mapArgs (simplifyArg env) args)
   Return vars ->
     -- Note that we do not need to check for writes to variables here.
     -- This construct may cause aliassing of variables, but an aliassed
     -- variable cannot be unique and thus we do not need to signal the
     -- original variable as mutated if it's returned.
-    (Return $ mapTupR (weaken $ substitute env) vars, IdxSet.empty)
+    ( variableIndices uniquenesses vars
+    , \env -> Return $ simplifyReturnVars env uniquenesses vars
+    )
   Compute expr ->
-    let expr' = simplifyExp env expr
-    in
-      if
-        | Just vars <- extractParams expr' ->
-          (Return $ mapTupR (\(Var tp ix) -> Var (GroundRscalar tp) ix) vars, IdxSet.empty)
-        | otherwise ->
-          (Compute expr', IdxSet.empty)
+    ( IdxSet.empty
+    , \env ->
+        let expr' = simplifyExp env expr
+        in 
+          if
+            | Just vars <- extractParams expr' ->
+              Return $ mapTupR (\(Var tp ix) -> Var (GroundRscalar tp) ix) vars
+            | otherwise ->
+              Compute expr'
+    )
   Alet lhs us bnd body ->
     let
-      (bnd', setBnd) = simplify' env bnd
-      env' = bindingEnv setBnd lhs bnd' (invalidate setBnd env)
-      (body', setBody) = simplify' env' body
+      (setBnd, bnd') = simplify' us bnd
+      (setBody, body') = simplify' uniquenesses body
     in
-      (bindLet lhs us bnd' body', setBnd `IdxSet.union` IdxSet.drop' lhs setBody)
-  Alloc shr tp sh -> (Alloc shr tp $ mapTupR (weaken $ substitute env) sh, IdxSet.empty)
-  Use tp n buffer -> (Use tp n buffer, IdxSet.empty)
-  Unit var -> (Unit $ weaken (substitute env) var, IdxSet.empty)
+      ( setBnd `IdxSet.union` IdxSet.drop' lhs setBody
+      , \env ->
+          let
+            bnd'' = bnd' env
+            env' = bindingEnv setBnd lhs bnd'' (invalidate setBnd env)
+          in bindLet lhs us bnd'' (body' env')
+      )
+  Alloc shr tp sh -> (IdxSet.empty, \env -> Alloc shr tp $ mapTupR (weaken $ substitute env) sh)
+  Use tp n buffer -> (IdxSet.empty, const $ Use tp n buffer)
+  Unit var -> (IdxSet.empty, \env -> Unit $ weaken (substitute env) var)
   Acond cond true false ->
     let
-      (true',  setT) = simplify' env true
-      (false', setF) = simplify' env false
+      (setT, true')  = simplify' uniquenesses true
+      (setF, false') = simplify' uniquenesses false
       set = IdxSet.union setT setF
-    in case infoFor (varIdx cond) env of
-        InfoConst 0  -> (false', setF)
-        InfoConst _  -> (true', setT)
-        InfoAlias ix -> (Acond (cond{varIdx = ix}) true' false', set)
-        InfoNone     -> (Acond cond                true' false', set)
+    in 
+      ( set
+      , \env -> case infoFor (varIdx cond) env of
+        InfoConst 0  -> false' env
+        InfoConst _  -> true'  env
+        InfoAlias ix -> Acond (cond{varIdx = ix}) (true' env) (false' env)
+        InfoNone     -> Acond cond                (true' env) (false' env)
+      )
   Awhile us cond step initial ->
     let
-      (cond', setC) = simplifyFun' env cond
-      (step', setS) = simplifyFun' env step
-      initial' = mapTupR (weaken $ substitute env) initial
-      -- Similar to Return, we don't need to track aliassing in 'initial' to find whether
-      -- variables may be mutated: aliassed buffers cannot be unique.
-    in (awhileSimplifyInvariant us cond' step' initial', setC `IdxSet.union` setS)
+      (setC, cond') = simplifyFun' cond
+      (setS, step') = simplifyFunWithUniqueness us step
+      set = setC `IdxSet.union` setS `IdxSet.union` variableIndices us initial
+    in
+      ( set
+      , \env ->
+          let
+            env' = invalidate set env
+          in
+            awhileSimplifyInvariant us (cond' env') (step' env') $ simplifyReturnVars env us initial
+      )
+
+variableIndices :: Uniquenesses t -> GroundVars env t -> IdxSet env
+variableIndices (TupRsingle Unique) (TupRsingle var) = IdxSet.singleton $ varIdx var
+variableIndices (TupRpair u1 u2) (TupRpair v1 v2) = variableIndices u1 v1 `IdxSet.union` variableIndices u2 v2
+variableIndices _ _ = IdxSet.empty
+
+simplifyReturnVars :: InfoEnv env -> Uniquenesses t -> GroundVars env t -> GroundVars env t
+simplifyReturnVars env (TupRpair u1 u2) (TupRpair v1 v2) =
+  simplifyReturnVars env u1 v1 `TupRpair` simplifyReturnVars env u2 v2
+simplifyReturnVars env (TupRsingle Shared) v = mapTupR (weaken $ substitute env) v
+simplifyReturnVars env (TupRsingle Unique) v = mapTupR (weaken $ substituteOutput env) v
+simplifyReturnVars _   TupRunit _ = TupRunit
+simplifyReturnVars _   _ _ = internalError "Tuple mismatch"
 
 bindLet :: forall env env' op t s. GLeftHandSide t env env' -> Uniquenesses t -> OperationAcc op env t -> OperationAcc op env' s -> OperationAcc op env s
 bindLet (LeftHandSidePair l1 l2) (TupRpair u1 u2) (Compute (Pair e1 e2))
@@ -303,7 +342,27 @@ bindingEnv _ lhs _ env = bindEnv lhs env
 invalidate :: IdxSet env -> InfoEnv env -> InfoEnv env
 invalidate indices (InfoEnv env1) = InfoEnv env4
   where
-    (dropped, env2) = wremovePrjSet InfoNone indices env1
+    -- Drops the given indices from the InfoEnv, unless they are an alias
+    -- (InfoAlias). Those are not removed, but instead the info on the
+    -- variable of which they are an alias is removed.
+    -- Returns a list of removed Infos.
+    goDrop :: IdxSet env -> WEnv Info env -> (WEnv Info env, [Exists (Info env)])
+    goDrop indices' e1
+      | [] <- indices'' = (e2, dropped')
+      | otherwise = (dropped' ++) <$> goDrop (IdxSet.fromList indices'') e2
+      where
+        (infos, e2) = wupdatePrjSet update indices' e1
+        (indices'', dropped') = partitionEithers $ map splitAlias infos
+
+        update :: Info env t -> Info env t
+        update i@(InfoAlias _) = i -- Keep aliasses
+        update _ = InfoNone
+
+        splitAlias :: Exists (Info env) -> Either (Exists (Idx env)) (Exists (Info env))
+        splitAlias (Exists (InfoAlias idx)) = Left $ Exists idx
+        splitAlias (Exists i) = Right $ Exists i
+
+    (env2, dropped) = goDrop indices env1
     invalidatedCopies = dropped >>= \(Exists i) -> Exists <$> copiedTo i
     invalidatedCopiedFrom = dropped >>= \case
       Exists (InfoBuffer _ (Just idx) _) -> [Exists idx]
