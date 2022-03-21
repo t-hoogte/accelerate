@@ -62,7 +62,7 @@ module Data.Array.Accelerate.AST.Exp (
   -- ** Miscellaneous
   mkConstant, mkBinary, unBody,
   formatExpOp, Direction(..),
-  expIsTrivial,
+  expIsTrivial, shapeExpVars,
 
 ) where
 
@@ -826,3 +826,9 @@ expIsTrivial arrayInstr = \case
   where
     trav :: PreOpenExp arr env' t' -> Bool
     trav = expIsTrivial arrayInstr
+
+shapeExpVars :: Distributes s => ShapeR sh -> Vars s env sh -> ExpVars env sh
+shapeExpVars ShapeRz          TupRunit                       = TupRunit
+shapeExpVars (ShapeRsnoc shr) (sh `TupRpair` TupRsingle var) = shapeExpVars shr sh `TupRpair` TupRsingle var{varType = scalarTypeInt}
+shapeExpVars ShapeRz          (TupRsingle (Var tp _))        = unitImpossible tp
+shapeExpVars (ShapeRsnoc _)   (TupRsingle (Var tp _))        = pairImpossible tp

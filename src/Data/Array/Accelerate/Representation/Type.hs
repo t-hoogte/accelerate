@@ -79,6 +79,8 @@ type family Distribute f a = b where
 class Distributes s where
   -- Shows that a single element isn't unit or a pair
   reprIsSingle :: s t -> Distribute f t :~: f t
+  pairImpossible :: s (t, v) -> a
+  unitImpossible :: s () -> a
 
 instance Distributes ScalarType where
   reprIsSingle (VectorScalarType _) = Refl
@@ -96,6 +98,14 @@ instance Distributes ScalarType where
     FloatingNumType TypeHalf   -> Refl
     FloatingNumType TypeFloat  -> Refl
     FloatingNumType TypeDouble -> Refl
+
+  pairImpossible (SingleScalarType (NumSingleType tp))
+    | IntegralNumType t <- tp = case t of {}
+    | FloatingNumType t <- tp = case t of {}
+
+  unitImpossible (SingleScalarType (NumSingleType tp))
+    | IntegralNumType t <- tp = case t of {}
+    | FloatingNumType t <- tp = case t of {}
 
 rnfTupR :: (forall b. s b -> ()) -> TupR s a -> ()
 rnfTupR _ TupRunit       = ()
