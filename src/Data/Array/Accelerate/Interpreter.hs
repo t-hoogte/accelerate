@@ -103,7 +103,7 @@ import qualified Data.Array.Accelerate.AST.Schedule.Uniform as S
 import qualified Data.Map as M
 import Control.Monad (when)
 import Data.Array.Accelerate.Trafo.Var (DeclareVars(DeclareVars), declareVars)
-import Data.Array.Accelerate.Trafo.Operation.Substitution (alet, weaken, LHS (LHS), mkLHS)
+import Data.Array.Accelerate.Trafo.Operation.Substitution (alet, aletUnique, weaken, LHS (LHS), mkLHS)
 import Control.DeepSeq (rnf)
 
 data Interpreter
@@ -244,7 +244,7 @@ instance DesugarAcc InterpretOp where
   -- we desugar a Fold with seed element into a Fold1 followed by a map which prepends the seed
   mkFold a@(ArgFun f) (Just (ArgExp seed)) b@(ArgArray In arr@(ArrayR _ tp) sh _) c@(ArgArray _ arr' sh' _)
     | DeclareVars lhsTemp wTemp kTemp <- declareVars $ buffersR tp =
-      alet lhsTemp (desugarAlloc arr $ fromGrounds sh) $
+      aletUnique lhsTemp (desugarAlloc arr' $ fromGrounds sh') $
         alet LeftHandSideUnit
           (mkFold (weaken wTemp a) Nothing (weaken wTemp b) (ArgArray Out arr' (weakenVars wTemp sh') (kTemp weakenId))) $
           case mkLHS tp of
@@ -256,13 +256,13 @@ instance DesugarAcc InterpretOp where
                 (ArgArray In arr' (weakenVars wTemp sh') (kTemp weakenId))
                 (weaken wTemp c)
   mkScan dir a Nothing b c = Exec (IScan1 dir) (a :>: b :>: c :>: ArgsNil)
-  -- we desugar a Scan with seed into a scan1 followed by a map followed by a backpermuteOr
-  mkScan dir comb (Just (ArgExp seed)) i@(ArgArray In arr@(ArrayR shr@(ShapeRsnoc shr') tp) sh _) o 
+  -- we desugar a Scan with seed into a scan1 followed by a map followed by an append
+  mkScan dir comb (Just (ArgExp seed)) i@(ArgArray In arr@(ArrayR shr tp) sh _) o 
     | DeclareVars lhsTemp1 wTemp  kTemp1 <- declareVars $ buffersR tp 
     , DeclareVars lhsTemp2 wTemp2 kTemp2 <- declareVars $ buffersR tp
     , wTemp1 <- wTemp2 .> wTemp = 
-      alet lhsTemp1 (desugarAlloc arr $ fromGrounds sh) $ 
-        alet lhsTemp2 (desugarAlloc arr $ fromGrounds $ weakenVars wTemp sh) $ 
+      aletUnique lhsTemp1 (desugarAlloc arr $ fromGrounds sh) $ 
+        aletUnique lhsTemp2 (desugarAlloc arr $ fromGrounds $ weakenVars wTemp sh) $ 
           alet LeftHandSideUnit
             (alet LeftHandSideUnit
               (mkScan dir (weakenThroughReindex wTemp1 reindexArg comb) Nothing (weakenThroughReindex wTemp1 reindexArg i) (ArgArray Out arr (weakenVars wTemp1 sh) (kTemp1 wTemp2)))

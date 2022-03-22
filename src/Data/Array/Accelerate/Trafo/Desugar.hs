@@ -133,7 +133,7 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
         typ = TupRpair ty1 ty2
         zippedArg  = ArgArray Out (ArrayR shr typ) (weakenVars w sh) (k weakenId)
         zippedArg' = ArgArray In  (ArrayR shr typ) (weakenVars w sh) (k weakenId) in
-      alet lhs (desugarAlloc (ArrayR shr typ) (fromGrounds sh)) $
+      aletUnique lhs (desugarAlloc (ArrayR shr typ) (fromGrounds sh)) $
         alet LeftHandSideUnit
           (mkZip (weaken w in1) (weaken w in2) zippedArg) $
           mkMap (ArgFun . uncurry' $ weakenArrayInstr w f) zippedArg' $ ArgArray Out outR (weakenVars w sh) (weakenVars w buf)

@@ -60,7 +60,8 @@ iffy acc = if size acc == 20 then twoMaps acc else reshape (Z_ ::. 1) (unit 1)
 twoMaps :: Acc (Vector Int) -> Acc (Vector Int)
 twoMaps = map (+1) . map (*2)
 
-foo (a :: Acc (Vector Int)) = map (*2) $ if (a ! I1 0) == 2 then map (+1) a else a
+foo :: Acc (Vector Int) -> Acc (Vector Int)
+foo a = map (*2) $ if (a ! I1 0) == 2 then map (+1) a else a
 
 -- Neither of the backpermutes is allowed to fuse with the map: otherwise the other backpermute cannot be computed.
 -- Fusing both is possible, but only with work duplication (we still choose to never do that for now).
@@ -82,7 +83,7 @@ runningExample xs = let
 
 main :: P.IO ()
 main =
-  P.putStrLn $ test @UniformScheduleFun @InterpretKernel $ inputProgram
+  P.putStrLn $ test @UniformScheduleFun @InterpretKernel $ dotp
   -- P.print $ run1 @Interpreter (permute (+) (use $ fromList (Z:.10) (P.repeat @P.Int 0)) (\(I1 x) -> Just_ (I1 (x `div` 2)))) $ fromList (Z :. 10) [1..]
   -- P.putStrLn $ test @UniformScheduleFun @InterpretKernel $ permute (+) (use $ fromList (Z:.10) (P.repeat @P.Int 0)) (\(I1 x) -> Just_ (I1 (x `div` 2)))
   -- doNTimes 10 P.print
