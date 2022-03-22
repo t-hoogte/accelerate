@@ -26,7 +26,7 @@ import Numeric.Optimization.MIP hiding (Bounds, Constraint, Var, Solution, name)
 import qualified Numeric.Optimization.MIP as MIP
 import qualified Numeric.Optimization.MIP.Solver.Base as MIP
 import Data.Scientific ( Scientific )
-import Data.Bifunctor (bimap)
+import Data.Bifunctor (bimap, first, second)
 
 import Numeric.Optimization.MIP.Solver
     ( cbc, cplex, glpsol, gurobiCl, lpSolve, scip )
@@ -39,14 +39,12 @@ import Control.Monad.Reader
 instance (MakesILP op, MIP.IsSolver s IO) => ILPSolver s op where
   solve s (ILP dir obj constr bnds n) = {-Debug.Trace.traceShow problem $-} makeSolution names <$> MIP.solve s options problem
     where
-      options
-        | M.size (fst names) > 255*26 = error "Too many variables: Fix Data.Array.Accelerate.Trafo.Partitioning.ILP.MIP/freshName"
-        | otherwise = MIP.SolveOptions{ MIP.solveTimeLimit   = Nothing
+      options = MIP.SolveOptions{ MIP.solveTimeLimit   = Nothing
                                 , MIP.solveLogger      = putStrLn . ("AccILPSolver: "      ++)
                                 , MIP.solveErrorLogger = putStrLn . ("AccILPSolverError: " ++) }
 
       stateProblem = Problem (Just "AccelerateILP") <$> (mkFun dir <$> expr n obj) <*> cons n constr <*> pure [] <*> pure [] <*> vartypes <*> (bounds bnds >>= finishBounds)
-      (problem, names) = runState stateProblem (mempty, mempty)
+      (problem, (names,_)) = runState stateProblem ((mempty, mempty),"")
 
       mkFun Maximise = ObjectiveFunction (Just "AccelerateObjective") OptMax
       mkFun Minimise = ObjectiveFunction (Just "AccelerateObjective") OptMin
@@ -81,44 +79,41 @@ bounds NoBounds = pure mempty
 -- Potentially, it's more efficient to simply make a bounds map giving (NegInf, PosInf) to all variables (like in `allIntegers`), and then use `unionWith const`?
 finishBounds :: M.Map MIP.Var (Extended Scientific, Extended Scientific) -> STN op (M.Map MIP.Var (Extended Scientific, Extended Scientific))
 finishBounds x = do
-  vars' <- gets $ map toVar . M.keys . fst
+  vars' <- gets $ map toVar . M.keys . fst . fst
   let y = M.keys x
   return $ x <> (M.fromList . map (,(NegInf,PosInf)) . filter (not . (`elem` y)) $ vars')
 
 allIntegers :: STN op (M.Map MIP.Var VarType)
-allIntegers = gets $ M.fromList . map ((,IntegerVariable) . toVar) . M.keys . fst
+allIntegers = gets $ M.fromList . map ((,IntegerVariable) . toVar) . M.keys . fst . fst
 
 -- Apparently, solvers don't appreciate variable names longer than 255 characters!
--- Instead, we generate small placeholders here and store their meaning :)
+-- Instead, we generate small placeholders here and store their meaning
 
 type Names op = (M.Map String (Graph.Var op), M.Map (Graph.Var op) String)
-type STN op = State (Names op)
+type STN op = State (Names op, String)
 freshName :: STN op String
 freshName = do
-  maybeLast <- gets $ M.lookupMax . fst
-  case maybeLast of
-    Nothing -> return "a"
-    Just (name, _) -> return $ increment name
+  modify $ second increment
+  gets snd
   where
     -- "a" to "z", followed by "za" to "zz", then "zza" to "zzz", etc.
-    -- This method isn't _optimal_ in that all non-final letters are always 'z',
+    -- This method isn't optimal in that all non-final letters are always 'z',
     -- but at least `M.lookupMax` does work and we get 26 options per length.
     -- I believe the limit is a variable name of 256 characters, which allows us
-    -- 6656 distinct variables at the moment. TODO improve once we get there,
-    -- by explicitly keeping track of the last name in the state.
-    increment "" = "a"
+    -- 6656 distinct variables at the moment. TODO improve if we hit the limit
     increment (char:cs)
       | ord char < ord 'z' = toEnum (ord char + 1) : cs
-      | otherwise = char : increment cs
+      | otherwise = 'a' : increment cs
+    increment "" = "a"
 
 var :: MakesILP op => Graph.Var op -> STN op MIP.Var
 var v = do
-  maybeName <- gets $ (M.!? v) . snd
+  maybeName <- gets $ (M.!? v) . snd . fst
   case maybeName of
     Just name -> return $ toVar name
     Nothing -> do
       name <- freshName
-      modify $ bimap (M.insert name v) (M.insert v name)
+      modify $ first $ bimap (M.insert name v) (M.insert v name)
       return $ toVar name
 
 unvar :: MakesILP op => MIP.Var -> Reader (Names op) (Maybe (Graph.Var op))
