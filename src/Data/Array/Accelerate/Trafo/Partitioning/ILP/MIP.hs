@@ -34,10 +34,10 @@ import Data.Char (ord)
 import Data.Maybe (mapMaybe)
 import Control.Monad.State
 import Control.Monad.Reader
-
+-- import qualified Debug.Trace
 
 instance (MakesILP op, MIP.IsSolver s IO) => ILPSolver s op where
-  solve s (ILP dir obj constr bnds n) = {-Debug.Trace.traceShow problem $-} makeSolution names <$> MIP.solve s options problem
+  solve s (ILP dir obj constr bnds n) = makeSolution names <$> MIP.solve s options problem
     where
       options = MIP.SolveOptions{ MIP.solveTimeLimit   = Nothing
                                 , MIP.solveLogger      = putStrLn . ("AccILPSolver: "      ++)
@@ -88,19 +88,13 @@ allIntegers = gets $ M.fromList . map ((,IntegerVariable) . toVar) . M.keys . fs
 
 -- Apparently, solvers don't appreciate variable names longer than 255 characters!
 -- Instead, we generate small placeholders here and store their meaning
-
 type Names op = (M.Map String (Graph.Var op), M.Map (Graph.Var op) String)
 type STN op = State (Names op, String)
 freshName :: STN op String
 freshName = do
   modify $ second increment
-  gets snd
+  gets $ ('x':) . snd -- to avoid generating keywords, we simply prepend every name with an 'x'. This still leaves 26^254 options, more than enough!
   where
-    -- "a" to "z", followed by "za" to "zz", then "zza" to "zzz", etc.
-    -- This method isn't optimal in that all non-final letters are always 'z',
-    -- but at least `M.lookupMax` does work and we get 26 options per length.
-    -- I believe the limit is a variable name of 256 characters, which allows us
-    -- 6656 distinct variables at the moment. TODO improve if we hit the limit
     increment (char:cs)
       | ord char < ord 'z' = toEnum (ord char + 1) : cs
       | otherwise = 'a' : increment cs
