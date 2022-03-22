@@ -24,7 +24,8 @@
 --
 
 module Data.Array.Accelerate.Trafo.Operation.Simplify (
-  simplify, simplifyFun, SimplifyOperation(..), CopyOperation(..), copyOperationsForArray, detectMapCopies
+  simplify, simplifyFun, SimplifyOperation(..), CopyOperation(..),
+  copyOperationsForArray, detectMapCopies, detectBackpermuteCopies
 ) where
 
 import Data.Array.Accelerate.AST.Environment
@@ -70,10 +71,10 @@ copyOperationsForArray (ArgArray _ (ArrayR _ tp) _ input) (ArgArray _ _ _ output
       | Refl <- reprIsSingle @ScalarType @s @Buffer t = (CopyOperation input' output' :)
     go _ _ _ = id
 
-detectMapCopies :: forall genv sh t s. Fun genv (t -> s) -> Arg genv (In sh t) -> Arg genv (Out sh s) -> [CopyOperation genv]
-detectMapCopies (Lam lhs (Body body)) (ArgArray _ _ _ input) (ArgArray _ _ _ output)
+detectMapCopies :: forall genv sh t s. Args genv (Fun' (t -> s) -> In sh t -> Out sh s -> ()) -> [CopyOperation genv]
+detectMapCopies (ArgFun (Lam lhs (Body body)) :>: ArgArray _ _ _ input :>: ArgArray _ _ _ output :>: ArgsNil)
   = detectMapCopies' lhs body input output
-detectMapCopies _ _ _ = internalError "Function impossible"
+detectMapCopies _ = internalError "Function impossible"
 
 detectMapCopies' :: forall genv env t s. ELeftHandSide t () env -> OpenExp env genv s -> GroundVars genv (Buffers t) -> GroundVars genv (Buffers s) -> [CopyOperation genv]
 detectMapCopies' lhs body input output = go Just body output []
@@ -103,6 +104,11 @@ detectMapCopies' lhs body input output = go Just body output []
       Right buffer -> Right buffer
     findInput' _ _ _ = internalError "Tuple mismatch"
 
+detectBackpermuteCopies :: forall env sh sh' t. (forall t t'. GroundVars env t -> GroundVars env t' -> Maybe (t :~: t')) -> Args env (Fun' (sh' -> sh) -> In sh t -> Out sh' t -> ()) -> [CopyOperation env]
+detectBackpermuteCopies matchVars'' (ArgFun f :>: input@(ArgArray _ _ sh _) :>: output@(ArgArray _ _ sh' _) :>: ArgsNil)
+  | Just Refl <- matchVars'' sh sh'
+  , Just Refl <- isIdentity f = copyOperationsForArray input output
+detectBackpermuteCopies _ _ = []
 
 data Info env t where
   InfoConst    :: t         -> Info env t -- A constant scalar

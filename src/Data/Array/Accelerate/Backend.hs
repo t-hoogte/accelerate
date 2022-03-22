@@ -30,6 +30,25 @@ module Data.Array.Accelerate.Backend (
   run, runWith,
   run1, run1With,
   runN, runNWith,
+
+  -- Type classes that a backend should implement:
+  Desugar.DesugarAcc(..),
+
+  Operation.SLVOperation(..),
+  Operation.SubArgs(..), Operation.SubArg(..),
+  Operation.defaultSlvGenerate, Operation.defaultSlvMap, Operation.defaultSlvBackpermute,
+
+  Operation.SimplifyOperation(..),
+  Operation.CopyOperation(..),
+  Operation.detectMapCopies, Operation.detectBackpermuteCopies, Operation.copyOperationsForArray,
+
+  Partitioning.MakesILP(..),
+  IsSchedule(..),
+  IsKernel(..),
+  Pretty.PrettyOp(..),
+  Execute(..),
+  Operation.NFData'(..),
+  Operation.ShrinkArg(..),
 ) where
 
 import qualified Data.Array.Accelerate.Smart as Smart

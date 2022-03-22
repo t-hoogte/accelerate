@@ -52,7 +52,7 @@ import qualified Data.Array.Accelerate.AST.Partitioned as P
 import Data.Array.Accelerate.AST.Operation
 import Data.Array.Accelerate.AST.Kernel
 import Data.Array.Accelerate.Trafo.Desugar
-import Data.Array.Accelerate.Trafo.Operation.Simplify (SimplifyOperation(..), copyOperationsForArray, detectMapCopies)
+import Data.Array.Accelerate.Trafo.Operation.Simplify (SimplifyOperation(..), copyOperationsForArray, detectMapCopies, detectBackpermuteCopies)
 import qualified Data.Array.Accelerate.Debug.Internal as Debug
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Error
@@ -306,36 +306,15 @@ mkAppend side i a b c = Exec (IAppend side i) (a :>: b :>: c :>: ArgsNil)
 -- mkBackpermuteOr a b c d = Exec IBackpermuteOr (a :>: b :>: c :>: d :>: ArgsNil)
 
 instance SimplifyOperation InterpretOp where
-  detectCopy _ IMap (ArgFun f :>: input :>: output :>: ArgsNil)
-    = detectMapCopies f input output
-  detectCopy matchVars' IBackpermute (ArgFun f :>: input@(ArgArray _ _ sh _) :>: output@(ArgArray _ _ sh' _) :>: ArgsNil)
-    | Just Refl <- matchVars'  sh sh'
-    , Just Refl <- isIdentity f = copyOperationsForArray input output
-  detectCopy _ _ _ = []
+  detectCopy _          IMap         = detectMapCopies
+  detectCopy matchVars' IBackpermute = detectBackpermuteCopies matchVars'
+  detectCopy _ _                     = const []
 
 instance SLVOperation InterpretOp where
-  slvOperation IGenerate = Just $ ShrinkOperation $ \subArgs args@(ArgFun f :>: array :>: ArgsNil) _ -> case subArgs of
-    SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgsNil
-      -> ShrunkOperation IGenerate args
-    SubArgKeep `SubArgsLive` SubArgOut subTup `SubArgsLive` SubArgsNil
-      -> ShrunkOperation IGenerate (ArgFun (subTupFun subTup f) :>: array :>: ArgsNil)
-    _ `SubArgsLive` SubArgsDead _ -> internalError "At least one output should be preserved"
-
-  slvOperation IMap = Just $ ShrinkOperation $ \subArgs args@(ArgFun f :>: input :>: output :>: ArgsNil) _ -> case subArgs of
-    SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgsNil
-      -> ShrunkOperation IMap args
-    SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgOut subTup `SubArgsLive` SubArgsNil
-      -> ShrunkOperation IMap (ArgFun (subTupFun subTup f) :>: input :>: output :>: ArgsNil)
-    _ `SubArgsLive` _ `SubArgsLive` SubArgsDead _ -> internalError "At least one output should be preserved"
-
-  slvOperation IBackpermute = Just $ ShrinkOperation $ \subArgs args@(f :>: ArgArray In (ArrayR shr r) sh buf :>: output :>: ArgsNil) _ -> case subArgs of
-    SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgsNil
-      -> ShrunkOperation IBackpermute args
-    SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgOut s `SubArgsLive` SubArgsNil
-      -> ShrunkOperation IBackpermute (f :>: ArgArray In (ArrayR shr (subTupR s r)) sh (subTupDBuf s buf) :>: output :>: ArgsNil)
-    _ `SubArgsLive` _ `SubArgsLive` SubArgsDead _ -> internalError "At least one output should be preserved"
-
-  slvOperation _ = Nothing -- TODO write for all constructors, and also, remind @IVO to make SLV support Nothing
+  slvOperation IGenerate    = defaultSlvGenerate    IGenerate
+  slvOperation IMap         = defaultSlvMap         IMap
+  slvOperation IBackpermute = defaultSlvBackpermute IBackpermute
+  slvOperation _            = Nothing
 
 data InterpretKernel env where
   InterpretKernel :: Cluster InterpretOp args -> Args env args -> InterpretKernel env
