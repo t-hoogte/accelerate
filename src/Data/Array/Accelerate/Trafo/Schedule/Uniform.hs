@@ -66,7 +66,6 @@ import Control.Category
 import Control.DeepSeq
 import qualified Data.Array.Accelerate.AST.Environment as Env
 import Control.Concurrent
-import Control.Concurrent.MVar
 import Data.IORef
 import System.IO.Unsafe (unsafePerformIO)
 
@@ -485,7 +484,7 @@ defineOutput (TupRsingle (GroundRbuffer tp)) _ = DefineOutput env subst value
 
     subst = weakenSucc $ weakenSucc $ weakenSucc weakenId
 
-    value :: forall fenv''. ((((fenv, OutputRef t), SignalResolver), SignalResolver)) :> fenv'' -> BaseVars fenv'' ((SignalResolver, SignalResolver), OutputRef t)
+    value :: forall fenv''. (((fenv, OutputRef t), SignalResolver), SignalResolver) :> fenv'' -> BaseVars fenv'' ((SignalResolver, SignalResolver), OutputRef t)
     value k = (TupRsingle (Var BaseRsignalResolver $ k >:> ZeroIdx) `TupRpair` TupRsingle (Var BaseRsignalResolver $ k >:> SuccIdx ZeroIdx)) `TupRpair` TupRsingle (Var (BaseRrefWrite $ GroundRbuffer tp) (k >:> SuccIdx (SuccIdx ZeroIdx)))
 defineOutput (TupRsingle (GroundRscalar tp)) _ = DefineOutput env subst value
   where
@@ -529,7 +528,7 @@ data ConvertEnvRead kernel genv fenv1 where
 -- Void data type with orphan type argument.
 -- Used to mark that a variable of the ground environment is used.
 --
-data FutureRef fenv t = FutureRef (BaseVar fenv (Ref t))
+newtype FutureRef fenv t = FutureRef (BaseVar fenv (Ref t))
 
 convertEnvRefs :: forall genv fenv fenv'. ConvertEnv genv fenv fenv' -> PartialEnv (FutureRef fenv') genv
 convertEnvRefs env = partialEnvFromList const $ snd $ go weakenId env []
@@ -622,7 +621,7 @@ convertEnvReadonlyVar var@(Var tp _)
     where
       future = ConvertEnvFuture var
 
-convertEnvFromList :: [Exists (Var AccessGroundR genv)] -> Exists (ConvertEnv genv fenv) 
+convertEnvFromList :: [Exists (Var AccessGroundR genv)] -> Exists (ConvertEnv genv fenv)
 convertEnvFromList [] = Exists ConvertEnvNil
 convertEnvFromList [Exists var]
   | Exists e1 <- convertEnvVar var
@@ -813,14 +812,14 @@ partialSchedule = (\(s, used, _) -> (s, used)) . travA (TupRsingle Shared)
         = let
             signals = convertEnvSignals env
             resolvers = convertEnvSignalResolvers k env
-            
+
           in
             ( PartialDo PartialDoOutputUnit env
                 $ await signals
                 $ inputBindings
                 $ Effect (Exec kernel sargs)
                 $ resolve resolvers
-                $ Return
+                  Return
             , IdxSet.fromList $ convertEnvToList env
             , TupRunit
             )
@@ -940,7 +939,7 @@ compileKernel' cluster args =
   go
     (partialEnvFromList combineAccessGroundR (map (\(Exists (Var tp ix)) -> EnvBinding ix tp) vars))
     weakenId
-    (flip const)
+    (\ _ x -> x)
   where
     vars = argsVars args
 
@@ -1093,7 +1092,7 @@ subFutureEnvironment PEnd (PNone senv) = (PNone fenv', actions)
   where
     (fenv', actions) = subFutureEnvironment PEnd senv
 subFutureEnvironment PEnd _ = (PEnd, [])
-subFutureEnvironment (PPush fenv f@(FutureScalar _ _ _)) senv = (PPush fenv' f, actions)
+subFutureEnvironment (PPush fenv f@FutureScalar{}) senv = (PPush fenv' f, actions)
   where
     (fenv', actions) = subFutureEnvironment fenv $ partialEnvTail senv
 subFutureEnvironment (PPush fenv f@(FutureBuffer tp signal ref read write)) (PPush senv sync) = (PPush fenv' f', action ++ actions)
@@ -1150,7 +1149,7 @@ data ChainFutureEnv kernel fenv genv where
 
 chainFutureEnvironment :: fenv :> fenv' -> FutureEnv fenv genv -> SyncEnv genv -> SyncEnv genv -> ChainFutureEnv kernel fenv' genv
 chainFutureEnvironment _ PEnd PEnd PEnd = ChainFutureEnv id weakenId PEnd PEnd
-chainFutureEnvironment k (PPush fenv f@(FutureScalar _ _ _)) senvLeft senvRight
+chainFutureEnvironment k (PPush fenv f@FutureScalar{}) senvLeft senvRight
   | ChainFutureEnv instr k1 fenvLeft fenvRight <- chainFutureEnvironment k fenv (partialEnvTail senvLeft) (partialEnvTail senvRight)
   = ChainFutureEnv instr k1 (PPush fenvLeft $ weaken (k1 .> k) f) (PPush fenvRight $ weaken (k1 .> k) f)
 -- Used in both subterms
@@ -1209,7 +1208,7 @@ chainFuture f@(FutureBuffer _ _ _ (Move _) mwrite) SyncRead SyncRead
 chainFuture (FutureBuffer tp signal ref (Borrow s r) mwrite) SyncRead SyncRead
   | Just _ <- mwrite = internalError "Expected a FutureBuffer without write lock"
   | Nothing <- mwrite
-  = ChainFuture 
+  = ChainFuture
       -- Create a pair of signal and resolver for both subterms.
       -- Fork a thread which will resolve the final read signal when the two
       -- new signals have been resolved.
@@ -1238,9 +1237,9 @@ chainFuture (FutureBuffer tp signal ref (Borrow s r) mwrite) SyncRead SyncRead
     k = weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId
 
     signal1   = SuccIdx $ SuccIdx $ SuccIdx ZeroIdx
-    resolver1 = SuccIdx $ SuccIdx $ ZeroIdx
-    signal2   = SuccIdx $ ZeroIdx
-    resolver2 = ZeroIdx
+    resolver1 =           SuccIdx $ SuccIdx ZeroIdx
+    signal2   =                     SuccIdx ZeroIdx
+    resolver2 =                             ZeroIdx
 
 -- Write before read, without release
 --          Left     Right
@@ -1263,7 +1262,7 @@ chainFuture (FutureBuffer tp signal ref (Move readSignal) (Just (Move writeSigna
           (weaken k signal)
           (weaken k ref)
           (Move $ weaken k readSignal)
-          (Just $ Borrow (weaken k $ writeSignal) writeResolver)
+          (Just $ Borrow (weaken k writeSignal) writeResolver)
       )
       ( FutureBuffer
           tp
@@ -1274,7 +1273,7 @@ chainFuture (FutureBuffer tp signal ref (Move readSignal) (Just (Move writeSigna
       )
   where
     k = weakenSucc $ weakenSucc weakenId
-    writeSignal2  = SuccIdx $ ZeroIdx
+    writeSignal2  = SuccIdx ZeroIdx
     writeResolver = ZeroIdx
 
 -- Write before read
@@ -1320,11 +1319,11 @@ chainFuture (FutureBuffer tp signal ref (Borrow readSignal readRelease) (Just (B
     k = weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId
 
     signal1   = SuccIdx $ SuccIdx $ SuccIdx $ SuccIdx $ SuccIdx ZeroIdx
-    resolver1 = SuccIdx $ SuccIdx $ SuccIdx $ SuccIdx $ ZeroIdx
-    signal2   = SuccIdx $ SuccIdx $ SuccIdx $ ZeroIdx
-    resolver2 = SuccIdx $ SuccIdx $ ZeroIdx
-    signal3   = SuccIdx $ ZeroIdx
-    resolver3 = ZeroIdx
+    resolver1 =           SuccIdx $ SuccIdx $ SuccIdx $ SuccIdx ZeroIdx
+    signal2   =                     SuccIdx $ SuccIdx $ SuccIdx ZeroIdx
+    resolver2 =                               SuccIdx $ SuccIdx ZeroIdx
+    signal3   =                                         SuccIdx ZeroIdx
+    resolver3 =                                                 ZeroIdx
 
 -- Write before read, with a write release
 --          Left     Right
@@ -1362,7 +1361,7 @@ chainFuture (FutureBuffer tp signal ref (Move readSignal) (Just (Borrow writeSig
       )
   where
     k = weakenSucc $ weakenSucc weakenId
-    signal1   = SuccIdx $ ZeroIdx
+    signal1   = SuccIdx ZeroIdx
     resolver1 = ZeroIdx
 
 -- Invalid cases of write-before-read
@@ -1407,15 +1406,15 @@ chainFuture (FutureBuffer tp signal ref read mwrite) SyncRead SyncWrite
           (weaken k signal)
           (weaken k ref)
           (weaken' k read)
-          (Just $ setLockSignal signal2 $ weaken' k write)          
+          (Just $ setLockSignal signal2 $ weaken' k write)
       )
   where
     k = weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId
 
     signal1   = SuccIdx $ SuccIdx $ SuccIdx ZeroIdx
-    resolver1 = SuccIdx $ SuccIdx $ ZeroIdx
-    signal2   = SuccIdx $ ZeroIdx
-    resolver2 = ZeroIdx
+    resolver1 =           SuccIdx $ SuccIdx ZeroIdx
+    signal2   =                     SuccIdx ZeroIdx
+    resolver2 =                             ZeroIdx
 
 -- Write before write
 --          Left     Right
@@ -1451,10 +1450,10 @@ chainFuture (FutureBuffer tp signal ref read mwrite) SyncWrite SyncWrite
   where
     k = weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId
 
-    signal1   = SuccIdx $ SuccIdx $ SuccIdx $ ZeroIdx
-    resolver1 = SuccIdx $ SuccIdx $ ZeroIdx
-    signal2   = SuccIdx $ ZeroIdx
-    resolver2 = ZeroIdx
+    signal1   = SuccIdx $ SuccIdx $ SuccIdx ZeroIdx
+    resolver1 =           SuccIdx $ SuccIdx ZeroIdx
+    signal2   =                     SuccIdx ZeroIdx
+    resolver2 =                             ZeroIdx
 
 -- Data type for the existentially qualified type variable fenv' used in loopFutureEnvironment
 -- This is split in 3 data types, as we must introduce variables in the input arguments,
@@ -1628,12 +1627,12 @@ loopFuture _ k01 (FutureBuffer tp signal ref readLock (Just writeLock)) (Just Sy
           (LeftHandSideSingle BaseRsignalResolver `LeftHandSidePair` LeftHandSideSingle BaseRsignalResolver)
           $ \k45 ->
             let
-              instr = \i ->
-                Alet lhsSignal NewSignal -- Signal denotes whether the condition has finished reading the array
-                  $ Alet lhsSignal NewSignal -- Signal denotes whether the condition has finished writing the array
-                  i
+              instr =
+                  Alet lhsSignal NewSignal -- Signal denotes whether the condition has finished reading the array
+                . Alet lhsSignal NewSignal -- Signal denotes whether the condition has finished writing the array
 
-              k56 = weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc $ weakenId
+
+              k56 = weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId
               k46 = k56 .> k45
               k26 = k46 .> weakenSucc (weakenSucc weakenId) .> k23
               k = k26 .> weakenSucc (weakenSucc weakenId) .> k01
@@ -1750,9 +1749,8 @@ loopFuture _ k01 (FutureBuffer tp signal ref readLock (Just writeLock)) (Just Sy
                   $ Fork i
                   $ -- The step may start writing to the array when the previous iteration has granted
                     -- write access and the condition has finished reading from the array. 
-                    ( Effect (SignalAwait [k26 >:> ZeroIdx, SuccIdx $ SuccIdx $ SuccIdx ZeroIdx])
-                    $ Effect (SignalResolve [ZeroIdx]) Return
-                    )
+                    Effect (SignalAwait [k26 >:> ZeroIdx, SuccIdx $ SuccIdx $ SuccIdx ZeroIdx])
+                           (Effect (SignalResolve [ZeroIdx]) Return)
 
               k56 = weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId
               k46 = k56 .> k45
@@ -1962,7 +1960,7 @@ loopFuture resolved k01 (FutureBuffer tp signal ref (Borrow acquireRead releaseR
                 -- threads waiting on this signal can proceed; they don't have to wait
                 -- on the step function to finish.
                 | otherwise = Effect (SignalAwait [k26 >:> ZeroIdx]) $ Effect (SignalResolve [k >:> releaseRead, ZeroIdx]) Return
-              k56 = weakenSucc $ weakenSucc $ weakenId
+              k56 = weakenSucc $ weakenSucc  weakenId
               k46 = k56 .> k45
               k26 = k46 .> weakenSucc weakenId .> k23
               k = k26 .> weakenSucc weakenId .> k01
@@ -2020,7 +2018,7 @@ lhsRef tp = LeftHandSidePair (LeftHandSideSingle $ BaseRref tp) (LeftHandSideSin
 -- destination of this program. Hence x shouldn't be present in the FutureEnv
 -- when compiling 'code'. We store x in ReusedVars to handle this.
 --
-newtype ReusedVars genv = ReusedVars { reusedVarsSet :: (IdxSet genv) }
+newtype ReusedVars genv = ReusedVars { reusedVarsSet :: IdxSet genv }
 
 removeReusedVars :: ReusedVars genv -> SyncEnv genv -> SyncEnv genv
 removeReusedVars (ReusedVars (IdxSet.IdxSet reused)) env = diffPartialEnv env reused
@@ -2090,7 +2088,7 @@ fromPartial outputEnv outputVars env reused = \case
         k idx = Identity $ prj' idx kEnv'
       in
         runIdentity $ reindexSchedule k schedule -- Something with a substitution
-    PartialReturn _ vars -> travReturn vars 
+    PartialReturn _ vars -> travReturn vars
     PartialDeclare _ lhs dest uniquenesses bnd body
       | reused' <- lhsReusedVars lhs dest reused
       , ChainFutureEnv splitInstr k1 envBnd envBody <- chainFutureEnvironment weakenId env (syncEnv' reused bnd) (environmentDropLHS (syncEnv' reused' body) lhs)
@@ -2105,7 +2103,7 @@ fromPartial outputEnv outputVars env reused = \case
     PartialAwhile _ uniquenesses condition step initial -> awhile uniquenesses condition step initial
   where
     travReturn :: GroundVars genv t -> UniformSchedule kernel fenv
-    travReturn vars = forks ((\(signals, s) -> await signals s) <$> travReturn' outputEnv outputVars vars [])
+    travReturn vars = forks (uncurry await <$> travReturn' outputEnv outputVars vars [])
 
     travReturn' :: OutputEnv t' r' -> BaseVars fenv r' -> GroundVars genv t' -> [([Idx fenv Signal], UniformSchedule kernel fenv)] -> [([Idx fenv Signal], UniformSchedule kernel fenv)]
     travReturn' (OutputEnvPair o1 o2) (TupRpair r1 r2) (TupRpair v1 v2) accum = travReturn' o1 r1 v1 $ travReturn' o2 r2 v2 accum
@@ -2118,7 +2116,7 @@ fromPartial outputEnv outputVars env reused = \case
             , Alet (LeftHandSideSingle $ BaseRground tp) (RefRead $ Var (BaseRref tp) ref)
               $ Effect (RefWrite (weaken (weakenSucc weakenId) destRef) (Var (BaseRground tp) ZeroIdx))
               $ Effect (SignalResolve [weakenSucc weakenId >:> varIdx destSignal])
-              $ Return
+                Return
             )
           Just FutureBuffer{} -> bufferImpossible tp'
     travReturn' OutputEnvShared (TupRpair (TupRsingle destSignalRef `TupRpair` TupRsingle destSignalRead) (TupRsingle destRef)) (TupRsingle (Var tp ix)) accum = task : accum
@@ -2133,7 +2131,7 @@ fromPartial outputEnv outputVars env reused = \case
               $ Effect (SignalResolve [weakenSucc weakenId >:> varIdx destSignalRef])
               $ Effect (SignalAwait [weakenSucc weakenId >:> lockSignal readAccess])
               $ Effect (SignalResolve [weakenSucc weakenId >:> varIdx destSignalRead])
-              $ Return
+                Return
             )
     travReturn' OutputEnvUnique (TupRpair (TupRpair (TupRsingle destSignalRef `TupRpair` TupRsingle destSignalRead) (TupRsingle destSignalWrite)) (TupRsingle destRef)) (TupRsingle (Var tp ix)) accum = task : accum
       where
@@ -2150,7 +2148,7 @@ fromPartial outputEnv outputVars env reused = \case
               $ Effect (SignalResolve [weakenSucc weakenId >:> varIdx destSignalRead])
               $ Effect (SignalAwait [weakenSucc weakenId >:> lockSignal writeAccess])
               $ Effect (SignalResolve [weakenSucc weakenId >:> varIdx destSignalWrite])
-              $ Return
+                Return
             )
     -- Destination was reused. No need to copy
     travReturn' OutputEnvIgnore _ _ accum = accum
@@ -2185,7 +2183,7 @@ debugFutureEnv :: FutureEnv fenv genv -> String
 debugFutureEnv (PPush env e) = debugFutureEnv env ++ " " ++ e'
   where
     e' = case e of
-      FutureScalar _ _ _ -> "S"
+      FutureScalar{} -> "S"
       FutureBuffer _ _ _ _ Nothing -> "R"
       FutureBuffer _ _ _ _ Just{}  -> "W"
 debugFutureEnv (PNone env) = debugFutureEnv env ++ " _"
@@ -2264,7 +2262,7 @@ fromPartialAwhile outputEnv outputVars env reused uniquenesses conditionFun@(Pla
   -- loop state which is actually used: it might be that lhsC and lhsS
   -- do not bind all variables and have wildcards at different locations.
   , envC <- environmentForSubLHS (envLambdaInput (k5 .> k4 .> k3 .> weakenSucc' (weakenSucc' k2)) envC') groundLhs lhsC
-  , envS <- environmentForSubLHS (envLambdaInput (k5 .> k4 .> k3 .> weakenSucc' (weakenSucc' k2)) envS') groundLhs lhsS 
+  , envS <- environmentForSubLHS (envLambdaInput (k5 .> k4 .> k3 .> weakenSucc' (weakenSucc' k2)) envS') groundLhs lhsS
   = let
       -- Create the loop function:
       -- Accept arguments for the input state (and additional signals in the
@@ -2419,7 +2417,7 @@ awhileInputOutput env0 env (TupRsingle uniqueness) (TupRsingle (Var groundR idx)
           `TupRpair`
           TupRsingle (Var (BaseRref $ GroundRbuffer tp') ref)
         Just (FutureBuffer _ _ _ _ Nothing) -> internalError "Expected a Future with write permissions."
-        Just (FutureBuffer _ _ _ _ _) -> internalError "Expected Move. Cannot Borrow a variable into a loop."
+        Just FutureBuffer{} -> internalError "Expected Move. Cannot Borrow a variable into a loop."
         Just _ -> internalError "Illegal variable"
         Nothing -> internalError "Variable not found"
     in
@@ -2429,7 +2427,7 @@ awhileInputOutput env0 env (TupRsingle uniqueness) (TupRsingle (Var groundR idx)
         (weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc weakenId)
         (LeftHandSideSingle BaseRsignal `LeftHandSidePair` LeftHandSideSingle BaseRsignal `LeftHandSidePair` LeftHandSideSingle BaseRsignal `LeftHandSidePair` LeftHandSideSingle (BaseRref groundR))
         (\k -> env (weakenSucc $ weakenSucc $ weakenSucc $ weakenSucc k) `PPush`
-                FutureBuffer tp (k >:> SuccIdx (SuccIdx $ SuccIdx $ ZeroIdx)) (k >:> ZeroIdx) (Move (k >:> SuccIdx (SuccIdx ZeroIdx))) (Just $ Move (k >:> SuccIdx ZeroIdx)))
+                FutureBuffer tp (k >:> SuccIdx (SuccIdx $ SuccIdx ZeroIdx)) (k >:> ZeroIdx) (Move (k >:> SuccIdx (SuccIdx ZeroIdx))) (Just $ Move (k >:> SuccIdx ZeroIdx)))
         initial
         -- Output
         OutputEnvUnique
@@ -2480,8 +2478,8 @@ awhileInputOutput env0 env (TupRsingle uniqueness) (TupRsingle (Var groundR idx)
         (TupRsingle BaseRsignalResolver `TupRpair` TupRsingle (BaseRrefWrite groundR))
 awhileInputOutput env0 env uniquenesses vars (LeftHandSideWildcard (TupRsingle groundR))
   | AwhileInputOutput io k lhs env' i outputEnv g <- awhileInputOutput env0 env uniquenesses vars (LeftHandSideSingle groundR)
-  = AwhileInputOutput io k lhs (\k' -> partialEnvTail $ env' k') i outputEnv g
-awhileInputOutput env0 env (TupRsingle Shared) vars lhs@(LeftHandSidePair{})
+  = AwhileInputOutput io k lhs (partialEnvTail . env') i outputEnv g
+awhileInputOutput env0 env (TupRsingle Shared) vars lhs@LeftHandSidePair{}
   = awhileInputOutput env0 env (TupRsingle Shared `TupRpair` TupRsingle Shared) vars lhs
 awhileInputOutput _ _ _ _ _ = internalError "Mismatch in GroundVars and LeftHandSide"
 
@@ -2547,10 +2545,10 @@ awhileWriteResult = \env resVars io vars -> go env resVars io vars []
       $ Effect (SignalResolve [weaken k $ varIdx resReadAccess])
       $ Effect (SignalAwait [weaken k $ varIdx writeAccess])
       $ Effect (SignalResolve [weaken k $ varIdx resWriteAccess])
-      $ Return
+        Return
       | otherwise = internalError "Mismatch with unique buffer"
       where
-        k = weakenSucc $ weakenId
+        k = weakenSucc weakenId
         ground = case varType resRef of
                    BaseRrefWrite t -> t
                    _ -> internalError "Mismatch in BaseR"
@@ -2567,7 +2565,7 @@ awhileWriteResult = \env resVars io vars -> go env resVars io vars []
       $ Effect (SignalResolve [weaken k $ varIdx resSignal])
       $ Effect (SignalAwait [weaken k $ varIdx readAccess])
       $ Effect (SignalResolve [weaken k $ varIdx resReadAccess])
-      $ Return
+        Return
     -- Internally unique buffer to shared buffer in result
       | InputOutputRpair (InputOutputRpair (InputOutputRpair InputOutputRsignal InputOutputRsignal) InputOutputRsignal) InputOutputRref <- io
       , TupRsingle signal `TupRpair` TupRsingle readAccess `TupRpair` _ `TupRpair` TupRsingle ref <- input
@@ -2578,7 +2576,7 @@ awhileWriteResult = \env resVars io vars -> go env resVars io vars []
           (TupRsingle signal `TupRpair` TupRsingle readAccess `TupRpair` TupRsingle ref)
       | otherwise = internalError "Mismatch with unique buffer"
       where
-        k = weakenSucc $ weakenId
+        k = weakenSucc weakenId
         ground = case varType resRef of
                    BaseRrefWrite t -> t
                    _ -> internalError "Mismatch in BaseR"
@@ -2593,9 +2591,9 @@ awhileWriteResult = \env resVars io vars -> go env resVars io vars []
       $ Alet (LeftHandSideSingle $ BaseRground ground) (RefRead ref)
       $ Effect (RefWrite (weaken k resRef) $ Var (BaseRground ground) ZeroIdx)
       $ Effect (SignalResolve [weaken k $ varIdx resSignal])
-      $ Return
+        Return
       where
-        k = weakenSucc $ weakenId
+        k = weakenSucc weakenId
     go OutputEnvIgnore _ _ _ = (Return :)
     go _ _ _ _ = internalError "OutputEnv and InputOutputR don't match"
 
@@ -2645,7 +2643,7 @@ partialDoSubstituteConvertEnv (ConvertEnvFuture var) fenv env
         | FutureBuffer _ s r _ _ <- future = (s, r)
     in
       env `Push` NewIdxJust signal `Push` NewIdxJust ref
-  | otherwise = internalError $ "Requested access to a variable " % (fromString $ show $ idxToInt $ varIdx var) % " of type " % fromString (show $ prettyGroundR $ varType var) % ", but the Future was not found in the environment"
+  | otherwise = internalError $ "Requested access to a variable " % fromString (show $ idxToInt $ varIdx var) % " of type " % fromString (show $ prettyGroundR $ varType var) % ", but the Future was not found in the environment"
 
 data DeclareInput fenv genv' t where
   DeclareInput :: fenv :> fenv'
@@ -2685,7 +2683,7 @@ declareInput = \fenv -> go (\k -> mapPartialEnv (weaken k) fenv)
                         tp
                         (k' >:> SuccIdx ZeroIdx)
                         (k' >:> ZeroIdx)
-                        (Move $ (k' >:> (SuccIdx ZeroIdx)))
+                        (Move (k' >:> SuccIdx ZeroIdx))
                         Nothing)
 
 data DeclareOutput kernel fenv t where
@@ -2796,7 +2794,7 @@ declareBinding retOutputEnv retOutputVars = \fenv -> go weakenId (\k -> mapParti
           id
           outputEnv
           (\k' -> mapTupR (weaken (k' .> k)) outputVars)
-          (\k' -> PNone $ fenv k')
+          (PNone . fenv)
           (const Nothing)
     go _ fenv (LeftHandSideSingle (GroundRscalar tp)) _ _
       = DeclareBinding
@@ -2816,7 +2814,7 @@ declareBinding retOutputEnv retOutputVars = \fenv -> go weakenId (\k -> mapParti
         instr
           = Alet lhsSignal NewSignal
           . Alet (lhsRef $ GroundRscalar tp) (NewRef $ GroundRscalar tp)
-        
+
         idx0 = ZeroIdx
         idx1 = SuccIdx ZeroIdx
         idx2 = SuccIdx $ SuccIdx ZeroIdx
@@ -2849,7 +2847,7 @@ declareBinding retOutputEnv retOutputVars = \fenv -> go weakenId (\k -> mapParti
           . Alet lhsSignal NewSignal -- Signal to grant read access to the array (idx5, idx4)
           . Alet lhsSignal NewSignal -- Signal to grant write access to the array (idx3, idx2)
           . Alet (lhsRef $ GroundRbuffer tp) (NewRef $ GroundRbuffer tp) -- (idx1, idx0)
-        
+
         idx0 = ZeroIdx
         idx1 = SuccIdx ZeroIdx
         idx2 = SuccIdx $ SuccIdx ZeroIdx
@@ -2882,7 +2880,7 @@ declareBinding retOutputEnv retOutputVars = \fenv -> go weakenId (\k -> mapParti
           = Alet lhsSignal NewSignal
           . Alet lhsSignal NewSignal
           . Alet (lhsRef $ GroundRbuffer tp) (NewRef $ GroundRbuffer tp)
-        
+
         idx0 = ZeroIdx
         idx1 = SuccIdx ZeroIdx
         idx2 = SuccIdx $ SuccIdx ZeroIdx

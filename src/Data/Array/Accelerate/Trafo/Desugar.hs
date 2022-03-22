@@ -86,6 +86,7 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
     where
       ArrayR _ tp = argArrayR input
 
+  -- TODO why does this exist? Transform is an artifact of the old fusion, so should never occur (or should simply be a composition of map and backpermute, in any order)
   mkTransform   :: Arg env (Fun' (sh' -> sh))
                 -> Arg env (Fun' (s -> t))
                 -> Arg env (In sh s)
@@ -106,7 +107,7 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
                 -> OperationAcc op env ()
   mkShrink input@( ArgArray _ (ArrayR shr _) sh1 _) 
            output@(ArgArray _ _              sh2 _) = if isJust (matchVars sh1 sh2)
-             then error "got here" --mkCopy input output 
+             then mkCopy input output 
              else mkBackpermute (ArgFun $ identity $ shapeType shr) input output
 
   -- Copies a buffer. This is used before passing a buffer to a 'Mut' argument,
@@ -604,7 +605,7 @@ desugarOpenAcc env = travA
                 Just Refl ->
                     aletUnique lhsOut' (desugarAlloc (ArrayR shr tp) (valueSh2 kIn2))
                   $ alet LeftHandSideUnit (mkZipWith argF' argIn1' argIn2' argOut')
-                  $ error "hello?" $ Return (sh1' `TupRpair` valueOut' weakenId)
+                  $ Return (sh1' `TupRpair` valueOut' weakenId)
                 Nothing ->
                     alet (mapLeftHandSide GroundRscalar lhsSh) (Compute $ mkIntersect shr (valueSh1 $ kIn2 .> kSh2 .> kIn1) (valueSh2 kIn2))
                   $ aletUnique lhsOut (desugarAlloc (ArrayR shr tp) (valueSh weakenId))

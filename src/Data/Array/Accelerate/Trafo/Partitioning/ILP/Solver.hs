@@ -104,6 +104,8 @@ lower :: Int -> Var op -> Bounds op
 lower = Lower
 upper :: Var op -> Int -> Bounds op
 upper = Upper
+equal :: Int -> Var op -> Bounds op
+equal x v = lowerUpper x v x
 
 -- Convenience
 (.>.)  :: Expression op -> Expression op -> Constraint op

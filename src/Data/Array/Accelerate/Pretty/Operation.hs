@@ -46,7 +46,7 @@ class PrettyOp op where
   prettyOp :: op t -> Adoc
   
   -- Only used in OperationAcc, when printing a PartitionedAcc a cluster is printed using prettyOp.
-  -- The reason is that PrettyOp (Cluster op) instance defines prettyOpWithArgs in terms of prettyOp.
+  -- The reason is that PrettyOp (Cluster' op) instance defines prettyOpWithArgs in terms of prettyOp.
   --
   prettyOpWithArgs :: Val env -> op t -> Args env t -> Adoc
   prettyOpWithArgs env op args = hang 2 $ group $ vsep [annotate Execute "execute", prettyOp op, prettyArgs env args]
@@ -95,7 +95,7 @@ prettyOpenAcc env = \case
           ]
         ]
   Awhile us condition step initial
-    -> "awhile" <+> prettyTupR (const $ prettyGroundRWithUniqueness) 10 (groundsRWithUniquenesses (mapTupR varType initial) us)
+    -> "awhile" <+> prettyTupR (const prettyGroundRWithUniqueness) 10 (groundsRWithUniquenesses (mapTupR varType initial) us)
         <> hardline <> hang 4 ("  ( " <> prettyOpenAfun env condition)
         <> hardline <> "  )"
         <> hardline <> hang 4 ("  ( " <> prettyOpenAfun env step)
@@ -146,9 +146,8 @@ prettyArrayInstr env context (Index arr) ix
     context' = Context L R 9
 prettyArrayInstr env _ (Parameter var) _ = prj (varIdx var) env
 
--- LHS
-prettyGLhs :: Val' env -> GLeftHandSide t env env' -> (Val' env', Adoc)
-prettyGLhs = prettyLhs' push Nothing False
+-- prettyGLhs :: Val' env -> GLeftHandSide t env env' -> (Val' env', Adoc)
+-- prettyGLhs = prettyLhs' push Nothing False
 
 prettyGLhsWithTypes :: Val' env -> GLeftHandSide t env env' -> (Val' env', Adoc)
 prettyGLhsWithTypes = prettyLhs' push (Just $ \(Exists t) -> prettyGroundR t) False

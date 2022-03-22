@@ -28,7 +28,7 @@
 
 module Data.Array.Accelerate.Trafo.Schedule.Uniform.Simplify (
   simplifyFun, simplify, emptySimplifyEnv,
-  
+
   -- Utilities
   forkUnless, fork, forks, serial,
 ) where
@@ -62,6 +62,7 @@ import Data.List
       mapAccumR )
 import qualified Data.List as List
 import Control.Monad
+import Data.Bifunctor (first)
 
 data InfoEnv env = InfoEnv
   (WEnv Info env)
@@ -250,7 +251,7 @@ bindingEnv (LeftHandSideSingle (BaseRground (GroundRscalar tp))) (Compute (Array
 bindingEnv lhs _ env = bindEnv lhs env
 
 propagate :: forall env. [SignalImplication env] -> InfoEnv env -> InfoEnv env
-propagate implications infoEnv@(InfoEnv env awaitedSignals) = (InfoEnv (foldl' add env implications) awaitedSignals)
+propagate implications infoEnv@(InfoEnv env awaitedSignals) = InfoEnv (foldl' add env implications) awaitedSignals
   where
     add :: WEnv Info env -> SignalImplication env -> WEnv Info env
     add env1 (SignalImplication signal implied) = wupdate (f $ map toSignal $ IdxSet.toList implied) signal env1
@@ -302,7 +303,7 @@ resolves' env@(InfoEnv env' awaitedSignals) resolvers = case signals of
     signals = [ signal | resolver <- resolvers, InfoSignalResolver (Just signal) <- [infoFor resolver env] ]
     signalsSet = IdxSet.fromList' signals
     implications = map (\idx -> SignalImplication idx (IdxSet.remove idx signalsSet `IdxSet.union` awaitedSignals)) signals
-    env'' = foldl' (\e idx -> wupdate (const InfoSignalResolved) idx e) env' signals
+    env'' = foldl' (flip (wupdate (const InfoSignalResolved))) env' signals
 
 await' :: forall kernel env. InfoEnv env -> [Idx env Signal] -> (InfoEnv env, UniformSchedule kernel env -> UniformSchedule kernel env)
 await' env@(InfoEnv env' awaitedSignals) signals =
@@ -335,7 +336,7 @@ await' env@(InfoEnv env' awaitedSignals) signals =
       | InfoSignalInstead instead <- infoFor idx env
         -- Instead of waiting on this signal, we must wait on the given signals
         -- in 'instead'.
-        = foldl' add (resolved, minimal) instead 
+        = foldl' add (resolved, minimal) instead
       | InfoSignalResolved <- infoFor idx env
         = (resolved, minimal) -- Was already resolved in the state
       | idx `IdxSet.member` resolved
@@ -531,9 +532,9 @@ forksGroupCommonAwait k env = serializeDependentForks k env . go . map (\b -> le
           -- common is the list of branches which wait on this signal, and
           -- uncommon is the list of branches which do not wait on the signal.
           , (common, uncommon) <- partition (\(s, _) -> signal `IdxSet.member` s) branches'
-          , common' <- map (\(s, b) -> (IdxSet.remove signal s, b)) common
+          , common' <- map (first (IdxSet.remove signal)) common
           = go uncommon ++ [await [toSignal $ Exists signal] $ serializeDependentForks k env $ go common']
-          
+
           | otherwise
           -- No signals found which are awaited by some branches.
           -- Now check if there signals waited by all branches
@@ -620,7 +621,7 @@ forkUnless s1     s2     awaits
     (signals2, s2') = directlyAwaits $ reorder s2
     signals2' = nub signals2
     signals2'' = signals2' \\ intersection
-    intersection = List.intersect signals1' signals2'
+    intersection = signals1' `List.intersect` signals2'
 
 fork :: UniformSchedule kernel fenv -> UniformSchedule kernel fenv -> UniformSchedule kernel fenv
 fork s1 s2 = forkUnless s1 s2 Nothing

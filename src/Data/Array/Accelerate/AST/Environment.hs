@@ -42,6 +42,7 @@ import Data.Array.Accelerate.Representation.Type
 import Data.Typeable                                ((:~:)(..))
 import Data.Either
 import Data.List ( sortOn )
+import Data.Functor.Identity
 
 -- Valuation for an environment
 --
@@ -281,17 +282,18 @@ mapEnv :: (forall t. a t -> b t) -> Env a env -> Env b env
 mapEnv _ Empty = Empty
 mapEnv g (Push env f) = Push (mapEnv g env) (g f)
 
-data Identity a = Identity { runIdentity :: a }
 
-instance Functor Identity where
-  {-# INLINE fmap #-}
-  fmap f (Identity a) = Identity (f a)
+-- data Identity a = Identity { runIdentity :: a }
 
-instance Applicative Identity where
-  {-# INLINE (<*>) #-}
-  {-# INLINE pure  #-}
-  Identity f <*> Identity a = Identity (f a)
-  pure a                    = Identity a
+-- instance Functor Identity where
+--   {-# INLINE fmap #-}
+--   fmap f (Identity a) = Identity (f a)
+
+-- instance Applicative Identity where
+--   {-# INLINE (<*>) #-}
+--   {-# INLINE pure  #-}
+--   Identity f <*> Identity a = Identity (f a)
+--   pure a                    = Identity a
 
 -- The type of shifting terms from one context into another
 --
@@ -367,3 +369,6 @@ stripWithLhs :: LeftHandSide f a env env' -> Env g env' -> Env g env
 stripWithLhs (LeftHandSideSingle _) (Push env _) = env
 stripWithLhs (LeftHandSideWildcard _) env = env
 stripWithLhs (LeftHandSidePair lhs1 lhs2) env = stripWithLhs lhs1 $ stripWithLhs lhs2 env
+
+
+

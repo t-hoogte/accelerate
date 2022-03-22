@@ -204,7 +204,8 @@ instance RebuildableAcc acc => Sink (PreOpenAfun acc) where
 weakenArrayInstr :: RebuildableExp f => aenv :> aenv' -> f (ArrayInstr aenv) env t -> f (ArrayInstr aenv') env t
 weakenArrayInstr k = Stats.substitution "weaken" . rebuildArrayInstr (ArrayInstr . weaken k)
 
-{- instance Sink (OpenExp env) where
+{- 
+instance Sink (OpenExp env) where
   {-# INLINEABLE weaken #-}
   weaken k = Stats.substitution "weaken" . runIdentity . rebuildOpenExp (Identity . Evar) (ReindexAvar (Identity . weaken k))
 

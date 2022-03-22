@@ -57,7 +57,7 @@ module Data.Array.Accelerate.AST.Operation (
   module Data.Array.Accelerate.AST.Exp,
 
   NFData'(..)
-,reindexAcc,toGrounds,fromGrounds) where
+,reindexAcc,toGrounds,fromGrounds,weakenThroughReindex,fuseArgs, Both(..)) where
 
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Exp
@@ -226,6 +226,13 @@ data PreArgs a t where
   ArgsNil :: PreArgs a ()
   (:>:)   :: a s -> PreArgs a t -> PreArgs a (s -> t)
 infixr 7 :>:
+
+data Both a b x where
+  Both :: a x -> b x -> Both a b x
+
+fuseArgs :: PreArgs a t -> PreArgs b t -> PreArgs (Both a b) t
+fuseArgs ArgsNil ArgsNil = ArgsNil
+fuseArgs (a :>: as) (b :>: bs) = Both a b :>: fuseArgs as bs
 
 argsToList :: PreArgs a t -> [Exists a]
 argsToList ArgsNil = []
@@ -469,12 +476,15 @@ reindexLHS r (LeftHandSideSingle st) k = k (LeftHandSideSingle st) $ \case
   ZeroIdx -> pure ZeroIdx
   SuccIdx idx -> SuccIdx <$> r idx
 reindexLHS r (LeftHandSideWildcard tr) k = k (LeftHandSideWildcard tr) r
-reindexLHS r (LeftHandSidePair left right) k = reindexLHS r left $ \left' r' -> 
-                                                reindexLHS r' right $ \right' r'' -> 
+reindexLHS r (LeftHandSidePair left right) k = reindexLHS r left $ \left' r' ->
+                                                reindexLHS r' right $ \right' r'' ->
                                                   k (LeftHandSidePair left' right') r''
 
 weakenReindex :: benv :> benv' -> ReindexPartial Identity benv benv'
 weakenReindex k = Identity . (k >:>)
+
+weakenThroughReindex :: (benv :> benv') -> (ReindexPartial Identity benv benv' -> x -> Identity y) -> x -> y
+weakenThroughReindex w k x = runIdentity $ k (weakenReindex w) x
 
 data AccessGroundR tp where
   AccessGroundRscalar :: ScalarType tp -> AccessGroundR tp
@@ -550,6 +560,9 @@ instance NFData' op => NFData (OperationAfun op env a) where
   rnf (Abody a) = rnf a
   rnf (Alam lhs f) = rnfLeftHandSide rnfGroundR lhs `seq` rnf f
 
+instance NFData' arg => NFData' (PreArgs arg) where
+  rnf' ArgsNil = ()
+  rnf' (a :>: args) = rnf' a `seq` rnf' args
 
 data GroundRWithUniqueness t where
   GroundRWithUniqueness :: GroundR t -> Uniqueness t -> GroundRWithUniqueness t
@@ -563,7 +576,7 @@ groundsRWithUniquenesses _                _                = internalError "Tupl
 
 lhsWithUniquesses :: GLeftHandSide t env env' -> Uniquenesses t -> LeftHandSide GroundRWithUniqueness t env env'
 lhsWithUniquesses (LeftHandSideWildcard g) uniquenesses     = LeftHandSideWildcard $ groundsRWithUniquenesses g uniquenesses
-lhsWithUniquesses (LeftHandSideSingle g)   (TupRsingle u)   = LeftHandSideSingle $ (GroundRWithUniqueness g u)
+lhsWithUniquesses (LeftHandSideSingle g)   (TupRsingle u)   = LeftHandSideSingle $ GroundRWithUniqueness g u
 lhsWithUniquesses (LeftHandSidePair l1 l2) (TupRpair u1 u2) = LeftHandSidePair (lhsWithUniquesses l1 u1) (lhsWithUniquesses l2 u2)
 lhsWithUniquesses (LeftHandSidePair l1 l2) _                = LeftHandSidePair (lhsWithUniquesses l1 $ TupRsingle Shared) (lhsWithUniquesses l2 $ TupRsingle Shared)
 lhsWithUniquesses _                        _                = internalError "Tuple mismatch"
