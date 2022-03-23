@@ -411,6 +411,7 @@ library
         Data.Array.Accelerate.Array.Remote.Table
         Data.Array.Accelerate.Array.Unique
         Data.Array.Accelerate.Async
+        Data.Array.Accelerate.Backend
         Data.Array.Accelerate.Error
         Data.Array.Accelerate.Debug.Internal
         Data.Array.Accelerate.Lifetime
@@ -471,7 +472,6 @@ library
   other-modules:
         Data.Array.Accelerate.Analysis.Hash.TH
         Data.Array.Accelerate.Array.Remote.Nursery
-        Data.Array.Accelerate.Backend
         Data.Array.Accelerate.Classes.Bounded
         Data.Array.Accelerate.Classes.Enum
         Data.Array.Accelerate.Classes.Eq

@@ -27,7 +27,7 @@
 --
 module Data.Array.Accelerate.AST.Partitioned (
   module Data.Array.Accelerate.AST.Partitioned,
-  GroundR(..), GroundsR, NFData'(..), Arg(..),
+  GroundR(..), GroundsR, GroundVar, GroundVars, NFData'(..), Arg(..),
   PreArgs(..), Args, Modifier(..),
   Exp', Var', Fun', In, Out, Mut
 ) where

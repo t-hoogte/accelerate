@@ -38,6 +38,9 @@ instance Distributes GroundR where
   reprIsSingle (GroundRbuffer _)  = Refl
   reprIsSingle (GroundRscalar tp) = reprIsSingle tp
 
+  pairImpossible (GroundRscalar tp) = pairImpossible tp
+  unitImpossible (GroundRscalar tp) = unitImpossible tp
+
 -- | Tuples of ground values
 --
 type GroundsR = TupR GroundR
