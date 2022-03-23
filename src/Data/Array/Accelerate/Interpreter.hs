@@ -120,13 +120,11 @@ type BackpermutedArgs env = PreArgs (BackpermutedArg env)
 type ToBP' f = Env (BP f)
 type ToBP = ToBP' Identity
 data BP f a = BP (f a) (Int -> Int)
-pattern PushBP :: () => (env' ~ (env, x)) => (Int -> Int) -> x -> ToBP env -> ToBP env'
-pattern PushBP f x env = Push env (BP (Identity x) f)
-{-# COMPLETE Empty, PushBP #-}
-type BPFromArg env = ToBP' (FromArg' env)
+type BPFromArg env = ToBP' (FromArgInfo env)
 newtype FromArg' env a = FromArg (FromArg env a)
-pattern PushBPFA :: () => (e' ~ (e, x)) => (Int -> Int) -> FromArg env x -> BPFromArg env e -> BPFromArg env e'
-pattern PushBPFA f x env = Push env (BP (FromArg x) f)
+data FromArgInfo env a = FromArgInfo (FromArg env a) (BackendClusterArg InterpretOp a)
+pattern PushBPFA :: () => (e' ~ (e, x)) => (Int -> Int) -> FromArg env x -> BackendClusterArg InterpretOp x -> BPFromArg env e -> BPFromArg env e'
+pattern PushBPFA f x info env = Push env (BP (FromArgInfo x info) f)
 {-# COMPLETE Empty, PushBPFA #-}
 
 pattern PushFA :: () => (e' ~ (e, x)) => FromArg env x -> Env (FromArg' env) e -> Env (FromArg' env) e'
@@ -667,12 +665,13 @@ fromArgs i env (ArgArray In (ArrayR shr typer) shv buf :>: args) =
   in (fromArgs i env args, Value (indexBuffers typer buf' i) (Shape shr sh))
 fromArgs i env (ArgArray Out (ArrayR shr _) sh _ :>: args) = (fromArgs i env args, Shape shr (varsGetVal sh env))
 
--- TODO make these think about the new info
+-- TODO make these think about the new info: pass if idle, and loop if nested
+  -- make a little combinator for that
 evalOp :: Int -> InterpretOp args -> Val env -> BPFromArg env (InArgs args) -> IO (Env (FromArg' env) (OutArgs args))
-evalOp _ IMap         env (PushBPFA _ f    (PushBPFA _ (Value x (Shape shr sh)) _)) = pure $ PushFA (Value (evalFun f env x) (Shape shr sh)) Empty
-evalOp _ IBackpermute _   (PushBPFA _ _    (PushBPFA _ (Value x _) (PushBPFA _ sh _))) = pure $ PushFA (Value x sh) Empty -- We evaluated the backpermute at the start already, now simply relabel the shape info
-evalOp i IGenerate    env (PushBPFA f' f   (PushBPFA _ (Shape shr sh) _)) = pure $ PushFA (Value (evalFun f env $ fromIndex shr sh (f' i)) (Shape shr sh)) Empty -- apply f', the Int->Int backpermute function, to our index before evaluating the generate function.
-evalOp i IPermute     env (PushBPFA _ comb (PushBPFA _ target (PushBPFA _ f (PushBPFA _ (Value (e :: e) (Shape shr sh)) _)))) =
+evalOp _ IMap         env (PushBPFA _ f    infoF (PushBPFA _ (Value x (Shape shr sh)) infoX _)) = pure $ PushFA (Value (evalFun f env x) (Shape shr sh)) Empty
+evalOp _ IBackpermute _   (PushBPFA _ _    infoF (PushBPFA _ (Value x _) infoI (PushBPFA _ sh infoO _))) = pure $ PushFA (Value x sh) Empty -- We evaluated the backpermute at the start already, now simply relabel the shape info
+evalOp i IGenerate    env (PushBPFA f' f   infoF (PushBPFA _ (Shape shr sh) infoSh _)) = pure $ PushFA (Value (evalFun f env $ fromIndex shr sh (f' i)) (Shape shr sh)) Empty -- apply f', the Int->Int backpermute function, to our index before evaluating the generate function.
+evalOp i IPermute     env (PushBPFA _ comb infoC (PushBPFA _ target         infoT (PushBPFA _ f infoF (PushBPFA _ (Value (e :: e) (Shape shr sh)) infoI _)))) =
   let typer = case comb of
         Lam lhs _ -> lhsToTupR lhs
         _ -> error "impossible; is a function"
@@ -692,9 +691,16 @@ evalOp i IPermute     env (PushBPFA _ comb (PushBPFA _ target (PushBPFA _ f (Pus
         return $ PushFA target Empty
     -- How do tags work again? If 'e' is a sum type, does the tag get combined, or does it get its own tag?
     _ -> error "PrimMaybe's tag was non-zero and non-one"
-evalOp i IFold1 _ _ = undefined -- TODO
-evalOp _ (IScan1 dir) _ _ = undefined -- TODO
+evalOp i IFold1 env (PushBPFA _ f infoF (PushBPFA _ (Value x sh) infoX _outputstuff))
+  | firstOfRow i _ _ _ = undefined -- write input to output
+  | otherwise = undefined -- combine input with output using f
+evalOp i (IScan1 dir) _ _
+  | firstOfRow i _ _ _ = undefined -- write input to output
+  | otherwise = undefined -- combine input with previous output using f
 evalOp _ (IAppend side n) _ _ = undefined -- TODO
+
+firstOfRow :: Int -> ShapeR sh -> sh -> Int -> Bool
+firstOfRow i shr sh idleRowsLeft = undefined
 
 type EvalArgs env = PreArgs (Both (BackpermutedArg env) (BackendClusterArg InterpretOp))
 evalCluster :: Cluster InterpretOp args -> Args env args -> Val env -> IO ()
@@ -734,15 +740,15 @@ pattern ArgInfo arg bp info = Both (BPA arg bp) info
 
 evalIO1 :: Int -> ClusterIO args i o -> EvalArgs env args -> Val env -> IO (BPFromArg env i)
 evalIO1 _ P.Empty                                         ArgsNil    _ = pure Empty
-evalIO1 n (Vertical _ r io) (ArgInfo (ArgVar vars          ) f info :>: args) env = PushBPFA f (Shape (arrayRshape r) (varsGetVal vars env)) <$> evalIO1 n io args env
-evalIO1 n (Input      io) (ArgInfo (ArgArray In r sh buf ) f info :>: args) env = PushBPFA f <$> value                                     <*> evalIO1 n io args env
+evalIO1 n (Vertical _ r io) (ArgInfo (ArgVar vars          ) f info :>: args) env = PushBPFA f (Shape (arrayRshape r) (varsGetVal vars env)) _ <$> evalIO1 n io args env
+evalIO1 n (Input      io) (ArgInfo (ArgArray In r sh buf ) f info :>: args) env = PushBPFA f <$> value                            <*> pure _ <*> evalIO1 n io args env
   where value = Value <$> indexBuffers' (arrayRtype  r) (varsGetVal buf env) (f n)
                       <*> pure (Shape   (arrayRshape r) (varsGetVal sh  env))
-evalIO1 n (Output _ _ _ io) (ArgInfo (ArgArray Out r sh   _) f info :>: args) env = PushBPFA f (Shape (arrayRshape r) (varsGetVal sh env))   <$> evalIO1 n io args env
-evalIO1 n (MutPut     io) (ArgInfo (ArgArray Mut r sh buf) f info :>: args) env = PushBPFA f (ArrayDescriptor (arrayRshape r) sh buf)      <$> evalIO1 n io args env
-evalIO1 n (ExpPut'    io) (ArgInfo (ArgExp e)              f info :>: args) env = PushBPFA f e                                             <$> evalIO1 n io args env
-evalIO1 n (ExpPut'    io) (ArgInfo (ArgVar e)              f info :>: args) env = PushBPFA f e                                             <$> evalIO1 n io args env
-evalIO1 n (ExpPut'    io) (ArgInfo (ArgFun e)              f info :>: args) env = PushBPFA f e                                             <$> evalIO1 n io args env
+evalIO1 n (Output _ _ _ io) (ArgInfo (ArgArray Out r sh   _) f info :>: args) env = PushBPFA f (Shape (arrayRshape r) (varsGetVal sh env)) _ <$> evalIO1 n io args env
+evalIO1 n (MutPut     io) (ArgInfo (ArgArray Mut r sh buf) f info :>: args) env = PushBPFA f (ArrayDescriptor (arrayRshape r) sh buf)      _ <$> evalIO1 n io args env
+evalIO1 n (ExpPut'    io) (ArgInfo (ArgExp e)              f info :>: args) env = PushBPFA f e                                             _ <$> evalIO1 n io args env
+evalIO1 n (ExpPut'    io) (ArgInfo (ArgVar e)              f info :>: args) env = PushBPFA f e                                             _ <$> evalIO1 n io args env
+evalIO1 n (ExpPut'    io) (ArgInfo (ArgFun e)              f info :>: args) env = PushBPFA f e                                             _ <$> evalIO1 n io args env
 
 evalIO2 :: Int -> ClusterIO args i o -> Args env args -> Val env -> Env (FromArg' env) o -> IO ()
 evalIO2 _ P.Empty ArgsNil _ Empty = pure ()
@@ -754,7 +760,7 @@ evalIO2 n (Output t s _ io) (ArgArray Out (arrayRtype -> r) _ buf :>: args) env 
 
 evalAST :: forall i o env. Int -> ClusterAST InterpretOp i o -> Val env -> BPFromArg env i -> IO (Env (FromArg' env) o)
 evalAST _ None _ Empty = pure Empty
-evalAST n None env (PushBPFA _ x i) = flip Push (FromArg x) <$> evalAST n None env i
+evalAST n None env (PushBPFA _ x info i) = flip Push (FromArg x) <$> evalAST n None env i
 evalAST n (Bind lhs op ast) env i = do
   let i' = evalLHS1 lhs i env
   o' <- evalOp n op env i'
@@ -763,24 +769,24 @@ evalAST n (Bind lhs op ast) env i = do
 
 evalLHS1 :: forall body i scope env. LeftHandSideArgs body i scope -> BPFromArg env i -> Val env -> BPFromArg env (InArgs body)
 evalLHS1 Base Empty _ = Empty
-evalLHS1 (Reqr t _ lhs) i env = let (BP (FromArg x) f, i') = take' t i in PushBPFA f x (evalLHS1 lhs i' env)
-evalLHS1 (Make _   lhs) (PushBPFA f x i') env = PushBPFA f x (evalLHS1 lhs i' env)
-evalLHS1 (EArg     lhs) (PushBPFA f x i') env = PushBPFA f x (evalLHS1 lhs i' env)
-evalLHS1 (FArg     lhs) (PushBPFA f x i') env = PushBPFA f x (evalLHS1 lhs i' env)
-evalLHS1 (VArg     lhs) (PushBPFA f x i') env = PushBPFA f x (evalLHS1 lhs i' env)
-evalLHS1 (Adju     lhs) (PushBPFA f x i') env = PushBPFA f x (evalLHS1 lhs i' env)
-evalLHS1 (Ignr     lhs) (PushBPFA _ _ i') env =               evalLHS1 lhs i' env
+evalLHS1 (Reqr t _ lhs) i env = let (BP (FromArgInfo x info) f, i') = take' t i in PushBPFA f x _ (evalLHS1 lhs i' env)
+evalLHS1 (Make _   lhs) (PushBPFA f x info i') env = PushBPFA f x _ (evalLHS1 lhs i' env)
+evalLHS1 (EArg     lhs) (PushBPFA f x info i') env = PushBPFA f x _ (evalLHS1 lhs i' env)
+evalLHS1 (FArg     lhs) (PushBPFA f x info i') env = PushBPFA f x _ (evalLHS1 lhs i' env)
+evalLHS1 (VArg     lhs) (PushBPFA f x info i') env = PushBPFA f x _ (evalLHS1 lhs i' env)
+evalLHS1 (Adju     lhs) (PushBPFA f x info i') env = PushBPFA f x _ (evalLHS1 lhs i' env)
+evalLHS1 (Ignr     lhs) (PushBPFA _ _ info i') env =               evalLHS1 lhs i' env
 
 evalLHS2 :: LeftHandSideArgs body i scope -> BPFromArg env i -> Val env -> Env (FromArg' env) (OutArgs body) -> BPFromArg env scope
 evalLHS2 Base Empty _ Empty = Empty
 evalLHS2 (Reqr t1 t2 lhs) i env o = let (x, i') = take' t1 i
                                     in                    put' t2 x       (evalLHS2 lhs i' env o)
-evalLHS2 (Make t lhs) (PushBPFA f _ i) env (Push o y)   = put' t (BP y f) (evalLHS2 lhs i  env o)
-evalLHS2 (EArg   lhs) (PushBPFA f e i) env           o  = PushBPFA f e    (evalLHS2 lhs i  env o)
-evalLHS2 (FArg   lhs) (PushBPFA f e i) env           o  = PushBPFA f e    (evalLHS2 lhs i  env o)
-evalLHS2 (VArg   lhs) (PushBPFA f e i) env           o  = PushBPFA f e    (evalLHS2 lhs i  env o)
-evalLHS2 (Adju   lhs) (PushBPFA f _ i) env (PushFA m o) = PushBPFA f m    (evalLHS2 lhs i  env o)
-evalLHS2 (Ignr   lhs) (PushBPFA f x i) env           o  = PushBPFA f x    (evalLHS2 lhs i  env o)
+evalLHS2 (Make t lhs) (PushBPFA f _ info i) env (Push o y)   = put' t (BP (FromArgInfo (_ y) _) f) (evalLHS2 lhs i  env o)
+evalLHS2 (EArg   lhs) (PushBPFA f e info i) env           o  = PushBPFA f e    _ (evalLHS2 lhs i  env o)
+evalLHS2 (FArg   lhs) (PushBPFA f e info i) env           o  = PushBPFA f e    _ (evalLHS2 lhs i  env o)
+evalLHS2 (VArg   lhs) (PushBPFA f e info i) env           o  = PushBPFA f e    _ (evalLHS2 lhs i  env o)
+evalLHS2 (Adju   lhs) (PushBPFA f _ info i) env (PushFA m o) = PushBPFA f m    _ (evalLHS2 lhs i  env o)
+evalLHS2 (Ignr   lhs) (PushBPFA f x info i) env           o  = PushBPFA f x    _ (evalLHS2 lhs i  env o)
 
 
 -- Program execution
