@@ -939,6 +939,7 @@ compileKernel' cluster args =
   go
     (partialEnvFromList combineAccessGroundR (map (\(Exists (Var tp ix)) -> EnvBinding ix tp) vars))
     weakenId
+    Empty
     (\ _ x -> x)
   where
     vars = argsVars args
@@ -947,27 +948,28 @@ compileKernel' cluster args =
       :: forall fenv1 kenv.
          PartialEnv AccessGroundR fenv1
       -> (fenv1 :> fenv)
+      -> Env AccessGroundR kenv
       -> (forall kenv'. kenv :> kenv' -> PartialEnv (Idx kenv') fenv1 -> PartialEnv (Idx kenv') fenv)
       -> CompiledKernel kenv fenv kernel
-    go PEnd _  kenv =
+    go PEnd _  kenv kSubst =
       CompiledKernel
-        (KernelFunBody $ compileKernel cluster args')
+        (KernelFunBody $ compileKernel kenv cluster args')
         ArgsNil
       where
-        kenv' = kenv weakenId PEnd
+        kSubst' = kSubst weakenId PEnd
         Identity args' = reindexArgs prjIdx args
         prjIdx :: forall a. Idx fenv a -> Identity (Idx kenv a)
-        prjIdx idx = case prjPartial idx kenv' of
+        prjIdx idx = case prjPartial idx kSubst' of
           Nothing -> internalError "Variable not found in environment. The environment was probably built incorrectly, argsVars may have missed this variable?"
           Just idx' -> Identity idx'
-    go (PPush env (AccessGroundRscalar tp)) k1 kenvF
-      | CompiledKernel kernel sargs <- go env (weakenSucc k1) (\k2 kenv -> kenvF (weakenSucc k2) $ PPush kenv (k2 >:> ZeroIdx))
+    go (PPush env a@(AccessGroundRscalar tp)) k1 kenv kSubstF
+      | CompiledKernel kernel sargs <- go env (weakenSucc k1) (kenv `Push` a) (\k2 kSubst -> kSubstF (weakenSucc k2) $ PPush kSubst (k2 >:> ZeroIdx))
       = CompiledKernel (KernelFunLam (KernelArgRscalar tp) kernel) (SArgScalar (Var tp $ k1 >:> ZeroIdx) :>: sargs)
-    go (PPush env (AccessGroundRbuffer mod' tp)) k1 kenvF
-      | CompiledKernel kernel sargs <- go env (weakenSucc k1) (\k2 kenv -> kenvF (weakenSucc k2) $ PPush kenv (k2 >:> ZeroIdx))
+    go (PPush env a@(AccessGroundRbuffer mod' tp)) k1 kenv kSubstF
+      | CompiledKernel kernel sargs <- go env (weakenSucc k1) (kenv `Push` a) (\k2 kSubst -> kSubstF (weakenSucc k2) $ PPush kSubst (k2 >:> ZeroIdx))
       = CompiledKernel (KernelFunLam (KernelArgRbuffer mod' tp) kernel) (SArgBuffer mod' (Var (GroundRbuffer tp) $ k1 >:> ZeroIdx) :>: sargs)
-    go (PNone env) k1 kenvF
-      = go env (weakenSucc k1) (\k2 kenv -> kenvF k2 $ PNone kenv)
+    go (PNone env) k1 kenv kSubstF
+      = go env (weakenSucc k1) kenv (\k2 kSubst -> kSubstF k2 $ PNone kSubst)
 
 syncEnv :: PartialSchedule kernel genv t -> SyncEnv genv
 syncEnv (PartialDo _ env _)          = convertEnvToSyncEnv env

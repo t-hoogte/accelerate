@@ -19,6 +19,7 @@ module Data.Array.Accelerate.AST.Kernel (
   OpenKernelFun(..), KernelFun
 ) where
 
+import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Type
@@ -28,7 +29,7 @@ import Data.Kind
 class NFData' kernel => IsKernel kernel where
   type KernelOperation kernel :: Type -> Type
 
-  compileKernel :: Cluster (KernelOperation kernel) args -> Args env args -> kernel env
+  compileKernel :: Env AccessGroundR env -> Cluster (KernelOperation kernel) args -> Args env args -> kernel env
 
 type KernelFun kernel = OpenKernelFun kernel ()
 
