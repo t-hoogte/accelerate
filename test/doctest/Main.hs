@@ -83,7 +83,8 @@ runningExample xs = let
 
 main :: P.IO ()
 main =
-  P.putStrLn $ test @UniformScheduleFun @InterpretKernel $ dotp
+  -- P.putStrLn $ test @UniformScheduleFun @InterpretKernel $ dotp
+  P.print $ runN @Interpreter dotp (fromList (Z :. 10) [1..]) (fromList (Z :. 10) [1..])
   -- P.print $ run1 @Interpreter (permute (+) (use $ fromList (Z:.10) (P.repeat @P.Int 0)) (\(I1 x) -> Just_ (I1 (x `div` 2)))) $ fromList (Z :. 10) [1..]
   -- P.putStrLn $ test @UniformScheduleFun @InterpretKernel $ permute (+) (use $ fromList (Z:.10) (P.repeat @P.Int 0)) (\(I1 x) -> Just_ (I1 (x `div` 2)))
   -- doNTimes 10 P.print

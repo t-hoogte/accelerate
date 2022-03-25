@@ -72,6 +72,7 @@ import Data.Type.Equality
 import System.IO.Unsafe (unsafePerformIO)
 import qualified Data.Array.Accelerate.AST.Operation as Operation
 import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Graph
+import Data.Array.Accelerate.Eval (EvalOp)
 
 class
   ( Desugar.DesugarAcc (Operation backend)
@@ -84,6 +85,7 @@ class
   , Execute (Schedule backend) (Kernel backend)
   , Operation.NFData' (Graph.BackendClusterArg (KernelOperation (Kernel backend)))
   , Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation (Kernel backend)))
+  , EvalOp (Operation backend)
   ) => Backend backend where
 
   type Schedule backend :: (Type -> Type) -> Type -> Type -> Type

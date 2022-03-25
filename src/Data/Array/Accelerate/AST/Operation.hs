@@ -57,7 +57,7 @@ module Data.Array.Accelerate.AST.Operation (
   module Data.Array.Accelerate.AST.Exp,
 
   NFData'(..)
-,reindexAcc,toGrounds,fromGrounds,weakenThroughReindex,fuseArgs, Both(..)) where
+,reindexAcc,toGrounds,fromGrounds,weakenThroughReindex,fuseArgsWith) where
 
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Exp
@@ -227,12 +227,9 @@ data PreArgs a t where
   (:>:)   :: a s -> PreArgs a t -> PreArgs a (s -> t)
 infixr 7 :>:
 
-data Both a b x where
-  Both :: a x -> b x -> Both a b x
-
-fuseArgs :: PreArgs a t -> PreArgs b t -> PreArgs (Both a b) t
-fuseArgs ArgsNil ArgsNil = ArgsNil
-fuseArgs (a :>: as) (b :>: bs) = Both a b :>: fuseArgs as bs
+fuseArgsWith :: PreArgs a t -> PreArgs b t -> (forall x. a x -> b x -> c x) -> PreArgs c t
+fuseArgsWith ArgsNil ArgsNil _ = ArgsNil
+fuseArgsWith (a :>: as) (b :>: bs) f = f a b :>: fuseArgsWith as bs f
 
 argsToList :: PreArgs a t -> [Exists a]
 argsToList ArgsNil = []
