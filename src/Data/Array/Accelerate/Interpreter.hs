@@ -83,7 +83,6 @@ import Data.Array.Accelerate.Pretty.Partitioned ()
 import Data.Array.Accelerate.Pretty.Schedule
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.LeftHandSide (LeftHandSide (LeftHandSideWildcard, LeftHandSideUnit))
-import Data.Functor.Identity ( Identity(..) )
 import Data.Array.Accelerate.AST.Schedule
 
 import Control.Concurrent (forkIO)
@@ -110,33 +109,17 @@ instance Backend Interpreter where
   type Schedule Interpreter = UniformScheduleFun
   type Kernel Interpreter = InterpretKernel
 
--- Overly simplistic datatype: We simply ignore all the functions that don't make sense (e.g. for non-array, non-generate args, or non-input args).
--- We also just use Int->Int for the interpreter now, but should be able to use some type families to construct actual Fun (sh -> sh') functions that match up
--- to the shapes of the array arguments instead. That's not trivial, but it is doable and almost required for the code-generating backends. 
--- Another advantage would be increased typesafety (more obviously correct, etc): Int->Int is horrible in that aspect!
--- if it is too difficult; we can at the very least make a Fun (Int -> Int) version
-
-data BackpermutedArg env t = BPA (Arg env t) (Int -> Int)
-type BackpermutedArgs env = PreArgs (BackpermutedArg env)
-type ToBP' f = Env (BP f)
-type ToBP = ToBP' Identity
-data BP f a = BP (f a) (Int -> Int)
-type BPFromArg env = ToBP' (FromArgInfo env)
-data FromArgInfo env a = FromArgInfo (FromArg env a) (BackendClusterArg InterpretOp a)
-pattern PushBPFA :: () => (e' ~ (e, x)) => (Int -> Int) -> FromArg env x -> BackendClusterArg InterpretOp x -> BPFromArg env e -> BPFromArg env e'
-pattern PushBPFA f x info env = Push env (BP (FromArgInfo x info) f)
-{-# COMPLETE Empty, PushBPFA #-}
 
 
 
 -- Pushes backpermute information through the cluster and stores it in the arguments, for use at the start of the loop (indexing) and in generates.
-makeBackpermuteArg :: Args env args -> Val env -> Cluster InterpretOp args -> BackendClusterArg2s InterpretOp args
+makeBackpermuteArg :: Args env args -> Val env -> Cluster InterpretOp args -> BackendArgs InterpretOp env args
 makeBackpermuteArg = makeBackendArg
 
 
 -- TODO add the dimsperthread and idlethreads stuff
 instance StaticClusterAnalysis InterpretOp where
-  data BackendClusterArg2 InterpretOp arg = BCA (Int -> Int)
+  data BackendClusterArg2 InterpretOp env arg = BCA (Int -> Int)
 
   onOp IBackpermute (BCA outF :>: ArgsNil) (ArgFun f :>: i :>: o :>: ArgsNil) env = 
     let ArgArray In  (ArrayR shr  _) (flip varsGetVal env -> sh ) _ = i
@@ -152,7 +135,7 @@ instance StaticClusterAnalysis InterpretOp where
         inF x = (+ x `mod` sz) $ outF (x `div` sz) -- this is where the magic happens to fuse backpermute . fold. Would be cleaner on shapes instead of Ints
     in BCA id :>: BCA inF :>: BCA outF :>: ArgsNil
   onOp (IScan1 _ _) _ _ _ = BCA id :>: BCA id :>: BCA id :>: ArgsNil -- here we trust that our ILP prevented any backpermutes after the scan
-  onOp (IAppend Left n) (BCA outF :>: ArgsNil) (f :>: i :>: _ :>: ArgsNil) env =
+  onOp (IAppend Left n) (BCA outF :>: ArgsNil) (_ :>: i :>: _ :>: ArgsNil) env =
     let ArgArray In _ (flip varsGetVal env -> (_, sz)) _ = i
         inF x = outF $ (+ (x `mod` sz) * (sz + n)) $ n + (x `div` sz) -- or something like this :)
     in BCA outF :>: BCA inF :>: BCA outF :>: ArgsNil
@@ -199,7 +182,7 @@ instance DesugarAcc InterpretOp where
   mkPermute     a b c d = Exec IPermute     (a :>: b :>: c :>: d :>: ArgsNil)
   mkFold        a Nothing b c = Exec (IFold1 $ unsafePerformIO $ newIORef mempty) (a :>: b :>: c :>:       ArgsNil)
   -- we desugar a Fold with seed element into a Fold1 followed by a map which prepends the seed
-  mkFold a@(ArgFun f) (Just (ArgExp seed)) b@(ArgArray In arr@(ArrayR _ tp) sh _) c@(ArgArray _ arr' sh' _)
+  mkFold a@(ArgFun f) (Just (ArgExp seed)) b@(ArgArray In (ArrayR _ tp) _ _) c@(ArgArray _ arr' sh' _)
     | DeclareVars lhsTemp wTemp kTemp <- declareVars $ buffersR tp =
       aletUnique lhsTemp (desugarAlloc arr' $ fromGrounds sh') $
         alet LeftHandSideUnit
@@ -580,11 +563,17 @@ prjVars (TupRsingle var) env = prj (varIdx var) env
 
 instance EvalOp InterpretOp where
   type EvalMonad InterpretOp = IO
-  evalOp = undefined
+  evalOp _ IMap env (Push (Push _ (BAE (Value x (Shape shr sh)) _)) (BAE f _)) = 
+    pure $ Push Empty (FromArg $ Value (evalFun f env x) (Shape shr sh))
+  evalOp _ IBackpermute _ (Push (Push (Push _ (BAE sh _)) (BAE (Value x _) _)) _) = 
+    pure $ Push Empty (FromArg $ Value x sh) -- We evaluated the backpermute at the start already, now simply relabel the shape info
+  evalOp _ _ _ _ = undefined
+
   writeOutput r buf n x = writeBuffers r (veryUnsafeUnfreezeBuffers r buf) n x
+  readInput r buf (BCA f) n = indexBuffers' r buf (f n)
 
 evalClusterInterpreter :: Cluster InterpretOp args -> Args env args -> Val env -> IO ()
-evalClusterInterpreter c@(Cluster clusterinfo (Cluster' io ast)) args env = evalCluster (doNTimes $ iterationsize io args env) c args env
+evalClusterInterpreter c@(Cluster _ (Cluster' io _)) args env = evalCluster (doNTimes $ iterationsize io args env) c args env
 
 -- TODO update when we add folds, reconsider when we add scans that add 1 to the size...
 iterationsize :: ClusterIO args i o -> Args env args -> Val env -> Int
