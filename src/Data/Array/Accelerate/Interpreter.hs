@@ -205,7 +205,7 @@ instance DesugarAcc InterpretOp where
         aletUnique lhsTemp2 (desugarAlloc arr $ fromGrounds $ weakenVars wTemp sh) $ 
           alet LeftHandSideUnit
             (alet LeftHandSideUnit
-              (mkScan dir (weakenThroughReindex wTemp1 reindexArg comb) Nothing (weakenThroughReindex wTemp1 reindexArg i) (ArgArray Out arr (weakenVars wTemp1 sh) (kTemp1 wTemp2)))
+              (mkScan dir (weaken wTemp1 comb) Nothing (weaken wTemp1 i) (ArgArray Out arr (weakenVars wTemp1 sh) (kTemp1 wTemp2)))
               (mkMap (ArgFun $ case mkLHS tp of
                       LHS lhs vars ->
                         Lam lhs $ Body $ (\f -> apply2 tp f (weakenThroughReindex wTemp1 reindexExp $ 
@@ -219,7 +219,7 @@ instance DesugarAcc InterpretOp where
               1
               (ArgFun $ Lam (LeftHandSideWildcard $ shapeType shr) $ Body $ weakenThroughReindex wTemp1 reindexExp seed)
               (ArgArray In arr (weakenVars wTemp1 sh) (kTemp2 weakenId)) 
-              (weakenThroughReindex wTemp1 reindexArg o)
+              (weaken wTemp1 o)
 
             -- mkBackpermuteOr 
             --   (case dir of

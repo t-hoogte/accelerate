@@ -12,6 +12,7 @@
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE TypeOperators         #-}
 {-# OPTIONS_HADDOCK hide #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 -- |
 -- Module      : Data.Array.Accelerate.AST.Operation
 -- Copyright   : [2008..2020] The Accelerate Team
@@ -560,6 +561,11 @@ instance NFData' op => NFData (OperationAfun op env a) where
 instance NFData' arg => NFData' (PreArgs arg) where
   rnf' ArgsNil = ()
   rnf' (a :>: args) = rnf' a `seq` rnf' args
+
+-- Orphan, but because we need NFData' this is a safe place to write it
+instance (NFData' s) => NFData (TupR s a) where
+  rnf = rnfTupR rnf'
+
 
 data GroundRWithUniqueness t where
   GroundRWithUniqueness :: GroundR t -> Uniqueness t -> GroundRWithUniqueness t

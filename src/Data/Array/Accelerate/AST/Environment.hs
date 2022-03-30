@@ -32,7 +32,7 @@ module Data.Array.Accelerate.AST.Environment (
   prjUpdate', prjReplace', update', updates', mapEnv,
   Identity(..), (:>)(..), weakenId, weakenSucc, weakenSucc', weakenEmpty,
   sink, (.>), sinkWithLHS, weakenWithLHS, substituteLHS,
-  varsGet, varsGetVal, stripWithLhs) where
+  varsGet, varsGetVal, stripWithLhs,weakenKeep) where
 
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Var
@@ -311,6 +311,11 @@ weakenSucc' (Weaken f) = Weaken (SuccIdx . f)
 
 weakenSucc :: (env, t) :> env' -> env :> env'
 weakenSucc (Weaken f) = Weaken (f . SuccIdx)
+
+weakenKeep :: env :> env' -> (env, t) :> (env', t)
+weakenKeep (Weaken f) = Weaken $ \case
+  ZeroIdx -> ZeroIdx
+  SuccIdx i -> SuccIdx $ f i
 
 weakenEmpty :: () :> env'
 weakenEmpty = Weaken $ \(VoidIdx x) -> x

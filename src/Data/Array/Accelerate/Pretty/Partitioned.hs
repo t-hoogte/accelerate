@@ -122,7 +122,7 @@ forward (Reqr t1 t2 lhs) fresh env out =
     env' = removeAt t1 env
     out' = pRemoveAt t2 out
     (fresh', env'', args) = forward lhs fresh env' out'
-forward (Make t lhs)     fresh (Pretty.Push env sh) out =
+forward (Make t1 t2 lhs)     fresh (Pretty.Push env sh) out =
   ( fresh''
   , insertAt t name env'
   , arg : args
@@ -147,7 +147,7 @@ forwardSingle lhs fresh (Pretty.Push env a) out = (fresh', Pretty.Push env' a, a
 backward :: LeftHandSideArgs body env scope -> PartialVal scope -> PartialVal env
 backward _ PEnd = PEnd
 backward (Reqr t1 t2 lhs) env = pWriteAt t1 (pTakeAt t2 env) $ backward lhs $ pRemoveAt t2 env
-backward (Make t lhs) env = PSkip $ backward lhs $ pRemoveAt t env
+backward (Make t1 t2 lhs) env = PSkip $ backward lhs $ pRemoveAt t env
 backward (ExpArg lhs) env = backwardSingle lhs env
 backward (Adju lhs) env = backwardSingle lhs env
 backward (Ignr lhs) env = backwardSingle lhs env

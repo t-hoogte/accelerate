@@ -1,7 +1,9 @@
 {-# LANGUAGE BangPatterns          #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE FlexibleInstances     #-}
 {-# LANGUAGE GADTs                 #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase            #-}
 {-# LANGUAGE RankNTypes            #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
@@ -44,11 +46,15 @@ import Data.Array.Accelerate.Representation.Shape (ShapeR)
 import Data.Type.Equality
 import Unsafe.Coerce (unsafeCoerce)
 import Data.Array.Accelerate.Trafo.Operation.LiveVars
-import Data.Array.Accelerate.Representation.Type (TypeR, rnfTypeR)
+import Data.Array.Accelerate.Representation.Type (TypeR, rnfTypeR, TupR (..), Distributes (pairImpossible), mapTupR)
 import Control.DeepSeq (NFData (rnf))
 import Data.Array.Accelerate.Trafo.Operation.Simplify (SimplifyOperation(..))
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (BackendCluster, MakesILP (BackendClusterArg))
- 
+import Data.Kind (Type)
+import Data.Array.Accelerate.Type (ScalarType)
+import Data.Array.Accelerate.AST.Environment ((:>), weakenId, (.>), weakenSucc, weakenSucc', weakenKeep)
+import Data.Array.Accelerate.Trafo.Operation.Substitution (weaken, Sink' (weaken'), Sink)
+
 -- In this model, every thread has one input element per input array,
 -- and one output element per output array. That works perfectly for
 -- a Map, Generate, ZipWith - but the rest requires some fiddling:
@@ -67,6 +73,8 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (BackendCluster, Makes
 type PartitionedAcc  op = PreOpenAcc  (Cluster op)
 type PartitionedAfun op = PreOpenAfun (Cluster op)
 
+-- TODO parametrize Cluster over the backendargs; to allow a backend to not have them
+-- currently using backendarg = () for this
 data Cluster op args where
   Cluster :: BackendCluster op args
           -> Cluster' op args
@@ -94,14 +102,15 @@ data LeftHandSideArgs body env scope where
   -- Because of `Ignr`, we could also give this the type `LeftHandSideArgs () () ()`.
   Base :: LeftHandSideArgs () () ()
   -- The body has an input array
-  Reqr :: Take (Value sh e) eenv env
-       -> Take (Value sh e) escope scope
-       -> LeftHandSideArgs              body   env             scope
-       -> LeftHandSideArgs (In  sh e -> body) eenv            escope
+  Reqr :: TupR (IdxF (Value sh) env  ) e
+       -> TupR (IdxF (Value sh) scope) e -- perhaps not needed, but it should always be there (because each buffer in the reqr is based on an ignr later)
+       -> LeftHandSideArgs              body  env            scope
+       -> LeftHandSideArgs (In  sh e -> body) env            scope
   -- The body creates an array
-  Make :: Take (Value sh e) escope scope
+  Make :: TakeBuffers (Value sh) e escope scope
+       -> ConsBuffers (Sh sh) e eenv env
        -> LeftHandSideArgs              body   env             scope
-       -> LeftHandSideArgs (Out sh e -> body) (env, Sh sh e)    escope
+       -> LeftHandSideArgs (Out sh e -> body) eenv            escope
   -- Used for Permute: Each 'thread' gets atomic update acess to all values. Behaves like Exp', Var' and Fun'.
   Adju :: LeftHandSideArgs              body   env             scope
        -> LeftHandSideArgs (Mut sh e -> body) (env, Mut sh e) (scope, Mut sh e)
@@ -119,8 +128,9 @@ data LeftHandSideArgs body env scope where
 data ClusterIO args input output where
   Empty  :: ClusterIO () () ()
   -- Even when an array is fused away, we'll still need its shape sometimes!
-  Vertical :: Take (Value sh e) eoutput output -> ArrayR (Array sh e) 
-           -> ClusterIO             args   input            output 
+  Vertical :: Take (Value sh e) eoutput output
+           -> ArrayR (Array sh e)
+           -> ClusterIO             args   input            output
            -> ClusterIO (Var' sh -> args) (input, Sh sh e) eoutput
   Input  :: ClusterIO              args   input               output
          -> ClusterIO (In  sh e -> args) (input, Value sh e) (output, Value sh e)
@@ -137,11 +147,108 @@ data ClusterIO args input output where
          -> ClusterIO (Var'   e -> args) (input, Var' e)   (output, Var' e)
   FunPut :: ClusterIO              args   input             output
          -> ClusterIO (Fun'   e -> args) (input, Fun' e)   (output, Fun' e)
+  Trivial :: ClusterIO args input output
+          -> ClusterIO (m sh () -> args) input output
+
+newtype IdxF f env a = IdxF { runIdxF :: Idx env (f a)}
+  deriving newtype (NFData)
+
+instance NFData' (IdxF f env) where
+  rnf' = rnf
+
+instance Sink (IdxF f) where
+  weaken w (IdxF i) = IdxF (weaken w i)
+
+pattern SuccIdxF :: IdxF f (env, s) a -> IdxF f env a
+pattern SuccIdxF i <- (succIdxF -> i)
+  where
+    SuccIdxF (IdxF (SuccIdx i)) = IdxF i
+succIdxF :: IdxF f env a -> IdxF f (env, s) a
+succIdxF (IdxF i) = IdxF (SuccIdx i)
+
+there' :: TupR (IdxF f env) a -> TupR (IdxF f (env, x)) a
+there' = mapTupR (\(IdxF i) -> IdxF (SuccIdx i))
+wIdxF :: env :> env' -> TupR (IdxF f env) a -> TupR (IdxF f env') a
+wIdxF w = mapTupR (\(IdxF i) -> IdxF (weaken w i))
+
+-- like a Take, except it works per buffer instead of for the entire array.
+-- Required to e.g. fuse Zips, and anything else where two sets of buffers overlap but aren't equal
+data TakeBuffers (f :: Type -> Type) e exs xs where
+  TakeUnit :: TakeBuffers f () xs xs
+  -- Invariant: represents a single buffer!
+  TakeSingle :: Take (f e) exs xs ->
+    TakeBuffers f e exs xs
+  TakePair :: TakeBuffers f e         exs  xs
+           -> TakeBuffers f e'      e'exs exs
+           -> TakeBuffers f (e, e') e'exs  xs
+
+data ConsBuffers (f :: Type -> Type) e exs xs where
+  ConsUnit :: ConsBuffers f () xs xs
+  -- Invariant: represents a single buffer!
+  ConsSingle ::
+    ConsBuffers f e (xs, f e) xs
+  ConsPair :: ConsBuffers f e         exs  xs
+           -> ConsBuffers f e'      e'exs exs
+           -> ConsBuffers f (e, e') e'exs  xs
+
+tbThere :: TakeBuffers f x exs xs -> TakeBuffers f x (exs, y) (xs, y)
+tbThere TakeUnit = TakeUnit
+tbThere (TakeSingle t) = TakeSingle (There t)
+tbThere (TakePair l r) = TakePair (tbThere l) (tbThere r)
+
+tbWeaken :: TakeBuffers f e exs xs -> xs :> exs
+tbWeaken TakeUnit = weakenId
+tbWeaken (TakeSingle t) = wTake t
+tbWeaken (TakePair l r) = tbWeaken r .> tbWeaken l
+
+cbWeaken :: ConsBuffers f e exs xs -> xs :> exs
+cbWeaken ConsUnit = weakenId
+cbWeaken ConsSingle = weakenSucc' weakenId
+cbWeaken (ConsPair l r) = cbWeaken r .> cbWeaken l
+
+-- there :: TakeBuffers f e exs xs -> TakeBuffers f e (exs, a) (xs, a)
+-- there TakeUnit = TakeUnit
+-- there (TakeSingle t) = TakeSingle (There t)
+-- there (TakePair l r) = TakePair (there l) (there r)
+
+takeBuf :: TakeBuffers f e exs xs -> exs -> (f e, xs)
+takeBuf = undefined
+
+putBuf :: TakeBuffers f e exs xs -> f e -> xs -> exs
+putBuf = undefined
+
+tbHere :: forall e f xs. TypeR e -> TakeBuffers f e (Append f e xs) xs
+tbHere TupRunit = TakeUnit
+tbHere (TupRpair l r) = TakePair (tbHere l) (tbHere r)
+tbHere (TupRsingle ty) = case fromScalar @e @f @xs ty of Refl -> TakeSingle Here
+
+cbHere :: forall e f xs. TypeR e -> ConsBuffers f e (Append f e xs) xs
+cbHere TupRunit = ConsUnit
+cbHere (TupRpair l r) = ConsPair (cbHere l) (cbHere r)
+cbHere (TupRsingle ty) = case fromScalar @e @f @xs ty of Refl -> ConsSingle
+
+type family Append f e xs where
+  Append f (e1, e2) xs = Append f e2 (Append f e1 xs)
+  Append f () xs = xs
+  Append f e xs = (xs, f e)
+
+fromScalar :: forall e f xs. ScalarType e -> Append f e xs :~: (xs, f e)
+fromScalar _ = unsafeCoerce Refl -- I promise
 
 
-pattern ExpArg :: () 
-                => forall e args body scope. (args' ~ (e -> args), body' ~ (body, e), scope' ~ (scope, e)) 
-                => LeftHandSideArgs args body scope 
+instance NFData (TakeBuffers f e exs xs) where
+  rnf TakeUnit = ()
+  rnf (TakePair l r) = rnf l `seq` rnf r
+  rnf (TakeSingle t) = rnf t
+
+instance NFData (ConsBuffers f e exs xs) where
+  rnf ConsUnit = ()
+  rnf ConsSingle = ()
+  rnf (ConsPair l r) = rnf l `seq` rnf r
+
+pattern ExpArg :: ()
+                => forall e args body scope. (args' ~ (e -> args), body' ~ (body, e), scope' ~ (scope, e))
+                => LeftHandSideArgs args body scope
                 -> LeftHandSideArgs args' body' scope'
 pattern ExpArg lhs <- (unExpArg -> Just (lhs, Refl))
 {-# COMPLETE Base, Reqr, Make, Adju, Ignr, ExpArg #-}
@@ -151,12 +258,12 @@ unExpArg (VArg lhs) = Just (unsafeCoerce lhs, unsafeCoerce Refl)
 unExpArg (FArg lhs) = Just (unsafeCoerce lhs, unsafeCoerce Refl)
 unExpArg _ = Nothing
 
-pattern ExpPut' :: () 
-                => forall e args i o. (args' ~ (e -> args), i' ~ (i, e), o' ~ (o, e)) 
-                => ClusterIO args  i  o 
+pattern ExpPut' :: ()
+                => forall e args i o. (args' ~ (e -> args), i' ~ (i, e), o' ~ (o, e))
+                => ClusterIO args  i  o
                 -> ClusterIO args' i' o'
 pattern ExpPut' io <- (unExpPut' -> Just (io, Refl))
-{-# COMPLETE Empty, Vertical, Input, Output, MutPut, ExpPut' #-}
+{-# COMPLETE Empty, Vertical, Input, Output, MutPut, ExpPut', Trivial #-}
 unExpPut' :: ClusterIO args' i' o' -> Maybe (ClusterIO args i o, (args', i', o') :~: (e -> args, (i, e), (o, e)))
 unExpPut' (ExpPut io) = Just (unsafeCoerce io, unsafeCoerce Refl)
 unExpPut' (VarPut io) = Just (unsafeCoerce io, unsafeCoerce Refl)
@@ -173,26 +280,42 @@ data Take x xargs args where
   There :: Take x  xargs      args
         -> Take x (xargs, y) (args, y)
 
+wTake :: Take x xargs args -> args :> xargs
+wTake Here = weakenSucc' weakenId
+wTake (There t) = weakenKeep $ wTake t
+
+takeStrengthen :: Idx xs x -> Take y xs zs -> Idx (zs, y) x
+takeStrengthen i Here = i
+takeStrengthen ZeroIdx (There _) = SuccIdx ZeroIdx
+takeStrengthen (SuccIdx i) (There t) = case takeStrengthen i t of
+  ZeroIdx -> ZeroIdx
+  SuccIdx i' -> SuccIdx $ SuccIdx i'
+
+-- unsafe: fails if (f a) is y.
+takeStrengthenF :: IdxF f xs a -> Take y xs env -> IdxF f env a
+takeStrengthenF (IdxF i) t = IdxF . (\(SuccIdx i') -> i') $ takeStrengthen i t
+
 takeIdx :: Take x xargs args -> Idx xargs x
 takeIdx Here      = ZeroIdx
 takeIdx (There t) = SuccIdx $ takeIdx t
 
 -- A cluster from a single node
+-- TODO just use conscluster for this
 unfused :: op args -> BackendCluster op args -> Args env args -> Cluster op args
-unfused op b args = iolhs args $ \io lhs -> Cluster b $ Cluster' io (Bind lhs op None)
+unfused op b args = undefined -- iolhs args $ \io lhs -> Cluster b $ Cluster' io (Bind lhs op None)
 
-iolhs :: Args env args -> (forall x y. ClusterIO args x y -> LeftHandSideArgs args x y -> r) -> r
-iolhs ArgsNil                     f =                       f  Empty            Base
-iolhs (ArgArray In  _ _ _ :>: as) f = iolhs as $ \io lhs -> f (Input       io) (Reqr Here Here lhs)
-iolhs (ArgArray Out r _ _ :>: as) f = iolhs as $ \io lhs -> f (Output Here SubTupRkeep (arrayRtype r) io) (Make Here lhs)
-iolhs (ArgArray Mut _ _ _ :>: as) f = iolhs as $ \io lhs -> f (MutPut io) (Adju lhs)
-iolhs (ArgExp _           :>: as) f = iolhs as $ \io lhs -> f (ExpPut      io) (EArg lhs)
-iolhs (ArgVar _           :>: as) f = iolhs as $ \io lhs -> f (VarPut      io) (VArg lhs)
-iolhs (ArgFun _           :>: as) f = iolhs as $ \io lhs -> f (FunPut      io) (FArg lhs)
+-- iolhs :: Args env args -> (forall x y. ClusterIO args x y -> LeftHandSideArgs args x y -> r) -> r
+-- iolhs ArgsNil                     f =                       f  Empty            Base
+-- iolhs (ArgArray In  _ _ _ :>: as) f = iolhs as $ \io lhs -> f (Input  _ _    io) (Reqr Here Here lhs)
+-- iolhs (ArgArray Out r _ _ :>: as) f = iolhs as $ \io lhs -> f (Output Here SubTupRkeep (arrayRtype r) io) (Make Here lhs)
+-- iolhs (ArgArray Mut _ _ _ :>: as) f = iolhs as $ \io lhs -> f (MutPut io) (Adju lhs)
+-- iolhs (ArgExp _           :>: as) f = iolhs as $ \io lhs -> f (ExpPut      io) (EArg lhs)
+-- iolhs (ArgVar _           :>: as) f = iolhs as $ \io lhs -> f (VarPut      io) (VArg lhs)
+-- iolhs (ArgFun _           :>: as) f = iolhs as $ \io lhs -> f (FunPut      io) (FArg lhs)
 
 mkBase :: ClusterIO args i o -> LeftHandSideArgs () i i
 mkBase Empty = Base
-mkBase (Input    ci) = Ignr (mkBase ci)
+mkBase (Input ci) = Ignr $ mkBase ci
 mkBase (Output _ _ _ ci) = Ignr (mkBase ci)
 mkBase (MutPut   ci) = Ignr (mkBase ci)
 mkBase (ExpPut'   ci) = Ignr (mkBase ci)
@@ -233,14 +356,26 @@ data Take' x xargs args where
   There' :: Take' x       xargs        args
          -> Take' x (y -> xargs) (y -> args)
 
-type family InArgs  a where
-  InArgs  ()              = ()
-  InArgs  (In sh e  -> x) = (InArgs x, Value sh e)
-  InArgs  (Mut sh e -> x) = (InArgs x, Mut sh e)
-  InArgs  (Exp'   e -> x) = (InArgs x, Exp' e)
-  InArgs  (Fun'   e -> x) = (InArgs x, Fun' e)
-  InArgs  (Var'   e -> x) = (InArgs x, Var' e)
-  InArgs  (Out sh e -> x) = (InArgs x, Sh sh e)
+type family InArg a = b | b -> a where
+  InArg (In sh e ) = Value sh e
+  InArg (Mut sh e) = Mut sh e
+  InArg (Exp'   e) = Exp' e
+  InArg (Fun'   e) = Fun' e
+  InArg (Var'   e) = Var' e
+  InArg (Out sh e) = Sh sh e
+type family InArgs a = b | b -> a where
+  InArgs  ()       = ()
+  InArgs  (a -> x) = (InArgs x, InArg a)
+
+takeTake' :: Take (InArg a) (InArgs axs) (InArgs xs) -> Take' a axs xs
+takeTake' Here = unsafeCoerce Here'
+takeTake' (There t) = unsafeCoerce There' $ takeTake' $ unsafeCoerce t
+
+take'Take :: Take' a axs xs -> Take (InArg a) (InArgs axs) (InArgs xs)
+take'Take Here' = Here
+take'Take (There' t) = There $ take'Take t
+
+
 type family OutArgs a where
   OutArgs ()              = ()
   OutArgs (Out sh e -> x) = (OutArgs x, Value sh e)
@@ -258,39 +393,42 @@ data ToArg env a where
          -> ToArg env (Value sh e)
   OutArg :: ArrayR (Array sh e)
          -> GroundVars env sh
-         -> GroundVars env (Buffers e) 
+         -> GroundVars env (Buffers e)
          -> ToArg env (Sh sh e)
   Others :: Arg env a -> ToArg env a
 
 
-getIn :: LeftHandSideArgs body i o -> i -> InArgs body
-getIn Base () = ()
-getIn (Reqr t1 _ lhs) i = let (x, i') = take t1 i in (getIn lhs i', x)
-getIn (Make _ lhs) (i, sh) = (getIn lhs i, sh)
-getIn (Adju lhs)   (i, x)  = (getIn lhs i, x)
-getIn (Ignr lhs)   (i, _)  =  getIn lhs i
-getIn (EArg lhs)   (i, x)  = (getIn lhs i, x)
-getIn (VArg lhs)   (i, x)  = (getIn lhs i, x)
-getIn (FArg lhs)   (i, x)  = (getIn lhs i, x)
-
-genOut :: LeftHandSideArgs body i o -> i -> OutArgs body -> o
-genOut Base             ()    _     = 
-  ()
-genOut (Reqr t1 t2 lhs) i     o     = 
-  let (x, i') = take t1 i 
-  in put t2 x (genOut lhs i' o)
-genOut (Make t lhs)    (i, _) (o, x) = 
-  put t x (genOut lhs i o)
-genOut (Adju lhs) (i, _)    (o, x) = 
-  (genOut lhs i o, x)
-genOut (Ignr lhs)      (i, x) o     =
-  (genOut lhs i o, x)
-genOut (EArg lhs)      (i, x) o     =
-  (genOut lhs i o, x)
-genOut (VArg lhs)      (i, x) o     =
-  (genOut lhs i o, x)
-genOut (FArg lhs)      (i, x) o     =
-  (genOut lhs i o, x)
+-- getIn :: LeftHandSideArgs body i o -> i -> InArgs body
+-- getIn Base () = ()
+-- getIn (Reqr t1 _ lhs) i = let x = collectValue $ mapTupR (\(IdxF idx) -> _ i idx) t1 in (getIn lhs i, x)
+-- getIn (Make _ _ lhs) i = let (sh, i') = _ i in (getIn lhs i', sh)
+-- getIn (Adju lhs)   (i, x)  = (getIn lhs i, x)
+-- getIn (Ignr lhs)   (i, _)  =  getIn lhs i
+-- getIn (EArg lhs)   (i, x)  = (getIn lhs i, x)
+-- getIn (VArg lhs)   (i, x)  = (getIn lhs i, x)
+-- getIn (FArg lhs)   (i, x)  = (getIn lhs i, x)
+--
+-- collectValue :: TupR (Value sh) e -> Value sh e
+-- collectValue TupRunit = Value () (error "no shape info")
+-- collectValue (TupRsingle v) = v
+-- collectValue (TupRpair (collectValue -> (Value l (Shape shr sh))) (collectValue -> (Value r _))) = Value (l,r) (Shape shr sh)
+--
+-- genOut :: LeftHandSideArgs body i o -> i -> OutArgs body -> o
+-- genOut Base             ()    _     =
+--   ()
+-- genOut (Reqr t1 t2 lhs) i     o     = genOut lhs i o
+-- genOut (Make t _ lhs)    (i, _) (o, x) =
+--   putBuf t x (genOut lhs i o)
+-- genOut (Adju lhs) (i, _)    (o, x) =
+--   (genOut lhs i o, x)
+-- genOut (Ignr lhs)      (i, x) o     =
+--   (genOut lhs i o, x)
+-- genOut (EArg lhs)      (i, x) o     =
+--   (genOut lhs i o, x)
+-- genOut (VArg lhs)      (i, x) o     =
+--   (genOut lhs i o, x)
+-- genOut (FArg lhs)      (i, x) o     =
+--   (genOut lhs i o, x)
 
 type family FromArg env a = b | b -> a where
   FromArg env (Exp'     e) = Exp     env e
@@ -331,9 +469,8 @@ instance NFData (ClusterIO args input output) where
   rnf (Input io) = rnf io
   rnf (Output t s tp io) = rnf t `seq` rnf s `seq` rnfTypeR tp `seq` rnf io
   rnf (MutPut io) = rnf io
-  rnf (ExpPut io) = rnf io
-  rnf (VarPut io) = rnf io
-  rnf (FunPut io) = rnf io
+  rnf (ExpPut' io) = rnf io
+  rnf (Trivial io) = rnf io
 
 instance NFData (Take x xargs args) where
   rnf Here = ()
@@ -346,7 +483,7 @@ instance NFData' op => NFData (ClusterAST op env result) where
 instance NFData (LeftHandSideArgs body env scope) where
   rnf Base = ()
   rnf (Reqr take1 take2 args) = rnf take1 `seq` rnf take2 `seq` rnf args
-  rnf (Make t args) = rnf t `seq` rnf args
+  rnf (Make t1 t2 args) = rnf t1 `seq` rnf t2 `seq` rnf args
   rnf (Adju args) = rnf args
   rnf (Ignr args) = rnf args
   rnf (EArg args) = rnf args
@@ -367,7 +504,7 @@ instance ShrinkArg (BackendClusterArg op) => SLVOperation (Cluster op) where
       slvIO SubArgsNil ArgsNil ArgsNil Empty = Empty
       slvIO (SubArgsDead subargs) (ArgVar _ :>: args') (ArgArray Out (ArrayR shr _) _ _ :>: args) (Output t _ te io') = Vertical t (ArrayR shr te) (slvIO subargs args' args io')
       slvIO (SubArgsLive SubArgKeep subargs) (_ :>: (args' :: Args env a')) (_ :>: (args :: Args env' a)) io'
-        = let k :: forall i o. ClusterIO a i o -> ClusterIO a' i o 
+        = let k :: forall i o. ClusterIO a i o -> ClusterIO a' i o
               k = slvIO subargs args' args in case io' of
             Vertical t r io'' -> Vertical t r $ k io''
             Input        io'' -> Input        $ k io''
@@ -376,6 +513,7 @@ instance ShrinkArg (BackendClusterArg op) => SLVOperation (Cluster op) where
             ExpPut       io'' -> ExpPut       $ k io''
             VarPut       io'' -> VarPut       $ k io''
             FunPut       io'' -> FunPut       $ k io''
+            Trivial      io'' -> Trivial      $ k io''
       slvIO
         (SubArgsLive (SubArgOut s) subargs)
         ((ArgArray Out _ _ _) :>: args')

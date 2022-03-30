@@ -99,10 +99,10 @@ makeBackendArg args env (Cluster info (Cluster' io ast)) = let o = getOutputEnv 
 
     lhsEnvArgs :: LeftHandSideArgs body env' scope -> BackendEnv op env scope -> (BackendArgs op env body, Args env body)
     lhsEnvArgs Base Empty = (ArgsNil, ArgsNil)
-    lhsEnvArgs (Reqr _ t lhs) env = case take' t env of (BEE (ArrArg r sh buf) f, env') -> bimap (valueToIn  f :>:) (ArgArray In  r sh buf :>:) $ lhsEnvArgs lhs env'
-                                                        _ -> error "urk"
-    lhsEnvArgs (Make   t lhs) env = case take' t env of (BEE (ArrArg r sh buf) f, env') -> bimap (valueToOut f :>:) (ArgArray Out r sh buf :>:) $ lhsEnvArgs lhs env'
-                                                        _ -> error "urk"
+    lhsEnvArgs (Reqr _ t   lhs) env = case _ t env of BEE (ArrArg r sh buf) f -> bimap (valueToIn  f :>:) (ArgArray In  r sh buf :>:) $ lhsEnvArgs lhs env
+                                                      _ -> error "urk"
+    lhsEnvArgs (Make t1 t2 lhs) env = case take' t env of (BEE (ArrArg r sh buf) f, env') -> bimap (valueToOut f :>:) (ArgArray Out r sh buf :>:) $ lhsEnvArgs lhs env'
+                                                          _ -> error "urk"
     lhsEnvArgs (ExpArg lhs) (Push env (BEE (Others arg) f)) = bimap (f :>:) (arg :>:) $ lhsEnvArgs lhs env
     lhsEnvArgs (Adju   lhs) (Push env (BEE (Others arg) f)) = bimap (f :>:) (arg :>:) $ lhsEnvArgs lhs env
     lhsEnvArgs (Ignr lhs) (Push env _) = lhsEnvArgs lhs env
@@ -110,7 +110,7 @@ makeBackendArg args env (Cluster info (Cluster' io ast)) = let o = getOutputEnv 
     lhsArgsEnv :: LeftHandSideArgs body env' scope -> BackendEnv op env scope -> BackendArgs op env body -> BackendEnv op env env'
     lhsArgsEnv Base                   _                ArgsNil            = Empty
     lhsArgsEnv (Reqr t1 t2 lhs)       env              (f :>: args) = case take' t2 env of (BEE arg          _, env') -> put' t1 (BEE arg (inToValue f)) (lhsArgsEnv lhs env' args)
-    lhsArgsEnv (Make t     lhs)       env              (f :>: args) = case take' t  env of (BEE (ArrArg r sh buf) _, env') -> Push (lhsArgsEnv lhs env' args) (BEE (OutArg r sh buf) (outToSh f))
+    lhsArgsEnv (Make t1 t2 lhs)       env              (f :>: args) = case take' t  env of (BEE (ArrArg r sh buf) _, env') -> Push (lhsArgsEnv lhs env' args) (BEE (OutArg r sh buf) (outToSh f))
                                                                                            _ -> error "urk"
     lhsArgsEnv (ExpArg     lhs) (Push env (BEE arg _)) (f :>: args) = Push (lhsArgsEnv lhs env  args) (BEE arg f)
     lhsArgsEnv (Adju       lhs) (Push env (BEE arg _)) (f :>: args) = Push (lhsArgsEnv lhs env  args) (BEE arg f)
@@ -119,7 +119,7 @@ makeBackendArg args env (Cluster info (Cluster' io ast)) = let o = getOutputEnv 
     getOutputEnv :: ClusterIO args i o -> Args env args -> BackendCluster op args -> BackendEnv op env o
     getOutputEnv P.Empty       ArgsNil           _ = Empty
     getOutputEnv (Vertical t r io) (arg@(ArgVar vars) :>: args) (info :>: infos) = put' t (BEE (ArrArg r (toGrounds vars) (error "accessing a fused away buffer")) (varToValue $ def arg env info)) (getOutputEnv io args infos) -- there is no buffer!
-    getOutputEnv (Input      io) (arg@(ArgArray In r sh buf) :>: args) (info :>: infos) = Push (getOutputEnv io args infos) (BEE (ArrArg r sh buf) (inToValue $ def arg env info))
+    getOutputEnv (Input io) (arg@(ArgArray In r sh buf) :>: args) (info :>: infos) = Push (getOutputEnv io args infos) (BEE (ArrArg r sh buf) (inToValue $ def arg env info))
     getOutputEnv (Output t s e io) (arg@(ArgArray Out r sh buf) :>: args) (info :>: infos) = put' t (BEE (ArrArg (ArrayR (arrayRshape r) e) sh (biggenBuffers s buf)) (outToValue $ shrinkOrGrow $ def arg env info)) (getOutputEnv io args infos)
     getOutputEnv (MutPut     io) (arg :>: args) (info :>: infos) = Push (getOutputEnv io args infos) (BEE (Others arg) (def arg env info))
     getOutputEnv (ExpPut'    io) (arg :>: args) (info :>: infos) = Push (getOutputEnv io args infos) (BEE (Others arg) (def arg env info))
@@ -168,7 +168,7 @@ evalCluster f c@(Cluster _ (Cluster' io ast)) args env = do
 
 evalIO1 :: EvalOp op => Int -> ClusterIO args i o -> Args env args -> BackendArgs op env args -> Val env -> (EvalMonad op) (BackendArgEnv op env i)
 evalIO1 _ P.Empty                                     ArgsNil    ArgsNil    _ = pure Empty
-evalIO1 n (Input     io) (ArgArray In r sh buf :>: args) (info :>: infos) env =
+evalIO1 n (Input io) (ArgArray In r sh buf :>: args) (info :>: infos) env =
   Push <$> evalIO1 n io args infos env <*> ((\value -> BAE value $ inToValue info) <$> value)
     where value = Value <$> readInput (arrayRtype r) (varsGetVal buf env) info n
                       <*> pure (Shape   (arrayRshape r) (varsGetVal sh  env))
@@ -199,7 +199,7 @@ evalAST n (Bind lhs op ast) env i = do
 evalLHS1 :: forall op body i scope env. LeftHandSideArgs body i scope -> BackendArgEnv op env i -> Val env -> BackendArgEnv op env (InArgs body)
 evalLHS1 Base Empty _ = Empty
 evalLHS1 (Reqr t _ lhs) i env = let (BAE x info, i') = take' t i in Push (evalLHS1 lhs i' env) $ BAE x info
-evalLHS1 (Make _   lhs) (Push i' (BAE x info)) env = Push (evalLHS1 lhs i' env) (BAE x info)
+evalLHS1 (Make _ _ lhs) (Push i' (BAE x info)) env = Push (evalLHS1 lhs i' env) (BAE x info)
 evalLHS1 (EArg     lhs) (Push i' (BAE x info)) env = Push (evalLHS1 lhs i' env) (BAE x info)
 evalLHS1 (FArg     lhs) (Push i' (BAE x info)) env = Push (evalLHS1 lhs i' env) (BAE x info)
 evalLHS1 (VArg     lhs) (Push i' (BAE x info)) env = Push (evalLHS1 lhs i' env) (BAE x info)
@@ -210,7 +210,7 @@ evalLHS2 :: EvalOp op => LeftHandSideArgs body i scope -> BackendArgEnv op env i
 evalLHS2 Base Empty _ Empty = Empty
 evalLHS2 (Reqr t1 t2 lhs) i env o = let (x, i') = take' t1 i
                                     in put' t2 x (evalLHS2 lhs i' env o)
-evalLHS2 (Make t lhs) (Push i (BAE _ info)) env (Push o (FromArg y)) = put' t (BAE y (shToValue info)) (evalLHS2 lhs i  env o)
+evalLHS2 (Make t1 t2 lhs) (Push i (BAE _ info)) env (Push o (FromArg y)) = put' t (BAE y (shToValue info)) (evalLHS2 lhs i  env o)
 evalLHS2 (EArg   lhs) (Push i (BAE x info)) env           o  = Push (evalLHS2 lhs i env o) (BAE x info)
 evalLHS2 (FArg   lhs) (Push i (BAE x info)) env           o  = Push (evalLHS2 lhs i env o) (BAE x info)
 evalLHS2 (VArg   lhs) (Push i (BAE x info)) env           o  = Push (evalLHS2 lhs i env o) (BAE x info)
