@@ -247,6 +247,10 @@ type family OutArgs a where
   OutArgs (Out sh e -> x) = (OutArgs x, Value sh e)
   OutArgs (Mut sh e -> x) = (OutArgs x, Mut sh e)
   OutArgs (_  -> x)       =  OutArgs x
+type family OutArgsOf a where
+  OutArgsOf () = ()
+  OutArgsOf (Out sh e -> x) = Out sh e -> OutArgsOf x
+  OutArgsOf (_ -> x) = OutArgsOf x
 
 data ToArg env a where
   ArrArg :: ArrayR (Array sh e)

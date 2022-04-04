@@ -83,7 +83,15 @@ runningExample xs = let
 
 main :: P.IO ()
 main =
-  P.putStrLn $ test @UniformScheduleFun @InterpretKernel $ dotp
+  -- P.putStrLn $ test @UniformScheduleFun @InterpretKernel $ zipWith @DIM1 @Int (+)
+  
+    -- this fails spectacularly: The problem is that we think we fuse, but we don't actually, because
+    -- the Cluster AST doesn't allow zip's style of SoA trickery yet.
+    -- probably need some SoA translations, e.g. in the `take`s in Make/Reqr and in ClusterIO.
+    -- Would then also need to fix cluster construction, which detects fusion
+  P.print $ runN @Interpreter (zipWith (+)) (fromList (Z :. 10) [1::Int ..]) (fromList (Z :. 10) [1..])
+  
+    --dotp (fromList (Z :. 10) [1..]) (fromList (Z :. 10) [1..])
   -- P.print $ run1 @Interpreter (permute (+) (use $ fromList (Z:.10) (P.repeat @P.Int 0)) (\(I1 x) -> Just_ (I1 (x `div` 2)))) $ fromList (Z :. 10) [1..]
   -- P.putStrLn $ test @UniformScheduleFun @InterpretKernel $ permute (+) (use $ fromList (Z:.10) (P.repeat @P.Int 0)) (\(I1 x) -> Just_ (I1 (x `div` 2)))
   -- doNTimes 10 P.print

@@ -49,15 +49,12 @@ module Data.Array.Accelerate.Interpreter (
 
 import Prelude                                                      hiding (take, (!!), sum, Either(..) )
 import Data.Array.Accelerate.AST.Partitioned hiding (Empty)
-import qualified Data.Array.Accelerate.AST.Partitioned as P
 import Data.Array.Accelerate.AST.Operation
 import Data.Array.Accelerate.AST.Kernel
 import Data.Array.Accelerate.Trafo.Desugar
-import Data.Array.Accelerate.Trafo.Operation.Simplify (SimplifyOperation(..), copyOperationsForArray, detectMapCopies, detectBackpermuteCopies)
 import qualified Data.Array.Accelerate.Debug.Internal as Debug
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Error
-import Data.Array.Accelerate.Analysis.Match
 import Data.Array.Accelerate.Analysis.Hash.Exp ( intHost, hashQ )
 import Data.Array.Accelerate.Analysis.Hash.Operation
 import Data.Array.Accelerate.Representation.Ground
@@ -78,22 +75,18 @@ import Unsafe.Coerce (unsafeCoerce)
 import Control.Monad.ST
 import Data.Bits
 import Data.Array.Accelerate.Backend
-import Data.Array.Accelerate.Trafo.Operation.LiveVars
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP (..), Information (Info), Var (BackendSpecific), (-?>), fused, infusibleEdges, manifest, LabelledArgOp (LOp))
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (Information (Info), Var (BackendSpecific), (-?>), fused, infusibleEdges, manifest, LabelledArgOp (LOp))
 import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Graph
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
 import qualified Data.Set as Set
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
 import Lens.Micro ((.~), (&))
 import Data.Array.Accelerate.Array.Buffer
-import Data.Array.Accelerate.Pretty.Operation ( PrettyOp(..) )
 import Data.Array.Accelerate.Pretty.Partitioned ()
 import Data.Array.Accelerate.Pretty.Schedule
 import Data.Array.Accelerate.AST.Idx
-import Data.Array.Accelerate.AST.LeftHandSide (lhsToTupR, LeftHandSide (LeftHandSideWildcard, LeftHandSideUnit))
-import Data.Functor.Identity ( Identity(Identity) )
+import Data.Array.Accelerate.AST.LeftHandSide (LeftHandSide (LeftHandSideWildcard, LeftHandSideUnit))
 import Data.Array.Accelerate.AST.Schedule
-import Data.Array.Accelerate.AST.Execute
 
 import Control.Concurrent (forkIO)
 import Data.IORef
@@ -108,115 +101,63 @@ import Control.Monad (when)
 import Data.Array.Accelerate.Trafo.Var (DeclareVars(DeclareVars), declareVars)
 import Data.Array.Accelerate.Trafo.Operation.Substitution (alet, aletUnique, weaken, LHS (LHS), mkLHS)
 import Control.DeepSeq (rnf)
+import Data.Map (Map)
+import System.IO.Unsafe (unsafePerformIO)
+
+import Data.Array.Accelerate.Eval
+import qualified Data.Array.Accelerate.AST.Partitioned as P
 
 data Interpreter
 instance Backend Interpreter where
   type Schedule Interpreter = UniformScheduleFun
   type Kernel Interpreter = InterpretKernel
 
--- Overly simplistic datatype: We simply ignore all the functions that don't make sense (e.g. for non-array, non-generate args, or non-input args).
--- We also just use Int->Int for the interpreter now, but should be able to use some type families to construct actual Fun (sh -> sh') functions that match up
--- to the shapes of the array arguments instead. That's not trivial, but it is doable and almost required for the code-generating backends. 
--- Another advantage would be increased typesafety (more obviously correct, etc): Int->Int is horrible in that aspect!
-data BackpermutedArg env t = BPA (Arg env t) (Int -> Int)
-type BackpermutedArgs env = PreArgs (BackpermutedArg env)
-type ToBP' f = Env (BP f)
-type ToBP = ToBP' Identity
-data BP f a = BP (f a) (Int -> Int)
-type BPFromArg env = ToBP' (FromArgInfo env)
-newtype FromArg' env a = FromArg (FromArg env a)
-data FromArgInfo env a = FromArgInfo (FromArg env a) (BackendClusterArg InterpretOp a)
-pattern PushBPFA :: () => (e' ~ (e, x)) => (Int -> Int) -> FromArg env x -> BackendClusterArg InterpretOp x -> BPFromArg env e -> BPFromArg env e'
-pattern PushBPFA f x info env = Push env (BP (FromArgInfo x info) f)
-{-# COMPLETE Empty, PushBPFA #-}
 
-pattern PushFA :: () => (e' ~ (e, x)) => FromArg env x -> Env (FromArg' env) e -> Env (FromArg' env) e'
-pattern PushFA x env = Push env (FromArg x)
-{-# COMPLETE Empty, PushFA #-}
-type BackpermutedEnv env = Env (BackpermutedEnvElem env)
-data BackpermutedEnvElem env a = BPE (ToArg env a) (Int -> Int)
+
 
 -- Pushes backpermute information through the cluster and stores it in the arguments, for use at the start of the loop (indexing) and in generates.
-makeBackpermuteArg :: Args env args -> Val env -> Cluster' InterpretOp args -> BackpermutedArgs env args
-makeBackpermuteArg args env (Cluster' io ast) = let o = getOutputEnv io args
-                                                    i = fromAST ast o env
-                                                in fromInputEnv io i
-  where
-    fromAST :: ClusterAST InterpretOp i o -> BackpermutedEnv env o -> Val env -> BackpermutedEnv env i
-    fromAST None o _ = o
-    fromAST (Bind lhs op ast) o env = let o' = fromAST ast o env
-                                      in lhsArgsEnv lhs o' (onOp op (lhsEnvArgs lhs o') env)
+makeBackpermuteArg :: Args env args -> Val env -> Cluster InterpretOp args -> BackendArgs InterpretOp env args
+makeBackpermuteArg = makeBackendArg
 
-    onOp :: InterpretOp args -> BackpermutedArgs env args -> Val env -> BackpermutedArgs env args
-    onOp IBackpermute (BPA f@(ArgFun f') _  :>: BPA i _                           :>: BPA o outF :>: ArgsNil) env =
-      let ArgArray In  (ArrayR shr  _) (flip varsGetVal env -> sh ) _ = i
-          ArgArray Out (ArrayR shr' _) (flip varsGetVal env -> sh') _ = o in
-                       BPA f             id :>: BPA i ({-outF .-} toIndex shr sh . evalFun f' env . fromIndex shr' sh' . outF) :>: BPA o outF :>: ArgsNil
-    onOp IGenerate    (BPA f _    :>: BPA o outF :>: ArgsNil) _ =
-                       BPA f outF :>: BPA o outF :>: ArgsNil -- important: we store the Int -> Int besides the function argument!
-    onOp IMap         (BPA f _  :>: BPA i _ :>: BPA o outF :>: ArgsNil) _ =
-                       BPA f id :>: BPA i outF :>: BPA o outF :>: ArgsNil
-    -- onOp IBackpermuteOr (f :>: BPA g _ :>: i :>: o@(BPA _ outF) :>: ArgsNil) env = case onOp IBackpermute (f :>: i :>: o :>: ArgsNil) env of
-    --   f' :>: i' :>: o' :>: ArgsNil -> f' :>: BPA g outF :>: i' :>: o' :>: ArgsNil
-    onOp IPermute args _ = args
-    onOp IFold1 (comb :>: BPA i _ :>: o@(BPA _ outF) :>: ArgsNil) env =
-      let ArgArray In _ (flip varsGetVal env -> (_, sz)) _ = i 
-          inF x = (+ x `mod` sz) $ outF (x `div` sz) -- this is where the magic happens to fuse backpermute . fold. Would be even cleaner on shapes instead of Ints
-      in comb :>: BPA i inF :>: o :>: ArgsNil
-    onOp (IScan1 _) bpas _ = bpas -- here we trust that our ILP prevented any backpermutes after the scan
-    onOp (IAppend Left n) (BPA f _ :>: BPA i _ :>: o@(BPA _ outF) :>: ArgsNil) env =
-      let ArgArray In _ (flip varsGetVal env -> (_, sz)) _ = i
-          inF x = outF $ (+ (x `mod` sz) * (sz + n)) $ n + (x `div` sz) -- or something like this :)
-      in BPA f outF :>: BPA i inF :>: o :>: ArgsNil
-    onOp (IAppend Right _) (BPA f _ :>: BPA i _ :>: o@(BPA _ outF) :>: ArgsNil) _ = -- TODO check, I think this is right?
-      BPA f outF :>: BPA i outF :>: o :>: ArgsNil
 
-    lhsEnvArgs :: LeftHandSideArgs body env' scope -> BackpermutedEnv env scope -> BackpermutedArgs env body
-    lhsEnvArgs Base Empty = ArgsNil
-    lhsEnvArgs (Reqr _ t lhs) env = case take' t env of (BPE (ArrArg r sh buf) f, env') -> BPA (ArgArray In r sh buf) f :>: lhsEnvArgs lhs env'
-                                                        _ -> error "urk"
-    lhsEnvArgs (Make   t lhs) env = case take' t env of (BPE (ArrArg r sh buf) f, env') -> BPA (ArgArray Out r sh buf) f :>: lhsEnvArgs lhs env'
-                                                        _ -> error "urk"
-    lhsEnvArgs (ExpArg lhs) (Push env (BPE (Others arg) f)) = BPA arg f :>: lhsEnvArgs lhs env
-    lhsEnvArgs (Adju lhs) (Push env (BPE (Others arg) f)) = BPA arg f :>: lhsEnvArgs lhs env
-    lhsEnvArgs (Ignr lhs) (Push env _) = lhsEnvArgs lhs env
+-- TODO add the dimsperthread and idlethreads stuff
+instance StaticClusterAnalysis InterpretOp where
+  data BackendClusterArg2 InterpretOp env arg = BCA (Int -> Int)
 
-    lhsArgsEnv :: LeftHandSideArgs body env' scope -> BackpermutedEnv env scope -> BackpermutedArgs env body -> BackpermutedEnv env env'
-    lhsArgsEnv Base                   _                ArgsNil            = Empty
-    lhsArgsEnv (Reqr t1 t2 lhs)       env              (BPA _ f :>: args) = case take' t2 env of (BPE arg          _, env') -> put' t1 (BPE arg f) (lhsArgsEnv lhs env' args)
-    lhsArgsEnv (Make t     lhs)       env              (BPA _ f :>: args) = case take' t  env of (BPE (ArrArg r sh buf) _, env') -> Push (lhsArgsEnv lhs env' args) (BPE (OutArg r sh buf) f)
-                                                                                                 _ -> error "urk"
-    lhsArgsEnv (ExpArg     lhs) (Push env (BPE arg _)) (BPA _ f :>: args) = Push (lhsArgsEnv lhs env  args) (BPE arg f)
-    lhsArgsEnv (Adju       lhs) (Push env (BPE arg _)) (BPA _ f :>: args) = Push (lhsArgsEnv lhs env  args) (BPE arg f)
-    lhsArgsEnv (Ignr       lhs) (Push env arg)                      args  = Push (lhsArgsEnv lhs env  args) arg
+  onOp IBackpermute (BCA outF :>: ArgsNil) (ArgFun f :>: i :>: o :>: ArgsNil) env = 
+    let ArgArray In  (ArrayR shr  _) (flip varsGetVal env -> sh ) _ = i
+        ArgArray Out (ArrayR shr' _) (flip varsGetVal env -> sh') _ = o in
+                      BCA id :>: BCA (toIndex shr sh . evalFun f env . fromIndex shr' sh' . outF) :>: BCA outF :>: ArgsNil
+  onOp IGenerate    (BCA outF :>: ArgsNil) _ _ =
+                      BCA outF :>: BCA outF :>: ArgsNil -- important: we store the Int -> Int besides the function argument!
+  onOp IMap         (BCA outF :>: ArgsNil) _ _ =
+                      BCA id :>: BCA outF :>: BCA outF :>: ArgsNil
+  onOp IPermute _ _ _ = BCA id :>: BCA id :>: BCA id :>: BCA id :>: ArgsNil
+  onOp (IFold1 _) (BCA outF :>: ArgsNil) (_ :>: i :>: _ :>: ArgsNil) env =
+    let ArgArray In _ (flip varsGetVal env -> (_, sz)) _ = i 
+        inF x = (+ x `mod` sz) $ outF (x `div` sz) -- this is where the magic happens to fuse backpermute . fold. Would be cleaner on shapes instead of Ints
+    in BCA id :>: BCA inF :>: BCA outF :>: ArgsNil
+  onOp (IScan1 _ _) _ _ _ = BCA id :>: BCA id :>: BCA id :>: ArgsNil -- here we trust that our ILP prevented any backpermutes after the scan
+  onOp (IAppend Left n) (BCA outF :>: ArgsNil) (_ :>: i :>: _ :>: ArgsNil) env =
+    let ArgArray In _ (flip varsGetVal env -> (_, sz)) _ = i
+        inF x = outF $ (+ (x `mod` sz) * (sz + n)) $ n + (x `div` sz) -- or something like this :)
+    in BCA outF :>: BCA inF :>: BCA outF :>: ArgsNil
+  onOp (IAppend Right _) (BCA outF :>: ArgsNil) _ _ =
+    BCA outF :>: BCA outF :>: BCA outF :>: ArgsNil
 
-    getOutputEnv :: ClusterIO args i o -> Args env args -> BackpermutedEnv env o
-    getOutputEnv P.Empty       ArgsNil           = Empty
-    getOutputEnv (Vertical t r io) (ArgVar vars :>: args) = put' t (BPE (ArrArg r (toGrounds vars) (error "accessing a fused away buffer")) id) (getOutputEnv io args) -- there is no buffer!
-    getOutputEnv (Input      io) (ArgArray In r sh buf :>: args) = Push (getOutputEnv io args) (BPE (ArrArg r sh buf) id)
-    getOutputEnv (Output t s e io) (ArgArray Out r sh buf :>: args) = put' t (BPE (ArrArg (ArrayR (arrayRshape r) e) sh (biggenBuffers s buf)) id) (getOutputEnv io args)
-    getOutputEnv (MutPut     io) (arg :>: args) = Push (getOutputEnv io args) (BPE (Others arg) id)
-    getOutputEnv (ExpPut'    io) (arg :>: args) = Push (getOutputEnv io args) (BPE (Others arg) id)
+  valueToIn    (BCA f) = BCA f
+  valueToOut   (BCA f) = BCA f
+  inToValue    (BCA f) = BCA f
+  outToValue   (BCA f) = BCA f
+  outToSh      (BCA f) = BCA f
+  shToOut      (BCA f) = BCA f
+  shToValue    (BCA f) = BCA f
+  varToValue   (BCA f) = BCA f
+  varToSh      (BCA f) = BCA f
+  shToVar      (BCA f) = BCA f
+  shrinkOrGrow (BCA f) = BCA f
 
-    biggenBuffers :: SubTupR e e' -> GroundVars env (Buffers e') -> GroundVars env (Buffers e)
-    biggenBuffers SubTupRskip _ = error "accessing a simplified away buffer"
-    biggenBuffers SubTupRkeep vars = vars
-    biggenBuffers (SubTupRpair _ _) (TupRsingle _) = error "impossible???"
-    biggenBuffers (SubTupRpair sl sr) (TupRpair bufl bufr) = TupRpair (biggenBuffers sl bufl) (biggenBuffers sr bufr)
-
-    fromInputEnv :: ClusterIO args input output -> BackpermutedEnv env input -> BackpermutedArgs env args
-    fromInputEnv P.Empty       Empty = ArgsNil
-    fromInputEnv (Vertical _ _ io) (Push env (BPE (OutArg _ sh _) f)) = BPA (ArgVar (fromGrounds sh)) f :>: fromInputEnv io env
-    fromInputEnv (Input    io) (Push env (BPE (ArrArg r sh buf) f)) = BPA (ArgArray In r sh buf) f :>: fromInputEnv io env
-    fromInputEnv (Output _ s e io) (Push env (BPE (OutArg r sh buf) f)) = BPA (ArgArray Out (ArrayR (arrayRshape r) (subTupR s e)) sh (subTupR (onBuffers s) buf)) f :>: fromInputEnv io env
-    fromInputEnv (MutPut   io) (Push env (BPE (Others arg) f)) = BPA arg f :>: fromInputEnv io env
-    fromInputEnv (ExpPut'  io) (Push env (BPE (Others arg) f)) = BPA arg f :>: fromInputEnv io env
-    fromInputEnv _ (Push _ (BPE (Others _) _)) = error "Array argument found in Other"
-
-    onBuffers :: SubTupR e e' -> SubTupR (Buffers e) (Buffers e')
-    onBuffers SubTupRskip = SubTupRskip
-    onBuffers SubTupRkeep = SubTupRkeep
-    onBuffers (SubTupRpair l r) = SubTupRpair (onBuffers l) (onBuffers r)
+  def _ _ _ = BCA id
 
 -- we can implement stencils using clamp, mirror or wrap with backpermute and zipwith(map), but for stencils using function we need a little extra.
 data InterpretOp args where
@@ -231,8 +172,9 @@ data InterpretOp args where
                               -> Fun' (sh -> PrimMaybe sh')
                               -> In sh e
                               -> ())
-  IFold1       :: InterpretOp (Fun' (e -> e -> e) -> In (sh, Int) e -> Out sh e -> ())
-  IScan1      :: Direction -> InterpretOp (Fun' (e -> e -> e) -> In (sh, Int) e -> Out (sh, Int) e -> ())
+  -- The interpreter doesn't have 'communication' with other 'threads' like the other backends do, to simulate cooperative scan/fold we use an IORef instead
+  IFold1       :: IORef (Map Int e) -> InterpretOp (Fun' (e -> e -> e) -> In (sh, Int) e -> Out sh e -> ())
+  IScan1      :: Direction -> IORef (Map Int e) -> InterpretOp (Fun' (e -> e -> e) -> In (sh, Int) e -> Out (sh, Int) e -> ())
   -- append a number of elements to the left or right of each innermost row using the generate function
   IAppend :: Side -> Int -> InterpretOp (Fun' ((sh, Int) -> e) -> In (sh, Int) e -> Out (sh, Int) e -> ())
 
@@ -241,9 +183,9 @@ instance DesugarAcc InterpretOp where
   mkBackpermute a b c   = Exec IBackpermute (a :>: b :>: c :>:       ArgsNil)
   mkGenerate    a b     = Exec IGenerate    (a :>: b :>:             ArgsNil)
   mkPermute     a b c d = Exec IPermute     (a :>: b :>: c :>: d :>: ArgsNil)
-  mkFold        a Nothing b c = Exec IFold1 (a :>: b :>: c :>:       ArgsNil)
+  mkFold        a Nothing b c = Exec (IFold1 $ unsafePerformIO $ newIORef mempty) (a :>: b :>: c :>:       ArgsNil)
   -- we desugar a Fold with seed element into a Fold1 followed by a map which prepends the seed
-  mkFold a@(ArgFun f) (Just (ArgExp seed)) b@(ArgArray In arr@(ArrayR _ tp) sh _) c@(ArgArray _ arr' sh' _)
+  mkFold a@(ArgFun f) (Just (ArgExp seed)) b@(ArgArray In (ArrayR _ tp) _ _) c@(ArgArray _ arr' sh' _)
     | DeclareVars lhsTemp wTemp kTemp <- declareVars $ buffersR tp =
       aletUnique lhsTemp (desugarAlloc arr' $ fromGrounds sh') $
         alet LeftHandSideUnit
@@ -256,7 +198,7 @@ instance DesugarAcc InterpretOp where
                     weakenE weakenEmpty seed) (expVars vars)) $ weakenThroughReindex wTemp reindexExp f)
                 (ArgArray In arr' (weakenVars wTemp sh') (kTemp weakenId))
                 (weaken wTemp c)
-  mkScan dir a Nothing b c = Exec (IScan1 dir) (a :>: b :>: c :>: ArgsNil)
+  mkScan dir a Nothing b c = Exec (IScan1 dir $ unsafePerformIO $ newIORef mempty) (a :>: b :>: c :>: ArgsNil)
   -- we desugar a Scan with seed into a scan1 followed by a map followed by an append
   mkScan dir comb (Just (ArgExp seed)) i@(ArgArray In arr@(ArrayR shr tp) sh _) o 
     | DeclareVars lhsTemp1 wTemp  kTemp1 <- declareVars $ buffersR tp 
@@ -301,9 +243,9 @@ instance EncodeOperation InterpretOp where
   encodeOperation IBackpermute         = intHost $(hashQ ("Backpermute" :: String))
   encodeOperation IGenerate            = intHost $(hashQ ("Generate" :: String))
   encodeOperation IPermute             = intHost $(hashQ ("Permute" :: String))
-  encodeOperation IFold1               = intHost $(hashQ ("Fold1" :: String))
-  encodeOperation (IScan1 LeftToRight) = intHost $(hashQ ("Scanl1" :: String))
-  encodeOperation (IScan1 RightToLeft) = intHost $(hashQ ("Scanr1" :: String))
+  encodeOperation (IFold1 _)           = intHost $(hashQ ("Fold1" :: String))
+  encodeOperation (IScan1 LeftToRight _) = intHost $(hashQ ("Scanl1" :: String))
+  encodeOperation (IScan1 RightToLeft _) = intHost $(hashQ ("Scanr1" :: String))
   encodeOperation (IAppend Left  n)    = intHost $(hashQ ("Appendl" :: String)) <> intHost n
   encodeOperation (IAppend Right n)    = intHost $(hashQ ("Appendr" :: String)) <> intHost n
 
@@ -360,37 +302,13 @@ data Side = Left | Right
 pattern InDir, OutDir :: Label -> Graph.Var InterpretOp
 pattern InDir  l = BackendSpecific (Order  InArr l)
 pattern OutDir l = BackendSpecific (Order OutArr l)
--- TODO add parallelity (number of virtual threads, or perhaps number of dimensions per thread (0 = one element per thread, 1 = one row per thread, 2= one matrix per thread, etc)) to the backendvar.
--- Assuming statically known array sizes for a moment:
--- Cost function should reward parallelity == array size, or dimensions=0, or ideally dimensions <= min_dimensions_to_saturate_threads which depends on concrete sizes
--- like order, parallelity of arguments need to match for fusion
--- fusing map after fold is possible but costly (if the work of the map is big)
--- fusing backpermute after fold is possible and free, so cost function shouldn't care about parallelity for backpermutes
--- 'number of threads' model also expresses exclusive scans, whereas 'dimensions per thread' is much clearer in every other case.
--- Or can we keep this total size `n` for an exclusive scan from `n` to `n+1` elements? E.g. by returning in the format of scanl' (T2 (init res) last res)).
--- That actually sounds quite neat; follow-up question: Can we fuse the cost of that abstraction away?
--- Alternatively, we could simply have one operation that takes an array and one value, and produces a 1-bigger array prefixed by that value.
---    per inner row
--- this operation would fuse perfectly, and then an exclusive scan is simply an inclusive scan followed by this thing.
--- having a lot of those in one kernel would decrease occupancy a little, but that is okay.
--- conclusion: scan is actually not hard at all, because I can just choose the primitives it consists of.
--- TODO: look at the llvm scan kernels & the scan variations in our interface, and decide on the best combination of primitives
--- candidates: with/without seed, including/excluding the total reduction (4 combinations)
---             map, fold, append, prefix, suffix as auxiliary primitives
 
--- random note: many utilities such as append/concat would fuse so much better when backed by a simple primitive than when expressed as a generate
-
--- We will also need to know the total iteration size for a cluster, to evaluate it :)
--- Also, adding some of the above options (append/prefix/suffix), a corollary is that every operation needs to know whether they're `on` for a certain index.
--- i.e. if we fuse append into its two producing maps, the maps will be inactive for half the threads! If we fuse prefix with anything,
--- then the other thing will be inactive for every thread that corresponds to the first element of a row! Unless we have dim/thread>0
 instance MakesILP InterpretOp where
   type BackendVar InterpretOp = InterpreterVariables
   type BackendArg InterpretOp = Maybe (Int, (Int, Int, Int))
   data BackendClusterArg InterpretOp arg where
-    ArrayInfo :: { dim :: Int, idleLeft :: Int, idleRight :: Int} -> BackendClusterArg InterpretOp (m sh e)
+    ArrayInfo :: { dim :: Int, idleLeft :: Int, idleRight :: Int} -> BackendClusterArg InterpretOp arg -- can't do (m sh e) because vertically fused arrays get a Var' argument
     NonArray :: BackendClusterArg InterpretOp arg
-
   -- each array argument gets labelled with its order,
   -- this ensures that e.g. multiple inputs of the same array
   -- in different orders won't fuse horizontally, and that
@@ -400,6 +318,7 @@ instance MakesILP InterpretOp where
   labelLabelledArg _ _ (L arg al) = LOp arg al Nothing
 
   getClusterArg (LOp ArgArray{} _ (Just (_, (x, y, z)))) = ArrayInfo x y z
+  getClusterArg (LOp ArgVar{}   _ (Just (_, (x, y, z)))) = ArrayInfo x y z -- vertically fused array
   getClusterArg (LOp ArgArray{} _ Nothing) = error "TODO: make a nice error"
   getClusterArg (LOp _ _ Nothing) = NonArray
   getClusterArg (LOp _ _ (Just _))         = error "TODO: make a nice error"
@@ -415,6 +334,14 @@ instance MakesILP InterpretOp where
       <> c (BackendSpecific $ IdleThreads InArr Right l) .==. c (BackendSpecific $ IdleThreads OutArr Right l)
       -- TODO reconsider: this has difficult consequences, because if we're backpermuting a matrix from a vector and Dims was 1, does it make sense still?
       -- Need to just work out some examples by hand
+
+-- seems like we might need not just #dimsperthread (shapeR), but also the size of those dims (shape)
+-- like the backpermute functions; these are not known to the ILP but can be statically threaded through back-to-front before evaluating a cluster, using the env
+--        or more precisely, we can thread a computation through the cluster at compile time, which can (at run time, before eval of cluster) use the env
+--        to compute them
+-- it's beginning to feel a lot like this is too much for the interpreter? But a nice little generalisation which allows the backends to use it too would be great.
+-- maybe find a way to make interpret without dimsperthread first though
+
       -- <> c (BackendSpecific $ DimensionsPerThread InArr l) .==. c (BackendSpecific $ DimensionsPerThread OutArr l)
       ) -- enforce that the backpermute follows its own rules, but the output can be anything
       (defaultBounds l)
@@ -439,7 +366,7 @@ instance MakesILP InterpretOp where
       <> equal 0 (BackendSpecific $ IdleThreads OutArr Right l)
       <> equal 0 (BackendSpecific $ DimensionsPerThread OutArr l))
 
-  mkGraph IFold1 (_ :>: L _ (_, Set.toList -> lIns) :>: _ :>: ArgsNil) l =
+  mkGraph (IFold1 _) (_ :>: L _ (_, Set.toList -> lIns) :>: _ :>: ArgsNil) l =
     Info
       mempty
       ( inputConstraints l lIns
@@ -449,7 +376,7 @@ instance MakesILP InterpretOp where
         <> c (BackendSpecific $ DimensionsPerThread InArr l) .+. int 1 .==. c (BackendSpecific $ DimensionsPerThread OutArr l))
       (defaultBounds l)
   
-  mkGraph (IScan1 _) (_ :>: L _ (_, Set.toList -> lIns) :>: _ :>: ArgsNil) l =
+  mkGraph (IScan1 _ _) (_ :>: L _ (_, Set.toList -> lIns) :>: _ :>: ArgsNil) l =
     Info
       mempty
       ( inputConstraints l lIns
@@ -509,12 +436,14 @@ instance NFData' (BackendClusterArg InterpretOp) where
   rnf' NonArray = ()
 
 instance ShrinkArg (BackendClusterArg InterpretOp) where
-  shrinkArg _ (ArrayInfo x y z) = unsafeCoerce $ ArrayInfo x y z -- it remains an array
+  shrinkArg _ (ArrayInfo x y z) = ArrayInfo x y z
   shrinkArg _ _ = error "impossible"
-  deadArg _ = NonArray
+  deadArg (ArrayInfo x y z) = ArrayInfo x y z
+  deadArg _ = error "impossible"
 
 instance NFData' InterpretOp where
-  rnf' (IScan1 dir) = dir `seq` ()
+  rnf' (IScan1 dir lookup) = lookup `seq` dir `seq` ()
+  rnf' (IFold1 lookup) = lookup `seq` ()
   rnf' (IAppend side n) = side `seq` n `seq` ()
   rnf' _ = ()
 
@@ -523,10 +452,10 @@ instance PrettyOp InterpretOp where
   prettyOp IBackpermute = "backpermute"
   prettyOp IGenerate    = "generate"
   prettyOp IPermute     = "permute"
-  prettyOp IFold1       = "fold1"
+  prettyOp (IFold1 _)   = "fold1"
   -- prettyOp IBackpermuteOr = "backpermute_with_default_generate"
-  prettyOp (IScan1 LeftToRight) = "scanl1"
-  prettyOp (IScan1 RightToLeft) = "scanr1"
+  prettyOp (IScan1 LeftToRight _) = "scanl1"
+  prettyOp (IScan1 RightToLeft _) = "scanr1"
   prettyOp (IAppend _ _) = "append"
 
 instance Execute UniformScheduleFun InterpretKernel where
@@ -608,7 +537,7 @@ executeKernelFun env kernelEnv (KernelFunLam KernelArgRscalar{} fun) (S.SArgScal
   = executeKernelFun env (Push' kernelEnv (prj (varIdx var) env)) fun args
 executeKernelFun env kernelEnv (KernelFunLam KernelArgRbuffer{} fun) (S.SArgBuffer _ var :>: args)
   = executeKernelFun env (Push' kernelEnv (prj (varIdx var) env)) fun args
-executeKernelFun _   kernelEnv (KernelFunBody (InterpretKernel cluster args)) ArgsNil = evalCluster cluster args kernelEnv
+executeKernelFun _   kernelEnv (KernelFunBody (InterpretKernel cluster args)) ArgsNil = evalClusterInterpreter cluster args kernelEnv
 
 executeAwhile
   :: Val env
@@ -650,66 +579,19 @@ prjVars TupRunit         _   = ()
 prjVars (TupRpair v1 v2) env = (prjVars v1 env, prjVars v2 env)
 prjVars (TupRsingle var) env = prj (varIdx var) env
 
-fromArgs :: Int -> Val env -> Args env args -> FromIn env args
-fromArgs _ _ ArgsNil = ()
-fromArgs i env (ArgVar v :>: args) = (fromArgs i env args, v)
-fromArgs i env (ArgExp e :>: args) = (fromArgs i env args, e)
-fromArgs i env (ArgFun f :>: args) = (fromArgs i env args, f)
-fromArgs i env (ArgArray Mut (ArrayR shr _) sh buf :>: args) = (fromArgs i env args, ArrayDescriptor shr sh buf)
-fromArgs i env (ArgArray In (ArrayR shr typer) shv buf :>: args) =
-  let buf' = varsGetVal buf env
-      sh   = varsGetVal shv env
-  in (fromArgs i env args, Value (indexBuffers typer buf' i) (Shape shr sh))
-fromArgs i env (ArgArray Out (ArrayR shr _) sh _ :>: args) = (fromArgs i env args, Shape shr (varsGetVal sh env))
+instance EvalOp InterpretOp where
+  type EvalMonad InterpretOp = IO
+  evalOp _ IMap env (Push (Push _ (BAE (Value x (Shape shr sh)) _)) (BAE f _)) = 
+    pure $ Push Empty (FromArg $ Value (evalFun f env x) (Shape shr sh))
+  evalOp _ IBackpermute _ (Push (Push (Push _ (BAE sh _)) (BAE (Value x _) _)) _) = 
+    pure $ Push Empty (FromArg $ Value x sh) -- We evaluated the backpermute at the start already, now simply relabel the shape info
+  evalOp _ _ _ _ = undefined
 
--- TODO make these think about the new info: pass if idle, and loop if nested
-  -- make a little combinator for that
-evalOp :: Int -> InterpretOp args -> Val env -> BPFromArg env (InArgs args) -> IO (Env (FromArg' env) (OutArgs args))
-evalOp _ IMap         env (PushBPFA _ f    infoF (PushBPFA _ (Value x (Shape shr sh)) infoX _)) = pure $ PushFA (Value (evalFun f env x) (Shape shr sh)) Empty
-{- evalOp _ IBackpermute _   (PushBPFA _ _    infoF (PushBPFA _ (Value x _) infoI (PushBPFA _ sh infoO _))) = pure $ PushFA (Value x sh) Empty -- We evaluated the backpermute at the start already, now simply relabel the shape info
-evalOp i IGenerate    env (PushBPFA f' f   infoF (PushBPFA _ (Shape shr sh) infoSh _)) = pure $ PushFA (Value (evalFun f env $ fromIndex shr sh (f' i)) (Shape shr sh)) Empty -- apply f', the Int->Int backpermute function, to our index before evaluating the generate function.
-evalOp i IPermute     env (PushBPFA _ comb infoC (PushBPFA _ target         infoT (PushBPFA _ f infoF (PushBPFA _ (Value (e :: e) (Shape shr sh)) infoI _)))) =
-  let typer = case comb of
-        Lam lhs _ -> lhsToTupR lhs
-        _ -> error "impossible; is a function"
-  in
-  case evalFun f env (fromIndex shr sh i) of
-    -- TODO double check: Is 0 Nothing?
-    (0, _) -> pure $ PushFA target Empty
-    (1, ((), sh)) -> case target of
-      ArrayDescriptor shr shvars bufvars -> do
-        let shsize = varsGetVal shvars env
-        let j = toIndex shr shsize sh
-        let buf = varsGetVal bufvars env
-        let buf' = veryUnsafeUnfreezeBuffers @e typer buf
-        x <- readBuffers @e typer buf' j
-        let x' = evalFun comb env x e
-        writeBuffers typer buf' j x'
-        return $ PushFA target Empty
-    -- How do tags work again? If 'e' is a sum type, does the tag get combined, or does it get its own tag?
-    _ -> error "PrimMaybe's tag was non-zero and non-one"
-evalOp i IFold1 env (PushBPFA _ f infoF (PushBPFA _ (Value x sh) infoX _outputstuff))
-  | firstOfRow i _ _ _ = undefined -- write input to output
-  | otherwise = undefined -- combine input with output using f
-evalOp i (IScan1 dir) _ _
-  | firstOfRow i _ _ _ = undefined -- write input to output
-  | otherwise = undefined -- combine input with previous output using f
-evalOp _ (IAppend side n) _ _ = undefined -- TODO
--}
+  writeOutput r buf n x = writeBuffers r (veryUnsafeUnfreezeBuffers r buf) n x
+  readInput r buf (BCA f) n = indexBuffers' r buf (f n)
 
-firstOfRow :: Int -> ShapeR sh -> sh -> Int -> Bool
-firstOfRow i shr sh idleRowsLeft = undefined
-
-type EvalArgs env = PreArgs (Both (BackpermutedArg env) (BackendClusterArg InterpretOp))
-evalCluster :: Cluster InterpretOp args -> Args env args -> Val env -> IO ()
-evalCluster (Cluster clusterinfo c@(Cluster' io ast)) args env = do
-  let bp = makeBackpermuteArg args env c
-  let bp' = fuseArgs bp clusterinfo
-  doNTimes
-    (iterationsize io args env)
-    (\n -> do i <- evalIO1 n io bp' env
-              o <- evalAST n ast env i
-              evalIO2 n io args env o)
+evalClusterInterpreter :: Cluster InterpretOp args -> Args env args -> Val env -> IO ()
+evalClusterInterpreter c@(Cluster _ (Cluster' io _)) args env = evalCluster (doNTimes $ iterationsize io args env) c args env
 
 -- TODO update when we add folds, reconsider when we add scans that add 1 to the size...
 iterationsize :: ClusterIO args i o -> Args env args -> Val env -> Int
@@ -722,6 +604,7 @@ iterationsize io args env = case io of
   P.MutPut io'       -> case args of ArgArray Mut (ArrayR shr _) sh _ :>: args' -> iterationsize io' args' env -- arrsize shr (varsGetVal sh env)
   P.ExpPut' io' -> case args of _ :>: args' -> iterationsize io' args' env -- skip past this one
 
+
 arrsize :: ShapeR sh -> sh -> Int
 arrsize ShapeRz () = 1
 arrsize (ShapeRsnoc shr) (sh,x) = x * arrsize shr sh
@@ -732,61 +615,69 @@ doNTimes n f
   | n == 0 = pure ()
   | otherwise = f (n-1) >> doNTimes (n-1) f
 
-pattern ArgInfo :: Arg env t -> (Int -> Int) -> BackendClusterArg InterpretOp t -> Both (BackpermutedArg env) (BackendClusterArg InterpretOp) t
-pattern ArgInfo arg bp info = Both (BPA arg bp) info
-{-# COMPLETE ArgInfo #-}
 
-evalIO1 :: Int -> ClusterIO args i o -> EvalArgs env args -> Val env -> IO (BPFromArg env i)
-evalIO1 _ P.Empty                                         ArgsNil    _ = pure Empty
-{- evalIO1 n (Vertical _ r io) (ArgInfo (ArgVar vars          ) f info :>: args) env = PushBPFA f (Shape (arrayRshape r) (varsGetVal vars env)) _ <$> evalIO1 n io args env
-evalIO1 n (Input      io) (ArgInfo (ArgArray In r sh buf ) f info :>: args) env = PushBPFA f <$> value                            <*> pure _ <*> evalIO1 n io args env
-  where value = Value <$> indexBuffers' (arrayRtype  r) (varsGetVal buf env) (f n)
-                      <*> pure (Shape   (arrayRshape r) (varsGetVal sh  env))
-evalIO1 n (Output _ _ _ io) (ArgInfo (ArgArray Out r sh   _) f info :>: args) env = PushBPFA f (Shape (arrayRshape r) (varsGetVal sh env)) _ <$> evalIO1 n io args env
-evalIO1 n (MutPut     io) (ArgInfo (ArgArray Mut r sh buf) f info :>: args) env = PushBPFA f (ArrayDescriptor (arrayRshape r) sh buf)      _ <$> evalIO1 n io args env
-evalIO1 n (ExpPut'    io) (ArgInfo (ArgExp e)              f info :>: args) env = PushBPFA f e                                             _ <$> evalIO1 n io args env
-evalIO1 n (ExpPut'    io) (ArgInfo (ArgVar e)              f info :>: args) env = PushBPFA f e                                             _ <$> evalIO1 n io args env
-evalIO1 n (ExpPut'    io) (ArgInfo (ArgFun e)              f info :>: args) env = PushBPFA f e                                             _ <$> evalIO1 n io args env
--}
 
-evalIO2 :: Int -> ClusterIO args i o -> Args env args -> Val env -> Env (FromArg' env) o -> IO ()
-evalIO2 _ P.Empty ArgsNil _ Empty = pure ()
-evalIO2 n (Vertical t _ io) (_ :>: args) env (take' t -> (_, o)) = evalIO2 n io args env o
-evalIO2 n (Input      io) (_ :>: args) env (PushFA _ o) = evalIO2 n io args env o
-evalIO2 n (MutPut     io) (_ :>: args) env (PushFA _ o) = evalIO2 n io args env o
-evalIO2 n (ExpPut'     io) (_ :>: args) env (PushFA _ o) = evalIO2 n io args env o
-evalIO2 n (Output t s _ io) (ArgArray Out (arrayRtype -> r) _ buf :>: args) env o = let (FromArg (Value x _), o') = take' t o in writeBuffers r (veryUnsafeUnfreezeBuffers r $ varsGetVal buf env) n (subTup s x) >> evalIO2 n io args env o'
 
-evalAST :: forall i o env. Int -> ClusterAST InterpretOp i o -> Val env -> BPFromArg env i -> IO (Env (FromArg' env) o)
-evalAST _ None _ Empty = pure Empty
-evalAST n None env (PushBPFA _ x info i) = flip Push (FromArg x) <$> evalAST n None env i
-evalAST n (Bind lhs op ast) env i = do
-  let i' = evalLHS1 lhs i env
-  o' <- evalOp n op env i'
-  let scope = evalLHS2 lhs i env o'
-  evalAST n ast env scope
+-- TODO make these think about the new info: pass if idle, and loop if nested
+  -- make a little combinator for that
+-- evalOp _ IMap         env (PushBPFA _ f    infoF (PushBPFA _ (Value x (Shape shr sh)) infoX _)) = pure $ PushFA (Value (evalFun f env x) (Shape shr sh)) Empty
+-- evalOp _ IBackpermute _   (PushBPFA _ _    infoF (PushBPFA _ (Value x _) infoI (PushBPFA _ sh infoO _))) = pure $ PushFA (Value x sh) Empty -- We evaluated the backpermute at the start already, now simply relabel the shape info
+-- evalOp i IGenerate    env (PushBPFA f' f   infoF (PushBPFA _ (Shape shr sh) infoSh _)) = pure $ PushFA (Value (evalFun f env $ fromIndex shr sh (f' i)) (Shape shr sh)) Empty -- apply f', the Int->Int backpermute function, to our index before evaluating the generate function.
+-- evalOp i IPermute     env (PushBPFA _ comb infoC (PushBPFA _ target         infoT (PushBPFA _ f infoF (PushBPFA _ (Value (e :: e) (Shape shr sh)) infoI _)))) =
+--   let typer = case comb of
+--         Lam lhs _ -> lhsToTupR lhs
+--         _ -> error "impossible; is a function"
+--   in
+--   case evalFun f env (fromIndex shr sh i) of
+--     (0, _) -> pure $ PushFA target Empty
+--     (1, ((), sh)) -> case target of
+--       ArrayDescriptor shr shvars bufvars -> do
+--         let shsize = varsGetVal shvars env
+--         let j = toIndex shr shsize sh
+--         let buf = varsGetVal bufvars env
+--         let buf' = veryUnsafeUnfreezeBuffers @e typer buf
+--         x <- readBuffers @e typer buf' j
+--         let x' = evalFun comb env x e
+--         writeBuffers typer buf' j x'
+--         return $ PushFA target Empty
+--     _ -> error "PrimMaybe's tag was non-zero and non-one"
+-- evalOp i (IAppend side n) env (PushBPFA f' f   infoF (PushBPFA _ (Value x shX) infoX (PushBPFA _ (Shape shr sh) infoO _))) = 
+--   if f' i - firstOfRow (f' i) (Shape shr sh) (idleLeft infoO) <= n
+--     then pure $ PushFA (Value x (Shape shr sh)) Empty
+--     else pure $ PushFA (Value (evalFun f env $ fromIndex shr sh (f' i)) (Shape shr sh)) Empty
 
-evalLHS1 :: forall body i scope env. LeftHandSideArgs body i scope -> BPFromArg env i -> Val env -> BPFromArg env (InArgs body)
-evalLHS1 Base Empty _ = Empty
-{- evalLHS1 (Reqr t _ lhs) i env = let (BP (FromArgInfo x info) f, i') = take' t i in PushBPFA f x _ (evalLHS1 lhs i' env)
-evalLHS1 (Make _   lhs) (PushBPFA f x info i') env = PushBPFA f x _ (evalLHS1 lhs i' env)
-evalLHS1 (EArg     lhs) (PushBPFA f x info i') env = PushBPFA f x _ (evalLHS1 lhs i' env)
-evalLHS1 (FArg     lhs) (PushBPFA f x info i') env = PushBPFA f x _ (evalLHS1 lhs i' env)
-evalLHS1 (VArg     lhs) (PushBPFA f x info i') env = PushBPFA f x _ (evalLHS1 lhs i' env)
-evalLHS1 (Adju     lhs) (PushBPFA f x info i') env = PushBPFA f x _ (evalLHS1 lhs i' env)
-evalLHS1 (Ignr     lhs) (PushBPFA _ _ info i') env =               evalLHS1 lhs i' env -}
+-- -- TODO the backpermute function!!!!!
+-- evalOp i (IFold1 lookup) env (PushBPFA _ f infoF (PushBPFA _ (Value x sh) infoX (PushBPFA _ outSh _ _)))
+--   | i == firstOfRow i sh (idleLeft infoX) = do -- write input to output
+--       lookupmap <- readIORef lookup
+--       writeIORef lookup (M.insert i x lookupmap)
+--       pure $ PushFA (Value x outSh) Empty
+--   | otherwise = do -- combine input with output using f
+--       lookupmap <- readIORef lookup
+--       let y = lookupmap M.! firstOfRow i sh (idleLeft infoX)
+--       let z = evalFun f env y x
+--       writeIORef lookup (M.insert (firstOfRow i sh (idleLeft infoX)) z lookupmap)
+--       pure $ PushFA (Value z outSh) Empty
+-- evalOp i (IScan1 dir lookup) env (PushBPFA _ f infoF (PushBPFA _ (Value x sh) infoX _outputstuff))
+--   | i == firstOfRow i sh (idleLeft infoX) = do -- write input to output
+--       lookupmap <- readIORef lookup
+--       writeIORef lookup $ M.insert i x lookupmap
+--       pure $ PushFA (Value x sh) Empty
+--   | otherwise = do -- combine input with previous output using f
+--       lookupmap <- readIORef lookup
+--       let y = lookupmap M.! (i - 1)
+--       let z = evalFun f env y x
+--       writeIORef lookup $ M.insert i z lookupmap
+--       pure $ PushFA (Value z sh) Empty
 
-evalLHS2 :: LeftHandSideArgs body i scope -> BPFromArg env i -> Val env -> Env (FromArg' env) (OutArgs body) -> BPFromArg env scope
-evalLHS2 Base Empty _ Empty = Empty
-evalLHS2 (Reqr t1 t2 lhs) i env o = let (x, i') = take' t1 i
-                                    in                    put' t2 x       (evalLHS2 lhs i' env o)
-{- evalLHS2 (Make t lhs) (PushBPFA f _ info i) env (Push o y)   = put' t (BP (FromArgInfo (_ y) _) f) (evalLHS2 lhs i  env o)
-evalLHS2 (EArg   lhs) (PushBPFA f e info i) env           o  = PushBPFA f e    _ (evalLHS2 lhs i  env o)
-evalLHS2 (FArg   lhs) (PushBPFA f e info i) env           o  = PushBPFA f e    _ (evalLHS2 lhs i  env o)
-evalLHS2 (VArg   lhs) (PushBPFA f e info i) env           o  = PushBPFA f e    _ (evalLHS2 lhs i  env o)
-evalLHS2 (Adju   lhs) (PushBPFA f _ info i) env (PushFA m o) = PushBPFA f m    _ (evalLHS2 lhs i  env o)
-evalLHS2 (Ignr   lhs) (PushBPFA f x info i) env           o  = PushBPFA f x    _ (evalLHS2 lhs i  env o)
--}
+firstOfRow :: Int -> Sh sh e -> Int -> Int
+firstOfRow i (Shape ShapeRz ()) idleRowsLeft
+  | i > idleRowsLeft = i - idleRowsLeft
+  | otherwise = error "not in a row"
+firstOfRow i (Shape (ShapeRsnoc _) (_, n)) idleRowsLeft = (i `mod` (n + idleRowsLeft)) - idleRowsLeft
+
+
+
 
 -- Program execution
 -- -----------------
