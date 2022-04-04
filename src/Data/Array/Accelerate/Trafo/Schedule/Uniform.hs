@@ -131,7 +131,7 @@ instance IsSchedule UniformScheduleFun where
             putMVar mvar ()
           return (Signal mvar, Ref ref)
 
-rnfSchedule' :: NFData' kernel => UniformSchedule kernel env -> ()
+rnfSchedule' :: IsKernel kernel => UniformSchedule kernel env -> ()
 rnfSchedule' Return                        = ()
 rnfSchedule' (Alet lhs bnd body)           = rnfLeftHandSide rnfBaseR lhs `seq` rnfBinding bnd `seq` rnfSchedule' body
 rnfSchedule' (Effect eff next)             = rnfEffect eff `seq` rnfSchedule' next
@@ -148,8 +148,8 @@ rnfBinding (Use tp n buffer) = buffer `seq` n `seq` rnfScalarType tp
 rnfBinding (Unit var)        = rnfExpVar var
 rnfBinding (RefRead r)       = rnfBaseVar r
 
-rnfEffect :: NFData' kernel => Effect kernel env -> ()
-rnfEffect (Exec kernel args)      = rnf' kernel `seq` rnfSArgs args
+rnfEffect :: IsKernel kernel => Effect kernel env -> ()
+rnfEffect (Exec md kernel args)   = rnf' md `seq` rnf' kernel `seq` rnfSArgs args
 rnfEffect (SignalAwait signals)   = rnf signals
 rnfEffect (SignalResolve signals) = rnf signals
 rnfEffect (RefWrite ref value)    = rnfBaseVar ref `seq` rnfBaseVar value
@@ -656,11 +656,6 @@ data Destination r t where
   DestinationNew   :: Destination r t
   DestinationReuse :: TupleIdx r t -> Destination r t
 
-data TupleIdx s t where
-  TupleIdxLeft  :: TupleIdx l t -> TupleIdx (l, r) t
-  TupleIdxRight :: TupleIdx r t -> TupleIdx (l, r) t
-  TupleIdxSelf  :: TupleIdx t t
-
 data PartialSchedule kernel genv t where
   PartialDo     :: PartialDoOutput () fenv t r
                 -> ConvertEnv genv fenv fenv'
@@ -817,7 +812,7 @@ partialSchedule = (\(s, used, _) -> (s, used)) . travA (TupRsingle Shared)
             ( PartialDo PartialDoOutputUnit env
                 $ await signals
                 $ inputBindings
-                $ Effect (Exec kernel sargs)
+                $ Effect (Exec (kernelMetadata kernel) kernel sargs)
                 $ resolve resolvers
                   Return
             , IdxSet.fromList $ convertEnvToList env

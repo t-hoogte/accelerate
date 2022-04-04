@@ -15,6 +15,7 @@
 {-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell     #-}
 {-# LANGUAGE TupleSections       #-}
 {-# LANGUAGE TypeApplications    #-}
 {-# LANGUAGE TypeFamilies        #-}
@@ -57,6 +58,8 @@ import qualified Data.Array.Accelerate.Debug.Internal as Debug
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Analysis.Match
+import Data.Array.Accelerate.Analysis.Hash.Exp ( intHost, hashQ )
+import Data.Array.Accelerate.Analysis.Hash.Operation
 import Data.Array.Accelerate.Representation.Ground
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Representation.Shape
@@ -232,7 +235,7 @@ data InterpretOp args where
   IScan1      :: Direction -> InterpretOp (Fun' (e -> e -> e) -> In (sh, Int) e -> Out (sh, Int) e -> ())
   -- append a number of elements to the left or right of each innermost row using the generate function
   IAppend :: Side -> Int -> InterpretOp (Fun' ((sh, Int) -> e) -> In (sh, Int) e -> Out (sh, Int) e -> ())
-  
+
 instance DesugarAcc InterpretOp where
   mkMap         a b c   = Exec IMap         (a :>: b :>: c :>:       ArgsNil)
   mkBackpermute a b c   = Exec IBackpermute (a :>: b :>: c :>:       ArgsNil)
@@ -293,6 +296,17 @@ instance DesugarAcc InterpretOp where
             --           Body $ Pair (expVars $ weakenVars (weakenSucc' weakenId) vars) (PrimApp (PrimMin $ NumSingleType $ IntegralNumType TypeInt) $ Pair (Evar (Var scalarTypeInt ZeroIdx)) (Const scalarTypeInt 1))
             --   )
 
+instance EncodeOperation InterpretOp where
+  encodeOperation IMap                 = intHost $(hashQ ("Map" :: String))
+  encodeOperation IBackpermute         = intHost $(hashQ ("Backpermute" :: String))
+  encodeOperation IGenerate            = intHost $(hashQ ("Generate" :: String))
+  encodeOperation IPermute             = intHost $(hashQ ("Permute" :: String))
+  encodeOperation IFold1               = intHost $(hashQ ("Fold1" :: String))
+  encodeOperation (IScan1 LeftToRight) = intHost $(hashQ ("Scanl1" :: String))
+  encodeOperation (IScan1 RightToLeft) = intHost $(hashQ ("Scanr1" :: String))
+  encodeOperation (IAppend Left  n)    = intHost $(hashQ ("Appendl" :: String)) <> intHost n
+  encodeOperation (IAppend Right n)    = intHost $(hashQ ("Appendr" :: String)) <> intHost n
+
 mkAppend :: Side -> Int -> Arg env (Fun' ((sh, Int) -> e)) -> Arg env (In (sh, Int) e) -> Arg env (Out (sh, Int) e) -> OperationAcc InterpretOp env ()
 mkAppend side i a b c = Exec (IAppend side i) (a :>: b :>: c :>: ArgsNil)
 
@@ -322,6 +336,7 @@ instance NFData' InterpretKernel where
 
 instance IsKernel InterpretKernel where
   type KernelOperation InterpretKernel = InterpretOp
+  type KernelMetadata  InterpretKernel = NoKernelMetadata
 
   compileKernel = const $ InterpretKernel
 
@@ -455,6 +470,9 @@ instance MakesILP InterpretOp where
         <> c (BackendSpecific $ DimensionsPerThread InArr l) .==. c (BackendSpecific $ DimensionsPerThread OutArr l))
       (defaultBounds l)
 
+  encodeBackendClusterArg (ArrayInfo d l r) = intHost $(hashQ ("ArrayInfo" :: String)) <> intHost d <> intHost l <> intHost r
+  encodeBackendClusterArg NonArray          = intHost $(hashQ ("NonArray" :: String))
+
   -- mkGraph IBackpermuteOr (_ :>: _ :>: ((L _ (_, Set.toList -> lIns)) :>: _)) l@(Label i _) =
   --   Info
   --     mempty
@@ -566,7 +584,7 @@ executeBinding env = \case
 
 executeEffect :: forall env. Val env -> S.Effect InterpretKernel env -> IO ()
 executeEffect env = \case
-  S.Exec kernelFun args ->
+  S.Exec _ kernelFun args ->
     executeKernelFun env Empty kernelFun args
   S.SignalAwait signals -> mapM_ await signals
   S.SignalResolve signals -> mapM_ resolve signals

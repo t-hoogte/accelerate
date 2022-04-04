@@ -68,7 +68,7 @@ instance Sink Binding where
   weaken k (RefRead ref)     = RefRead $ weaken k ref
 
 instance Sink' (Effect kernel) where
-  weaken' k (Exec kernel args) = Exec kernel $ runIdentity $ reindexSArgs' (ReindexF $ \ix -> NewIdxJust <$> weakenReindex k ix) args
+  weaken' k (Exec md kernel args) = Exec md kernel $ runIdentity $ reindexSArgs' (ReindexF $ \ix -> NewIdxJust <$> weakenReindex k ix) args
   weaken' k (SignalAwait vars) = SignalAwait $ map (weaken k) vars
   weaken' k (SignalResolve vars) = SignalResolve $ map (weaken k) vars
   weaken' k (RefWrite ref value) = RefWrite (weaken k ref) (weaken k value)
@@ -128,7 +128,7 @@ reindexScheduleFun' k = \case
 
 reindexEffect' :: forall kernel f env env'. (Applicative f) => SunkReindexPartialN f env env' -> Effect kernel env -> f (Effect kernel env')
 reindexEffect' k = \case
-  Exec kernel args -> Exec kernel <$> reindexSArgs' k args
+  Exec md kernel args -> Exec md kernel <$> reindexSArgs' k args
   SignalAwait signals -> SignalAwait <$> traverse (fromNewIdxSignal <.> reindex' k) signals
   SignalResolve resolvers -> SignalResolve . mapMaybe toMaybe <$> traverse (reindex' k) resolvers
   RefWrite ref value -> RefWrite <$> reindexVar (fromNewIdxOutputRef <.> reindex' k) ref <*> reindexVar (fromNewIdxUnsafe <.> reindex' k) value

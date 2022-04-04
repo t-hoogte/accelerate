@@ -32,7 +32,7 @@ module Data.Array.Accelerate.Trafo.LiveVars
   , SubTupR(..), subTupR, subTupRpair, subTupUnit, DeclareSubVars(..), declareSubVars
   , LVAnalysis(..), LVAnalysisFun(..), LVAnalysis'(..), allDead, expectJust
   , subTupExp, subTupFun
-  ,composeSubTupR,subTup,subTupDBuf) where
+  , composeSubTupR, subTup, subTupDBuf) where
 
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Exp
