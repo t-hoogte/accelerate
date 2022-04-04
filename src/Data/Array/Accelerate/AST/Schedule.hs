@@ -53,16 +53,12 @@ class IsSchedule sched where
   type ScheduleInput  sched a
   type ScheduleOutput sched a
 
-  rnfSchedule :: NFData' kernel => sched kernel env t -> ()
+  rnfSchedule :: IsKernel kernel => sched kernel env t -> ()
 
   convertScheduleFun
     :: IsKernel kernel
     => PartitionedAfun (KernelOperation kernel) () t -> sched kernel () (Scheduled sched t)
 
-  -- Note that we could drop 'IO' here, as IOFun already introduces an IO at
-  -- the return type of that function. By including IO here it's just easier to
-  -- implement this function.
-  --
   callScheduledFun :: GFunctionR t -> IOFun (Scheduled sched t) -> FullIOFun t
 
 convertSchedule
