@@ -21,6 +21,7 @@ module Data.Array.Accelerate.Analysis.Hash.Operation ( EncodeOperation(..), hash
 
 import Data.Array.Accelerate.Analysis.Hash.Exp
 import Data.Array.Accelerate.AST.Idx
+import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.Trafo.LiveVars
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
@@ -28,11 +29,11 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
 import Crypto.Hash.XKCP
 import Data.ByteString.Builder
 
-hashOperation :: EncodeOperation op => op t -> Hash
-hashOperation
+hashOperation :: EncodeOperation op => op t -> Args env t -> Hash
+hashOperation op args
   = hashlazy
-  . toLazyByteString
-  . encodeOperation
+  $ toLazyByteString
+  $ encodeOperation op <> encodePreArgs encodeArg args
 
 class EncodeOperation op where
   encodeOperation :: op t -> Builder
@@ -43,6 +44,28 @@ instance (MakesILP op, EncodeOperation op) => EncodeOperation (Cluster op) where
 encodePreArgs :: (forall t. arg t -> Builder) -> PreArgs arg f -> Builder
 encodePreArgs f (a :>: as) = intHost $(hashQ ":>:") <> f a <> encodePreArgs f as
 encodePreArgs f ArgsNil    = intHost $(hashQ "ArgsNil")
+
+encodeArg :: Arg env t -> Builder
+encodeArg (ArgArray m repr sh buffers)
+  = intHost $(hashQ "Array") <> encodeModifier m <> encodeArrayType repr <> encodeGroundVars sh <> encodeGroundVars buffers
+encodeArg (ArgVar var) = intHost $(hashQ "Var") <> encodeTupR encodeExpVar var
+encodeArg (ArgExp exp) = intHost $(hashQ "Exp") <> encodeOpenExp exp
+encodeArg (ArgFun fun) = intHost $(hashQ "Fun") <> encodeOpenFun fun
+
+encodeGroundVars :: GroundVars env t -> Builder
+encodeGroundVars = encodeTupR encodeGroundVar
+
+encodeGroundVar :: GroundVar env t -> Builder
+encodeGroundVar (Var tp ix) = encodeGroundR tp <> encodeIdx ix
+
+encodeGroundR :: GroundR t -> Builder
+encodeGroundR (GroundRscalar tp) = intHost $(hashQ "Scalar") <> encodeScalarType tp
+encodeGroundR (GroundRbuffer tp) = intHost $(hashQ "Buffer") <> encodeScalarType tp
+
+encodeModifier :: Modifier m -> Builder
+encodeModifier In  = intHost $(hashQ "In")
+encodeModifier Out = intHost $(hashQ "Out")
+encodeModifier Mut = intHost $(hashQ "Mut")
 
 encodeCluster' :: EncodeOperation op => Cluster' op args -> Builder
 encodeCluster' (Cluster' io ast) = encodeClusterIO io <> encodeClusterAST ast

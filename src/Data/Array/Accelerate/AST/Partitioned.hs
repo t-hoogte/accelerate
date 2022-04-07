@@ -41,7 +41,8 @@ import Data.Bifunctor
 import Data.Array.Accelerate.Trafo.Desugar (ArrayDescriptor(..))
 import Data.Array.Accelerate.Representation.Array (Array, Buffers, ArrayR (ArrayR), arrayRtype, rnfArrayR)
 import qualified Data.Array.Accelerate.AST.Environment as Env
-import Data.Array.Accelerate.Representation.Shape (ShapeR)
+import Data.Array.Accelerate.AST.LeftHandSide
+import Data.Array.Accelerate.Representation.Shape (ShapeR, shapeType)
 import Data.Type.Equality
 import Unsafe.Coerce (unsafeCoerce)
 import Data.Array.Accelerate.Trafo.Operation.LiveVars
@@ -49,7 +50,7 @@ import Data.Array.Accelerate.Representation.Type (TypeR, rnfTypeR)
 import Control.DeepSeq (NFData (rnf))
 import Data.Array.Accelerate.Trafo.Operation.Simplify (SimplifyOperation(..))
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (BackendCluster, MakesILP (BackendClusterArg))
- 
+
 -- In this model, every thread has one input element per input array,
 -- and one output element per output array. That works perfectly for
 -- a Map, Generate, ZipWith - but the rest requires some fiddling:
@@ -218,6 +219,12 @@ take' (There t) (Env.Push env x) = second (`Env.Push` x) $ take' t env
 put' :: Take a ab b -> f a -> Env.Env f b -> Env.Env f ab
 put' Here a env = Env.Push env a
 put' (There t) a (Env.Push env c) = Env.Push (put' t a env) c
+
+weakenTakeWithLHS :: LeftHandSide s t xenv xenv' -> Take x xenv env -> Exists (Take x xenv')
+weakenTakeWithLHS (LeftHandSideWildcard _) t = Exists t
+weakenTakeWithLHS (LeftHandSideSingle _)   t = Exists $ There t
+weakenTakeWithLHS (LeftHandSidePair l1 l2) t
+  | Exists t1 <- weakenTakeWithLHS l1 t = weakenTakeWithLHS l2 t1
 
 ttake :: Take x xas as -> Take y xyas xas -> (forall yas. Take x xyas yas -> Take y yas as -> r) -> r
 ttake  tx           Here       k = k (There tx)   Here

@@ -30,12 +30,17 @@ module Data.Array.Accelerate.Eval where
 
 import Prelude                                                      hiding (take, (!!), sum, Either(..) )
 import Data.Array.Accelerate.AST.Partitioned hiding (Empty)
+import Data.Array.Accelerate.AST.Var
+import Data.Array.Accelerate.AST.LeftHandSide
 import qualified Data.Array.Accelerate.AST.Partitioned as P
 import Data.Array.Accelerate.AST.Operation
+import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Trafo.Desugar
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Type
+import Data.Array.Accelerate.Representation.Ground
 import Data.Array.Accelerate.AST.Environment hiding (Identity(..))
+import Data.Array.Accelerate.Trafo.Substitution
 import Data.Array.Accelerate.Trafo.Operation.LiveVars
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (BackendCluster, MakesILP (BackendClusterArg))
 import Data.Array.Accelerate.Array.Buffer
@@ -46,6 +51,7 @@ import Data.Array.Accelerate.Trafo.Schedule.Uniform ()
 import Data.Array.Accelerate.Pretty.Schedule.Uniform ()
 import Data.Kind (Type)
 import Data.Bifunctor (bimap)
+import Data.Typeable
 
 type BackendArgs op env = PreArgs (BackendClusterArg2 op env)
 type BackendEnv op env = Env (BackendEnvElem op env)
@@ -219,3 +225,189 @@ evalLHS2 (Ignr   lhs) (Push i (BAE x info)) env           o  = Push (evalLHS2 lh
 
 first' :: (a -> b -> c) -> (a,b) -> (c,b)
 first' f (a,b) = (f a b, b)
+
+
+
+data ClusterOperations op env where
+  ClusterOperations
+    :: TypeR e
+    -> GLeftHandSide (Buffers e) env env'
+    -> [ApplyOperation op env']
+    -> ClusterOperations op env
+
+data ApplyOperation op env where
+  ApplyOperation :: op f -> Args env f -> ApplyOperation op env
+
+data Arg' env t where
+  ArgArray' :: Arg env (m sh t)   -> Arg' env (m' sh t) -- Used for Value and Sh
+  ArgOther' :: Arg env t          -> Arg' env t
+
+instance Sink Arg' where
+  weaken k (ArgArray' arg) = ArgArray' $ weaken k arg
+  weaken k (ArgOther' arg) = ArgOther' $ weaken k arg
+
+data BoundIO env input output where
+  BoundIO
+    :: TypeR e
+    -> GLeftHandSide (Buffers e) env env'
+    -> Env (Arg' env') input
+    -> Env (Arg' env') output
+    -> BoundIO env input output
+
+clusterOperations :: Cluster op f -> Args env f -> ClusterOperations op env
+clusterOperations (Cluster _ (Cluster' io ast)) args
+  | BoundIO tp lhs input  _ <- bindIO io args
+  = ClusterOperations tp lhs (traverseClusterAST input ast)
+  where
+    bindIO :: ClusterIO f' input output -> Args env f' -> BoundIO env input output
+    bindIO P.Empty ArgsNil = BoundIO TupRunit (LeftHandSideWildcard TupRunit) Empty Empty
+    bindIO (P.Vertical t repr@(ArrayR _ tp) io) (ArgVar sh :>: args)
+      | BoundIO bndTp lhs input output <- bindIO io args
+      , k <- weakenWithLHS lhs
+      -- Create variables for the buffers which were fused away
+      , DeclareVars lhs' k' vars <- declareVars (buffersR tp)
+      , arg <- ArgArray Mut repr (mapVars GroundRscalar $ mapTupR (weaken $ k' .> k) sh) (vars weakenId)
+      , input'  <- mapEnv (weaken k') input
+      , output' <- mapEnv (weaken k') output
+      = BoundIO
+        (bndTp `TupRpair` tp)
+        (lhs `LeftHandSidePair` lhs')
+        (Push input' $ ArgArray' arg)
+        (put' t (ArgArray' arg) output')
+    bindIO (P.Input io) (arg@(ArgArray In _ _ _) :>: args)
+      | BoundIO bndTp lhs input output <- bindIO io args
+      , k <- weakenWithLHS lhs
+      = BoundIO bndTp lhs
+        (Push input  $ ArgArray' $ weaken k arg)
+        (Push output $ ArgArray' $ weaken k arg)
+    bindIO (P.Output t s tp io) (arg :>: args)
+      -- Output which was fully preserved
+      | Just Refl <- subTupPreserves tp s
+      , BoundIO bndTp lhs input output <- bindIO io args
+      , k <- weakenWithLHS lhs
+      , arg' <- weaken k arg
+      = BoundIO bndTp lhs
+        (Push input $ ArgArray' arg')
+        (put' t (ArgArray' arg') output)
+    bindIO (P.Output t s tp io) (ArgArray Out (ArrayR shr _) sh buffers :>: args)
+      -- Part of the output is used. The operation has more output, but doesn't use that.
+      -- We need to declare variables for those buffers here.
+      | BoundIO bndTp lhs input output <- bindIO io args
+      , k <- weakenWithLHS lhs
+      , DeclareMissingDistributedVars tp' lhs' k' buffers' <-
+          declareMissingDistributedVars @Buffer tp (buffersR tp) s $ mapTupR (weaken k) buffers
+      , arg' <- ArgArray Out (ArrayR shr tp) (mapTupR (weaken $ k' .> k) sh) (buffers' weakenId)
+      , input'  <- mapEnv (weaken k') input
+      , output' <- mapEnv (weaken k') output
+      = BoundIO (bndTp `TupRpair` tp') (LeftHandSidePair lhs lhs')
+        (Push input' $ ArgArray' arg')
+        (put' t (ArgArray' arg') output')
+    -- For Mut, Exp, Var and Fun we must simply put them on top of the environments.
+    bindIO (P.MutPut io) (arg :>: args)
+      | BoundIO bndTp lhs input output <- bindIO io args
+      , k <- weakenWithLHS lhs
+      , arg' <- weaken k arg
+      = BoundIO bndTp lhs
+        (Push input  $ ArgOther' arg')
+        (Push output $ ArgOther' arg')
+    bindIO (P.ExpPut io) (arg :>: args)
+      | BoundIO bndTp lhs input output <- bindIO io args
+      , k <- weakenWithLHS lhs
+      , arg' <- weaken k arg
+      = BoundIO bndTp lhs
+        (Push input  $ ArgOther' arg')
+        (Push output $ ArgOther' arg')
+    bindIO (P.VarPut io) (arg :>: args)
+      | BoundIO bndTp lhs input output <- bindIO io args
+      , k <- weakenWithLHS lhs
+      , arg' <- weaken k arg
+      = BoundIO bndTp lhs
+        (Push input  $ ArgOther' arg')
+        (Push output $ ArgOther' arg')
+    bindIO (P.FunPut io) (arg :>: args)
+      | BoundIO bndTp lhs input output <- bindIO io args
+      , k <- weakenWithLHS lhs
+      , arg' <- weaken k arg
+      = BoundIO bndTp lhs
+        (Push input  $ ArgOther' arg')
+        (Push output $ ArgOther' arg')
+
+    traverseClusterAST
+      :: Env (Arg' env') input
+      -> ClusterAST op input output
+      -> [ApplyOperation op env']
+    traverseClusterAST _     None = []
+    traverseClusterAST input (Bind lhs op ast) =
+      ApplyOperation op (prjArgs input lhs)
+      : traverseClusterAST (lhsArgsOutput retypeSh lhs input) ast
+
+    prjArgs
+      :: Env (Arg' env') input
+      -> LeftHandSideArgs f input output
+      -> Args env' f
+    prjArgs input = \case
+      Base -> ArgsNil
+      Reqr t _ lhs
+        | (arg, input') <- take' t input
+        -> case arg of
+            ArgArray' (ArgArray _ repr sh buffers) -> ArgArray In repr sh buffers :>: prjArgs input' lhs
+            ArgOther' (ArgArray m _ _ _) -> case m of {}
+      Make _ lhs
+        | input' `Push` arg <- input
+        -> case arg of
+            ArgArray' (ArgArray _ repr sh buffers) -> ArgArray Out repr sh buffers :>: prjArgs input' lhs
+            ArgOther' (ArgArray m _ _ _) -> case m of {}
+      Adju lhs
+        | input' `Push` arg <- input
+        -> case arg of
+            ArgArray' (ArgArray _ repr sh buffers) -> ArgArray Mut repr sh buffers :>: prjArgs input' lhs
+            ArgOther' (ArgArray _ repr sh buffers) -> ArgArray Mut repr sh buffers :>: prjArgs input' lhs
+      Ignr lhs
+        | input' `Push` _ <- input
+        -> prjArgs input' lhs
+      EArg lhs
+        | input' `Push` ArgOther' arg <- input
+        -> arg :>: prjArgs input' lhs
+      VArg lhs
+        | input' `Push` ArgOther' arg <- input
+        -> arg :>: prjArgs input' lhs
+      FArg lhs
+        | input' `Push` ArgOther' arg <- input
+        -> arg :>: prjArgs input' lhs
+  
+    retypeSh :: Arg' env (Sh sh t) -> Arg' env (m' sh t)
+    retypeSh (ArgArray' arg) = ArgArray' arg
+    retypeSh (ArgOther' (ArgArray m _ _ _)) = case m of {}
+
+lhsArgsOutput
+  :: forall f t input output.
+     (forall sh e. f (Sh sh e) -> f (Value sh e))
+  -> LeftHandSideArgs t input output
+  -> Env f input
+  -> Env f output
+lhsArgsOutput make lhsArgs input = case lhsArgs of
+  Base -> Empty
+  Reqr t t' args
+    | (arg, input') <- take' t input
+    -> put' t' arg $ go args input'
+  Make t args
+    | input' `Push` arg <- input
+    -> put' t (make arg) $ go args input'
+  Adju args
+    | input' `Push` arg <- input
+    -> go args input' `Push` arg
+  Ignr args
+    | input' `Push` arg <- input
+    -> go args input' `Push` arg
+  EArg args
+    | input' `Push` arg <- input
+    -> go args input' `Push` arg
+  VArg args
+    | input' `Push` arg <- input
+    -> go args input' `Push` arg
+  FArg args
+    | input' `Push` arg <- input
+    -> go args input' `Push` arg
+  where
+    go :: LeftHandSideArgs t' input' output' -> Env f input' -> Env f output'
+    go = lhsArgsOutput make
