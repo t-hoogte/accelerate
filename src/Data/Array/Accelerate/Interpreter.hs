@@ -127,7 +127,7 @@ instance StaticClusterAnalysis InterpretOp where
   onOp IBackpermute (BCA outF :>: ArgsNil) (ArgFun f :>: i :>: o :>: ArgsNil) env = 
     let ArgArray In  (ArrayR shr  _) (flip varsGetVal env -> sh ) _ = i
         ArgArray Out (ArrayR shr' _) (flip varsGetVal env -> sh') _ = o in
-                      BCA id :>: BCA (toIndex shr sh . evalFun f env . fromIndex shr' sh' . outF) :>: BCA outF :>: ArgsNil
+                      BCA id :>: BCA (toIndex shr sh . evalFun f (evalArrayInstrDefault env) . fromIndex shr' sh' . outF) :>: BCA outF :>: ArgsNil
   onOp IGenerate    (BCA outF :>: ArgsNil) _ _ =
                       BCA outF :>: BCA outF :>: ArgsNil -- important: we store the Int -> Int besides the function argument!
   onOp IMap         (BCA outF :>: ArgsNil) _ _ =
@@ -490,7 +490,7 @@ executeSchedule !env = \case
 executeBinding :: Val env -> S.Binding env t -> IO t
 executeBinding env = \case
   S.Compute expr ->
-    return $ evalExp expr env
+    return $ evalExp expr (evalArrayInstrDefault env)
   S.NewSignal -> do
     mvar <- newEmptyMVar
     return (S.Signal mvar, S.SignalResolver mvar)
@@ -582,7 +582,7 @@ prjVars (TupRsingle var) env = prj (varIdx var) env
 instance EvalOp InterpretOp where
   type EvalMonad InterpretOp = IO
   evalOp _ IMap env (Push (Push _ (BAE (Value x (Shape shr sh)) _)) (BAE f _)) = 
-    pure $ Push Empty (FromArg $ Value (evalFun f env x) (Shape shr sh))
+    pure $ Push Empty (FromArg $ Value (evalFun f (evalArrayInstrDefault env) x) (Shape shr sh))
   evalOp _ IBackpermute _ (Push (Push (Push _ (BAE sh _)) (BAE (Value x _) _)) _) = 
     pure $ Push Empty (FromArg $ Value x sh) -- We evaluated the backpermute at the start already, now simply relabel the shape info
   evalOp _ _ _ _ = undefined
@@ -746,22 +746,32 @@ fromFunction' repr sh f = (TupRsingle repr, fromFunction repr sh f)
 -- Scalar expression evaluation
 -- ----------------------------
 
+newtype EvalArrayInstr arr = EvalArrayInstr (forall s t. arr (s -> t) -> s -> t)
+
+evalArrayInstrDefault :: Val aenv -> EvalArrayInstr (ArrayInstr aenv)
+evalArrayInstrDefault aenv = EvalArrayInstr $ \instr arg -> case instr of
+  Index buffer  -> indexBuffer (groundRelt $ varType buffer) (prj (varIdx buffer) aenv) arg
+  Parameter var -> prj (varIdx var) aenv
+
+evalNoArrayInstr :: EvalArrayInstr NoArrayInstr
+evalNoArrayInstr = EvalArrayInstr $ \instr -> case instr of {}
+
 -- Evaluate a closed scalar expression
 --
-evalExp :: HasCallStack => Exp aenv t -> Val aenv -> t
+evalExp :: HasCallStack => PreOpenExp arr () t -> EvalArrayInstr arr -> t
 evalExp e = evalOpenExp e Empty
 
 -- Evaluate a closed scalar function
 --
-evalFun :: HasCallStack => Fun aenv t -> Val aenv -> t
+evalFun :: HasCallStack => PreOpenFun arr () t -> EvalArrayInstr arr -> t
 evalFun f = evalOpenFun f Empty
 
 -- Evaluate an open scalar function
 --
-evalOpenFun :: HasCallStack => OpenFun env aenv t -> Val env -> Val aenv -> t
-evalOpenFun (Body e)    env aenv = evalOpenExp e env aenv
-evalOpenFun (Lam lhs f) env aenv =
-  \x -> evalOpenFun f (env `push` (lhs, x)) aenv
+evalOpenFun :: HasCallStack => PreOpenFun arr env t -> Val env -> EvalArrayInstr arr -> t
+evalOpenFun (Body e)    env arr = evalOpenExp e env arr
+evalOpenFun (Lam lhs f) env arr =
+  \x -> evalOpenFun f (env `push` (lhs, x)) arr
 
 
 -- Evaluate an open scalar expression
@@ -773,26 +783,23 @@ evalOpenFun (Lam lhs f) env aenv =
 --     leading to a large amount of wasteful recomputation.
 --
 evalOpenExp
-    :: forall env aenv t. HasCallStack
-    => OpenExp env aenv t
+    :: forall env arr t. HasCallStack
+    => PreOpenExp arr env t
     -> Val env
-    -> Val aenv
+    -> EvalArrayInstr arr
     -> t
-evalOpenExp pexp env aenv =
+evalOpenExp pexp env arr@(EvalArrayInstr runArrayInstr) =
   let
-      evalE :: OpenExp env aenv t' -> t'
-      evalE e = evalOpenExp e env aenv
+      evalE :: PreOpenExp arr env t' -> t'
+      evalE e = evalOpenExp e env arr
 
-      evalF :: OpenFun env aenv f' -> f'
-      evalF f = evalOpenFun f env aenv
-
-      -- evalA :: ArrayVar aenv a -> WithReprs a
-      -- evalA (Var repr ix) = (TupRsingle repr, prj ix aenv)
+      evalF :: PreOpenFun arr env f' -> f'
+      evalF f = evalOpenFun f env arr
   in
   case pexp of
     Let lhs exp1 exp2           -> let !v1  = evalE exp1
                                        env' = env `push` (lhs, v1)
-                                   in  evalOpenExp exp2 env' aenv
+                                   in  evalOpenExp exp2 env' arr
     Evar (Var _ ix)             -> prj ix env
     Const _ c                   -> c
     Undef tp                    -> undefElt (TupRsingle tp)
@@ -831,7 +838,7 @@ evalOpenExp pexp env aenv =
     FromIndex shr sh ix         -> fromIndex shr (evalE sh) (evalE ix)
     Case e rhs def              -> evalE (caseof (evalE e) rhs)
       where
-        caseof :: TAG -> [(TAG, OpenExp env aenv t)] -> OpenExp env aenv t
+        caseof :: TAG -> [(TAG, PreOpenExp arr env t)] -> PreOpenExp arr env t
         caseof tag = go
           where
             go ((t,c):cs)
@@ -853,10 +860,9 @@ evalOpenExp pexp env aenv =
           | toBool (p x) = go (f x)
           | otherwise    = x
 
-    ArrayInstr (Index buffer) ix -> indexBuffer (groundRelt $ varType buffer) (prj (varIdx buffer) aenv) (evalE ix)
-    ArrayInstr (Parameter var) _ -> prj (varIdx var) aenv
+    ArrayInstr instr ix         -> runArrayInstr instr (evalE ix)
     ShapeSize shr sh            -> size shr (evalE sh)
-    Foreign _ _ f e             -> evalOpenFun (rebuildNoArrayInstr f) Empty Empty $ evalE e
+    Foreign _ _ f e             -> evalOpenFun f Empty evalNoArrayInstr $ evalE e
     Coerce t1 t2 e              -> evalCoerceScalar t1 t2 (evalE e)
 
 
