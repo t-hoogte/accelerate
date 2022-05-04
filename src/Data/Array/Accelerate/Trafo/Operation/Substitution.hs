@@ -47,6 +47,7 @@ import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Trafo.Substitution       (Sink(..), Sink'(..))
 import Data.Array.Accelerate.Trafo.Exp.Substitution
+import Data.Functor.Identity
 
 data SunkReindexPartial f env env' where
   Sink     :: SunkReindexPartial f env env' -> SunkReindexPartial f (env, s) (env', s)

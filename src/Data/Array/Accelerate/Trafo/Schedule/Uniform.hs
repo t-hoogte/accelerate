@@ -70,6 +70,7 @@ import Data.IORef
 import System.IO.Unsafe (unsafePerformIO)
 
 import Data.Array.Accelerate.Pretty.Operation
+import Data.Functor.Identity
 
 instance IsSchedule UniformScheduleFun where
   type ScheduleInput  UniformScheduleFun a = Input a

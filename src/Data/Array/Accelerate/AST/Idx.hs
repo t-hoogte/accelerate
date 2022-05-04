@@ -2,6 +2,7 @@
 {-# LANGUAGE CPP                 #-}
 {-# LANGUAGE EmptyCase           #-}
 {-# LANGUAGE GADTs               #-}
+{-# LANGUAGE KindSignatures      #-}
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE PatternSynonyms     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -31,6 +32,7 @@ module Data.Array.Accelerate.AST.Idx (
 
 import Language.Haskell.TH.Extra
 import Control.DeepSeq
+import Data.Kind as Kind
 
 #ifndef ACCELERATE_INTERNAL_CHECKS
 import Data.Type.Equality ((:~:)(Refl))
@@ -93,7 +95,7 @@ matchIdx _           _           = Nothing
 --
 -- For performance, it uses an Int under the hood.
 --
-newtype Idx env t = UnsafeIdxConstructor { unsafeRunIdx :: Int } deriving ( Eq, Ord )
+newtype Idx (env :: Kind.Type) (t :: Kind.Type) = UnsafeIdxConstructor { unsafeRunIdx :: Int } deriving ( Eq, Ord )
 
 {-# COMPLETE ZeroIdx, SuccIdx #-}
 
@@ -134,6 +136,7 @@ instance NFData (Idx env t) where
 -- | Despite the 'complete' pragma above, GHC can't infer that there is no
 -- pattern possible if the environment is empty. This can be used instead.
 --
+{-# COMPLETE VoidIdx #-}
 pattern VoidIdx :: forall env t a. (env ~ ()) => () => a -> Idx env t
 pattern VoidIdx a <- (\case{} -> a)
 

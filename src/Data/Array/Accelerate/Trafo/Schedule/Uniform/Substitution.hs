@@ -42,6 +42,7 @@ import Data.Array.Accelerate.Trafo.Substitution
 import Data.Maybe
 import Prelude hiding (id, (.), read)
 import Control.Category
+import Data.Functor.Identity
 
 
 instance Sink' (UniformSchedule kernel) where

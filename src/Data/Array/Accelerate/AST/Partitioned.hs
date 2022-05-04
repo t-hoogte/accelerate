@@ -1,3 +1,4 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE BangPatterns          #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleContexts      #-}
@@ -5,17 +6,17 @@
 {-# LANGUAGE GADTs                 #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase            #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes            #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
 {-# LANGUAGE TemplateHaskell       #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE TypeFamilyDependencies#-}
 {-# LANGUAGE TypeOperators         #-}
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE AllowAmbiguousTypes #-}
-{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ViewPatterns #-}
 
 -- |
@@ -40,20 +41,22 @@ import Data.Array.Accelerate.AST.Operation
 import Prelude hiding ( take )
 import Data.Bifunctor
 import Data.Array.Accelerate.Trafo.Desugar (ArrayDescriptor(..))
-import Data.Array.Accelerate.Representation.Array (Array, Buffers, ArrayR (ArrayR), arrayRtype, rnfArrayR)
+import Data.Array.Accelerate.Representation.Array (Array, Buffers, ArrayR (ArrayR), rnfArrayR)
 import qualified Data.Array.Accelerate.AST.Environment as Env
 import Data.Array.Accelerate.Representation.Shape (ShapeR)
 import Data.Type.Equality
 import Unsafe.Coerce (unsafeCoerce)
 import Data.Array.Accelerate.Trafo.Operation.LiveVars
-import Data.Array.Accelerate.Representation.Type (TypeR, rnfTypeR, TupR (..), Distributes (pairImpossible), mapTupR)
+import Data.Array.Accelerate.Representation.Type (TypeR, rnfTypeR, TupR (..), mapTupR)
 import Control.DeepSeq (NFData (rnf))
 import Data.Array.Accelerate.Trafo.Operation.Simplify (SimplifyOperation(..))
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (BackendCluster, MakesILP (BackendClusterArg))
 import Data.Kind (Type)
 import Data.Array.Accelerate.Type (ScalarType)
-import Data.Array.Accelerate.AST.Environment ((:>), weakenId, (.>), weakenSucc, weakenSucc', weakenKeep)
-import Data.Array.Accelerate.Trafo.Operation.Substitution (weaken, Sink' (weaken'), Sink)
+import Data.Array.Accelerate.AST.Environment ((:>), weakenId, (.>), weakenSucc', weakenKeep, Env, prj')
+import Data.Array.Accelerate.Trafo.Operation.Substitution (weaken, Sink)
+import Data.Functor.Identity
+import Data.Functor.Compose
 
 -- In this model, every thread has one input element per input array,
 -- and one output element per output array. That works perfectly for
@@ -320,6 +323,7 @@ mkBase (Output _ _ _ ci) = Ignr (mkBase ci)
 mkBase (MutPut   ci) = Ignr (mkBase ci)
 mkBase (ExpPut'   ci) = Ignr (mkBase ci)
 mkBase (Vertical _ _ ci) = Ignr (mkBase ci)
+mkBase (Trivial ci) = mkBase ci
 
 fromArgsTake :: forall env a ab b. Take a ab b -> Take (FromArg env a) (FromArgs env ab) (FromArgs env b)
 fromArgsTake Here = Here
@@ -521,3 +525,43 @@ instance ShrinkArg (BackendClusterArg op) => SLVOperation (Cluster op) where
         (Output t s' tr io')
         = Output t (composeSubTupR s s') tr (slvIO subargs args' args io')
 
+class TupRmonoid f g where
+  unit :: Compose f g ()
+  pair :: Compose f g a -> Compose f g b -> Compose f g (a,b)
+  unpair :: Compose f g (a,b) -> (Compose f g a, Compose f g b)
+
+tupRfold :: TupRmonoid f g => TupR (Compose f g) e -> f (g e)
+tupRfold TupRunit = getCompose unit
+tupRfold (TupRsingle s) = getCompose s
+tupRfold (TupRpair l r) = getCompose $ Compose (tupRfold l) `pair` Compose (tupRfold r)
+
+takeBuffers :: TupRmonoid f g => TakeBuffers g e exs xs -> Env f exs -> (f (g e), Env f xs)
+takeBuffers TakeUnit env = (getCompose unit, env)
+takeBuffers (TakeSingle t) env = take' t env
+takeBuffers (TakePair l r) env = case takeBuffers r env of
+  (r', env') -> case takeBuffers l env' of
+    (l', env'') -> (getCompose $ Compose l' `pair` Compose r', env'')
+
+putBuffers :: TupRmonoid f g => TakeBuffers g e exs xs -> f (g e) -> Env f xs -> Env f exs
+putBuffers TakeUnit _ env = env
+putBuffers (TakeSingle t) s env = put' t s env
+putBuffers (TakePair l r) lr env = let
+  (Compose l', Compose r') = unpair $ Compose lr
+  in putBuffers r r' $ putBuffers l l' env
+
+unconsBuffers :: TupRmonoid f g => ConsBuffers g e exs xs -> Env f exs -> (f (g e), Env f xs)
+unconsBuffers ConsUnit env = (getCompose unit, env)
+unconsBuffers ConsSingle (Env.Push env s) = (s, env)
+unconsBuffers (ConsPair l r) env = case unconsBuffers r env of
+  (r', env') -> case unconsBuffers l env' of
+    (l', env'') -> (getCompose $ Compose l' `pair` Compose r', env'')
+
+consBuffers :: TupRmonoid f g => ConsBuffers g e exs xs -> f (g e) -> Env f xs -> Env f exs
+consBuffers ConsUnit _ env = env
+consBuffers ConsSingle s env = Env.Push env s
+consBuffers (ConsPair l r) lr env = let
+  (Compose l', Compose r') = unpair $ Compose lr
+  in consBuffers r r' $ consBuffers l l' env
+
+tupRindex :: TupRmonoid f g => Env f env -> TupR (IdxF g env) a -> f (g a)
+tupRindex env = tupRfold . mapTupR (\(IdxF idx) -> Compose $ prj' idx env)

@@ -71,6 +71,7 @@ import Data.Maybe
 import Control.Applicative                              hiding ( Const )
 import Control.Monad
 import Prelude                                          hiding ( exp, seq )
+import Data.Functor.Identity
 
 infixr `compose`
 

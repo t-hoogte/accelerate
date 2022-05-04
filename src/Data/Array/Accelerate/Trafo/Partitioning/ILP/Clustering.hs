@@ -15,10 +15,10 @@
 -- _Significantly_ speeds up compilation of this file, but at an obvious cost!
 -- Even in GHC 9.0.1, which has Lower Your Guards, these checks take some time (though no longer as long).
 -- Recommended to disable these options when working on this file, and restore them when you're done.
--- {-# OPTIONS_GHC 
-  -- -Wno-overlapping-patterns 
-  -- -Wno-incomplete-patterns 
--- #-}
+{-# OPTIONS_GHC 
+  -Wno-overlapping-patterns 
+  -Wno-incomplete-patterns 
+#-}
 
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering where
 
@@ -36,7 +36,7 @@ import Data.Array.Accelerate.AST.Operation
 import Data.Maybe (fromJust)
 import Data.Type.Equality ( type (:~:)(Refl) )
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (ClusterLs (Execs, NonExec))
-import Data.Array.Accelerate.AST.Environment (Identity(runIdentity), weakenWithLHS)
+import Data.Array.Accelerate.AST.Environment (weakenWithLHS)
 
 import Prelude hiding ( take )
 import Lens.Micro (_1)
@@ -47,6 +47,7 @@ import qualified Data.Functor.Const as C
 import Data.Bifunctor (first, second)
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.Trafo.Operation.Substitution (weaken)
+import Data.Functor.Identity
 
 -- "open research question"
 -- -- Each set of ints corresponds to a set of Constructions, which themselves contain a set of ints (the things they depend on).
@@ -244,7 +245,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
 
 weakenAcc :: LeftHandSide s t env env' -> PreOpenAcc op env a -> PreOpenAcc op env' a
 weakenAcc lhs =  runIdentity . reindexAcc (weakenReindex $ weakenWithLHS lhs)
-
+ 
 
 -- | Internal datatype for `makeCluster`.
 

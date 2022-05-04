@@ -399,7 +399,7 @@ desugarOpenAcc env = travA
             bufferType    = GroundRbuffer $ scalarTypeWord8
             lhsScalarBool = LeftHandSidePair (LeftHandSideWildcard TupRunit) (LeftHandSideSingle bufferType)
             env'          = weakenBEnv k env
-            c'            = case desugarOpenAfun env' c of
+            c'            = case desugarOpenAfun @op env' c of
               Alam lhs' (Abody body) -> Alam lhs' $ Abody $ Alet lhsScalarBool (TupRsingle Shared) body $ Compute $ ArrayInstr (Index $ Var bufferType ZeroIdx) $ Const scalarTypeInt 0
               Abody _                -> error "It's a long time since we last met"
             f'            = desugarOpenAfun env' f

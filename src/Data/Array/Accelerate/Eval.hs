@@ -45,7 +45,11 @@ import Data.Array.Accelerate.Pretty.Partitioned ()
 import Data.Array.Accelerate.Trafo.Schedule.Uniform ()
 import Data.Array.Accelerate.Pretty.Schedule.Uniform ()
 import Data.Kind (Type)
-import Data.Bifunctor (bimap)
+import Data.Bifunctor (bimap, first)
+import Data.Functor.Compose
+import Data.Type.Equality
+import Unsafe.Coerce (unsafeCoerce)
+import Data.Maybe (fromJust)
 
 type BackendArgs op env = PreArgs (BackendClusterArg2 op env)
 type BackendEnv op env = Env (BackendEnvElem op env)
@@ -74,6 +78,7 @@ class (MakesILP op) => StaticClusterAnalysis (op :: Type -> Type) where
   varToSh      :: BackendClusterArg2 op env (Var'  sh)    -> BackendClusterArg2 op env (Sh    sh e)
   shToVar      :: BackendClusterArg2 op env (Sh    sh e)  -> BackendClusterArg2 op env (Var'  sh  )
   shrinkOrGrow :: BackendClusterArg2 op env (m     sh e') -> BackendClusterArg2 op env (m     sh e)
+  addTup       :: BackendClusterArg2 op env (v     sh e)  -> BackendClusterArg2 op env (v     sh ((), e))
 
 
 -- use ScopedTypeVariables for op and env, but not for the args (so we call them arguments instead)
@@ -99,19 +104,25 @@ makeBackendArg args env (Cluster info (Cluster' io ast)) = let o = getOutputEnv 
 
     lhsEnvArgs :: LeftHandSideArgs body env' scope -> BackendEnv op env scope -> (BackendArgs op env body, Args env body)
     lhsEnvArgs Base Empty = (ArgsNil, ArgsNil)
-    lhsEnvArgs (Reqr _ t   lhs) env = case _ t env of BEE (ArrArg r sh buf) f -> bimap (valueToIn  f :>:) (ArgArray In  r sh buf :>:) $ lhsEnvArgs lhs env
-                                                      _ -> error "urk"
-    lhsEnvArgs (Make t1 t2 lhs) env = case take' t env of (BEE (ArrArg r sh buf) f, env') -> bimap (valueToOut f :>:) (ArgArray Out r sh buf :>:) $ lhsEnvArgs lhs env'
-                                                          _ -> error "urk"
+    lhsEnvArgs (Reqr _ t   lhs) env = case getCompose $ tupRindex (justEnv env) t of
+      Just (BEE (ArrArg r sh buf) f) -> bimap (valueToIn  f :>:) (ArgArray In  r sh buf :>:) $ lhsEnvArgs lhs env
+      _ -> error "urk"
+    lhsEnvArgs (Make t1 t2 lhs) env = case first getCompose $ takeBuffers t1 $ justEnv env of
+      (Just (BEE (ArrArg r sh buf) f), env') -> bimap (valueToOut f :>:) (ArgArray Out r sh buf :>:) $ lhsEnvArgs lhs $ fromJustEnv env'
+      _ -> error "urk"
     lhsEnvArgs (ExpArg lhs) (Push env (BEE (Others arg) f)) = bimap (f :>:) (arg :>:) $ lhsEnvArgs lhs env
     lhsEnvArgs (Adju   lhs) (Push env (BEE (Others arg) f)) = bimap (f :>:) (arg :>:) $ lhsEnvArgs lhs env
     lhsEnvArgs (Ignr lhs) (Push env _) = lhsEnvArgs lhs env
 
     lhsArgsEnv :: LeftHandSideArgs body env' scope -> BackendEnv op env scope -> BackendArgs op env body -> BackendEnv op env env'
     lhsArgsEnv Base                   _                ArgsNil            = Empty
-    lhsArgsEnv (Reqr t1 t2 lhs)       env              (f :>: args) = case take' t2 env of (BEE arg          _, env') -> put' t1 (BEE arg (inToValue f)) (lhsArgsEnv lhs env' args)
-    lhsArgsEnv (Make t1 t2 lhs)       env              (f :>: args) = case take' t  env of (BEE (ArrArg r sh buf) _, env') -> Push (lhsArgsEnv lhs env' args) (BEE (OutArg r sh buf) (outToSh f))
-                                                                                           _ -> error "urk"
+    lhsArgsEnv (Reqr t1 t2 lhs)       env              (f :>: args) = case getCompose $ tupRindex (justEnv env) t2 of
+      Just (BEE arg _) ->
+        lhsArgsEnv lhs env args -- TODO think about what this function needs; do I need to overwrite or can we just recurse? 
+      Nothing -> lhsArgsEnv lhs env args -- TODO perhaps none of this matters: ^^^
+    lhsArgsEnv (Make t1 t2 lhs)       env              (f :>: args) = case first getCompose $ takeBuffers t1 (justEnv env) of
+      (Just (BEE (ArrArg r sh buf) _), env') -> consBuffers t2 (BEE (OutArg r sh buf) (outToSh f)) (lhsArgsEnv lhs (fromJustEnv env') args)
+      _ -> error "urk"
     lhsArgsEnv (ExpArg     lhs) (Push env (BEE arg _)) (f :>: args) = Push (lhsArgsEnv lhs env  args) (BEE arg f)
     lhsArgsEnv (Adju       lhs) (Push env (BEE arg _)) (f :>: args) = Push (lhsArgsEnv lhs env  args) (BEE arg f)
     lhsArgsEnv (Ignr       lhs) (Push env arg)                      args  = Push (lhsArgsEnv lhs env  args) arg
@@ -123,6 +134,7 @@ makeBackendArg args env (Cluster info (Cluster' io ast)) = let o = getOutputEnv 
     getOutputEnv (Output t s e io) (arg@(ArgArray Out r sh buf) :>: args) (info :>: infos) = put' t (BEE (ArrArg (ArrayR (arrayRshape r) e) sh (biggenBuffers s buf)) (outToValue $ shrinkOrGrow $ def arg env info)) (getOutputEnv io args infos)
     getOutputEnv (MutPut     io) (arg :>: args) (info :>: infos) = Push (getOutputEnv io args infos) (BEE (Others arg) (def arg env info))
     getOutputEnv (ExpPut'    io) (arg :>: args) (info :>: infos) = Push (getOutputEnv io args infos) (BEE (Others arg) (def arg env info))
+    getOutputEnv (Trivial    io) (arg :>: args) (info :>: infos) = getOutputEnv io args infos
 
     biggenBuffers :: SubTupR e e' -> GroundVars env (Buffers e') -> GroundVars env (Buffers e)
     biggenBuffers SubTupRskip _ = error "accessing a simplified away buffer"
@@ -198,8 +210,8 @@ evalAST n (Bind lhs op ast) env i = do
 
 evalLHS1 :: forall op body i scope env. LeftHandSideArgs body i scope -> BackendArgEnv op env i -> Val env -> BackendArgEnv op env (InArgs body)
 evalLHS1 Base Empty _ = Empty
-evalLHS1 (Reqr t _ lhs) i env = let (BAE x info, i') = take' t i in Push (evalLHS1 lhs i' env) $ BAE x info
-evalLHS1 (Make _ _ lhs) (Push i' (BAE x info)) env = Push (evalLHS1 lhs i' env) (BAE x info)
+evalLHS1 (Reqr t _ lhs) i env = let BAE x info = tupRindex i t in Push (evalLHS1 lhs i env) $ BAE x info
+evalLHS1 (Make _ t lhs) i env = let (BAE x info, i') = unconsBuffers t i in Push (evalLHS1 lhs i' env) (BAE x info)
 evalLHS1 (EArg     lhs) (Push i' (BAE x info)) env = Push (evalLHS1 lhs i' env) (BAE x info)
 evalLHS1 (FArg     lhs) (Push i' (BAE x info)) env = Push (evalLHS1 lhs i' env) (BAE x info)
 evalLHS1 (VArg     lhs) (Push i' (BAE x info)) env = Push (evalLHS1 lhs i' env) (BAE x info)
@@ -208,9 +220,8 @@ evalLHS1 (Ignr     lhs) (Push i' (BAE _ _   )) env =       evalLHS1 lhs i' env
 
 evalLHS2 :: EvalOp op => LeftHandSideArgs body i scope -> BackendArgEnv op env i -> Val env -> Env (FromArg' env) (OutArgs body) -> BackendArgEnv op env scope
 evalLHS2 Base Empty _ Empty = Empty
-evalLHS2 (Reqr t1 t2 lhs) i env o = let (x, i') = take' t1 i
-                                    in put' t2 x (evalLHS2 lhs i' env o)
-evalLHS2 (Make t1 t2 lhs) (Push i (BAE _ info)) env (Push o (FromArg y)) = put' t (BAE y (shToValue info)) (evalLHS2 lhs i  env o)
+evalLHS2 (Reqr t1 t2 lhs) i env o = evalLHS2 lhs i env o -- TODO ignoring here?
+evalLHS2 (Make t1 t2 lhs) i env (Push o (FromArg y)) = let (BAE _ info, i') = unconsBuffers t2 i in putBuffers t1 (BAE y (shToValue info)) (evalLHS2 lhs i'  env o)
 evalLHS2 (EArg   lhs) (Push i (BAE x info)) env           o  = Push (evalLHS2 lhs i env o) (BAE x info)
 evalLHS2 (FArg   lhs) (Push i (BAE x info)) env           o  = Push (evalLHS2 lhs i env o) (BAE x info)
 evalLHS2 (VArg   lhs) (Push i (BAE x info)) env           o  = Push (evalLHS2 lhs i env o) (BAE x info)
@@ -219,3 +230,30 @@ evalLHS2 (Ignr   lhs) (Push i (BAE x info)) env           o  = Push (evalLHS2 lh
 
 first' :: (a -> b -> c) -> (a,b) -> (c,b)
 first' f (a,b) = (f a b, b)
+
+instance StaticClusterAnalysis op => TupRmonoid (Compose Maybe (BackendEnvElem op env)) (Value sh) where
+  unit = Compose $ Compose Nothing
+  pair (Compose (Compose x)) (Compose (Compose y)) = Compose . Compose $ f x y
+    where
+      f :: forall e1 e2
+        .  Maybe (BackendEnvElem op env (Value sh e1))
+        -> Maybe (BackendEnvElem op env (Value sh e2))
+        -> Maybe (BackendEnvElem op env (Value sh (e1, e2)))
+      f Nothing Nothing = Nothing --oh no, this means the unsafeCoerces go wrong :(
+        -- instead of a Maybe, keep track of the type? :S
+      f Nothing (Just (BEE (ArrArg (ArrayR shr tyr) sh buf) d)) = case unsafeCoerce @(Int :~: Int) @(e1 :~: ()) Refl of
+        Refl -> Just $ BEE (ArrArg (ArrayR shr (TupRpair TupRunit tyr)) sh (TupRpair TupRunit buf)) (addTup d)
+      f _ _ = undefined
+  unpair xy = undefined
+
+instance TupRmonoid (BackendEnvElem op env) (Sh sh) where
+
+instance TupRmonoid (BackendArgEnvElem op env) (Value sh) where
+
+instance TupRmonoid (BackendArgEnvElem op env) (Sh sh) where
+
+
+justEnv     :: Env a env -> Env (Compose Maybe a) env
+justEnv     = mapEnv (Compose . Just)
+fromJustEnv :: Env (Compose Maybe a) env -> Env a env
+fromJustEnv = mapEnv (fromJust . getCompose)

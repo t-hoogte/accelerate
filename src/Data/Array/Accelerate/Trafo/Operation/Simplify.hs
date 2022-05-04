@@ -51,6 +51,7 @@ import Data.Maybe                                           ( mapMaybe )
 import Data.List                                            ( foldl' )
 import Data.Either                                          ( partitionEithers )
 import Control.Monad
+import Data.Functor.Identity
 
 class SimplifyOperation op where
   detectCopy :: (forall t t'. GroundVars env t -> GroundVars env t' -> Maybe (t :~: t')) -> op f -> Args env f -> [CopyOperation env]

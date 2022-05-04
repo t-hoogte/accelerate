@@ -79,6 +79,7 @@ import Data.Typeable                                                ( (:~:)(..) 
 import Language.Haskell.TH.Extra                                    ( CodeQ )
 import Data.Kind (Type)
 import Control.DeepSeq (NFData (rnf))
+import Data.Functor.Identity
 
 -- | An intermediate representation parameterized over executable operations.
 -- This data type only consists of the control flow structure and

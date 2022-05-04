@@ -94,69 +94,70 @@ clusterEnv env = \cio args -> (input cio args, output cio args)
 -- Variables which are absent in both environments represent arrays which are fused away.
 --
 prettyClusterAST :: PrettyOp op => PartialVal result -> ClusterAST op env result -> (PartialVal env, Int -> Pretty.Val env -> [Adoc])
-prettyClusterAST envResult None = (envResult, \_ _ -> [])
-prettyClusterAST envResult (Bind lhs op next) =
-  ( backward lhs envOut
-  , \fresh envIn ->
-      let
-        (fresh', envNext, args) = forward lhs fresh envIn envOut
-      in
-        prettyOpWithArgs' op args
-        : next' fresh' envNext
-  )
-  where
-    (envOut, next') = prettyClusterAST envResult next
+prettyClusterAST = undefined
+-- prettyClusterAST envResult None = (envResult, \_ _ -> [])
+-- prettyClusterAST envResult (Bind lhs op next) =
+--   ( backward lhs envOut
+--   , \fresh envIn ->
+--       let
+--         (fresh', envNext, args) = forward lhs fresh envIn envOut
+--       in
+--         prettyOpWithArgs' op args
+--         : next' fresh' envNext
+--   )
+--   where
+--     (envOut, next') = prettyClusterAST envResult next
 
-prettyOpWithArgs' :: PrettyOp op => op t -> [Adoc] -> Adoc
-prettyOpWithArgs' op args = hang 2 $ group $ vsep [prettyOp op, tupled args]
+-- prettyOpWithArgs' :: PrettyOp op => op t -> [Adoc] -> Adoc
+-- prettyOpWithArgs' op args = hang 2 $ group $ vsep [prettyOp op, tupled args]
 
-forward :: LeftHandSideArgs body env scope -> Int -> Pretty.Val env -> PartialVal scope -> (Int, Pretty.Val scope, [Adoc])
-forward Base             fresh env _   = (fresh, env, [])
-forward (Reqr t1 t2 lhs) fresh env out =
-  ( fresh'
-  , insertAt t2 arg env''
-  , arg : args
-  )
-  where
-    arg = prj (takeIdx t1) env
-    env' = removeAt t1 env
-    out' = pRemoveAt t2 out
-    (fresh', env'', args) = forward lhs fresh env' out'
-forward (Make t1 t2 lhs)     fresh (Pretty.Push env sh) out =
-  ( fresh''
-  , insertAt t name env'
-  , arg : args
-  )
-  where
-    (arg, name, fresh') = case pTakeAt t out of
-      Just a ->  (a, a, fresh)
-      Nothing -> (intermediate Out fresh sh, intermediate In fresh sh, fresh + 1)
-    (fresh'', env', args) = forward lhs fresh' env (pRemoveAt t out)
-forward (ExpArg lhs)     fresh env out = forwardSingle lhs fresh env out
-forward (Adju lhs)       fresh env out = forwardSingle lhs fresh env out
-forward (Ignr lhs)       fresh (Pretty.Push env x) out = (\(a, b, c) -> (a, Pretty.Push b x, c)) (forward lhs fresh env (pEnvTail out))
+-- forward :: LeftHandSideArgs body env scope -> Int -> Pretty.Val env -> PartialVal scope -> (Int, Pretty.Val scope, [Adoc])
+-- forward Base             fresh env _   = (fresh, env, [])
+-- forward (Reqr t1 t2 lhs) fresh env out =
+--   ( fresh'
+--   , insertAt t2 arg env''
+--   , arg : args
+--   )
+--   where
+--     arg = prj (takeIdx t1) env
+--     env' = removeAt t1 env
+--     out' = pRemoveAt t2 out
+--     (fresh', env'', args) = forward lhs fresh env' out'
+-- forward (Make t1 t2 lhs)     fresh (Pretty.Push env sh) out =
+--   ( fresh''
+--   , insertAt t name env'
+--   , arg : args
+--   )
+--   where
+--     (arg, name, fresh') = case pTakeAt t out of
+--       Just a ->  (a, a, fresh)
+--       Nothing -> (intermediate Out fresh sh, intermediate In fresh sh, fresh + 1)
+--     (fresh'', env', args) = forward lhs fresh' env (pRemoveAt t out)
+-- forward (ExpArg lhs)     fresh env out = forwardSingle lhs fresh env out
+-- forward (Adju lhs)       fresh env out = forwardSingle lhs fresh env out
+-- forward (Ignr lhs)       fresh (Pretty.Push env x) out = (\(a, b, c) -> (a, Pretty.Push b x, c)) (forward lhs fresh env (pEnvTail out))
 
-intermediate :: Modifier m -> Int -> Adoc -> Adoc
-intermediate m idx sh = group $ vsep [prettyModifier m, "(" <> sh <> ")", "%" <> pretty idx]
+-- intermediate :: Modifier m -> Int -> Adoc -> Adoc
+-- intermediate m idx sh = group $ vsep [prettyModifier m, "(" <> sh <> ")", "%" <> pretty idx]
 
-forwardSingle :: LeftHandSideArgs body env scope -> Int -> Pretty.Val (env, t) -> PartialVal (scope, t) -> (Int, Pretty.Val (scope, t), [Adoc])
-forwardSingle lhs fresh (Pretty.Push env a) out = (fresh', Pretty.Push env' a, a : args)
-  where
-    (fresh', env', args) = forward lhs fresh env $ pEnvTail out
+-- forwardSingle :: LeftHandSideArgs body env scope -> Int -> Pretty.Val (env, t) -> PartialVal (scope, t) -> (Int, Pretty.Val (scope, t), [Adoc])
+-- forwardSingle lhs fresh (Pretty.Push env a) out = (fresh', Pretty.Push env' a, a : args)
+--   where
+--     (fresh', env', args) = forward lhs fresh env $ pEnvTail out
 
-backward :: LeftHandSideArgs body env scope -> PartialVal scope -> PartialVal env
-backward _ PEnd = PEnd
-backward (Reqr t1 t2 lhs) env = pWriteAt t1 (pTakeAt t2 env) $ backward lhs $ pRemoveAt t2 env
-backward (Make t1 t2 lhs) env = PSkip $ backward lhs $ pRemoveAt t env
-backward (ExpArg lhs) env = backwardSingle lhs env
-backward (Adju lhs) env = backwardSingle lhs env
-backward (Ignr lhs) env = backwardSingle lhs env
+-- backward :: LeftHandSideArgs body env scope -> PartialVal scope -> PartialVal env
+-- backward _ PEnd = PEnd
+-- backward (Reqr t1 t2 lhs) env = pWriteAt t1 (pTakeAt t2 env) $ backward lhs $ pRemoveAt t2 env
+-- backward (Make t1 t2 lhs) env = PSkip $ backward lhs $ pRemoveAt t env
+-- backward (ExpArg lhs) env = backwardSingle lhs env
+-- backward (Adju lhs) env = backwardSingle lhs env
+-- backward (Ignr lhs) env = backwardSingle lhs env
 
--- Helper for 'backward'
-backwardSingle :: LeftHandSideArgs body env scope -> PartialVal (scope, t) -> PartialVal (env, t)
-backwardSingle lhs (PSkip env)   = PSkip (backward lhs env)
-backwardSingle lhs (PPush env a) = PPush (backward lhs env) a
-backwardSingle _   PEnd          = PEnd
+-- -- Helper for 'backward'
+-- backwardSingle :: LeftHandSideArgs body env scope -> PartialVal (scope, t) -> PartialVal (env, t)
+-- backwardSingle lhs (PSkip env)   = PSkip (backward lhs env)
+-- backwardSingle lhs (PPush env a) = PPush (backward lhs env) a
+-- backwardSingle _   PEnd          = PEnd
 
 insertAt :: Take t env' env -> Adoc -> Pretty.Val env -> Pretty.Val env'
 insertAt Here      a env                 = Pretty.Push env a

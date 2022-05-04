@@ -1,5 +1,6 @@
 {-# LANGUAGE EmptyCase           #-}
 {-# LANGUAGE GADTs               #-}
+{-# LANGUAGE KindSignatures      #-}
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE RankNTypes          #-}
@@ -30,7 +31,7 @@ module Data.Array.Accelerate.AST.Environment (
   Skip(..), skipIdx, chainSkip, skipWeakenIdx,
 
   prjUpdate', prjReplace', update', updates', mapEnv,
-  Identity(..), (:>)(..), weakenId, weakenSucc, weakenSucc', weakenEmpty,
+  (:>)(..), weakenId, weakenSucc, weakenSucc', weakenEmpty,
   sink, (.>), sinkWithLHS, weakenWithLHS, substituteLHS,
   varsGet, varsGetVal, stripWithLhs,weakenKeep) where
 
@@ -43,6 +44,7 @@ import Data.Typeable                                ((:~:)(..))
 import Data.Either
 import Data.List ( sortOn )
 import Data.Functor.Identity
+import Data.Kind (Type)
 
 -- Valuation for an environment
 --
@@ -301,7 +303,7 @@ mapEnv g (Push env f) = Push (mapEnv g env) (g f)
 -- quantifier may give issues with impredicative polymorphism, which GHC
 -- does not support.
 --
-newtype env :> env' = Weaken { (>:>) :: forall t'. Idx env t' -> Idx env' t' } -- Weak or Weaken
+newtype env :> env' = Weaken { (>:>) :: forall (t' :: Type). Idx env t' -> Idx env' t' } -- Weak or Weaken
 
 weakenId :: env :> env
 weakenId = Weaken id
