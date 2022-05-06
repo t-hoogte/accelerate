@@ -200,7 +200,7 @@ intersectSignalImplications as bs = mapMaybe f as
       Nothing -> Nothing
 
 simplifyEffect :: InfoEnv env -> Effect kernel env -> ([SignalImplication env], InfoEnv env, UniformSchedule kernel env -> UniformSchedule kernel env)
-simplifyEffect env (Exec kernel args) = ([], env, Effect $ Exec kernel $ mapArgs (weaken $ substitute env) args)
+simplifyEffect env (Exec md kernel args) = ([], env, Effect $ Exec md kernel $ mapArgs (weaken $ substitute env) args)
 simplifyEffect env (SignalAwait awaits) = ([], env', instr)
   where
     (env', instr) = await' env awaits

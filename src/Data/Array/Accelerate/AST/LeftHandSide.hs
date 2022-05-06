@@ -3,6 +3,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes      #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeOperators   #-}
 {-# OPTIONS_HADDOCK hide #-}
 -- |
 -- Module      : Data.Array.Accelerate.AST.LeftHandSide
@@ -18,13 +19,14 @@ module Data.Array.Accelerate.AST.LeftHandSide
   (
     Exists(..),
     LeftHandSide(.., LeftHandSideUnit), leftHandSidePair,
-    lhsToTupR,
+    lhsToTupR, leftHandSideIsVoid,
     rnfLeftHandSide, liftLeftHandSide, mapLeftHandSide, flattenTupR)
   where
 
 import Data.Array.Accelerate.Representation.Type
 
 import Language.Haskell.TH.Extra
+import Data.Typeable
 
 
 data Exists f where
@@ -81,3 +83,10 @@ flattenTupR = (`go` [])
     go (TupRsingle s)   accum = Exists s : accum
     go (TupRpair t1 t2) accum = go t1 $ go t2 accum
     go TupRunit         accum = accum
+
+leftHandSideIsVoid :: LeftHandSide s t env env' -> Maybe (env :~: env')
+leftHandSideIsVoid (LeftHandSideWildcard _) = Just Refl
+leftHandSideIsVoid (LeftHandSidePair l1 l2)
+  | Just Refl <- leftHandSideIsVoid l1
+  , Just Refl <- leftHandSideIsVoid l2 = Just Refl
+leftHandSideIsVoid _ = Nothing

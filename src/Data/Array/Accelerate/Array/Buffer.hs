@@ -103,7 +103,7 @@ type MutableBuffers e = Distribute MutableBuffer e
 -- array.
 --
 type family ScalarArrayDataR t where
-  ScalarArrayDataR Int       = Int
+  {- ScalarArrayDataR Int       = Int
   ScalarArrayDataR Int8      = Int8
   ScalarArrayDataR Int16     = Int16
   ScalarArrayDataR Int32     = Int32
@@ -115,8 +115,9 @@ type family ScalarArrayDataR t where
   ScalarArrayDataR Word64    = Word64
   ScalarArrayDataR Half      = Half
   ScalarArrayDataR Float     = Float
-  ScalarArrayDataR Double    = Double
-  ScalarArrayDataR (Vec n t) = ScalarArrayDataR t
+  ScalarArrayDataR Double    = Double -}
+  ScalarArrayDataR (Vec n t) = t
+  ScalarArrayDataR t         = t
 
 {-
 data ScalarArrayDict a where

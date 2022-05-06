@@ -403,6 +403,7 @@ library
         Data.Array.Accelerate.AST.Var
         Data.Array.Accelerate.Analysis.Hash
         Data.Array.Accelerate.Analysis.Hash.Exp
+        Data.Array.Accelerate.Analysis.Hash.Operation
         Data.Array.Accelerate.Analysis.Match
         Data.Array.Accelerate.Array.Buffer
         Data.Array.Accelerate.Array.Remote
@@ -417,6 +418,8 @@ library
         Data.Array.Accelerate.Debug.Internal
         Data.Array.Accelerate.Lifetime
         Data.Array.Accelerate.Pretty
+        Data.Array.Accelerate.Pretty.Schedule
+        Data.Array.Accelerate.Pretty.Schedule.Uniform
         Data.Array.Accelerate.Representation.Array
         Data.Array.Accelerate.Representation.Elt
         Data.Array.Accelerate.Representation.Ground
@@ -512,8 +515,6 @@ library
         Data.Array.Accelerate.Pretty.Operation
         Data.Array.Accelerate.Pretty.Partitioned
         Data.Array.Accelerate.Pretty.Print
-        Data.Array.Accelerate.Pretty.Schedule
-        Data.Array.Accelerate.Pretty.Schedule.Uniform
         Data.Array.Accelerate.Pretty.Type
         Data.Array.Accelerate.Trafo.Exp.Algebra
         Data.Array.Accelerate.Trafo.Environment

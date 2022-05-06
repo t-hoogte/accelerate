@@ -27,6 +27,7 @@ module Data.Array.Accelerate.Representation.Type
   where
 
 import Data.Array.Accelerate.Type
+import Data.Array.Accelerate.Error
 import Data.Primitive.Vec
 import Data.Type.Equality
 
@@ -64,6 +65,11 @@ formatTypeR = later $ \case
   TupRpair a b -> bformat (parenthesised (formatTypeR % "," % formatTypeR)) a b
 
 type TypeR = TupR ScalarType
+
+data TupleIdx s t where
+  TupleIdxLeft  :: TupleIdx l t -> TupleIdx (l, r) t
+  TupleIdxRight :: TupleIdx r t -> TupleIdx (l, r) t
+  TupleIdxSelf  :: TupleIdx t t
 
 -- | Distributes a type constructor over the elements of a tuple.
 -- TODO: Could we make this type class injective? Then we wouldn't
@@ -114,6 +120,22 @@ rnfTupR f (TupRpair a b) = rnfTupR f a `seq` rnfTupR f b
 
 rnfTypeR :: TypeR t -> ()
 rnfTypeR = rnfTupR rnfScalarType
+
+tupleSize :: TupR b t -> Int
+tupleSize TupRunit       = 0
+tupleSize (TupRsingle _) = 1
+tupleSize (TupRpair a b) = tupleSize a + tupleSize b
+
+tupleIdxToInt :: TupR b s -> TupleIdx s t -> Int
+tupleIdxToInt (TupRpair a _) (TupleIdxLeft ix) = tupleIdxToInt a ix
+tupleIdxToInt (TupRpair a b) (TupleIdxRight ix) = tupleSize a + tupleIdxToInt b ix
+tupleIdxToInt _              _                  = 0
+
+prjTupleIdxR :: TupR b s -> TupleIdx s t -> TupR b t
+prjTupleIdxR (TupRpair a _) (TupleIdxLeft  ix) = prjTupleIdxR a ix
+prjTupleIdxR (TupRpair _ b) (TupleIdxRight ix) = prjTupleIdxR b ix
+prjTupleIdxR t              TupleIdxSelf       = t
+prjTupleIdxR _              _                  = internalError "Tuple mismatch"
 
 liftTupR :: (forall b. s b -> CodeQ (s b)) -> TupR s a -> CodeQ (TupR s a)
 liftTupR _ TupRunit       = [|| TupRunit ||]

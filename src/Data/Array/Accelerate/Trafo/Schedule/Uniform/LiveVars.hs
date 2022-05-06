@@ -179,14 +179,14 @@ reEnvBinding re = \case
   RefRead var      -> RefRead $ expectJust $ reEnvVar re var
 
 analyseEffect :: Effect kernel env -> LivenessEnv env -> LivenessEnv env
-analyseEffect (Exec _ args) liveness = setIndicesLive (argsIndices args) liveness
+analyseEffect (Exec _ _ args) liveness = setIndicesLive (argsIndices args) liveness
 analyseEffect (SignalAwait signals) liveness = setIndicesLive (map Exists signals) liveness
 analyseEffect (SignalResolve _) liveness = liveness
 analyseEffect (RefWrite ref value) liveness = setLivenessImplies (varIdx ref) (IdxSet.singleton $ varIdx value) liveness
 
 reEnvEffect :: ReEnv env subenv -> Effect kernel env -> UniformSchedule kernel subenv -> UniformSchedule kernel subenv
 reEnvEffect re = \case
-  Exec kernel args -> Effect $ Exec kernel $ mapArgs (reEnvArg re) args
+  Exec md kernel args -> Effect $ Exec md kernel $ mapArgs (reEnvArg re) args
   SignalAwait signals -> Effect $ SignalAwait $ reEnvIndices' re signals
   SignalResolve resolvers -> resolve $ reEnvIndices' re resolvers
   RefWrite ref value -> case (reEnvVar re ref, reEnvVar re value) of

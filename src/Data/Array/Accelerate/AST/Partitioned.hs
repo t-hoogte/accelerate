@@ -31,6 +31,7 @@
 module Data.Array.Accelerate.AST.Partitioned (
   module Data.Array.Accelerate.AST.Partitioned,
   GroundR(..), GroundsR, GroundVar, GroundVars, NFData'(..), Arg(..),
+  AccessGroundR(..),
   PreArgs(..), Args, Modifier(..),
   Exp', Var', Fun', In, Out, Mut
 ) where
@@ -43,7 +44,8 @@ import Data.Bifunctor
 import Data.Array.Accelerate.Trafo.Desugar (ArrayDescriptor(..))
 import Data.Array.Accelerate.Representation.Array (Array, Buffers, ArrayR (ArrayR), rnfArrayR)
 import qualified Data.Array.Accelerate.AST.Environment as Env
-import Data.Array.Accelerate.Representation.Shape (ShapeR)
+import Data.Array.Accelerate.AST.LeftHandSide
+import Data.Array.Accelerate.Representation.Shape (ShapeR, shapeType)
 import Data.Type.Equality
 import Unsafe.Coerce (unsafeCoerce)
 import Data.Array.Accelerate.Trafo.Operation.LiveVars
@@ -344,6 +346,12 @@ take' (There t) (Env.Push env x) = second (`Env.Push` x) $ take' t env
 put' :: Take a ab b -> f a -> Env.Env f b -> Env.Env f ab
 put' Here a env = Env.Push env a
 put' (There t) a (Env.Push env c) = Env.Push (put' t a env) c
+
+weakenTakeWithLHS :: LeftHandSide s t xenv xenv' -> Take x xenv env -> Exists (Take x xenv')
+weakenTakeWithLHS (LeftHandSideWildcard _) t = Exists t
+weakenTakeWithLHS (LeftHandSideSingle _)   t = Exists $ There t
+weakenTakeWithLHS (LeftHandSidePair l1 l2) t
+  | Exists t1 <- weakenTakeWithLHS l1 t = weakenTakeWithLHS l2 t1
 
 ttake :: Take x xas as -> Take y xyas xas -> (forall yas. Take x xyas yas -> Take y yas as -> r) -> r
 ttake  tx           Here       k = k (There tx)   Here

@@ -175,7 +175,7 @@ prettyBinding env = \case
 
 prettyEffect :: PrettyKernel kernel => Val' env -> Effect kernel env -> Adoc
 prettyEffect env = \case
-  Exec kernel args      -> prettyKernelFun env kernel args
+  Exec _ kernel args    -> prettyKernelFun env kernel args
   SignalAwait signals   -> hang 2 $ group $ vsep [annotate Statement "await",   list $ map (prettyIdx env) signals]
   SignalResolve signals -> hang 2 $ group $ vsep [annotate Statement "resolve", list $ map (prettyIdx env) signals]
   RefWrite ref value    -> hang 2 $ group $ vsep ["*" <> prettyVar env ref <+> "=", prettyVar env value]

@@ -1,5 +1,7 @@
-{-# LANGUAGE GADTs        #-}
-{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE DefaultSignatures #-}
+{-# LANGUAGE FlexibleContexts  #-}
+{-# LANGUAGE GADTs             #-}
+{-# LANGUAGE TypeFamilies      #-}
 
 -- |
 -- Module      : Data.Array.Accelerate.AST.Kernel
@@ -16,19 +18,26 @@
 
 module Data.Array.Accelerate.AST.Kernel (
   IsKernel(..), KernelArgR(..),
-  OpenKernelFun(..), KernelFun
+  OpenKernelFun(..), KernelFun,
+  NoKernelMetadata
 ) where
 
+import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Array.Buffer
 import Data.Kind
 
-class NFData' kernel => IsKernel kernel where
+class (NFData' kernel, NFData' (KernelMetadata kernel)) => IsKernel kernel where
   type KernelOperation kernel :: Type -> Type
+  type KernelMetadata  kernel :: Type -> Type
 
-  compileKernel :: Cluster (KernelOperation kernel) args -> Args env args -> kernel env
+  compileKernel :: Env AccessGroundR env -> Cluster (KernelOperation kernel) args -> Args env args -> kernel env
+
+  kernelMetadata :: KernelFun kernel f -> KernelMetadata kernel f
+  default kernelMetadata :: KernelMetadata kernel ~ NoKernelMetadata => KernelFun kernel f -> KernelMetadata kernel f
+  kernelMetadata _ = NoKernelMetadata
 
 type KernelFun kernel = OpenKernelFun kernel ()
 
@@ -53,3 +62,8 @@ instance NFData' kernel => NFData' (OpenKernelFun kernel env) where
 rnfKernelArgR :: KernelArgR t r -> ()
 rnfKernelArgR (KernelArgRscalar tp)   = rnfScalarType tp
 rnfKernelArgR (KernelArgRbuffer m tp) = m `seq` rnfScalarType tp 
+
+data NoKernelMetadata f = NoKernelMetadata
+
+instance NFData' NoKernelMetadata where
+  rnf' NoKernelMetadata = ()

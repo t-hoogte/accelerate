@@ -1,3 +1,4 @@
+{-# LANGUAGE AllowAmbiguousTypes  #-}
 {-# LANGUAGE InstanceSigs         #-}
 {-# LANGUAGE GADTs                #-}
 {-# LANGUAGE LambdaCase           #-}
@@ -5,6 +6,7 @@
 {-# LANGUAGE OverloadedStrings    #-}
 {-# LANGUAGE RankNTypes           #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
+{-# LANGUAGE TypeApplications     #-}
 {-# LANGUAGE TypeOperators        #-}
 {-# OPTIONS_HADDOCK hide #-}
 -- |
@@ -29,10 +31,12 @@ module Data.Array.Accelerate.Trafo.LiveVars
   , ReturnImplication(..), ReturnImplications, noReturnImplications
   , strengthenReturnImplications, droppedReturnImplications, propagateReturnLiveness
   , joinReturnImplications, joinReturnImplication
-  , SubTupR(..), subTupR, subTupRpair, subTupUnit, DeclareSubVars(..), declareSubVars
+  , SubTupR(..), subTupR, subTupRpair, subTupUnit, subTupPreserves, subTupDistribute
+  , DeclareSubVars(..), declareSubVars, DeclareMissingVars(..), declareMissingVars
+  , DeclareMissingDistributedVars(..), declareMissingDistributedVars
   , LVAnalysis(..), LVAnalysisFun(..), LVAnalysis'(..), allDead, expectJust
   , subTupExp, subTupFun
-  ,composeSubTupR,subTup,subTupDBuf) where
+  , composeSubTupR, subTup, subTupDBuf) where
 
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Exp
@@ -360,6 +364,49 @@ declareSubVars (TupRpair t1 t2) (SubTupRpair s1 s2)
   = DeclareSubVars (LeftHandSidePair lhs1 lhs2) (subst2 .> subst1) $ \k -> a1 (k .> subst2) `TupRpair` a2 k
 declareSubVars _ _ = internalError "Tuple mismatch"
 
+data DeclareMissingVars s t t' env where
+  -- Captures existentials env' and t''.
+  DeclareMissingVars :: LeftHandSide s t'' env env'
+                     -> (env :> env')
+                     -> (forall env''. env' :> env'' -> Vars s env'' t)
+                     -> DeclareMissingVars s t t' env
+
+declareMissingVars :: TupR s t -> SubTupR t t' -> Vars s env t' -> DeclareMissingVars s t t' env
+declareMissingVars _  SubTupRkeep vars = DeclareMissingVars (LeftHandSideWildcard TupRunit) weakenId (\k -> mapTupR (weaken k) vars)
+declareMissingVars tp SubTupRskip _
+  | DeclareVars lhs k value <- declareVars tp
+  = DeclareMissingVars lhs k value
+declareMissingVars (TupRpair t1 t2) (SubTupRpair s1 s2) (TupRpair v1 v2)
+  | DeclareMissingVars lhs1 subst1 value1 <- declareMissingVars t1 s1 v1
+  , DeclareMissingVars lhs2 subst2 value2 <- declareMissingVars t2 s2 (mapTupR (weaken subst1) v2)
+  = DeclareMissingVars (LeftHandSidePair lhs1 lhs2) (subst2 .> subst1) $ \k -> value1 (k .> subst2) `TupRpair` value2 k
+declareMissingVars _ _ _ = internalError "Tuple mismatch"
+
+data DeclareMissingDistributedVars f s' s t t' env where
+  -- Captures existentials env' and t''.
+  DeclareMissingDistributedVars
+    :: TupR s' t''
+    -> LeftHandSide s (Distribute f t'') env env'
+    -> (env :> env')
+    -> (forall env''. env' :> env'' -> Vars s env'' (Distribute f t))
+    -> DeclareMissingDistributedVars f s' s t t' env
+
+-- 'f' is ambiguous
+declareMissingDistributedVars
+  :: forall f s' s t t' env.
+     TupR s' t -> TupR s (Distribute f t) -> SubTupR t t' -> Vars s env (Distribute f t') -> DeclareMissingDistributedVars f s' s t t' env
+declareMissingDistributedVars _ _ SubTupRkeep vars
+  = DeclareMissingDistributedVars TupRunit (LeftHandSideWildcard TupRunit) weakenId (\k -> mapTupR (weaken k) vars)
+declareMissingDistributedVars tp tp' SubTupRskip _
+  | DeclareVars lhs k value <- declareVars tp'
+  = DeclareMissingDistributedVars tp lhs k value
+declareMissingDistributedVars (TupRpair t1 t2) (TupRpair t1' t2') (SubTupRpair s1 s2) (TupRpair v1 v2)
+  | DeclareMissingDistributedVars st1 lhs1 subst1 value1 <- declareMissingDistributedVars @f t1 t1' s1 v1
+  , DeclareMissingDistributedVars st2 lhs2 subst2 value2 <- declareMissingDistributedVars @f t2 t2' s2 (mapTupR (weaken subst1) v2)
+  = DeclareMissingDistributedVars (TupRpair st1 st2) (LeftHandSidePair lhs1 lhs2) (subst2 .> subst1) $ \k -> value1 (k .> subst2) `TupRpair` value2 k
+declareMissingDistributedVars _ _ _ _ = internalError "Tuple mismatch"
+
+
 -- For an IR parameterized over the result type, implement a function of this
 -- type:
 --
@@ -409,7 +456,7 @@ composeSubTupR bc SubTupRkeep = bc
 composeSubTupR SubTupRkeep ab = ab
 composeSubTupR SubTupRskip SubTupRskip = SubTupRskip
 composeSubTupR SubTupRskip _ = SubTupRskip
-composeSubTupR (SubTupRpair bc bc') (SubTupRpair ab ab') = SubTupRpair (composeSubTupR bc ab) (composeSubTupR bc' ab')
+composeSubTupR (SubTupRpair bc bc') (SubTupRpair ab ab') = subTupRpair (composeSubTupR bc ab) (composeSubTupR bc' ab')
 
 subTupRpair :: SubTupR t1 t1'  -> SubTupR t2 t2' -> SubTupR (t1, t2) (t1', t2')
 subTupRpair SubTupRkeep SubTupRkeep = SubTupRkeep
@@ -429,6 +476,23 @@ subTup (SubTupRpair l r) (t1, t2) = (subTup l t1, subTup r t2)
 subTupUnit :: SubTupR () t' -> t' :~: ()
 subTupUnit SubTupRskip = Refl
 subTupUnit SubTupRkeep = Refl
+
+-- Checks whether the SubTup preserves the entire tuple.
+-- This function needs a 'TupR s t' to check whether 'SubTupRskip' is used on
+-- '()'. On a unit, SubTupRskip and SubTupRkeep have the same meaning.
+--
+subTupPreserves :: TupR s t -> SubTupR t t' -> Maybe (t' :~: t)
+subTupPreserves TupRunit s = Just $ subTupUnit s
+subTupPreserves (TupRpair t1 t2) (SubTupRpair s1 s2)
+  | Just Refl <- subTupPreserves t1 s1
+  , Just Refl <- subTupPreserves t2 s2 = Just Refl
+subTupPreserves _ _ = Nothing
+
+-- 's' is ambiguous, so explicit type annotation is needed.
+subTupDistribute :: forall s t t'. SubTupR t t' -> SubTupR (Distribute s t) (Distribute s t')
+subTupDistribute SubTupRskip = SubTupRskip
+subTupDistribute SubTupRkeep = SubTupRkeep
+subTupDistribute (SubTupRpair s1 s2) = subTupDistribute @s s1 `SubTupRpair` subTupDistribute @s s2
 
 data LVAnalysis ir env t where
   LVAnalysis

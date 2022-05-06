@@ -30,6 +30,7 @@ import Data.Array.Accelerate.AST.Operation hiding ( Var )
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
 import Data.Array.Accelerate.Type
+import Data.Array.Accelerate.Analysis.Hash.Exp
 
 -- Data structures
 -- In this file, order often subly matters.
@@ -164,6 +165,9 @@ class (Eq (BackendVar op), Ord (BackendVar op), Eq (BackendArg op)) => MakesILP 
 
   -- allow the backend to add constraints/bounds for every node
   finalize :: [Label] -> Constraint op
+
+  encodeBackendClusterArg :: BackendClusterArg op arg -> Builder
+
 -- Control flow cannot be fused, so we make separate ILPs for e.g.
 -- then-branch and else-branch. In the future, a possible optimisation is to
 -- generate code for the awhile-condition twice: once maybe fused after the body,

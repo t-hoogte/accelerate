@@ -220,7 +220,8 @@ data Binding env t where
 
 -- Effects do not have a return value.
 data Effect kernel env where
-  Exec          :: KernelFun kernel f
+  Exec          :: KernelMetadata kernel f
+                -> KernelFun kernel f
                 -> SArgs env f
                 -> Effect kernel env
 
@@ -301,7 +302,7 @@ bindingFreeVars (Compute e)    = IdxSet.fromList $ map f $ arrayInstrs e
     f (Exists (Parameter (Var _ idx))) = Exists idx
 
 effectFreeVars :: Effect kernel env -> IdxSet env
-effectFreeVars (Exec _ args)             = IdxSet.fromList $ sargVars args
+effectFreeVars (Exec _ _ args)           = IdxSet.fromList $ sargVars args
 effectFreeVars (SignalAwait signals)     = IdxSet.fromList $ map Exists $ signals
 effectFreeVars (SignalResolve resolvers) = IdxSet.fromList $ map Exists resolvers
 effectFreeVars (RefWrite ref value)      = IdxSet.insertVar ref $ IdxSet.singletonVar value

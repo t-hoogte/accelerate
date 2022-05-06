@@ -37,10 +37,13 @@ module Data.Array.Accelerate.Backend (
   Operation.SLVOperation(..),
   Operation.SubArgs(..), Operation.SubArg(..),
   Operation.defaultSlvGenerate, Operation.defaultSlvMap, Operation.defaultSlvBackpermute,
+  Operation.EncodeOperation(..), Operation.hashOperation,
 
   Operation.SimplifyOperation(..),
   Operation.CopyOperation(..),
   Operation.detectMapCopies, Operation.detectBackpermuteCopies, Operation.copyOperationsForArray,
+
+  Pretty.PrettyKernel(..), Pretty.PrettyKernelStyle(..),
 
   Partitioning.MakesILP(..),
   IsSchedule(..),
@@ -62,11 +65,13 @@ import Data.Array.Accelerate.Trafo
 import Data.Array.Accelerate.Trafo.Config
 import qualified Data.Array.Accelerate.Trafo.Operation.LiveVars as Operation
 import qualified Data.Array.Accelerate.Trafo.Operation.Simplify as Operation
+import qualified Data.Array.Accelerate.Analysis.Hash.Operation  as Operation
 
 import Data.Array.Accelerate.Trafo.Sharing (Afunction(..), AfunctionRepr(..), afunctionGroundR, afunctionRepr)
 import qualified Data.Array.Accelerate.Trafo.Desugar as Desugar
 import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Partitioning
 import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
+import qualified Data.Array.Accelerate.Pretty.Schedule as Pretty
 import Data.Kind
 import Data.Type.Equality
 import System.IO.Unsafe (unsafePerformIO)
@@ -82,10 +87,12 @@ class
   , IsSchedule (Schedule backend)
   , IsKernel (Kernel backend)
   , Pretty.PrettyOp (Operation backend)
+  , Pretty.PrettyKernel (Kernel backend)
+  , Pretty.PrettySchedule (Schedule backend)
   , Execute (Schedule backend) (Kernel backend)
   , Operation.NFData' (Graph.BackendClusterArg (KernelOperation (Kernel backend)))
   , Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation (Kernel backend)))
-  , EvalOp (Operation backend)
+  , Operation.EncodeOperation (Operation backend)
   ) => Backend backend where
 
   type Schedule backend :: (Type -> Type) -> Type -> Type -> Type
