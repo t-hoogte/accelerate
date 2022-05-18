@@ -61,7 +61,7 @@ import Data.Array.Accelerate.Representation.Ground
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Slice
-import Data.Array.Accelerate.AST.Environment hiding (Identity(..))
+import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.Type
 import Data.Primitive.Vec
 import Data.Primitive.Types
@@ -75,7 +75,7 @@ import Unsafe.Coerce (unsafeCoerce)
 import Control.Monad.ST
 import Data.Bits
 import Data.Array.Accelerate.Backend
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (Information (Info), Var (BackendSpecific), (-?>), fused, infusibleEdges, manifest, LabelledArgOp (LOp))
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (Var (BackendSpecific), (-?>), fused, infusibleEdges, manifest, LabelledArgOp (LOp))
 import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Graph
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
 import qualified Data.Set as Set
@@ -326,7 +326,7 @@ instance MakesILP InterpretOp where
   finalize = foldMap $ \l -> timesN (manifest l) .>. c (OutDir l)
   
   mkGraph IBackpermute (_ :>: ((L _ (_, Set.toList -> lIns)) :>: _ :>: ArgsNil)) l@(Label i _) =
-    Info
+    Graph.Info
       mempty
       (  inputConstraints l lIns
       <> c (InDir l) .==. int i
@@ -345,9 +345,9 @@ instance MakesILP InterpretOp where
       -- <> c (BackendSpecific $ DimensionsPerThread InArr l) .==. c (BackendSpecific $ DimensionsPerThread OutArr l)
       ) -- enforce that the backpermute follows its own rules, but the output can be anything
       (defaultBounds l)
-  mkGraph IGenerate _ l = Info mempty mempty (defaultBounds l) -- creats some superfluous variables, oh well
+  mkGraph IGenerate _ l = Graph.Info mempty mempty (defaultBounds l) -- creats some superfluous variables, oh well
   mkGraph IMap (_ :>: L _ (_, Set.toList -> lIns) :>: _ :>: ArgsNil) l =
-    Info
+    Graph.Info
       mempty
       (  inputConstraints l lIns
       <> c (InDir l) .==. c (OutDir l)
@@ -356,7 +356,7 @@ instance MakesILP InterpretOp where
       <> c (BackendSpecific $ DimensionsPerThread InArr l) .==. c (BackendSpecific $ DimensionsPerThread OutArr l))
       (defaultBounds l)
   mkGraph IPermute (_ :>: L _ (_, lTargets) :>: _ :>: L _ (_, Set.toList -> lIns) :>: ArgsNil) l@(Label i _) =
-    Info
+    Graph.Info
       (  mempty & infusibleEdges .~ Set.map (-?> l) lTargets) -- Cannot fuse with the producer of the target array
       (  inputConstraints l lIns <> c (OutDir l) .==. int (-3-i)) -- convention meaning infusible
       (  lower (-2) (InDir l)
@@ -367,7 +367,7 @@ instance MakesILP InterpretOp where
       <> equal 0 (BackendSpecific $ DimensionsPerThread OutArr l))
 
   mkGraph (IFold1 _) (_ :>: L _ (_, Set.toList -> lIns) :>: _ :>: ArgsNil) l =
-    Info
+    Graph.Info
       mempty
       ( inputConstraints l lIns
         <> c (InDir l) .==. c (OutDir l)
@@ -377,7 +377,7 @@ instance MakesILP InterpretOp where
       (defaultBounds l)
   
   mkGraph (IScan1 _ _) (_ :>: L _ (_, Set.toList -> lIns) :>: _ :>: ArgsNil) l =
-    Info
+    Graph.Info
       mempty
       ( inputConstraints l lIns
         <> c (InDir l) .==. c (OutDir l)
@@ -388,7 +388,7 @@ instance MakesILP InterpretOp where
       (defaultBounds l)
   
   mkGraph (IAppend side n) (_ :>: L _ (_, Set.toList -> lIns) :>: _ :>: ArgsNil) l =
-    Info
+    Graph.Info
       mempty
       ( inputConstraints l lIns
         <> c (InDir l) .==. c (OutDir l)

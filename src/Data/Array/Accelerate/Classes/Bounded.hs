@@ -1,4 +1,5 @@
 {-# LANGUAGE ConstraintKinds   #-}
+{-# LANGUAGE CPP               #-}
 {-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE TemplateHaskell   #-}
@@ -133,7 +134,7 @@ instance P.Bounded (Exp CSChar) where
 instance P.Bounded (Exp CUChar) where
   minBound = mkBitcast (mkMinBound @Word8)
   maxBound = mkBitcast (mkMaxBound @Word8)
-
+#ifndef __GHCIDE__
 $(runQ $ do
     let
         mkInstance :: Int -> Q [Dec]
@@ -151,4 +152,4 @@ $(runQ $ do
     --
     concat <$> mapM mkInstance [2..16]
  )
-
+#endif

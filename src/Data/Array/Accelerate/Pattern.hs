@@ -1,4 +1,5 @@
 {-# LANGUAGE ConstraintKinds       #-}
+{-# LANGUAGE CPP                   #-}
 {-# LANGUAGE DataKinds             #-}
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE FlexibleInstances     #-}
@@ -26,6 +27,7 @@
 module Data.Array.Accelerate.Pattern (
 
   pattern Pattern,
+#ifndef __GHCIDE__
   pattern T2,  pattern T3,  pattern T4,  pattern T5,  pattern T6,
   pattern T7,  pattern T8,  pattern T9,  pattern T10, pattern T11,
   pattern T12, pattern T13, pattern T14, pattern T15, pattern T16,
@@ -35,7 +37,7 @@ module Data.Array.Accelerate.Pattern (
   pattern I5, pattern I6, pattern I7, pattern I8, pattern I9,
 
   pattern V2, pattern V3, pattern V4, pattern V8, pattern V16,
-
+#endif
 ) where
 
 import Data.Array.Accelerate.AST.Idx
@@ -111,6 +113,7 @@ instance (Elt a, Elt b) => IsPattern Exp (a :. b) (Exp a :. Exp b) where
   matcher (Exp t)          = Exp (SmartExp $ Prj PairIdxLeft t) :. Exp (SmartExp $ Prj PairIdxRight t)
 
 
+#ifndef __GHCIDE__
 -- IsPattern instances for up to 16-tuples (Acc and Exp). TH takes care of
 -- the (unremarkable) boilerplate for us.
 --
@@ -216,7 +219,6 @@ runQ $ do
     vs <- mapM mkVecPattern [2,3,4,8,16]
     return $ concat (es ++ as ++ vs)
 
-
 -- | Specialised pattern synonyms for tuples, which may be more convenient to
 -- use than 'Data.Array.Accelerate.Lift.lift' and
 -- 'Data.Array.Accelerate.Lift.unlift'. For example, to construct a pair:
@@ -293,3 +295,4 @@ runQ $ do
     vs <- mapM mkV [2,3,4,8,16]
     return $ concat (ts ++ is ++ vs)
 
+#endif

@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes  #-}
+{-# LANGUAGE CPP                  #-}
 {-# LANGUAGE DefaultSignatures    #-}
 {-# LANGUAGE FlexibleContexts     #-}
 {-# LANGUAGE FlexibleInstances    #-}
@@ -305,6 +306,8 @@ instance (Shape sh, Elt e) => Arrays (Array sh e) where
   fromArr (Array arr) = arr
   toArr               = Array
 
+#ifndef __GHCIDE__
+
 runQ $ do
   let
       mkTuple :: Int -> Q Dec
@@ -319,3 +322,146 @@ runQ $ do
   --
   mapM mkTuple [2..16]
 
+#else
+  
+instance (Arrays x0, Arrays x1) => Arrays (x0, x1)
+instance (Arrays x0, Arrays x1, Arrays x2) => Arrays (x0, x1, x2)
+instance (Arrays x0, Arrays x1, Arrays x2, Arrays x3) =>
+          Arrays (x0, x1, x2, x3)
+instance (Arrays x0, Arrays x1, Arrays x2, Arrays x3, Arrays x4) =>
+          Arrays (x0, x1, x2, x3, x4)
+instance (Arrays x0,
+          Arrays x1,
+          Arrays x2,
+          Arrays x3,
+          Arrays x4,
+          Arrays x5) =>
+          Arrays (x0, x1, x2, x3, x4, x5)
+instance (Arrays x0,
+          Arrays x1,
+          Arrays x2,
+          Arrays x3,
+          Arrays x4,
+          Arrays x5,
+          Arrays x6) =>
+          Arrays (x0, x1, x2, x3, x4, x5, x6)
+instance (Arrays x0,
+          Arrays x1,
+          Arrays x2,
+          Arrays x3,
+          Arrays x4,
+          Arrays x5,
+          Arrays x6,
+          Arrays x7) =>
+          Arrays (x0, x1, x2, x3, x4, x5, x6, x7)
+instance (Arrays x0,
+          Arrays x1,
+          Arrays x2,
+          Arrays x3,
+          Arrays x4,
+          Arrays x5,
+          Arrays x6,
+          Arrays x7,
+          Arrays x8) =>
+          Arrays (x0, x1, x2, x3, x4, x5, x6, x7, x8)
+instance (Arrays x0,
+          Arrays x1,
+          Arrays x2,
+          Arrays x3,
+          Arrays x4,
+          Arrays x5,
+          Arrays x6,
+          Arrays x7,
+          Arrays x8,
+          Arrays x9) =>
+          Arrays (x0, x1, x2, x3, x4, x5, x6, x7, x8, x9)
+instance (Arrays x0,
+          Arrays x1,
+          Arrays x2,
+          Arrays x3,
+          Arrays x4,
+          Arrays x5,
+          Arrays x6,
+          Arrays x7,
+          Arrays x8,
+          Arrays x9,
+          Arrays x10) =>
+          Arrays (x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10)
+instance (Arrays x0,
+          Arrays x1,
+          Arrays x2,
+          Arrays x3,
+          Arrays x4,
+          Arrays x5,
+          Arrays x6,
+          Arrays x7,
+          Arrays x8,
+          Arrays x9,
+          Arrays x10,
+          Arrays x11) =>
+          Arrays (x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11)
+instance (Arrays x0,
+          Arrays x1,
+          Arrays x2,
+          Arrays x3,
+          Arrays x4,
+          Arrays x5,
+          Arrays x6,
+          Arrays x7,
+          Arrays x8,
+          Arrays x9,
+          Arrays x10,
+          Arrays x11,
+          Arrays x12) =>
+          Arrays (x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12)
+instance (Arrays x0,
+          Arrays x1,
+          Arrays x2,
+          Arrays x3,
+          Arrays x4,
+          Arrays x5,
+          Arrays x6,
+          Arrays x7,
+          Arrays x8,
+          Arrays x9,
+          Arrays x10,
+          Arrays x11,
+          Arrays x12,
+          Arrays x13) =>
+          Arrays (x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13)
+instance (Arrays x0,
+          Arrays x1,
+          Arrays x2,
+          Arrays x3,
+          Arrays x4,
+          Arrays x5,
+          Arrays x6,
+          Arrays x7,
+          Arrays x8,
+          Arrays x9,
+          Arrays x10,
+          Arrays x11,
+          Arrays x12,
+          Arrays x13,
+          Arrays x14) =>
+          Arrays (x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13,
+                  x14)
+instance (Arrays x0,
+          Arrays x1,
+          Arrays x2,
+          Arrays x3,
+          Arrays x4,
+          Arrays x5,
+          Arrays x6,
+          Arrays x7,
+          Arrays x8,
+          Arrays x9,
+          Arrays x10,
+          Arrays x11,
+          Arrays x12,
+          Arrays x13,
+          Arrays x14,
+          Arrays x15) =>
+          Arrays (x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13,
+                  x14, x15)
+#endif

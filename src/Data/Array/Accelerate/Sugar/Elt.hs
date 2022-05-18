@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes  #-}
+{-# LANGUAGE CPP                  #-}
 {-# LANGUAGE DataKinds            #-}
 {-# LANGUAGE DefaultSignatures    #-}
 {-# LANGUAGE FlexibleContexts     #-}
@@ -294,6 +295,8 @@ instance Elt Char where
   toElt   = chr . fromIntegral
   fromElt = fromIntegral . ord
 
+#ifndef __GHCIDE__
+
 runQ $ do
   let
       -- XXX: we might want to do the digItOut trick used by FromIntegral?
@@ -394,3 +397,296 @@ runQ $ do
   -- vs <- sequence [ mkVecElt t n | t <- integralTypes ++ floatingTypes, n <- [2,3,4,8,16] ]
   return (concat ss ++ concat ns ++ ts)
 
+#else
+
+instance Elt Int where
+  type EltR Int = Int
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt = id
+  toElt = id
+instance Elt Int8 where
+  type EltR Int8 = Int8
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt = id
+  toElt = id
+instance Elt Int16 where
+  type EltR Int16 = Int16
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt = id
+  toElt = id
+instance Elt Int32 where
+  type EltR Int32 = Int32
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt = id
+  toElt = id
+instance Elt Int64 where
+  type EltR Int64 = Int64
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt = id
+  toElt = id
+instance Elt Word where
+  type EltR Word = Word
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt = id
+  toElt = id
+instance Elt Word8 where
+  type EltR Word8 = Word8
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt = id
+  toElt = id
+instance Elt Word16 where
+  type EltR Word16 = Word16
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt = id
+  toElt = id
+instance Elt Word32 where
+  type EltR Word32 = Word32
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt = id
+  toElt = id
+instance Elt Word64 where
+  type EltR Word64 = Word64
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt = id
+  toElt = id
+instance Elt Half where
+  type EltR Half = Half
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt = id
+  toElt = id
+instance Elt Float where
+  type EltR Float = Float
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt = id
+  toElt = id
+instance Elt Double where
+  type EltR Double = Double
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt = id
+  toElt = id
+instance Elt CShort where
+  type EltR CShort = Int16
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt (CShort x) = x
+  toElt = CShort
+instance Elt CUShort where
+  type EltR CUShort = Word16
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt (CUShort x) = x
+  toElt = CUShort
+instance Elt CInt where
+  type EltR CInt = Int32
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt (CInt x) = x
+  toElt = CInt
+instance Elt CUInt where
+  type EltR CUInt = Word32
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt (CUInt x) = x
+  toElt = CUInt
+instance Elt CLong where
+  type EltR CLong = Int64
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt (CLong x) = x
+  toElt = CLong
+instance Elt CULong where
+  type EltR CULong = Word64
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt (CULong x) = x
+  toElt = CULong
+instance Elt CLLong where
+  type EltR CLLong = Int64
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt (CLLong x) = x
+  toElt = CLLong
+instance Elt CULLong where
+  type EltR CULLong = Word64
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt (CULLong x) = x
+  toElt = CULLong
+instance Elt CFloat where
+  type EltR CFloat = Float
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt (CFloat x) = x
+  toElt = CFloat
+instance Elt CDouble where
+  type EltR CDouble = Double
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt (CDouble x) = x
+  toElt = CDouble
+instance Elt CChar where
+  type EltR CChar = Int8
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt (CChar x) = x
+  toElt = CChar
+instance Elt CSChar where
+  type EltR CSChar = Int8
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt (CSChar x) = x
+  toElt = CSChar
+instance Elt CUChar where
+  type EltR CUChar = Word8
+  eltR = TupRsingle scalarType
+  tagsR = [TagRsingle scalarType]
+  fromElt (CUChar x) = x
+  toElt = CUChar
+instance (Elt x0, Elt x1) => Elt (x0, x1)
+instance (Elt x0, Elt x1, Elt x2) => Elt (x0, x1, x2)
+instance (Elt x0, Elt x1, Elt x2, Elt x3) => Elt (x0, x1, x2, x3)
+instance (Elt x0, Elt x1, Elt x2, Elt x3, Elt x4) =>
+          Elt (x0, x1, x2, x3, x4)
+instance (Elt x0, Elt x1, Elt x2, Elt x3, Elt x4, Elt x5) =>
+          Elt (x0, x1, x2, x3, x4, x5)
+instance (Elt x0,
+          Elt x1,
+          Elt x2,
+          Elt x3,
+          Elt x4,
+          Elt x5,
+          Elt x6) =>
+          Elt (x0, x1, x2, x3, x4, x5, x6)
+instance (Elt x0,
+          Elt x1,
+          Elt x2,
+          Elt x3,
+          Elt x4,
+          Elt x5,
+          Elt x6,
+          Elt x7) =>
+          Elt (x0, x1, x2, x3, x4, x5, x6, x7)
+instance (Elt x0,
+          Elt x1,
+          Elt x2,
+          Elt x3,
+          Elt x4,
+          Elt x5,
+          Elt x6,
+          Elt x7,
+          Elt x8) =>
+          Elt (x0, x1, x2, x3, x4, x5, x6, x7, x8)
+instance (Elt x0,
+          Elt x1,
+          Elt x2,
+          Elt x3,
+          Elt x4,
+          Elt x5,
+          Elt x6,
+          Elt x7,
+          Elt x8,
+          Elt x9) =>
+          Elt (x0, x1, x2, x3, x4, x5, x6, x7, x8, x9)
+instance (Elt x0,
+          Elt x1,
+          Elt x2,
+          Elt x3,
+          Elt x4,
+          Elt x5,
+          Elt x6,
+          Elt x7,
+          Elt x8,
+          Elt x9,
+          Elt x10) =>
+          Elt (x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10)
+instance (Elt x0,
+          Elt x1,
+          Elt x2,
+          Elt x3,
+          Elt x4,
+          Elt x5,
+          Elt x6,
+          Elt x7,
+          Elt x8,
+          Elt x9,
+          Elt x10,
+          Elt x11) =>
+          Elt (x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11)
+instance (Elt x0,
+          Elt x1,
+          Elt x2,
+          Elt x3,
+          Elt x4,
+          Elt x5,
+          Elt x6,
+          Elt x7,
+          Elt x8,
+          Elt x9,
+          Elt x10,
+          Elt x11,
+          Elt x12) =>
+          Elt (x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12)
+instance (Elt x0,
+          Elt x1,
+          Elt x2,
+          Elt x3,
+          Elt x4,
+          Elt x5,
+          Elt x6,
+          Elt x7,
+          Elt x8,
+          Elt x9,
+          Elt x10,
+          Elt x11,
+          Elt x12,
+          Elt x13) =>
+          Elt (x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13)
+instance (Elt x0,
+          Elt x1,
+          Elt x2,
+          Elt x3,
+          Elt x4,
+          Elt x5,
+          Elt x6,
+          Elt x7,
+          Elt x8,
+          Elt x9,
+          Elt x10,
+          Elt x11,
+          Elt x12,
+          Elt x13,
+          Elt x14) =>
+          Elt (x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13,
+              x14)
+instance (Elt x0,
+          Elt x1,
+          Elt x2,
+          Elt x3,
+          Elt x4,
+          Elt x5,
+          Elt x6,
+          Elt x7,
+          Elt x8,
+          Elt x9,
+          Elt x10,
+          Elt x11,
+          Elt x12,
+          Elt x13,
+          Elt x14,
+          Elt x15) =>
+          Elt (x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13,
+              x14, x15)
+#endif

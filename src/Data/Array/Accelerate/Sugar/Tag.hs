@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes  #-}
+{-# LANGUAGE CPP                  #-}
 {-# LANGUAGE DefaultSignatures    #-}
 {-# LANGUAGE FlexibleContexts     #-}
 {-# LANGUAGE FlexibleInstances    #-}
@@ -68,7 +69,7 @@ instance Tagged Bool
 instance Tagged Ordering
 instance Tagged (Maybe a)
 instance Tagged (Either a b)
-
+#ifndef __GHCIDE__
 runQ $ do
   let
       mkTuple :: Int -> Q Dec
@@ -81,3 +82,24 @@ runQ $ do
   --
   mapM mkTuple [2..16]
 
+#else
+instance Tagged (x0, x1)
+instance Tagged (x0, x1, x2)
+instance Tagged (x0, x1, x2, x3)
+instance Tagged (x0, x1, x2, x3, x4)
+instance Tagged (x0, x1, x2, x3, x4, x5)
+instance Tagged (x0, x1, x2, x3, x4, x5, x6)
+instance Tagged (x0, x1, x2, x3, x4, x5, x6, x7)
+instance Tagged (x0, x1, x2, x3, x4, x5, x6, x7, x8)
+instance Tagged (x0, x1, x2, x3, x4, x5, x6, x7, x8, x9)
+instance Tagged (x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10)
+instance Tagged (x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11)
+instance Tagged (x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11,
+                 x12)
+instance Tagged (x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11,
+                 x12, x13)
+instance Tagged (x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11,
+                 x12, x13, x14)
+instance Tagged (x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11,
+                 x12, x13, x14, x15)
+#endif

@@ -514,6 +514,10 @@ instance ShrinkArg (BackendClusterArg op) => SLVOperation (Cluster op) where
 
       slvIO :: SubArgs a a' -> Args env a' -> Args env' a -> ClusterIO a i o -> ClusterIO a' i o
       slvIO SubArgsNil ArgsNil ArgsNil Empty = Empty
+      slvIO (SubArgsDead sa) (_:>:a') (_:>:a) (Trivial io') = error "impossible" $ slvIO sa a' a io'
+      slvIO (SubArgsLive SubArgKeep              sa) (_:>:a') (_:>:a) (Trivial io') = Trivial $ slvIO sa a' a io'
+      slvIO (SubArgsLive (SubArgOut SubTupRskip) sa) (_:>:a') (_:>:a) (Trivial io') = Trivial $ slvIO sa a' a io'
+      slvIO (SubArgsLive (SubArgOut SubTupRkeep) sa) (_:>:a') (_:>:a) (Trivial io') = Trivial $ slvIO sa a' a io'
       slvIO (SubArgsDead subargs) (ArgVar _ :>: args') (ArgArray Out (ArrayR shr _) _ _ :>: args) (Output t _ te io') = Vertical t (ArrayR shr te) (slvIO subargs args' args io')
       slvIO (SubArgsLive SubArgKeep subargs) (_ :>: (args' :: Args env a')) (_ :>: (args :: Args env' a)) io'
         = let k :: forall i o. ClusterIO a i o -> ClusterIO a' i o
@@ -525,7 +529,6 @@ instance ShrinkArg (BackendClusterArg op) => SLVOperation (Cluster op) where
             ExpPut       io'' -> ExpPut       $ k io''
             VarPut       io'' -> VarPut       $ k io''
             FunPut       io'' -> FunPut       $ k io''
-            Trivial      io'' -> Trivial      $ k io''
       slvIO
         (SubArgsLive (SubArgOut s) subargs)
         ((ArgArray Out _ _ _) :>: args')
@@ -533,43 +536,70 @@ instance ShrinkArg (BackendClusterArg op) => SLVOperation (Cluster op) where
         (Output t s' tr io')
         = Output t (composeSubTupR s s') tr (slvIO subargs args' args io')
 
-class TupRmonoid f g where
-  unit :: Compose f g ()
-  pair :: Compose f g a -> Compose f g b -> Compose f g (a,b)
-  unpair :: Compose f g (a,b) -> (Compose f g a, Compose f g b)
+class TupRmonoid f where
+  pair' :: f a -> f b -> f (a,b)
+  injL :: f a -> TupUnitsProof b -> f (a,b)
+  injR :: f b -> TupUnitsProof a -> f (a,b)
+  unpair' :: f (a,b) -> (f a, f b)
 
-tupRfold :: TupRmonoid f g => TupR (Compose f g) e -> f (g e)
-tupRfold TupRunit = getCompose unit
-tupRfold (TupRsingle s) = getCompose s
-tupRfold (TupRpair l r) = getCompose $ Compose (tupRfold l) `pair` Compose (tupRfold r)
+unit :: TupInfo f ()
+unit = NoInfo OneUnit
 
-takeBuffers :: TupRmonoid f g => TakeBuffers g e exs xs -> Env f exs -> (f (g e), Env f xs)
-takeBuffers TakeUnit env = (getCompose unit, env)
-takeBuffers (TakeSingle t) env = take' t env
+pair :: TupRmonoid f => TupInfo f a -> TupInfo f b -> TupInfo f (a,b)
+pair (Info x) (Info y) = Info $ pair' x y
+pair (Info x) (NoInfo y) = Info $ injL x y
+pair (NoInfo x) (Info y) = Info $ injR y x
+pair (NoInfo x) (NoInfo y) = NoInfo (MoreUnits x y)
+
+unpair :: TupRmonoid f => TupInfo f (a,b) -> (TupInfo f a, TupInfo f b)
+unpair (Info x) = bimap Info Info $ unpair' x
+unpair (NoInfo (MoreUnits x y)) = (NoInfo x, NoInfo y)
+
+data TupUnitsProof a where
+  OneUnit :: TupUnitsProof ()
+  MoreUnits :: TupUnitsProof a -> TupUnitsProof b -> TupUnitsProof (a,b)
+-- Hold the info, or a proof that there are no non-unit values in this type
+data TupInfo f a where
+  Info :: f a -> TupInfo f a
+  NoInfo :: TupUnitsProof a -> TupInfo f a
+
+tupInfoTransform :: (forall e. f e -> g e) -> TupInfo f a -> TupInfo g a
+tupInfoTransform f (Info x) = Info $ f x
+tupInfoTransform _ (NoInfo p) = NoInfo p
+
+tupRfold :: TupRmonoid f => TupR f e -> TupInfo f e
+tupRfold TupRunit = unit
+tupRfold (TupRsingle s) = Info s
+tupRfold (TupRpair l r) = tupRfold l `pair` tupRfold r
+
+takeBuffers :: TupRmonoid (Compose f g) => TakeBuffers g e exs xs -> Env f exs -> (TupInfo (Compose f g) e, Env f xs)
+takeBuffers TakeUnit env = (unit, env)
+takeBuffers (TakeSingle t) env = first (Info . Compose) $ take' t env
 takeBuffers (TakePair l r) env = case takeBuffers r env of
   (r', env') -> case takeBuffers l env' of
-    (l', env'') -> (getCompose $ Compose l' `pair` Compose r', env'')
+    (l', env'') -> (l' `pair` r', env'')
 
-putBuffers :: TupRmonoid f g => TakeBuffers g e exs xs -> f (g e) -> Env f xs -> Env f exs
+putBuffers :: TupRmonoid (Compose f g) => TakeBuffers g e exs xs -> TupInfo (Compose f g) e -> Env f xs -> Env f exs
 putBuffers TakeUnit _ env = env
-putBuffers (TakeSingle t) s env = put' t s env
-putBuffers (TakePair l r) lr env = let
-  (Compose l', Compose r') = unpair $ Compose lr
-  in putBuffers r r' $ putBuffers l l' env
+putBuffers (TakeSingle t) s env = case s of
+  Info (Compose s') -> put' t s' env
+  NoInfo _ -> error "single tupunitsproof"
+putBuffers (TakePair l r) lr env = let (l', r') = unpair lr
+                                   in putBuffers r r' $ putBuffers l l' env
 
-unconsBuffers :: TupRmonoid f g => ConsBuffers g e exs xs -> Env f exs -> (f (g e), Env f xs)
-unconsBuffers ConsUnit env = (getCompose unit, env)
-unconsBuffers ConsSingle (Env.Push env s) = (s, env)
+unconsBuffers :: TupRmonoid (Compose f g) => ConsBuffers g e exs xs -> Env f exs -> (TupInfo (Compose f g) e, Env f xs)
+unconsBuffers ConsUnit env = (unit, env)
+unconsBuffers ConsSingle (Env.Push env s) = (Info $ Compose s, env)
 unconsBuffers (ConsPair l r) env = case unconsBuffers r env of
   (r', env') -> case unconsBuffers l env' of
-    (l', env'') -> (getCompose $ Compose l' `pair` Compose r', env'')
+    (l', env'') -> (l' `pair` r', env'')
 
-consBuffers :: TupRmonoid f g => ConsBuffers g e exs xs -> f (g e) -> Env f xs -> Env f exs
+consBuffers :: TupRmonoid (Compose f g) => ConsBuffers g e exs xs -> f (g e) -> Env f xs -> Env f exs
 consBuffers ConsUnit _ env = env
 consBuffers ConsSingle s env = Env.Push env s
 consBuffers (ConsPair l r) lr env = let
-  (Compose l', Compose r') = unpair $ Compose lr
+  (Compose l', Compose r') = unpair' $ Compose lr
   in consBuffers r r' $ consBuffers l l' env
 
-tupRindex :: TupRmonoid f g => Env f env -> TupR (IdxF g env) a -> f (g a)
+tupRindex :: TupRmonoid (Compose f g) => Env f env -> TupR (IdxF g env) a -> TupInfo (Compose f g) a
 tupRindex env = tupRfold . mapTupR (\(IdxF idx) -> Compose $ prj' idx env)
