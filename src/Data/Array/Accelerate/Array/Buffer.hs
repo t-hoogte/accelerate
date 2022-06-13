@@ -44,10 +44,10 @@ module Data.Array.Accelerate.Array.Buffer (
 
   -- * Utilities for type classes
   SingleArrayDict(..), singleArrayDict,
+  ScalarArrayDict(..), scalarArrayDict,
 
   -- * TemplateHaskell
   liftBuffers, liftBuffer,
-
 ) where
 
 import Data.Array.Accelerate.Array.Unique
@@ -119,18 +119,18 @@ type family ScalarArrayDataR t where
   ScalarArrayDataR (Vec n t) = t
   ScalarArrayDataR t         = t
 
-{-
+
 data ScalarArrayDict a where
-  ScalarArrayDict :: ( ArrayData a ~ ScalarArrayData a, ScalarArrayDataR a ~ ScalarArrayDataR b )
+  ScalarArrayDict :: ( Buffers a ~ Buffer a, ScalarArrayDataR a ~ ScalarArrayDataR b, Storable b, Buffers b ~ Buffer b )
                   => {-# UNPACK #-} !Int    -- vector width
                   -> SingleType b           -- base type
-                  -> ScalarArrayDict a -}
+                  -> ScalarArrayDict a 
 
 data SingleArrayDict a where
   SingleArrayDict :: ( Buffers a ~ Buffer a, ScalarArrayDataR a ~ a, Storable a )
                   => SingleArrayDict a
 
-{-
+
 scalarArrayDict :: ScalarType a -> ScalarArrayDict a
 scalarArrayDict = scalar
   where
@@ -143,7 +143,7 @@ scalarArrayDict = scalar
     vector :: VectorType a -> ScalarArrayDict a
     vector (VectorType w s)
       | SingleArrayDict <- singleArrayDict s
-      = ScalarArrayDict w s -}
+      = ScalarArrayDict w s 
 
 singleArrayDict :: SingleType a -> SingleArrayDict a
 singleArrayDict = single

@@ -106,6 +106,7 @@ import System.IO.Unsafe (unsafePerformIO)
 
 import Data.Array.Accelerate.Eval
 import qualified Data.Array.Accelerate.AST.Partitioned as P
+import Data.Functor.Identity
 
 data Interpreter
 instance Backend Interpreter where
@@ -580,15 +581,20 @@ prjVars (TupRpair v1 v2) env = (prjVars v1 env, prjVars v2 env)
 prjVars (TupRsingle var) env = prj (varIdx var) env
 
 instance EvalOp InterpretOp where
+  -- We have to sprinkle 'Identity' around a bit here, to allow other backends to use different types
   type EvalMonad InterpretOp = IO
-  evalOp _ IMap env (Push (Push _ (BAE (Value x (Shape shr sh)) _)) (BAE f _)) = 
-    pure $ Push Empty (FromArg $ Value (evalFun f (evalArrayInstrDefault env) x) (Shape shr sh))
+  type Index InterpretOp = Int
+  type Embed' InterpretOp = Identity
+  type EnvF InterpretOp = Identity
+
+  evalOp _ IMap env (Push (Push _ (BAE (Value (Identity x) (Shape shr sh)) _)) (BAE f _)) = 
+    pure $ Push Empty (FromArg $ Value (Identity $ evalFun f (evalArrayInstrDefault env) x) (Shape shr sh))
   evalOp _ IBackpermute _ (Push (Push (Push _ (BAE sh _)) (BAE (Value x _) _)) _) = 
     pure $ Push Empty (FromArg $ Value x sh) -- We evaluated the backpermute at the start already, now simply relabel the shape info
   evalOp _ _ _ _ = undefined
 
-  writeOutput r buf n x = writeBuffers r (veryUnsafeUnfreezeBuffers r buf) n x
-  readInput r buf (BCA f) n = indexBuffers' r buf (f n)
+  writeOutput r buf env n (Identity x) = writeBuffers (TupRsingle r) (veryUnsafeUnfreezeBuffers (TupRsingle r) $ varsGetVal buf env) n x
+  readInput r buf env (BCA f) n = Identity <$> indexBuffers' (TupRsingle r) (varsGetVal buf env) (f n)
 
 evalClusterInterpreter :: Cluster InterpretOp args -> Args env args -> Val env -> IO ()
 evalClusterInterpreter c@(Cluster _ (Cluster' io _)) args env = evalCluster (doNTimes $ iterationsize io args env) c args env

@@ -50,24 +50,27 @@ import Data.Functor.Compose
 import Data.Type.Equality
 import Data.Maybe (fromJust)
 import Data.Function ((&))
+import Data.Array.Accelerate.Type (ScalarType)
+import Unsafe.Coerce (unsafeCoerce)
+import Data.Array.Accelerate.Representation.Shape (ShapeR)
 
 
 type BackendArgs op env = PreArgs (BackendClusterArg2 op env)
 type BackendEnv op env = Env (BackendEnvElem op env)
 data BackendEnvElem op env arg = BEE (ToArg env arg) (BackendClusterArg2 op env arg)
 type BackendArgEnv op env = Env (BackendArgEnvElem op env)
-data BackendArgEnvElem op env arg = BAE (FromArg env arg) (BackendClusterArg2 op env arg)
-newtype FromArg' env a = FromArg (FromArg env a)
-pattern PushFA :: () => (e' ~ (e, x)) => FromArg env x -> Env (FromArg' env) e -> Env (FromArg' env) e'
+data BackendArgEnvElem op env arg = BAE (FromArg env (Embed op arg)) (BackendClusterArg2 op env arg)
+newtype FromArg' op env a = FromArg (FromArg env (Embed op a))
+pattern PushFA :: () => (e' ~ (e, x)) => FromArg env (Embed op x) -> Env (FromArg' op env) e -> Env (FromArg' op env) e'
 pattern PushFA x env = Push env (FromArg x)
 {-# COMPLETE Empty, PushFA #-}
 
--- TODO make actually static, i.e. by removing all 'Val env's from these functions and using `Fun env (Int -> Int)` instead in the interpreter
+-- TODO make actually static, i.e. by using `Fun env (Int -> Int)` instead in the interpreter
 class (MakesILP op) => StaticClusterAnalysis (op :: Type -> Type) where
   -- give better name
   data BackendClusterArg2 op env arg
-  onOp :: op args -> BackendArgs op env (OutArgsOf args) -> Args env args -> Val env -> BackendArgs op env args
-  def :: Arg env arg -> Val env -> BackendClusterArg op arg -> BackendClusterArg2 op env arg
+  onOp :: op args -> BackendArgs op env (OutArgsOf args) -> Args env args -> Env (EnvF op) env -> BackendArgs op env args
+  def :: Arg env arg -> Env (EnvF op) env -> BackendClusterArg op arg -> BackendClusterArg2 op env arg
   valueToIn    :: BackendClusterArg2 op env (Value sh e)  -> BackendClusterArg2 op env (In    sh e)
   valueToOut   :: BackendClusterArg2 op env (Value sh e)  -> BackendClusterArg2 op env (Out   sh e)
   inToValue    :: BackendClusterArg2 op env (In    sh e)  -> BackendClusterArg2 op env (Value sh e)
@@ -80,9 +83,10 @@ class (MakesILP op) => StaticClusterAnalysis (op :: Type -> Type) where
   shToVar      :: BackendClusterArg2 op env (Sh    sh e)  -> BackendClusterArg2 op env (Var'  sh  )
   shrinkOrGrow :: BackendClusterArg2 op env (m     sh e') -> BackendClusterArg2 op env (m     sh e)
   addTup       :: BackendClusterArg2 op env (v     sh e)  -> BackendClusterArg2 op env (v     sh ((), e))
+  justUnit     :: BackendClusterArg2 op env (m sh ())
 
 -- use ScopedTypeVariables for op and env, but not for the args (so we call them arguments instead)
-makeBackendArg :: forall op env arguments. StaticClusterAnalysis op => Args env arguments -> Val env -> Cluster op arguments -> BackendArgs op env arguments
+makeBackendArg :: forall op env arguments. StaticClusterAnalysis op => Args env arguments -> Env (EnvF op) env -> Cluster op arguments -> BackendArgs op env arguments
 makeBackendArg args env (Cluster info (Cluster' io ast)) = let o = getOutputEnv io args info
                                                                i = fromAST ast o
                                                           in fromInputEnv io i
@@ -149,7 +153,7 @@ makeBackendArg args env (Cluster info (Cluster' io ast)) = let o = getOutputEnv 
     fromInputEnv (Output _ _ _ io) (Push env (BEE _ f)) = shrinkOrGrow (shToOut f) :>: fromInputEnv io env
     fromInputEnv (MutPut       io) (Push env (BEE _ f)) = f                        :>: fromInputEnv io env
     fromInputEnv (ExpPut'      io) (Push env (BEE _ f)) = f                        :>: fromInputEnv io env
-    fromInputEnv (Trivial      io)       env            = getCompose undefined                    :>: fromInputEnv io env
+    fromInputEnv (Trivial      io)       env            = justUnit                 :>: fromInputEnv io env
 
 
 
@@ -168,41 +172,70 @@ fromArgs i env (ArgArray Out (ArrayR shr _) sh _ :>: args) = (fromArgs i env arg
 
 class (StaticClusterAnalysis op, Monad (EvalMonad op)) => EvalOp op where
   type family EvalMonad op :: Type -> Type
-  evalOp :: Int -> op args -> Val env -> BackendArgEnv op env (InArgs args) -> (EvalMonad op) (Env (FromArg' env) (OutArgs args))
-  writeOutput :: TypeR e -> Buffers e -> Int -> e -> EvalMonad op ()
-  readInput :: TypeR e -> Buffers e -> BackendClusterArg2 op env (In sh e) -> Int -> EvalMonad op e
+  type family Index op :: Type -- Could also remove this, and use Embed' Int as Index instead, but no real need
+  type family Embed' op :: Type -> Type
+  type family EnvF op :: Type -> Type
 
-evalCluster :: forall op env args. EvalOp op => ((Int -> EvalMonad op ()) -> EvalMonad op ()) -> Cluster op args -> Args env args -> Val env -> (EvalMonad op) ()
+  -- TODO most of these functions should probably be unnecesary, but adding them is the easiest way to get things working right now
+  embedshr :: ShapeR sh -> ShapeR (Embed' op sh)
+  indexsh :: GroundVars env sh -> Env (EnvF op) env -> EvalMonad op (Embed' op sh)
+  indexsh' :: ExpVars env sh -> Env (EnvF op) env -> EvalMonad op (Embed' op sh)
+  subtup :: SubTupR e e' -> Embed' op e -> Embed' op e'
+
+  evalOp :: Index op -> op args -> Env (EnvF op) env -> BackendArgEnv op env (InArgs args) -> (EvalMonad op) (Env (FromArg' op env) (OutArgs args))
+  writeOutput :: ScalarType e -> GroundVars env (Buffers e) -> Env (EnvF op) env -> Index op -> Embed' op e -> EvalMonad op ()
+  readInput :: ScalarType e -> GroundVars env (Buffers e) -> Env (EnvF op) env -> BackendClusterArg2 op env (In sh e) -> Index op -> EvalMonad op (Embed' op e)
+
+type family Embed op a where
+  Embed op (Value sh e) = Value (Embed' op sh) (Embed' op e)
+  Embed op (Sh sh e) = Sh (Embed' op sh) (Embed' op e)
+  Embed op e = e -- Mut, Exp', Var', Fun'
+
+type family Distribute' f a = b | b -> a where
+  Distribute' f () = ()
+  Distribute' f (a,b) = (Distribute' f a, f b)
+  -- Distribute' f (a, b) = (Distribute' f a, Distribute' f b)
+  -- Distribute' f (Value sh e) = Value sh (f e)
+  -- Distribute' f (Sh sh e) = Sh sh (f e)
+distUnit :: forall f a. Distribute' f a ~ () => a :~: ()
+distUnit = unsafeCoerce Refl
+distPair :: forall f a b c. Distribute' f a ~ (Distribute' f b, f c) => a :~: (a, b)
+distPair = unsafeCoerce Refl
+
+evalCluster :: forall op env args. EvalOp op => ((Index op -> EvalMonad op ()) -> EvalMonad op ()) -> Cluster op args -> Args env args -> Env (EnvF op) env -> (EvalMonad op) ()
 evalCluster f c@(Cluster _ (Cluster' io ast)) args env = do
   let ba = makeBackendArg args env c
   f (\n -> do i <- evalIO1 n io args ba env
               o <- evalAST n ast env i
               evalIO2 @op n io args env o)
 
-evalIO1 :: EvalOp op => Int -> ClusterIO args i o -> Args env args -> BackendArgs op env args -> Val env -> (EvalMonad op) (BackendArgEnv op env i)
+evalIO1 :: forall op args i o env. EvalOp op => Index op -> ClusterIO args i o -> Args env args -> BackendArgs op env args -> Env (EnvF op) env -> (EvalMonad op) (BackendArgEnv op env i)
 evalIO1 _ P.Empty                                     ArgsNil    ArgsNil    _ = pure Empty
-evalIO1 n (Input io) (ArgArray In r sh buf :>: args) (info :>: infos) env =
-  Push <$> evalIO1 n io args infos env <*> ((\value -> BAE value $ inToValue info) <$> value)
-    where value = Value <$> readInput (arrayRtype r) (varsGetVal buf env) info n
-                      <*> pure (Shape   (arrayRshape r) (varsGetVal sh  env))
-evalIO1 n (Vertical _ r io) (ArgVar vars         :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> pure (BAE (Shape (arrayRshape r) (varsGetVal vars env)) $ varToSh info)
-evalIO1 n (Output _ _ _ io) (ArgArray Out r sh _ :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> pure (BAE (Shape (arrayRshape r) (varsGetVal sh env)) $ outToSh $ shrinkOrGrow info)
+evalIO1 n (Input io) (ArgArray In (ArrayR shr ~(TupRsingle tp)) sh buf :>: args) (info :>: infos) env
+  | ScalarArrayDict _ _ <- scalarArrayDict tp =
+    (\env' e sh -> Push env' (BAE (Value e (Shape (embedshr @op shr) sh)) $ inToValue info))
+    <$> evalIO1 n io args infos env
+    <*> readInput tp buf env info n
+    <*> indexsh @op sh env
+evalIO1 n (Vertical _ r io) (ArgVar vars         :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> (flip BAE (varToSh info) . Shape (embedshr @op $ arrayRshape r) <$> indexsh' @op vars env)
+evalIO1 n (Output _ _ _ io) (ArgArray Out r sh _ :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> (flip BAE (outToSh $ shrinkOrGrow info) . Shape (embedshr @op $ arrayRshape r) <$> indexsh @op sh env)
 evalIO1 n (MutPut     io) (ArgArray Mut r sh buf :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> pure (BAE (ArrayDescriptor (arrayRshape r) sh buf) info)
 evalIO1 n (ExpPut'    io) (ArgExp e              :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> pure (BAE e info)
 evalIO1 n (ExpPut'    io) (ArgVar e              :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> pure (BAE e info)
 evalIO1 n (ExpPut'    io) (ArgFun e              :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> pure (BAE e info)
 evalIO1 n (Trivial    io) (ArgArray _ _ sh _ :>: args)(info :>: infos) env = evalIO1 n io args infos env
 
-evalIO2 :: forall op args i o env. EvalOp op => Int -> ClusterIO args i o -> Args env args -> Val env -> Env (FromArg' env) o -> (EvalMonad op) ()
+evalIO2 :: forall op args i o env. EvalOp op => Index op -> ClusterIO args i o -> Args env args -> Env (EnvF op) env -> Env (FromArg' op env) o -> (EvalMonad op) ()
 evalIO2 _ P.Empty ArgsNil _ Empty = pure ()
 evalIO2 n (Vertical t _ io) (_                                    :>: args) env (take' t -> (_, o)) = evalIO2 @op n io args env o
 evalIO2 n (Input      io)   (_                                    :>: args) env (PushFA _ o)        = evalIO2 @op n io args env o
 evalIO2 n (MutPut     io)   (_                                    :>: args) env (PushFA _ o)        = evalIO2 @op n io args env o
 evalIO2 n (ExpPut'     io)  (_                                    :>: args) env (PushFA _ o)        = evalIO2 @op n io args env o
-evalIO2 n (Output t s _ io) (ArgArray Out (arrayRtype -> r) _ buf :>: args) env o = let (FromArg (Value x _), o') = take' t o in writeOutput @op r (varsGetVal buf env) n (subTup s x) >> evalIO2 @op n io args env o'
 evalIO2 n (Trivial io) (_ :>: args) env o = evalIO2 @op n io args env o
+evalIO2 n (Output t s _ io) (ArgArray Out (arrayRtype -> TupRsingle r) _ buf :>: args) env o = let (FromArg (Value x _), o') = take' t o in writeOutput @op r buf env n (subtup @op s x) >> evalIO2 @op n io args env o'
+evalIO2 _ (Output _ _ _ _ ) (ArgArray Out (arrayRtype -> _           ) _ _   :>: _   ) _   _ = error "Output isn't a TupRsingle"
 
-evalAST :: forall op i o env. EvalOp op => Int -> ClusterAST op i o -> Val env -> BackendArgEnv op env i -> (EvalMonad op) (Env (FromArg' env) o)
+evalAST :: forall op i o env. EvalOp op => Index op -> ClusterAST op i o -> Env (EnvF op) env -> BackendArgEnv op env i -> (EvalMonad op) (Env (FromArg' op env) o)
 evalAST _ None _ Empty = pure Empty
 evalAST n None env (Push i (BAE x _)) = flip Push (FromArg x) <$> evalAST n None env i
 evalAST n (Bind lhs op ast) env i = do
@@ -211,7 +244,7 @@ evalAST n (Bind lhs op ast) env i = do
   let scope = evalLHS2 lhs i env o'
   evalAST n ast env scope
 
-evalLHS1 :: forall op body i scope env. LeftHandSideArgs body i scope -> BackendArgEnv op env i -> Val env -> BackendArgEnv op env (InArgs body)
+evalLHS1 :: forall op body i scope env. LeftHandSideArgs body i scope -> BackendArgEnv op env i -> Env (EnvF op) env -> BackendArgEnv op env (InArgs body)
 evalLHS1 Base Empty _ = Empty
 evalLHS1 (Reqr t _ lhs) i env = let Info (Compose (BAE x info)) = tupRindex i t in Push (evalLHS1 lhs i env) $ BAE x info
 evalLHS1 (Make _ t lhs) i env = let (Info (Compose (BAE x info)), i') = unconsBuffers t i in Push (evalLHS1 lhs i' env) (BAE x info)
@@ -221,12 +254,12 @@ evalLHS1 (VArg     lhs) (Push i' (BAE x info)) env = Push (evalLHS1 lhs i' env) 
 evalLHS1 (Adju     lhs) (Push i' (BAE x info)) env = Push (evalLHS1 lhs i' env) (BAE x info)
 evalLHS1 (Ignr     lhs) (Push i' (BAE _ _   )) env =       evalLHS1 lhs i' env
 
-evalLHS2 :: EvalOp op => LeftHandSideArgs body i scope -> BackendArgEnv op env i -> Val env -> Env (FromArg' env) (OutArgs body) -> BackendArgEnv op env scope
+evalLHS2 :: EvalOp op => LeftHandSideArgs body i scope -> BackendArgEnv op env i -> Env (EnvF op) env -> Env (FromArg' op env) (OutArgs body) -> BackendArgEnv op env scope
 evalLHS2 Base Empty _ Empty = Empty
 evalLHS2 (Reqr t1 t2 lhs) i env o = evalLHS2 lhs i env o -- TODO ignoring here?
-evalLHS2 (Make t1 t2 lhs) i env (Push o (FromArg y)) = 
-  let (info, i') = unconsBuffers t2 i 
-  in putBuffers t1 
+evalLHS2 (Make t1 t2 lhs) i env (Push o (FromArg y)) =
+  let (info, i') = unconsBuffers t2 i
+  in putBuffers t1
     (tupInfoTransform (Compose . (\(BAE _ i) -> BAE undefined (shToValue i)) . getCompose) info & (\case
         Info (Compose (BAE _ i)) -> Info (Compose (BAE y i))
         NoInfo p -> NoInfo p))
@@ -401,8 +434,8 @@ clusterOperations (Cluster _ (Cluster' io ast)) args
       --       ArgArray' (ArgArray _ repr sh buffers) -> ArgArray Out repr sh buffers :>: prjArgs input' lhs
       --       ArgOther' (ArgArray m _ _ _) -> case m of {}
       Make _ cb lhs
-        | (Info (Compose arg), input') <- unconsBuffers cb input 
-        -> case arg of 
+        | (Info (Compose arg), input') <- unconsBuffers cb input
+        -> case arg of
           ArgArray' arg@(ArgArray Out _ _ _) -> arg :>: prjArgs input' lhs
           _ -> error "nope"
         | otherwise -> error "nope"

@@ -140,7 +140,7 @@ data ClusterIO args input output where
   Input  :: ClusterIO              args   input               output
          -> ClusterIO (In  sh e -> args) (input, Value sh e) (output, Value sh e)
   Output :: Take (Value sh e) eoutput output
-         -> SubTupR e e'
+         -> SubTupR e e' -- since the latest refactor, we can replace the SubTup and the TypeR with a ScalarType, because this is always a scalar
          -> TypeR e
          -> ClusterIO              args   input               output
          -> ClusterIO (Out sh e' -> args) (input, Sh sh e)    eoutput
@@ -442,15 +442,14 @@ data ToArg env a where
 -- genOut (FArg lhs)      (i, x) o     =
 --   (genOut lhs i o, x)
 
-type family FromArg env a = b | b -> a where
+type family FromArg env a where
   FromArg env (Exp'     e) = Exp     env e
   FromArg env (Var'     e) = ExpVars env e
   FromArg env (Fun'     e) = Fun     env e
   FromArg env (Mut   sh e) = ArrayDescriptor env (Array sh e)
-  FromArg env (Value sh e) = Value sh e
-  FromArg env (Sh    sh e) = Sh sh e
+  FromArg env x = x
 
-type family FromArgs env a = b | b -> a where
+type family FromArgs env a where
   FromArgs env ()            = ()
   FromArgs env (a, x) = (FromArgs env a, FromArg env x)
   -- FromArgs env (x, Exp'   e) = (FromArgs env x, Exp     env e)
