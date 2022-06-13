@@ -177,7 +177,7 @@ class (StaticClusterAnalysis op, Monad (EvalMonad op)) => EvalOp op where
   type family EnvF op :: Type -> Type
 
   -- TODO most of these functions should probably be unnecesary, but adding them is the easiest way to get things working right now
-  embedshr :: ShapeR sh -> ShapeR (Embed' op sh)
+  -- embedshr :: ShapeR sh -> ShapeR (Embed' op sh)
   indexsh :: GroundVars env sh -> Env (EnvF op) env -> EvalMonad op (Embed' op sh)
   indexsh' :: ExpVars env sh -> Env (EnvF op) env -> EvalMonad op (Embed' op sh)
   subtup :: SubTupR e e' -> Embed' op e -> Embed' op e'
@@ -187,9 +187,12 @@ class (StaticClusterAnalysis op, Monad (EvalMonad op)) => EvalOp op where
   readInput :: ScalarType e -> GroundVars env (Buffers e) -> Env (EnvF op) env -> BackendClusterArg2 op env (In sh e) -> Index op -> EvalMonad op (Embed' op e)
 
 type family Embed op a where
-  Embed op (Value sh e) = Value (Embed' op sh) (Embed' op e)
-  Embed op (Sh sh e) = Sh (Embed' op sh) (Embed' op e)
+  Embed op (Value sh e) = Value' op sh e
+  Embed op (Sh sh e) = Sh' op sh e
   Embed op e = e -- Mut, Exp', Var', Fun'
+
+data Value' op sh e = Value' (Embed' op e) (Sh' op sh e)
+data Sh' op sh e = Shape' (ShapeR sh) (Embed' op sh)
 
 type family Distribute' f a = b | b -> a where
   Distribute' f () = ()
@@ -213,12 +216,12 @@ evalIO1 :: forall op args i o env. EvalOp op => Index op -> ClusterIO args i o -
 evalIO1 _ P.Empty                                     ArgsNil    ArgsNil    _ = pure Empty
 evalIO1 n (Input io) (ArgArray In (ArrayR shr ~(TupRsingle tp)) sh buf :>: args) (info :>: infos) env
   | ScalarArrayDict _ _ <- scalarArrayDict tp =
-    (\env' e sh -> Push env' (BAE (Value e (Shape (embedshr @op shr) sh)) $ inToValue info))
+    (\env' e sh -> Push env' (BAE (Value' e (Shape' shr sh)) $ inToValue info))
     <$> evalIO1 n io args infos env
     <*> readInput tp buf env info n
     <*> indexsh @op sh env
-evalIO1 n (Vertical _ r io) (ArgVar vars         :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> (flip BAE (varToSh info) . Shape (embedshr @op $ arrayRshape r) <$> indexsh' @op vars env)
-evalIO1 n (Output _ _ _ io) (ArgArray Out r sh _ :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> (flip BAE (outToSh $ shrinkOrGrow info) . Shape (embedshr @op $ arrayRshape r) <$> indexsh @op sh env)
+evalIO1 n (Vertical _ r io) (ArgVar vars         :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> (flip BAE (varToSh info) . Shape' (arrayRshape r) <$> indexsh' @op vars env)
+evalIO1 n (Output _ _ _ io) (ArgArray Out r sh _ :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> (flip BAE (outToSh $ shrinkOrGrow info) . Shape' (arrayRshape r) <$> indexsh @op sh env)
 evalIO1 n (MutPut     io) (ArgArray Mut r sh buf :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> pure (BAE (ArrayDescriptor (arrayRshape r) sh buf) info)
 evalIO1 n (ExpPut'    io) (ArgExp e              :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> pure (BAE e info)
 evalIO1 n (ExpPut'    io) (ArgVar e              :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> pure (BAE e info)
@@ -232,8 +235,7 @@ evalIO2 n (Input      io)   (_                                    :>: args) env 
 evalIO2 n (MutPut     io)   (_                                    :>: args) env (PushFA _ o)        = evalIO2 @op n io args env o
 evalIO2 n (ExpPut'     io)  (_                                    :>: args) env (PushFA _ o)        = evalIO2 @op n io args env o
 evalIO2 n (Trivial io) (_ :>: args) env o = evalIO2 @op n io args env o
-evalIO2 n (Output t s _ io) (ArgArray Out (arrayRtype -> TupRsingle r) _ buf :>: args) env o = let (FromArg (Value x _), o') = take' t o in writeOutput @op r buf env n (subtup @op s x) >> evalIO2 @op n io args env o'
-evalIO2 _ (Output _ _ _ _ ) (ArgArray Out (arrayRtype -> _           ) _ _   :>: _   ) _   _ = error "Output isn't a TupRsingle"
+evalIO2 n (Output t s _ io) (ArgArray Out (arrayRtype -> ~(TupRsingle r)) _ buf :>: args) env o = let (FromArg (Value' x _), o') = take' t o in writeOutput @op r buf env n (subtup @op s x) >> evalIO2 @op n io args env o'
 
 evalAST :: forall op i o env. EvalOp op => Index op -> ClusterAST op i o -> Env (EnvF op) env -> BackendArgEnv op env i -> (EvalMonad op) (Env (FromArg' op env) o)
 evalAST _ None _ Empty = pure Empty
