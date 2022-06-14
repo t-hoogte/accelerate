@@ -336,6 +336,7 @@ library
         , ansi-terminal                 >= 0.6.2
         , array                         >= 0.4
         , base-orphans                  >= 0.3
+        , bifunctors
         , bytestring                    >= 0.10.2
         , composition
         , containers                    >= 0.3

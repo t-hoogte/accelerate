@@ -49,7 +49,7 @@ import Data.Array.Accelerate.Representation.Shape (ShapeR, shapeType)
 import Data.Type.Equality
 import Unsafe.Coerce (unsafeCoerce)
 import Data.Array.Accelerate.Trafo.Operation.LiveVars
-import Data.Array.Accelerate.Representation.Type (TypeR, rnfTypeR, TupR (..), mapTupR)
+import Data.Array.Accelerate.Representation.Type (TypeR, rnfTypeR, TupR (..), mapTupR, Distribute)
 import Control.DeepSeq (NFData (rnf))
 import Data.Array.Accelerate.Trafo.Operation.Simplify (SimplifyOperation(..))
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (BackendCluster, MakesILP (BackendClusterArg))
@@ -554,6 +554,12 @@ unpair :: TupRmonoid f => TupInfo f (a,b) -> (TupInfo f a, TupInfo f b)
 unpair (Info x) = bimap Info Info $ unpair' x
 unpair (NoInfo (MoreUnits x y)) = (NoInfo x, NoInfo y)
 
+instance TupRmonoid Identity where
+  pair' (Identity x) (Identity y) = Identity (x, y)
+  unpair' (Identity (x,y)) = (Identity x, Identity y)
+  injL (Identity x) p = Identity (x, proofToV p)
+  injR (Identity x) p = Identity (proofToV p, x)
+
 data TupUnitsProof a where
   OneUnit :: TupUnitsProof ()
   MoreUnits :: TupUnitsProof a -> TupUnitsProof b -> TupUnitsProof (a,b)
@@ -561,6 +567,18 @@ data TupUnitsProof a where
 data TupInfo f a where
   Info :: f a -> TupInfo f a
   NoInfo :: TupUnitsProof a -> TupInfo f a
+
+proofToR :: TupUnitsProof a -> TupR f a
+proofToR OneUnit = TupRunit
+proofToR (MoreUnits l r) = TupRpair (proofToR l) (proofToR r)
+
+proofToR' :: forall g f a. TupUnitsProof a -> TupR f (Distribute g a)
+proofToR' OneUnit = TupRunit
+proofToR' (MoreUnits l r) = TupRpair (proofToR' @g l) (proofToR' @g r)
+
+proofToV :: TupUnitsProof a -> a
+proofToV OneUnit = ()
+proofToV (MoreUnits a b) = (proofToV a, proofToV b)
 
 tupInfoTransform :: (forall e. f e -> g e) -> TupInfo f a -> TupInfo g a
 tupInfoTransform f (Info x) = Info $ f x

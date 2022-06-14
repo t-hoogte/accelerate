@@ -120,6 +120,10 @@ instance Backend Interpreter where
 makeBackpermuteArg :: Args env args -> Val env -> Cluster InterpretOp args -> BackendArgs InterpretOp env args
 makeBackpermuteArg = makeBackendArg
 
+instance Eq (BackendClusterArg2 InterpretOp env arg) where
+  -- this is a sanity check anyway
+  BCA f == BCA g = map f [1..100] == map g [1..100]
+
 
 -- TODO add the dimsperthread and idlethreads stuff
 instance StaticClusterAnalysis InterpretOp where
@@ -157,6 +161,8 @@ instance StaticClusterAnalysis InterpretOp where
   varToSh      (BCA f) = BCA f
   shToVar      (BCA f) = BCA f
   shrinkOrGrow (BCA f) = BCA f
+  addTup       (BCA f) = BCA f
+  justUnit = BCA undefined
 
   def _ _ _ = BCA id
 
@@ -587,14 +593,15 @@ instance EvalOp InterpretOp where
   type Embed' InterpretOp = Identity
   type EnvF InterpretOp = Identity
 
-  evalOp _ IMap env (Push (Push _ (BAE (Value (Identity x) (Shape shr sh)) _)) (BAE f _)) = 
-    pure $ Push Empty (FromArg $ Value (Identity $ evalFun f (evalArrayInstrDefault env) x) (Shape shr sh))
-  evalOp _ IBackpermute _ (Push (Push (Push _ (BAE sh _)) (BAE (Value x _) _)) _) = 
-    pure $ Push Empty (FromArg $ Value x sh) -- We evaluated the backpermute at the start already, now simply relabel the shape info
+  evalOp _ IMap env (Push (Push _ (BAE (Value' (Identity x) (Shape' shr sh)) _)) (BAE f _)) = 
+    pure $ Push Empty (FromArg $ Value' (Identity $ evalFun f (evalArrayInstrDefault env) x) (Shape' shr sh))
+  evalOp _ IBackpermute _ (Push (Push (Push _ (BAE sh _)) (BAE (Value' x _) _)) _) = 
+    pure $ Push Empty (FromArg $ Value' x sh) -- We evaluated the backpermute at the start already, now simply relabel the shape info
   evalOp _ _ _ _ = undefined
 
   writeOutput r buf env n (Identity x) = writeBuffers (TupRsingle r) (veryUnsafeUnfreezeBuffers (TupRsingle r) $ varsGetVal buf env) n x
   readInput r buf env (BCA f) n = Identity <$> indexBuffers' (TupRsingle r) (varsGetVal buf env) (f n)
+
 
 evalClusterInterpreter :: Cluster InterpretOp args -> Args env args -> Val env -> IO ()
 evalClusterInterpreter c@(Cluster _ (Cluster' io _)) args env = evalCluster (doNTimes $ iterationsize io args env) c args env

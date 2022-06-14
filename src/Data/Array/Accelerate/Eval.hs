@@ -46,6 +46,7 @@ import Data.Array.Accelerate.Trafo.Schedule.Uniform ()
 import Data.Array.Accelerate.Pretty.Schedule.Uniform ()
 import Data.Kind (Type)
 import Data.Bifunctor (bimap)
+import Data.Biapplicative (biliftA2)
 import Data.Functor.Compose
 import Data.Type.Equality
 import Data.Maybe (fromJust)
@@ -53,6 +54,7 @@ import Data.Function ((&))
 import Data.Array.Accelerate.Type (ScalarType)
 import Unsafe.Coerce (unsafeCoerce)
 import Data.Array.Accelerate.Representation.Shape (ShapeR)
+import Data.Composition ((.*))
 
 
 type BackendArgs op env = PreArgs (BackendClusterArg2 op env)
@@ -66,24 +68,28 @@ pattern PushFA x env = Push env (FromArg x)
 {-# COMPLETE Empty, PushFA #-}
 
 -- TODO make actually static, i.e. by using `Fun env (Int -> Int)` instead in the interpreter
-class (MakesILP op) => StaticClusterAnalysis (op :: Type -> Type) where
+class (MakesILP op, forall env arg. Eq (BackendClusterArg2 op env arg)) => StaticClusterAnalysis (op :: Type -> Type) where
   -- give better name
   data BackendClusterArg2 op env arg
   onOp :: op args -> BackendArgs op env (OutArgsOf args) -> Args env args -> Env (EnvF op) env -> BackendArgs op env args
   def :: Arg env arg -> Env (EnvF op) env -> BackendClusterArg op arg -> BackendClusterArg2 op env arg
-  valueToIn    :: BackendClusterArg2 op env (Value sh e)  -> BackendClusterArg2 op env (In    sh e)
-  valueToOut   :: BackendClusterArg2 op env (Value sh e)  -> BackendClusterArg2 op env (Out   sh e)
-  inToValue    :: BackendClusterArg2 op env (In    sh e)  -> BackendClusterArg2 op env (Value sh e)
-  outToValue   :: BackendClusterArg2 op env (Out   sh e)  -> BackendClusterArg2 op env (Value sh e)
-  outToSh      :: BackendClusterArg2 op env (Out   sh e)  -> BackendClusterArg2 op env (Sh    sh e)
-  shToOut      :: BackendClusterArg2 op env (Sh    sh e)  -> BackendClusterArg2 op env (Out   sh e)
-  shToValue    :: BackendClusterArg2 op env (Sh    sh e)  -> BackendClusterArg2 op env (Value sh e)
-  varToValue   :: BackendClusterArg2 op env (Var'  sh)    -> BackendClusterArg2 op env (Value sh e)
-  varToSh      :: BackendClusterArg2 op env (Var'  sh)    -> BackendClusterArg2 op env (Sh    sh e)
-  shToVar      :: BackendClusterArg2 op env (Sh    sh e)  -> BackendClusterArg2 op env (Var'  sh  )
-  shrinkOrGrow :: BackendClusterArg2 op env (m     sh e') -> BackendClusterArg2 op env (m     sh e)
-  addTup       :: BackendClusterArg2 op env (v     sh e)  -> BackendClusterArg2 op env (v     sh ((), e))
+  valueToIn    :: BackendClusterArg2 op env (Value sh e)     -> BackendClusterArg2 op env (In    sh e)
+  valueToOut   :: BackendClusterArg2 op env (Value sh e)     -> BackendClusterArg2 op env (Out   sh e)
+  inToValue    :: BackendClusterArg2 op env (In    sh e)     -> BackendClusterArg2 op env (Value sh e)
+  outToValue   :: BackendClusterArg2 op env (Out   sh e)     -> BackendClusterArg2 op env (Value sh e)
+  outToSh      :: BackendClusterArg2 op env (Out   sh e)     -> BackendClusterArg2 op env (Sh    sh e)
+  shToOut      :: BackendClusterArg2 op env (Sh    sh e)     -> BackendClusterArg2 op env (Out   sh e)
+  shToValue    :: BackendClusterArg2 op env (Sh    sh e)     -> BackendClusterArg2 op env (Value sh e)
+  varToValue   :: BackendClusterArg2 op env (Var'  sh)       -> BackendClusterArg2 op env (Value sh e)
+  varToSh      :: BackendClusterArg2 op env (Var'  sh)       -> BackendClusterArg2 op env (Sh    sh e)
+  shToVar      :: BackendClusterArg2 op env (Sh    sh e)     -> BackendClusterArg2 op env (Var'  sh  )
+  shrinkOrGrow :: BackendClusterArg2 op env (m     sh e')    -> BackendClusterArg2 op env (m     sh e)
+  addTup       :: BackendClusterArg2 op env (v     sh e)     -> BackendClusterArg2 op env (v     sh ((), e))
   justUnit     :: BackendClusterArg2 op env (m sh ())
+  pairinfo     :: BackendClusterArg2 op env (m sh a)         -> BackendClusterArg2 op env (m sh b) -> BackendClusterArg2 op env (m sh (a,b))
+  pairinfo a b = if shrinkOrGrow a == b then shrinkOrGrow a else error "pairing unequal"
+  unpairinfo   :: BackendClusterArg2 op env (m sh (a,b))     -> (BackendClusterArg2 op env (m sh a),  BackendClusterArg2 op env (m sh b))
+  unpairinfo x = (shrinkOrGrow x, shrinkOrGrow x)
 
 -- use ScopedTypeVariables for op and env, but not for the args (so we call them arguments instead)
 makeBackendArg :: forall op env arguments. StaticClusterAnalysis op => Args env arguments -> Env (EnvF op) env -> Cluster op arguments -> BackendArgs op env arguments
@@ -153,6 +159,7 @@ makeBackendArg args env (Cluster info (Cluster' io ast)) = let o = getOutputEnv 
     fromInputEnv (Output _ _ _ io) (Push env (BEE _ f)) = shrinkOrGrow (shToOut f) :>: fromInputEnv io env
     fromInputEnv (MutPut       io) (Push env (BEE _ f)) = f                        :>: fromInputEnv io env
     fromInputEnv (ExpPut'      io) (Push env (BEE _ f)) = f                        :>: fromInputEnv io env
+    -- TODO wasn't the plan to put TupInfo's in the env, so we don't need justUnit?
     fromInputEnv (Trivial      io)       env            = justUnit                 :>: fromInputEnv io env
 
 
@@ -170,7 +177,8 @@ fromArgs i env (ArgArray In (ArrayR shr typer) shv buf :>: args) =
 fromArgs i env (ArgArray Out (ArrayR shr _) sh _ :>: args) = (fromArgs i env args, Shape shr (varsGetVal sh env))
 
 
-class (StaticClusterAnalysis op, Monad (EvalMonad op)) => EvalOp op where
+class (StaticClusterAnalysis op, Monad (EvalMonad op), TupRmonoid (Embed' op))
+    => EvalOp op where
   type family EvalMonad op :: Type -> Type
   type family Index op :: Type -- Could also remove this, and use Embed' Int as Index instead, but no real need
   type family Embed' op :: Type -> Type
@@ -181,6 +189,7 @@ class (StaticClusterAnalysis op, Monad (EvalMonad op)) => EvalOp op where
   indexsh :: GroundVars env sh -> Env (EnvF op) env -> EvalMonad op (Embed' op sh)
   indexsh' :: ExpVars env sh -> Env (EnvF op) env -> EvalMonad op (Embed' op sh)
   subtup :: SubTupR e e' -> Embed' op e -> Embed' op e'
+
 
   evalOp :: Index op -> op args -> Env (EnvF op) env -> BackendArgEnv op env (InArgs args) -> (EvalMonad op) (Env (FromArg' op env) (OutArgs args))
   writeOutput :: ScalarType e -> GroundVars env (Buffers e) -> Env (EnvF op) env -> Index op -> Embed' op e -> EvalMonad op ()
@@ -246,7 +255,7 @@ evalAST n (Bind lhs op ast) env i = do
   let scope = evalLHS2 lhs i env o'
   evalAST n ast env scope
 
-evalLHS1 :: forall op body i scope env. LeftHandSideArgs body i scope -> BackendArgEnv op env i -> Env (EnvF op) env -> BackendArgEnv op env (InArgs body)
+evalLHS1 :: forall op body i scope env. EvalOp op => LeftHandSideArgs body i scope -> BackendArgEnv op env i -> Env (EnvF op) env -> BackendArgEnv op env (InArgs body)
 evalLHS1 Base Empty _ = Empty
 evalLHS1 (Reqr t _ lhs) i env = let Info (Compose (BAE x info)) = tupRindex i t in Push (evalLHS1 lhs i env) $ BAE x info
 evalLHS1 (Make _ t lhs) i env = let (Info (Compose (BAE x info)), i') = unconsBuffers t i in Push (evalLHS1 lhs i' env) (BAE x info)
@@ -276,27 +285,116 @@ first' :: (a -> b -> c) -> (a,b) -> (c,b)
 first' f (a,b) = (f a b, b)
 
 
-    -- where
-    --   f :: forall e1 e2
-    --     .  Maybe (BackendEnvElem op env (Value sh e1))
-    --     -> Maybe (BackendEnvElem op env (Value sh e2))
-    --     -> Maybe (BackendEnvElem op env (Value sh (e1, e2)))
-    --   f Nothing Nothing = Nothing --oh no, this means the unsafeCoerces go wrong :(
-    --     -- instead of a Maybe, keep track of the type? :S
-    --   f Nothing (Just (BEE (ArrArg (ArrayR shr tyr) sh buf) d)) = case unsafeCoerce @(Int :~: Int) @(e1 :~: ()) Refl of
-    --     Refl -> Just $ BEE (ArrArg (ArrayR shr (TupRpair TupRunit tyr)) sh (TupRpair TupRunit buf)) (addTup d)
-    --   f _ _ = undefined
+instance EvalOp op => TupRmonoid (Value' op sh) where
+  pair' (Value' x sh1) (Value' y sh2) = Value' (pair' x y) (pair' sh1 sh2)
+  unpair' (Value' x sh) = biliftA2 Value' Value' (unpair' x) (unpair' sh)
+  injL (Value' x sh) p = Value' (injL x p) (injL sh p)
+  injR (Value' x sh) p = Value' (injR x p) (injR sh p)
 
-instance TupRmonoid (Compose (BackendEnvElem op env) (Value sh)) where
-instance TupRmonoid (Compose (BackendEnvElem op env) (Sh sh)) where
+instance TupRmonoid (Sh' op sh) where
+  pair' (Shape' shr sh) _ = Shape' shr sh
+  unpair' (Shape' shr sh) = (Shape' shr sh, Shape' shr sh)
+  injL (Shape' shr sh) _ = Shape' shr sh
+  injR (Shape' shr sh) _ = Shape' shr sh
 
-instance TupRmonoid (Compose (BackendArgEnvElem op env) (Value sh)) where
+instance StaticClusterAnalysis op => TupRmonoid (Compose (BackendEnvElem op env) (Value sh)) where
+  pair' (Compose (BEE (ArrArg (ArrayR shr ar) shvars abufs) b))
+        (Compose (BEE (ArrArg (ArrayR _ cr) _ cbufs) d))
+    = Compose $ BEE
+                  (ArrArg (ArrayR shr (TupRpair ar cr)) shvars (TupRpair abufs cbufs))
+                  (pairinfo b d)
+  pair' _ _ = error "value not in arrarg"
 
-instance TupRmonoid (Compose (BackendArgEnvElem op env) (Sh sh)) where
+  unpair' (Compose (BEE (ArrArg (ArrayR shr (TupRpair ar cr)) shvars (TupRpair abufs cbufs)) infos))
+    = bimap
+        (Compose . BEE (ArrArg (ArrayR shr ar) shvars abufs))
+        (Compose . BEE (ArrArg (ArrayR shr cr) shvars cbufs))
+        $ unpairinfo infos
+  unpair' _ = error "value not in arrarg"
+
+  injL (Compose (BEE (ArrArg (ArrayR shr r) shvars bufs) info)) proof
+   = Compose $ BEE (ArrArg (ArrayR shr (TupRpair r (proofToR proof))) shvars (TupRpair bufs (proofToR' @Buffer proof))) (shrinkOrGrow info)
+  injL _ _ = error "value not in arrarg"
+
+  injR (Compose (BEE (ArrArg (ArrayR shr r) shvars bufs) info)) proof
+   = Compose $ BEE (ArrArg (ArrayR shr (TupRpair (proofToR proof) r)) shvars (TupRpair (proofToR' @Buffer proof) bufs)) (shrinkOrGrow info)
+  injR _ _ = error "value not in arrarg"
+
+instance StaticClusterAnalysis op => TupRmonoid (Compose (BackendEnvElem op env) (Sh sh)) where
+  pair' (Compose (BEE (OutArg (ArrayR shr ar) shvars abufs) b))
+        (Compose (BEE (OutArg (ArrayR _ cr) _ cbufs) d))
+    = Compose $ BEE
+                  (OutArg (ArrayR shr (TupRpair ar cr)) shvars (TupRpair abufs cbufs))
+                  (pairinfo b d)
+  pair' _ _ = error "value not in arrarg"
+
+  unpair' (Compose (BEE (OutArg (ArrayR shr (TupRpair ar cr)) shvars (TupRpair abufs cbufs)) infos))
+    = bimap
+        (Compose . BEE (OutArg (ArrayR shr ar) shvars abufs))
+        (Compose . BEE (OutArg (ArrayR shr cr) shvars cbufs))
+        $ unpairinfo infos
+  unpair' _ = error "value not in arrarg"
+
+  injL (Compose (BEE (OutArg (ArrayR shr r) shvars bufs) info)) proof
+   = Compose $ BEE (OutArg (ArrayR shr (TupRpair r (proofToR proof))) shvars (TupRpair bufs (proofToR' @Buffer proof))) (shrinkOrGrow info)
+  injL _ _ = error "value not in arrarg"
+
+  injR (Compose (BEE (OutArg (ArrayR shr r) shvars bufs) info)) proof
+   = Compose $ BEE (OutArg (ArrayR shr (TupRpair (proofToR proof) r)) shvars (TupRpair (proofToR' @Buffer proof) bufs)) (shrinkOrGrow info)
+  injR _ _ = error "value not in arrarg"
+
+
+instance EvalOp op => TupRmonoid (Compose (BackendArgEnvElem op env) (Value sh)) where
+  pair' (Compose (BAE x b)) (Compose (BAE y d)) =
+    Compose $ BAE (pair' x y) (pairinfo b d)
+  unpair' (Compose (BAE x b)) =
+    biliftA2
+      (Compose .* BAE)
+      (Compose .* BAE)
+      (unpair' x)
+      (unpairinfo b)
+  injL (Compose (BAE x b)) p = Compose $ BAE (injL x p) (shrinkOrGrow b)
+  injR (Compose (BAE x b)) p = Compose $ BAE (injR x p) (shrinkOrGrow b)
+
+instance EvalOp op => TupRmonoid (Compose (BackendArgEnvElem op env) (Sh sh)) where
+  pair' (Compose (BAE x b)) (Compose (BAE y d)) =
+    Compose $ BAE (pair' x y) (pairinfo b d)
+  unpair' (Compose (BAE x b)) =
+    biliftA2
+      (Compose .* BAE)
+      (Compose .* BAE)
+      (unpair' x)
+      (unpairinfo b)
+  injL (Compose (BAE x b)) p = Compose $ BAE (injL x p) (shrinkOrGrow b)
+  injR (Compose (BAE x b)) p = Compose $ BAE (injR x p) (shrinkOrGrow b)
 
 instance TupRmonoid (Compose (Arg' env) (Value sh)) where
+  pair' (Compose (ArgArray' (ArgArray m (ArrayR r r1) sh buf1))) (Compose (ArgArray' (ArgArray _ (ArrayR _ r2) _ buf2)))
+    = Compose $ ArgArray' $ ArgArray m (ArrayR r $ TupRpair r1 r2) sh (TupRpair buf1 buf2)
+  pair' _ _ = error "not argarray'"
+  unpair' (Compose (ArgArray' (ArgArray m (ArrayR r (TupRpair r1 r2)) sh (TupRpair buf1 buf2))))
+    = (Compose (ArgArray' (ArgArray m (ArrayR r r1) sh buf1)), Compose (ArgArray' (ArgArray m (ArrayR r r2) sh buf2)))
+  unpair' _ = error "not argarray'"
+  injL (Compose (ArgArray' (ArgArray m (ArrayR r re) sh buf))) p
+    = Compose $ ArgArray' $ ArgArray m (ArrayR r (TupRpair re (proofToR p))) sh (TupRpair buf (proofToR' @Buffer p))
+  injL _ _ = error "not argarray'"
+  injR (Compose (ArgArray' (ArgArray m (ArrayR r re) sh buf))) p
+    = Compose $ ArgArray' $ ArgArray m (ArrayR r (TupRpair (proofToR p) re)) sh (TupRpair (proofToR' @Buffer p) buf)
+  injR _ _ = error "not argarray'"
 
 instance TupRmonoid (Compose (Arg' env) (Sh sh)) where
+  pair' (Compose (ArgArray' (ArgArray m (ArrayR r r1) sh buf1))) (Compose (ArgArray' (ArgArray _ (ArrayR _ r2) _ buf2)))
+    = Compose $ ArgArray' $ ArgArray m (ArrayR r $ TupRpair r1 r2) sh (TupRpair buf1 buf2)
+  pair' _ _ = error "not argarray'"
+  unpair' (Compose (ArgArray' (ArgArray m (ArrayR r (TupRpair r1 r2)) sh (TupRpair buf1 buf2))))
+    = (Compose (ArgArray' (ArgArray m (ArrayR r r1) sh buf1)), Compose (ArgArray' (ArgArray m (ArrayR r r2) sh buf2)))
+  unpair' _ = error "not argarray'"
+  injL (Compose (ArgArray' (ArgArray m (ArrayR r re) sh buf))) p
+    = Compose $ ArgArray' $ ArgArray m (ArrayR r (TupRpair re (proofToR p))) sh (TupRpair buf (proofToR' @Buffer p))
+  injL _ _ = error "not argarray'"
+  injR (Compose (ArgArray' (ArgArray m (ArrayR r re) sh buf))) p
+    = Compose $ ArgArray' $ ArgArray m (ArrayR r (TupRpair (proofToR p) re)) sh (TupRpair (proofToR' @Buffer p) buf)
+  injR _ _ = error "not argarray'"
 
 justEnv     :: Env a env -> Env (Compose Maybe a) env
 justEnv     = mapEnv (Compose . Just)
