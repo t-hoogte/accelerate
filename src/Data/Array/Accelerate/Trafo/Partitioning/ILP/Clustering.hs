@@ -254,20 +254,54 @@ data FoldType op env
   | forall args. InitFold (op args) (LabelledArgsOp op env args)
   | NotFold (Construction op)
 
--- contains all elements of a Cluster, plus two lists of elabels to identify each buffer
--- for fusion, and the LabelledArgsOp
--- note that the mapping from buffers to elabels is already present in the labelledarg,
--- but we're caching it for both efficiency and convenience.
+-- contains all elements of a Cluster and the LabelledArgsOp
 data ConstructingCluster op args env where
   CCluster :: LabelledArgsOp op env args
-           -> BackendCluster op args
+           -> BackendCluster op args -- you can get this from the labelledargs, why is it here?
            -> ClusterIO args input output
            -> ClusterAST op input output
            -> ConstructingCluster op args env
 
-unfused :: op args -> LabelledArgsOp op env args -> ConstructingCluster op args env
-unfused = undefined
-
+unfused :: MakesILP op => op args -> LabelledArgsOp op env args -> ConstructingCluster op args env
+unfused op largs = go largs $ \io lhs -> CCluster largs (mapArgs getClusterArg largs) io (Bind lhs op None)
+  where
+    go :: LabelledArgsOp op env args -> (forall i o. ClusterIO args i o -> LeftHandSideArgs args i o -> r) -> r
+    go ArgsNil k = k Empty Base
+    go (LOp (ArgArray Mut r sh buf) a b :>: args) k 
+      = go args $ \io lhs -> 
+        k (MutPut io)
+          (Adju lhs)
+    -- after handling Mut, and before handling In and Out, we do the Trivial cases
+    go (LOp (ArgArray In (ArrayR _ TupRunit) sh buf) a b :>: args) k
+      = go args $ \io lhs ->
+        k (Trivial io)
+          (Reqr TupRunit TupRunit lhs)
+    go (LOp (ArgArray Out (ArrayR _ TupRunit) sh buf) a b :>: args) k
+      = go args $ \io lhs ->
+        k (Trivial io)
+          (Make TakeUnit ConsUnit lhs)
+    go (LOp (ArgArray In r sh buf) a b :>: args) k 
+      = go args $ \io lhs -> 
+        k (Input io) 
+          (Reqr (TupRsingle (IdxF ZeroIdx)) 
+                (TupRsingle (IdxF ZeroIdx)) 
+            $ Ignr lhs)
+    go (LOp (ArgArray Out (ArrayR _ t) sh buf) a b :>: args) k 
+      = go args $ \io lhs -> 
+        k (Output Here SubTupRkeep t io) 
+          (Make (TakeSingle Here) ConsSingle lhs)
+    go (LOp (ArgExp e) a b :>: args) k
+      = go args $ \io lhs ->
+        k (ExpPut io)
+          (EArg lhs)
+    go (LOp (ArgFun f) a b :>: args) k
+      = go args $ \io lhs ->
+        k (FunPut io)
+          (FArg lhs)
+    go (LOp (ArgVar v) a b :>: args) k
+      = go args $ \io lhs ->
+        k (VarPut io)
+          (VArg lhs)
 
 consCluster :: forall env args extra op r
              . MakesILP op
