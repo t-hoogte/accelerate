@@ -214,12 +214,12 @@ distUnit = unsafeCoerce Refl
 distPair :: forall f a b c. Distribute' f a ~ (Distribute' f b, f c) => a :~: (a, b)
 distPair = unsafeCoerce Refl
 
-evalCluster :: forall op env args m. (EvalOp op, Monad m) => ((Index op -> EvalMonad op ()) -> m ()) -> Cluster op args -> Args env args -> Env (EnvF op) env -> m ()
-evalCluster f c@(Cluster _ (Cluster' io ast)) args env = do
+evalCluster :: forall op env args r. (EvalOp op) => Cluster op args -> Args env args -> Env (EnvF op) env -> Index op -> EvalMonad op ()
+evalCluster c@(Cluster _ (Cluster' io ast)) args env ix = do
   let ba = makeBackendArg args env c
-  f (\n -> do i <- evalIO1 n io args ba env
-              o <- evalAST n ast env i
-              evalIO2 @op n io args env o)
+  i <- evalIO1 ix io args ba env
+  o <- evalAST ix ast env i
+  evalIO2 @op ix io args env o
 
 evalIO1 :: forall op args i o env. EvalOp op => Index op -> ClusterIO args i o -> Args env args -> BackendArgs op env args -> Env (EnvF op) env -> (EvalMonad op) (BackendArgEnv op env i)
 evalIO1 _ P.Empty                                     ArgsNil    ArgsNil    _ = pure Empty

@@ -604,7 +604,7 @@ instance EvalOp InterpretOp where
 
 
 evalClusterInterpreter :: Cluster InterpretOp args -> Args env args -> Val env -> IO ()
-evalClusterInterpreter c@(Cluster _ (Cluster' io _)) args env = evalCluster (doNTimes $ iterationsize io args env) c args env
+evalClusterInterpreter c@(Cluster _ (Cluster' io _)) args env = doNTimes (iterationsize io args env) $ evalCluster c args env
 
 -- TODO update when we add folds, reconsider when we add scans that add 1 to the size...
 iterationsize :: ClusterIO args i o -> Args env args -> Val env -> Int
