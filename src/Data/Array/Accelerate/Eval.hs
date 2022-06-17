@@ -214,7 +214,7 @@ distUnit = unsafeCoerce Refl
 distPair :: forall f a b c. Distribute' f a ~ (Distribute' f b, f c) => a :~: (a, b)
 distPair = unsafeCoerce Refl
 
-evalCluster :: forall op env args. EvalOp op => ((Index op -> EvalMonad op ()) -> EvalMonad op ()) -> Cluster op args -> Args env args -> Env (EnvF op) env -> (EvalMonad op) ()
+evalCluster :: forall op env args m. (EvalOp op, Monad m) => ((Index op -> EvalMonad op ()) -> m ()) -> Cluster op args -> Args env args -> Env (EnvF op) env -> m ()
 evalCluster f c@(Cluster _ (Cluster' io ast)) args env = do
   let ba = makeBackendArg args env c
   f (\n -> do i <- evalIO1 n io args ba env
@@ -227,7 +227,7 @@ evalIO1 n (Input io) (ArgArray In (ArrayR shr ~(TupRsingle tp)) sh buf :>: args)
   | ScalarArrayDict _ _ <- scalarArrayDict tp =
     (\env' e sh -> Push env' (BAE (Value' e (Shape' shr sh)) $ inToValue info))
     <$> evalIO1 n io args infos env
-    <*> readInput tp buf env info n
+    <*> readInput @op tp buf env info n
     <*> indexsh @op sh env
 evalIO1 n (Vertical _ r io) (ArgVar vars         :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> (flip BAE (varToSh info) . Shape' (arrayRshape r) <$> indexsh' @op vars env)
 evalIO1 n (Output _ _ _ io) (ArgArray Out r sh _ :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> (flip BAE (outToSh $ shrinkOrGrow info) . Shape' (arrayRshape r) <$> indexsh @op sh env)
@@ -275,11 +275,11 @@ evalLHS2 (Make t1 t2 lhs) i env (Push o (FromArg y)) =
         Info (Compose (BAE _ i)) -> Info (Compose (BAE y i))
         NoInfo p -> NoInfo p))
     (evalLHS2 lhs i'  env o)
-evalLHS2 (EArg   lhs) (Push i (BAE x info)) env           o  = Push (evalLHS2 lhs i env o) (BAE x info)
-evalLHS2 (FArg   lhs) (Push i (BAE x info)) env           o  = Push (evalLHS2 lhs i env o) (BAE x info)
-evalLHS2 (VArg   lhs) (Push i (BAE x info)) env           o  = Push (evalLHS2 lhs i env o) (BAE x info)
-evalLHS2 (Adju   lhs) (Push i (BAE _ info)) env (PushFA m o) = Push (evalLHS2 lhs i env o) (BAE m info)
-evalLHS2 (Ignr   lhs) (Push i (BAE x info)) env           o  = Push (evalLHS2 lhs i env o) (BAE x info)
+evalLHS2 (EArg   lhs) (Push i (BAE x info)) env o = Push (evalLHS2 lhs i env o) (BAE x info)
+evalLHS2 (FArg   lhs) (Push i (BAE x info)) env o = Push (evalLHS2 lhs i env o) (BAE x info)
+evalLHS2 (VArg   lhs) (Push i (BAE x info)) env o = Push (evalLHS2 lhs i env o) (BAE x info)
+evalLHS2 (Adju   lhs) (Push i (BAE m info)) env o = Push (evalLHS2 lhs i env o) (BAE m info)
+evalLHS2 (Ignr   lhs) (Push i (BAE x info)) env o = Push (evalLHS2 lhs i env o) (BAE x info)
 
 first' :: (a -> b -> c) -> (a,b) -> (c,b)
 first' f (a,b) = (f a b, b)
