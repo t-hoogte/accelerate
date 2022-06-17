@@ -93,7 +93,7 @@ encodeClusterAST None = intHost $(hashQ "None")
 encodeClusterAST (Bind lhs op ast) = intHost $(hashQ "Bind") <> encodeLeftHandSideArgs lhs <> encodeOperation op <> encodeClusterAST ast
 
 encodeLeftHandSideArgs :: LeftHandSideArgs body env scope -> Builder
-encodeLeftHandSideArgs = undefined
+encodeLeftHandSideArgs _ = intHost $(hashQ "If I just don't hash this, that's fine right? :)")
 -- encodeLeftHandSideArgs Base = intHost $(hashQ "Base")
 -- encodeLeftHandSideArgs (Reqr t1 t2 lhs) = intHost $(hashQ "Reqr") <> encodeTake t1 <> encodeTake t2 <> encodeLeftHandSideArgs lhs
 -- encodeLeftHandSideArgs (Make t lhs) = intHost $(hashQ "Make") <> encodeTake t <> encodeLeftHandSideArgs lhs
