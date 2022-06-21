@@ -147,6 +147,7 @@ data ClusterLs = Execs Labels | NonExec Label
 -- I think that only `let`s can still be in the same cluster as `exec`s, 
 -- and their bodies should all be in earlier clusters already.
 -- Simply make one cluster per let, before the cluster with execs.
+-- TODO: split the cluster of Execs into connected components
 splitExecs :: ([Labels], M.Map Label [Labels]) -> M.Map Label (Construction op) -> ([ClusterLs], M.Map Label [ClusterLs])
 splitExecs (xs, xM) constrM = (f xs, M.map f xM)
   where
