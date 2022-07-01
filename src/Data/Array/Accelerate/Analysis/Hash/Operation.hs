@@ -79,6 +79,7 @@ encodeClusterIO (MutPut io)           = intHost $(hashQ "MutPut") <> encodeClust
 encodeClusterIO (ExpPut io)           = intHost $(hashQ "ExpPut") <> encodeClusterIO io
 encodeClusterIO (VarPut io)           = intHost $(hashQ "VarPut") <> encodeClusterIO io
 encodeClusterIO (FunPut io)           = intHost $(hashQ "FunPut") <> encodeClusterIO io
+encodeClusterIO (Trivial io)          = intHost $(hashQ "Trivial") <> encodeClusterIO io
 
 encodeTake :: Take x xargs args -> Builder
 encodeTake = intHost . idxToInt . takeIdx
