@@ -113,7 +113,8 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
   -- Copies a buffer. This is used before passing a buffer to a 'Mut' argument,
   -- to make sure it is unique. This may be removed during fusion to facilitate
   -- in-place updates
-  -- TODO: Perform one map per buffer, instead of one for the whole array?
+  -- TODO: Perform one map per buffer, instead of one for the whole array
+  -- this gives more freedom to the ILP
   mkCopy        :: Arg env (In  sh t)
                 -> Arg env (Out sh t)
                 -> OperationAcc op env ()

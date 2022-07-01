@@ -121,7 +121,7 @@ makeBackpermuteArg :: Args env args -> Val env -> Cluster InterpretOp args -> Ba
 makeBackpermuteArg = makeBackendArg
 
 instance Eq (BackendClusterArg2 InterpretOp env arg) where
-  -- this is a sanity check anyway
+  -- this is just a sanity check
   BCA f == BCA g = map f [1..100] == map g [1..100]
 
 

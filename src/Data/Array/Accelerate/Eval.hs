@@ -223,12 +223,14 @@ evalCluster c@(Cluster _ (Cluster' io ast)) args env ix = do
 
 evalIO1 :: forall op args i o env. EvalOp op => Index op -> ClusterIO args i o -> Args env args -> BackendArgs op env args -> Env (EnvF op) env -> (EvalMonad op) (BackendArgEnv op env i)
 evalIO1 _ P.Empty                                     ArgsNil    ArgsNil    _ = pure Empty
-evalIO1 n (Input io) (ArgArray In (ArrayR shr ~(TupRsingle tp)) sh buf :>: args) (info :>: infos) env
+evalIO1 n (Input io) (ArgArray In (ArrayR shr (TupRsingle tp)) sh buf :>: args) (info :>: infos) env
   | ScalarArrayDict _ _ <- scalarArrayDict tp =
     (\env' e sh -> Push env' (BAE (Value' e (Shape' shr sh)) $ inToValue info))
     <$> evalIO1 n io args infos env
     <*> readInput @op tp buf env info n
     <*> indexsh @op sh env
+evalIO1 _ _ (ArgArray _ (ArrayR _ TupRunit) _ _ :>: _) _ _ = error "unit"
+evalIO1 _ _ (ArgArray _ (ArrayR _ (TupRpair _ _)) _ _ :>: _) _ _ = error "pair"
 evalIO1 n (Vertical _ r io) (ArgVar vars         :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> (flip BAE (varToSh info) . Shape' (arrayRshape r) <$> indexsh' @op vars env)
 evalIO1 n (Output _ _ _ io) (ArgArray Out r sh _ :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> (flip BAE (outToSh $ shrinkOrGrow info) . Shape' (arrayRshape r) <$> indexsh @op sh env)
 evalIO1 n (MutPut     io) (ArgArray Mut r sh buf :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> pure (BAE (ArrayDescriptor (arrayRshape r) sh buf) info)
