@@ -140,9 +140,9 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
     makeAST _ [] _ = error "empty AST"
     makeAST env [cluster] prev = case makeCluster env cluster of
       Fold (CCluster args info cio cast) -> Exists $ Exec (Cluster info (Cluster' cio cast)) $ unLabelOp args
-      InitFold o args' -> let args = unLabelOp args' in case unfused o args' of
-                              CCluster _ info cio cast ->
-                                Exists $ Exec (Cluster info (Cluster' cio cast)) args
+      InitFold o args -> unfused o args $
+                            \(CCluster args' info cio cast) ->
+                                Exists $ Exec (Cluster info (Cluster' cio cast)) (unLabelOp args')
       NotFold con -> case con of
          CExe {}    -> error "should be Fold/InitFold!"
          CExe'{}    -> error "should be Fold/InitFold!"
@@ -238,7 +238,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
     fuseCluster :: FoldType op env -> FoldType op env -> FoldType op env
     fuseCluster (Fold cluster) (InitFold op largs) =
       consCluster largs cluster op Fold
-    fuseCluster (InitFold op largs) x = fuseCluster (Fold (unfused op largs)) x
+    fuseCluster (InitFold op largs) x = unfused op largs $ \c -> fuseCluster (Fold c) x
     fuseCluster Fold{} Fold{} = error "fuseCluster got non-leaf as second argument" -- Should never happen
     fuseCluster NotFold{}   _ = error "fuseCluster encountered NotFold" -- Should only occur in singleton clusters
     fuseCluster _   NotFold{} = error "fuseCluster encountered NotFold" -- Should only occur in singleton clusters
@@ -262,46 +262,8 @@ data ConstructingCluster op args env where
            -> ClusterAST op input output
            -> ConstructingCluster op args env
 
-unfused :: MakesILP op => op args -> LabelledArgsOp op env args -> ConstructingCluster op args env
-unfused op largs = go largs $ \io lhs -> CCluster largs (mapArgs getClusterArg largs) io (Bind lhs op None)
-  where
-    go :: LabelledArgsOp op env args -> (forall i o. ClusterIO args i o -> LeftHandSideArgs args i o -> r) -> r
-    go ArgsNil k = k Empty Base
-    go (LOp (ArgArray Mut r sh buf) a b :>: args) k 
-      = go args $ \io lhs -> 
-        k (MutPut io)
-          (Adju lhs)
-    -- after handling Mut, and before handling In and Out, we do the Trivial cases
-    go (LOp (ArgArray In (ArrayR _ TupRunit) sh buf) a b :>: args) k
-      = go args $ \io lhs ->
-        k (Trivial io)
-          (Reqr TupRunit TupRunit lhs)
-    go (LOp (ArgArray Out (ArrayR _ TupRunit) sh buf) a b :>: args) k
-      = go args $ \io lhs ->
-        k (Trivial io)
-          (Make TakeUnit ConsUnit lhs)
-    go (LOp (ArgArray In r sh buf) a b :>: args) k 
-      = go args $ \io lhs -> 
-        k (Input io) 
-          (Reqr (TupRsingle (IdxF ZeroIdx)) 
-                (TupRsingle (IdxF ZeroIdx)) 
-            $ Ignr lhs)
-    go (LOp (ArgArray Out (ArrayR _ t) sh buf) a b :>: args) k 
-      = go args $ \io lhs -> 
-        k (Output Here SubTupRkeep t io) 
-          (Make (TakeSingle Here) ConsSingle lhs)
-    go (LOp (ArgExp e) a b :>: args) k
-      = go args $ \io lhs ->
-        k (ExpPut io)
-          (EArg lhs)
-    go (LOp (ArgFun f) a b :>: args) k
-      = go args $ \io lhs ->
-        k (FunPut io)
-          (FArg lhs)
-    go (LOp (ArgVar v) a b :>: args) k
-      = go args $ \io lhs ->
-        k (VarPut io)
-          (VArg lhs)
+unfused :: MakesILP op => op args -> LabelledArgsOp op env args -> (forall args'. ConstructingCluster op args' env -> r) -> r
+unfused op largs = consCluster largs (CCluster ArgsNil ArgsNil Empty None) op
 
 consCluster :: forall env args extra op r
              . MakesILP op
