@@ -178,6 +178,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
          CUnt env' evar     -> Exists $ Unit        (fromJust $ reindexVar  (mkReindexPartial env' env) evar)
     makeAST env (cluster:ctail) prev = 
 
+      -- TODO: use guards to fuse these two identical cases
       case makeCluster env cluster of
       NotFold con -> case con of
         CLHS (mylhs :: MyGLHS a) b u -> case prev M.! b of

@@ -229,8 +229,8 @@ evalIO1 n (Input io) (ArgArray In (ArrayR shr (TupRsingle tp)) sh buf :>: args) 
     <$> evalIO1 n io args infos env
     <*> readInput @op tp buf env info n
     <*> indexsh @op sh env
-evalIO1 _ _ (ArgArray _ (ArrayR _ TupRunit) _ _ :>: _) _ _ = error "unit"
-evalIO1 _ _ (ArgArray _ (ArrayR _ (TupRpair _ _)) _ _ :>: _) _ _ = error "pair"
+evalIO1 _ (Input io) (ArgArray _ (ArrayR _ TupRunit) _ _ :>: _) _ _ = error "unit"
+evalIO1 _ (Input io) (ArgArray _ (ArrayR _ (TupRpair _ _)) _ _ :>: _) _ _ = error "pair"
 evalIO1 n (Vertical _ r io) (ArgVar vars         :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> (flip BAE (varToSh info) . Shape' (arrayRshape r) <$> indexsh' @op vars env)
 evalIO1 n (Output _ _ _ io) (ArgArray Out r sh _ :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> (flip BAE (outToSh $ shrinkOrGrow info) . Shape' (arrayRshape r) <$> indexsh @op sh env)
 evalIO1 n (MutPut     io) (ArgArray Mut r sh buf :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> pure (BAE (ArrayDescriptor (arrayRshape r) sh buf) info)
