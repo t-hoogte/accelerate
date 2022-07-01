@@ -366,8 +366,8 @@ consInArg (LOp (ArgArray In (ArrayR sh (TupRpair l r)) sh' (TupRpair bufL bufR))
   consInArg (LOp (ArgArray In (ArrayR sh l) sh' bufL) (Arr el, mempty) b) ltot lhs ast io $ 
     \ltot' ast' lhs' io' ->
       consInArg (LOp (ArgArray In (ArrayR sh r) sh' bufR) (Arr er, mempty) b) ltot' lhs' ast' io' $
-        \ltot'' ast'' (Reqr t1 t2 (Reqr t3 t4 lhs'')) io'' ->
-          k ltot'' ast'' (Reqr (TupRpair t3 t1) (TupRpair t4 t2) lhs'') io''
+        \ltot'' ast'' lhs'' io'' -> 
+            k ltot'' ast'' (squish lhs'') io''
 consInArg a@(LOp (ArgArray In (ArrayR _ (TupRsingle _)) _ _) (Arr (TupRsingle (C.Const _)), _) _) ltot lhs ast io k =
   maybe
     (let (ast', io') = addInput ast io 
@@ -375,6 +375,22 @@ consInArg a@(LOp (ArgArray In (ArrayR _ (TupRsingle _)) _ _) (Arr (TupRsingle (C
     (\lhs' -> k ltot ast lhs' io)
     (fuseInput a ltot lhs io)
 consInArg _ _ _ _ _ _ = error "impossible combination of TypeR, ALabels and TupR Buffer"
+
+
+-- Only works if the top of the lhsargs only contains Reqr and Ignr! This is the case in @consInArg@
+squish :: LeftHandSideArgs (In sh b -> In sh a -> args) i o -> LeftHandSideArgs (In sh (a,b) -> args) i o
+squish (Ignr lhs) = Ignr (squish lhs)
+squish (Reqr t1 t2 lhs) = case go lhs of 
+  Reqr t3 t4 lhs' -> Reqr (TupRpair t3 t1) (TupRpair t4 t2) lhs'
+  where
+    -- search for the second reqr and weaken it up above the ignrs
+    go :: LeftHandSideArgs (In sh a -> args) i o -> LeftHandSideArgs (In sh a -> args) i o
+    go (Reqr a b c) = Reqr a b c
+    go (Ignr lhs') = case go lhs' of
+      Reqr a b lhs'' -> Reqr (mapTupR succIdxF a) (mapTupR succIdxF b) $ Ignr lhs''
+    go _ = error "squish encountered non-reqr and non-ignr"
+squish _ = error "squish encountered non-reqr and non-ignr"
+
 
 consOutArg :: MakesILP op
            => LabelledArgOp op env (Out sh e)
