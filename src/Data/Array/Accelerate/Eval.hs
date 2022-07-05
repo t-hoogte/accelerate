@@ -169,7 +169,7 @@ fromArgs _ _ ArgsNil = ()
 fromArgs i env (ArgVar v :>: args) = (fromArgs i env args, v)
 fromArgs i env (ArgExp e :>: args) = (fromArgs i env args, e)
 fromArgs i env (ArgFun f :>: args) = (fromArgs i env args, f)
-fromArgs i env (ArgArray Mut (ArrayR shr _) sh buf :>: args) = (fromArgs i env args, ArrayDescriptor shr sh buf)
+fromArgs i env (ArgArray Mut (ArrayR shr t) sh buf :>: args) = (fromArgs i env args, (ArrayDescriptor shr sh buf, t))
 fromArgs i env (ArgArray In (ArrayR shr typer) shv buf :>: args) =
   let buf' = varsGetVal buf env
       sh   = varsGetVal shv env
@@ -214,7 +214,7 @@ distUnit = unsafeCoerce Refl
 distPair :: forall f a b c. Distribute' f a ~ (Distribute' f b, f c) => a :~: (a, b)
 distPair = unsafeCoerce Refl
 
-evalCluster :: forall op env args r. (EvalOp op) => Cluster op args -> Args env args -> Env (EnvF op) env -> Index op -> EvalMonad op ()
+evalCluster :: forall op env args. (EvalOp op) => Cluster op args -> Args env args -> Env (EnvF op) env -> Index op -> EvalMonad op ()
 evalCluster c@(Cluster _ (Cluster' io ast)) args env ix = do
   let ba = makeBackendArg args env c
   i <- evalIO1 ix io args ba env
@@ -233,7 +233,7 @@ evalIO1 _ (Input io) (ArgArray _ (ArrayR _ TupRunit) _ _ :>: _) _ _ = error "uni
 evalIO1 _ (Input io) (ArgArray _ (ArrayR _ (TupRpair _ _)) _ _ :>: _) _ _ = error "pair"
 evalIO1 n (Vertical _ r io) (ArgVar vars         :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> (flip BAE (varToSh info) . Shape' (arrayRshape r) <$> indexsh' @op vars env)
 evalIO1 n (Output _ _ _ io) (ArgArray Out r sh _ :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> (flip BAE (outToSh $ shrinkOrGrow info) . Shape' (arrayRshape r) <$> indexsh @op sh env)
-evalIO1 n (MutPut     io) (ArgArray Mut r sh buf :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> pure (BAE (ArrayDescriptor (arrayRshape r) sh buf) info)
+evalIO1 n (MutPut     io) (ArgArray Mut (ArrayR shr t) sh buf :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> pure (BAE (ArrayDescriptor shr sh buf, t) info)
 evalIO1 n (ExpPut'    io) (ArgExp e              :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> pure (BAE e info)
 evalIO1 n (ExpPut'    io) (ArgVar e              :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> pure (BAE e info)
 evalIO1 n (ExpPut'    io) (ArgFun e              :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> pure (BAE e info)

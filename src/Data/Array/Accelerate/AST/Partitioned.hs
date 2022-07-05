@@ -445,7 +445,7 @@ type family FromArg env a where
   FromArg env (Exp'     e) = Exp     env e
   FromArg env (Var'     e) = ExpVars env e
   FromArg env (Fun'     e) = Fun     env e
-  FromArg env (Mut   sh e) = ArrayDescriptor env (Array sh e)
+  FromArg env (Mut   sh e) = (ArrayDescriptor env (Array sh e), TypeR e)
   FromArg env x = x
 
 type family FromArgs env a where
