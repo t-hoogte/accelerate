@@ -74,6 +74,7 @@ clusterEnv env = \cio args -> (input cio args, output cio args)
       = Pretty.Push (input cio as) (prettyArg env a)
     input (ExpPut' cio) (a :>: as)
       = Pretty.Push (input cio as) (prettyArg env a)
+    input (Trivial io) (_ :>: as) = input io as
 
     output :: ClusterIO t input' output' -> Args env t -> PartialVal output'
     output Empty ArgsNil
@@ -88,6 +89,8 @@ clusterEnv env = \cio args -> (input cio args, output cio args)
       = PPush (output cio as) (prettyArg env a)
     output (ExpPut' cio) (a :>: as)
       = PPush (output cio as) (prettyArg env a)
+    output (Trivial io) (_ :>: as)
+      = output io as
 
 -- The pretty printer gets an environment with Adocs of input variables (Val env, from clusterEnv)
 -- which is propagated in the same flow as the cluster.
