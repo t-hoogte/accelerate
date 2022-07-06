@@ -48,6 +48,7 @@ import Data.Bifunctor (first, second)
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.Trafo.Operation.Substitution (weaken)
 import Data.Functor.Identity
+import Data.Array.Accelerate.Pretty.Exp (IdxF(..))
 
 -- "open research question"
 -- -- Each set of ints corresponds to a set of Constructions, which themselves contain a set of ints (the things they depend on).

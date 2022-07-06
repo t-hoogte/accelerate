@@ -18,6 +18,7 @@
 {-# LANGUAGE TypeOperators         #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 -- |
 -- Module      : Data.Array.Accelerate.AST.Partitioned
@@ -59,6 +60,7 @@ import Data.Array.Accelerate.AST.Environment ((:>), weakenId, (.>), weakenSucc',
 import Data.Array.Accelerate.Trafo.Operation.Substitution (weaken, Sink)
 import Data.Functor.Identity
 import Data.Functor.Compose
+import Data.Array.Accelerate.Pretty.Exp (IdxF (..))
 
 -- In this model, every thread has one input element per input array,
 -- and one output element per output array. That works perfectly for
@@ -155,8 +157,6 @@ data ClusterIO args input output where
   Trivial :: ClusterIO args input output
           -> ClusterIO (m sh () -> args) input output
 
-newtype IdxF f env a = IdxF { runIdxF :: Idx env (f a)}
-  deriving newtype (NFData)
 
 instance NFData' (IdxF f env) where
   rnf' = rnf

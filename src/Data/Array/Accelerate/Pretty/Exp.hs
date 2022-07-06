@@ -9,6 +9,8 @@
 {-# LANGUAGE TypeApplications    #-}
 {-# LANGUAGE TypeOperators       #-}
 {-# LANGUAGE ViewPatterns        #-}
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 -- |
 -- Module      : Data.Array.Accelerate.Pretty.Exp
 -- Copyright   : [2008..2020] The Accelerate Team
@@ -29,10 +31,11 @@ module Data.Array.Accelerate.Pretty.Exp (
   prettyTupR,
   primOperator, isInfix,
   Precedence, Fixity(..),
-  Val(..), PrettyEnv(..), sizeEnv, prj,
+  Val(..), PrettyEnv(..), sizeEnv, prj, prjs,
   Context(..), context0, app,
-  shiftwidth, (?)
-) where
+  shiftwidth, (?), 
+  IdxF(..)
+  ) where
 
 import Data.Array.Accelerate.AST.Exp                                hiding ( Direction )
 import Data.Array.Accelerate.AST.Idx
@@ -45,8 +48,9 @@ import Data.Array.Accelerate.Type
 
 import Data.Char
 import Data.String
-import Data.Text.Prettyprint.Doc
+import Prettyprinter
 import Prelude                                                      hiding ( exp )
+import Control.DeepSeq (NFData)
 
 type Adoc = Doc Keyword
 
@@ -501,6 +505,11 @@ prj :: Idx env t -> Val env -> Adoc
 prj ZeroIdx      (Push _ v)   = v
 prj (SuccIdx ix) (Push env _) = prj ix env
 
+prjs :: TupR (IdxF f env) e -> Val env -> [Adoc]
+prjs TupRunit _ = []
+prjs (TupRpair l r) env = prjs l env <> prjs r env
+prjs (TupRsingle (IdxF ix)) env = [prj ix env]
+
 -- Utilities
 -- ---------
 
@@ -511,3 +520,7 @@ infix 0 ?
 (?) :: Bool -> (a, a) -> a
 True  ? (t,_) = t
 False ? (_,f) = f
+
+
+newtype IdxF f env a = IdxF { runIdxF :: Idx env (f a)}
+  deriving newtype (NFData)
