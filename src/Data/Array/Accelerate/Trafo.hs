@@ -61,10 +61,12 @@ import qualified Data.Array.Accelerate.Trafo.NewNewFusion as NewNewFusion
 import qualified Data.Array.Accelerate.Pretty             as Pretty
 import qualified Data.Array.Accelerate.Pretty.Operation   as Pretty
 import qualified Data.Array.Accelerate.Pretty.Schedule    as Pretty
+import Data.Array.Accelerate.Pretty (prettyOpenAcc)
 import Data.Array.Accelerate.Pretty.Partitioned ()
 import Data.Text.Lazy.Builder
 import qualified Data.Array.Accelerate.AST.Operation as Operation
 import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Graph
+import Data.Array.Accelerate.Pretty.Print (configPlain, Val (Empty))
 
 #ifdef ACCELERATE_DEBUG
 import Formatting
@@ -78,7 +80,11 @@ test
   => f
   -> String
 test f
-  = "OperationAcc:\n"
+  = "OriginalAcc:\n"
+  ++ Pretty.renderForTerminal (Pretty.prettyPreOpenAfun configPlain prettyOpenAcc Empty original)
+  ++ "\n\nDesugared OperationAcc:\n"
+  ++ Pretty.renderForTerminal (Pretty.prettyAfun desugared)
+  ++ "\n\nSimplified OperationAcc:\n"
   ++ Pretty.renderForTerminal (Pretty.prettyAfun operation)
   ++ "\n\nPartitionedAcc:\n"
   ++ Pretty.renderForTerminal (Pretty.prettyAfun partitioned)
@@ -91,8 +97,12 @@ test f
       = Operation.simplifyFun
       $ Operation.stronglyLiveVariablesFun
       $ Operation.simplifyFun
-      $ desugarAfun @(KernelOperation kernel)
-      $ LetSplit.convertAfun 
+      $ desugared
+    desugared =
+        desugarAfun @(KernelOperation kernel)
+      $ original
+    original =
+        LetSplit.convertAfun 
       $ Sharing.convertAfunWith defaultOptions f
 
     partitioned = Operation.simplifyFun $ NewNewFusion.convertAfun operation

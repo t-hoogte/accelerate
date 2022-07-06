@@ -24,6 +24,7 @@ module Data.Array.Accelerate.Pretty (
   -- ** Pretty printing
   PrettyAcc, ExtractAcc,
   prettyPreOpenAcc,
+  prettyOpenAcc,
   prettyPreOpenAfun,
   prettyOpenExp,
   prettyOpenFun,
