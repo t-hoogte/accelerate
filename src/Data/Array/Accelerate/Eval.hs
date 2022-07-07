@@ -55,6 +55,8 @@ import Data.Array.Accelerate.Type (ScalarType)
 import Unsafe.Coerce (unsafeCoerce)
 import Data.Array.Accelerate.Representation.Shape (ShapeR)
 import Data.Composition ((.*))
+import Data.Array.Accelerate.Pretty.Exp (IdxF(..))
+import Data.Array.Accelerate.AST.Idx (Idx (..))
 
 
 type BackendArgs op env = PreArgs (BackendClusterArg2 op env)
@@ -127,9 +129,9 @@ makeBackendArg args env (Cluster info (Cluster' io ast)) = let o = getOutputEnv 
     lhsArgsEnv :: LeftHandSideArgs body env' scope -> BackendEnv op env scope -> BackendArgs op env body -> BackendEnv op env env'
     lhsArgsEnv Base                   _                ArgsNil            = Empty
     lhsArgsEnv (Reqr t1 t2 lhs)       env              (f :>: args) = case tupRindex env t2 of
-      Info (Compose (BEE arg _)) ->
-        lhsArgsEnv lhs env args -- TODO think about what this function needs; do I need to overwrite or can we just recurse? 
-      NoInfo _ -> lhsArgsEnv lhs env args -- TODO perhaps none of this matters: ^^^
+      Info bee ->
+        overwriteInBackendEnv t1 bee $ lhsArgsEnv lhs env args
+      NoInfo _ -> lhsArgsEnv lhs env args
     lhsArgsEnv (Make t1 t2 lhs)       env              (f :>: args) = case takeBuffers t1 env of
       (Info (Compose (BEE (ArrArg r sh buf) _)), env') -> consBuffers t2 (BEE (OutArg r sh buf) (outToSh f)) (lhsArgsEnv lhs env' args)
       _ -> error "urk"
@@ -161,6 +163,15 @@ makeBackendArg args env (Cluster info (Cluster' io ast)) = let o = getOutputEnv 
     fromInputEnv (ExpPut'      io) (Push env (BEE _ f)) = f                        :>: fromInputEnv io env
     -- TODO wasn't the plan to put TupInfo's in the env, so we don't need justUnit?
     fromInputEnv (Trivial      io)       env            = justUnit                 :>: fromInputEnv io env
+
+    overwriteInBackendEnv :: TupR (IdxF (Value sh) env') e -> Compose (BackendEnvElem op env) (Value sh) e -> BackendEnv op env env' -> BackendEnv op env env'
+    overwriteInBackendEnv TupRunit _ env = env
+    overwriteInBackendEnv (TupRpair l r) (unpair' -> (beeL, beeR)) env = overwriteInBackendEnv l beeL $ overwriteInBackendEnv r beeR env
+    overwriteInBackendEnv (TupRsingle (IdxF idx)) (Compose bee) env = overwrite idx bee env
+      where
+        overwrite :: Idx env' (Value sh e) -> BackendEnvElem op env (Value sh e) -> BackendEnv op env env' -> BackendEnv op env env'
+        overwrite ZeroIdx bee (Push env _) = Push env bee
+        overwrite (SuccIdx idx) bee (Push env e) = Push (overwrite idx bee env) e
 
 
 
