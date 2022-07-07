@@ -192,8 +192,8 @@ class (StaticClusterAnalysis op, Monad (EvalMonad op), TupRmonoid (Embed' op))
 
 
   evalOp :: Index op -> op args -> Env (EnvF op) env -> BackendArgEnv op env (InArgs args) -> (EvalMonad op) (Env (FromArg' op env) (OutArgs args))
-  writeOutput :: ScalarType e -> GroundVars env (Buffers e) -> Env (EnvF op) env -> Index op -> Embed' op e -> EvalMonad op ()
-  readInput :: ScalarType e -> GroundVars env (Buffers e) -> Env (EnvF op) env -> BackendClusterArg2 op env (In sh e) -> Index op -> EvalMonad op (Embed' op e)
+  writeOutput :: ScalarType e -> GroundVars env sh -> GroundVars env (Buffers e) -> Env (EnvF op) env -> Index op -> Embed' op e -> EvalMonad op ()
+  readInput :: ScalarType e -> GroundVars env sh -> GroundVars env (Buffers e) -> Env (EnvF op) env -> BackendClusterArg2 op env (In sh e) -> Index op -> EvalMonad op (Embed' op e)
 
 type family Embed op a where
   Embed op (Value sh e) = Value' op sh e
@@ -227,7 +227,7 @@ evalIO1 n (Input io) (ArgArray In (ArrayR shr (TupRsingle tp)) sh buf :>: args) 
   | ScalarArrayDict _ _ <- scalarArrayDict tp =
     (\env' e sh -> Push env' (BAE (Value' e (Shape' shr sh)) $ inToValue info))
     <$> evalIO1 n io args infos env
-    <*> readInput @op tp buf env info n
+    <*> readInput @op tp sh buf env info n
     <*> indexsh @op sh env
 evalIO1 _ (Input io) (ArgArray _ (ArrayR _ TupRunit) _ _ :>: _) _ _ = error "unit"
 evalIO1 _ (Input io) (ArgArray _ (ArrayR _ (TupRpair _ _)) _ _ :>: _) _ _ = error "pair"
@@ -246,7 +246,7 @@ evalIO2 n (Input      io)   (_                                    :>: args) env 
 evalIO2 n (MutPut     io)   (_                                    :>: args) env (PushFA _ o)        = evalIO2 @op n io args env o
 evalIO2 n (ExpPut'     io)  (_                                    :>: args) env (PushFA _ o)        = evalIO2 @op n io args env o
 evalIO2 n (Trivial io) (_ :>: args) env o = evalIO2 @op n io args env o
-evalIO2 n (Output t s _ io) (ArgArray Out (arrayRtype -> ~(TupRsingle r)) _ buf :>: args) env o = let (FromArg (Value' x _), o') = take' t o in writeOutput @op r buf env n (subtup @op s x) >> evalIO2 @op n io args env o'
+evalIO2 n (Output t s _ io) (ArgArray Out (arrayRtype -> ~(TupRsingle r)) sh buf :>: args) env o = let (FromArg (Value' x _), o') = take' t o in writeOutput @op r sh buf env n (subtup @op s x) >> evalIO2 @op n io args env o'
 
 evalAST :: forall op i o env. EvalOp op => Index op -> ClusterAST op i o -> Env (EnvF op) env -> BackendArgEnv op env i -> (EvalMonad op) (Env (FromArg' op env) o)
 evalAST _ None _ Empty = pure Empty

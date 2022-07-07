@@ -599,8 +599,8 @@ instance EvalOp InterpretOp where
     pure $ Push Empty (FromArg $ Value' x sh) -- We evaluated the backpermute at the start already, now simply relabel the shape info
   evalOp _ _ _ _ = undefined
 
-  writeOutput r buf env n (Identity x) = writeBuffers (TupRsingle r) (veryUnsafeUnfreezeBuffers (TupRsingle r) $ varsGetVal buf env) n x
-  readInput r buf env (BCA f) n = Identity <$> indexBuffers' (TupRsingle r) (varsGetVal buf env) (f n)
+  writeOutput r sh buf env n (Identity x) = writeBuffers (TupRsingle r) (veryUnsafeUnfreezeBuffers (TupRsingle r) $ varsGetVal buf env) n x
+  readInput r sh buf env (BCA f) n = Identity <$> indexBuffers' (TupRsingle r) (varsGetVal buf env) (f n)
 
 
 evalClusterInterpreter :: Cluster InterpretOp args -> Args env args -> Val env -> IO ()
