@@ -129,8 +129,8 @@ makeBackendArg args env (Cluster info (Cluster' io ast)) = let o = getOutputEnv 
     lhsArgsEnv :: LeftHandSideArgs body env' scope -> BackendEnv op env scope -> BackendArgs op env body -> BackendEnv op env env'
     lhsArgsEnv Base                   _                ArgsNil            = Empty
     lhsArgsEnv (Reqr t1 t2 lhs)       env              (f :>: args) = case tupRindex env t2 of
-      Info bee ->
-        overwriteInBackendEnv t1 bee $ lhsArgsEnv lhs env args
+      Info (Compose (BEE arg _)) ->
+        overwriteInBackendEnv t1 (Compose (BEE arg $ inToValue f)) $ lhsArgsEnv lhs env args
       NoInfo _ -> lhsArgsEnv lhs env args
     lhsArgsEnv (Make t1 t2 lhs)       env              (f :>: args) = case takeBuffers t1 env of
       (Info (Compose (BEE (ArrArg r sh buf) _)), env') -> consBuffers t2 (BEE (OutArg r sh buf) (outToSh f)) (lhsArgsEnv lhs env' args)
@@ -146,7 +146,7 @@ makeBackendArg args env (Cluster info (Cluster' io ast)) = let o = getOutputEnv 
     getOutputEnv (Output t s e io) (arg@(ArgArray Out r sh buf) :>: args) (info :>: infos) = put' t (BEE (ArrArg (ArrayR (arrayRshape r) e) sh (biggenBuffers s buf)) (outToValue $ shrinkOrGrow $ def arg env info)) (getOutputEnv io args infos)
     getOutputEnv (MutPut     io) (arg :>: args) (info :>: infos) = Push (getOutputEnv io args infos) (BEE (Others arg) (def arg env info))
     getOutputEnv (ExpPut'    io) (arg :>: args) (info :>: infos) = Push (getOutputEnv io args infos) (BEE (Others arg) (def arg env info))
-    getOutputEnv (Trivial    io) (arg :>: args) (info :>: infos) = getOutputEnv io args infos
+    getOutputEnv (Trivial    io) (_   :>: args) (_    :>: infos) = getOutputEnv io args infos
 
     biggenBuffers :: SubTupR e e' -> GroundVars env (Buffers e') -> GroundVars env (Buffers e)
     biggenBuffers SubTupRskip _ = error "accessing a simplified away buffer"
@@ -191,12 +191,11 @@ fromArgs i env (ArgArray Out (ArrayR shr _) sh _ :>: args) = (fromArgs i env arg
 class (StaticClusterAnalysis op, Monad (EvalMonad op), TupRmonoid (Embed' op))
     => EvalOp op where
   type family EvalMonad op :: Type -> Type
-  type family Index op :: Type -- Could also remove this, and use Embed' Int as Index instead, but no real need
+  type family Index op :: Type 
   type family Embed' op :: Type -> Type
   type family EnvF op :: Type -> Type
 
   -- TODO most of these functions should probably be unnecesary, but adding them is the easiest way to get things working right now
-  -- embedshr :: ShapeR sh -> ShapeR (Embed' op sh)
   indexsh :: GroundVars env sh -> Env (EnvF op) env -> EvalMonad op (Embed' op sh)
   indexsh' :: ExpVars env sh -> Env (EnvF op) env -> EvalMonad op (Embed' op sh)
   subtup :: SubTupR e e' -> Embed' op e -> Embed' op e'
