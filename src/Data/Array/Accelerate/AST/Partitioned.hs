@@ -572,7 +572,7 @@ instance ShrinkArg (BackendClusterArg op) => SLVOperation (Cluster op) where
       wConsBuffers (DeeperO    diff) cb k = wConsBuffers diff cb $ \diff' cb' -> k (DeeperO diff') cb'
       wConsBuffers diff (ConsPair cb1 cb2) k = wConsBuffers diff cb2 $ \diff' cb2' -> wConsBuffers diff' cb1 $ \diff'' cb1' -> k diff'' (ConsPair cb1' cb2')
       wConsBuffers (DeeperI    diff) ConsSingle k = k diff ConsSingle
-      wConsBuffers (UselessArg diff) ConsSingle k = wConsBuffers diff ConsSingle $ \diff' ConsSingle -> k (UselessArg diff') (ConsUnitFusedAway ConsSingle)
+      wConsBuffers (UselessArg diff) ConsSingle k = wConsBuffers diff ConsSingle $ \diff' consSingle -> k (UselessArg diff') (ConsUnitFusedAway consSingle)
       wConsBuffers diff ConsUnit k = k diff ConsUnit
       wConsBuffers _ ConsUnitFusedAway{} _ = error "cufa gets introduced here"
 
