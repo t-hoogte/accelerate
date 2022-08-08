@@ -106,7 +106,6 @@ data ClusterAST op env result where
 -- | A version of `LeftHandSide` that works on the function-separated environments: 
 -- Given environment `env`, we can execute `body`, yielding environment `scope`.
 data LeftHandSideArgs body env scope where
-  -- Because of `Ignr`, we could also give this the type `LeftHandSideArgs () () ()`.
   Base :: LeftHandSideArgs () () ()
   -- The body has an input array
   Reqr :: TupR (IdxF (Value sh) env  ) e
@@ -124,6 +123,7 @@ data LeftHandSideArgs body env scope where
   -- Does nothing to this part of the environment
   Ignr :: LeftHandSideArgs              body   env             scope
        -> LeftHandSideArgs              body  (env, e)        (scope, e)
+  -- Expressions, variables and functions are not fused
   EArg :: LeftHandSideArgs              body   env             scope
        -> LeftHandSideArgs (Exp'   e -> body) (env, Exp' e)   (scope, Exp' e)
   VArg :: LeftHandSideArgs              body   env             scope
@@ -504,35 +504,106 @@ instance SimplifyOperation op => SimplifyOperation (Cluster op) where
   -- TODO: Propagate detectCopy of operations in cluster?
   -- currently this simplifies nothing!
 
+data SLVIO a i o where
+  SLVIO :: ClusterIO a i' o' -> SLVDiff i o i' o' -> SLVIO a i o
+
+data SLVDiff i o i' o' where
+  Same :: SLVDiff i o i o
+  DeeperI :: SLVDiff i o i' o' -> SLVDiff (i, x)  o     (i', x) o'
+  DeeperO :: SLVDiff i o i' o' -> SLVDiff i      (o, y)  i'    (o', y)
+  UselessArg :: SLVDiff i o i' o' -> SLVDiff i o (i', x) (o', x)
+
 instance ShrinkArg (BackendClusterArg op) => SLVOperation (Cluster op) where
   slvOperation (Cluster b (Cluster' io ast :: Cluster' op args)) = Just $ ShrinkOperation shrinkOperation
     where
       shrinkOperation :: SubArgs args args' -> Args env args' -> Args env' args -> ShrunkOperation (Cluster op) env
-      shrinkOperation subArgs args' args = ShrunkOperation (Cluster (shrinkArgs subArgs b) $ Cluster' (slvIO subArgs args' args io) ast) args'
+      shrinkOperation subArgs args' args = ShrunkOperation (Cluster (shrinkArgs subArgs b) $ cluster') args'
+        where cluster' = case slvIO subArgs args' args io of SLVIO io' diff -> Cluster' io' $ diffAST diff ast
 
-      slvIO :: SubArgs a a' -> Args env a' -> Args env' a -> ClusterIO a i o -> ClusterIO a' i o
-      slvIO SubArgsNil ArgsNil ArgsNil Empty = Empty
-      slvIO (SubArgsDead sa) (_:>:a') (_:>:a) (Trivial io') = error "impossible" $ slvIO sa a' a io'
-      slvIO (SubArgsLive SubArgKeep              sa) (_:>:a') (_:>:a) (Trivial io') = Trivial $ slvIO sa a' a io'
-      slvIO (SubArgsLive (SubArgOut SubTupRskip) sa) (_:>:a') (_:>:a) (Trivial io') = Trivial $ slvIO sa a' a io'
-      slvIO (SubArgsLive (SubArgOut SubTupRkeep) sa) (_:>:a') (_:>:a) (Trivial io') = Trivial $ slvIO sa a' a io'
-      slvIO (SubArgsDead subargs) (ArgVar _ :>: args') (ArgArray Out (ArrayR shr _) _ _ :>: args) (Output t _ te io') = Vertical t (ArrayR shr te) (slvIO subargs args' args io')
+      slvIO :: SubArgs a a' -> Args env a' -> Args env' a -> ClusterIO a i o -> SLVIO a' i o
+      slvIO SubArgsNil ArgsNil ArgsNil Empty = SLVIO Empty Same
+      slvIO (SubArgsDead sa) (_:>:a') (_:>:a) (Trivial io') = case slvIO sa a' a io' of SLVIO io'' diff -> SLVIO (VarPut io'') (UselessArg diff)
+      slvIO (SubArgsLive SubArgKeep              sa) (_:>:a') (_:>:a) (Trivial io') = case slvIO sa a' a io' of SLVIO io'' diff -> SLVIO (Trivial io'') diff
+      slvIO (SubArgsLive (SubArgOut SubTupRskip) sa) (_:>:a') (_:>:a) (Trivial io') = case slvIO sa a' a io' of SLVIO io'' diff -> SLVIO (Trivial io'') diff
+      slvIO (SubArgsLive (SubArgOut SubTupRkeep) sa) (_:>:a') (_:>:a) (Trivial io') = case slvIO sa a' a io' of SLVIO io'' diff -> SLVIO (Trivial io'') diff
+      slvIO (SubArgsDead subargs) (ArgVar _ :>: args') (ArgArray Out (ArrayR shr _) _ _ :>: args) (Output t _ te io') 
+        = case slvIO subargs args' args io' of 
+          SLVIO io'' diff -> 
+            wTakeO diff t $ \diff' t' ->
+              SLVIO (Vertical t' (ArrayR shr te) io'') (DeeperI diff')
       slvIO (SubArgsLive SubArgKeep subargs) (_ :>: (args' :: Args env a')) (_ :>: (args :: Args env' a)) io'
-        = let k :: forall i o. ClusterIO a i o -> ClusterIO a' i o
-              k = slvIO subargs args' args in case io' of
-            Vertical t r io'' -> Vertical t r $ k io''
-            Input        io'' -> Input        $ k io''
-            Output t s e io'' -> Output t s e $ k io''
-            MutPut       io'' -> MutPut       $ k io''
-            ExpPut       io'' -> ExpPut       $ k io''
-            VarPut       io'' -> VarPut       $ k io''
-            FunPut       io'' -> FunPut       $ k io''
+        = let k :: forall i o. ClusterIO a i o -> SLVIO a' i o
+              k = slvIO subargs args' args 
+          in case io' of
+            Input        io'' -> case k io'' of SLVIO io''' diff -> SLVIO (Input        io''') (DeeperI $ DeeperO diff)
+            MutPut       io'' -> case k io'' of SLVIO io''' diff -> SLVIO (MutPut       io''') (DeeperI $ DeeperO diff)
+            ExpPut       io'' -> case k io'' of SLVIO io''' diff -> SLVIO (ExpPut       io''') (DeeperI $ DeeperO diff)
+            VarPut       io'' -> case k io'' of SLVIO io''' diff -> SLVIO (VarPut       io''') (DeeperI $ DeeperO diff)
+            FunPut       io'' -> case k io'' of SLVIO io''' diff -> SLVIO (FunPut       io''') (DeeperI $ DeeperO diff)
+            Vertical t r io'' -> case k io'' of SLVIO io''' diff -> wTakeO diff t $ \diff' t' -> SLVIO (Vertical t' r io''') (DeeperI diff')
+            Output t s e io'' -> case k io'' of SLVIO io''' diff -> wTakeO diff t $ \diff' t' -> SLVIO (Output t' s e io''') (DeeperI diff')
       slvIO
-        (SubArgsLive (SubArgOut s) subargs)
-        ((ArgArray Out _ _ _) :>: args')
-        ((ArgArray Out _ _ _) :>: args)
+        (SubArgsLive (SubArgOut s) sa)
+        ((ArgArray Out _ _ _) :>: a')
+        ((ArgArray Out _ _ _) :>: a)
         (Output t s' tr io')
-        = Output t (composeSubTupR s s') tr (slvIO subargs args' args io')
+        = case slvIO sa a' a io' of SLVIO io'' diff -> wTakeO diff t $ \diff' t' -> SLVIO (Output t' (composeSubTupR s s') tr io'') (DeeperI diff')
+
+      wTakeO :: SLVDiff i o i' o' -> Take x eo o -> (forall eo'. SLVDiff i eo i' eo' -> Take x eo' o' -> r) -> r
+      wTakeO Same t k = k Same t
+      wTakeO (DeeperI d) t k = wTakeO d t $ \d' t' -> k (DeeperI d') t'
+      wTakeO (DeeperO d) Here k = k (DeeperO $ DeeperO d) Here
+      wTakeO (DeeperO d) (There t) k = wTakeO d t $ \d' t' -> k (DeeperO d') (There t')
+      wTakeO (UselessArg d) t k = wTakeO d t $ \d' t' -> k (UselessArg d') (There t')
+
+      diffAST :: SLVDiff i o i' o' -> ClusterAST op i o -> ClusterAST op i' o'
+      diffAST Same ast = ast
+      diffAST diff None = wNone diff None
+      diffAST diff (Bind lhs op ast) = wLHS diff lhs $ \diff' lhs' -> Bind lhs' op (diffAST diff' ast)
+
+      wLHS :: SLVDiff i o i' o' -> LeftHandSideArgs body i scope -> (forall scope'. SLVDiff scope o scope' o' -> LeftHandSideArgs body i' scope' -> r) -> r
+      wLHS Same lhs k = k Same lhs
+      wLHS (DeeperI diff) (Make t1 t2 lhs) k = wConsBuffers (DeeperI diff) t2 $ \diff' t2' ->
+                                                wLHS diff' lhs $ \diff'' lhs' -> 
+                                                  wTakeBuffers diff'' t1 $ \diff''' t1' -> 
+                                                    k diff''' (Make t1' t2' lhs')                                                                                                      -- just weaken them
+      wLHS (DeeperI diff) (Reqr t1 t2 lhs) k = wLHS (DeeperI diff) lhs $ \diff' lhs' -> k diff' (Reqr (wIdxF (wDiff $ DeeperI diff) t1) (wIdxF (wDiff diff') t2) lhs')
+      wLHS (DeeperI diff) (Adju       lhs) k = wLHS diff lhs $ \diff' lhs' -> k (DeeperI diff') (Adju lhs')
+      wLHS (DeeperI diff) (Ignr       lhs) k = wLHS diff lhs $ \diff' lhs' -> k (DeeperI diff') (Ignr lhs')
+      wLHS (DeeperI diff) (EArg       lhs) k = wLHS diff lhs $ \diff' lhs' -> k (DeeperI diff') (EArg lhs')
+      wLHS (DeeperI diff) (VArg       lhs) k = wLHS diff lhs $ \diff' lhs' -> k (DeeperI diff') (VArg lhs')
+      wLHS (DeeperI diff) (FArg       lhs) k = wLHS diff lhs $ \diff' lhs' -> k (DeeperI diff') (FArg lhs')
+      wLHS (DeeperO    diff) lhs k = wLHS diff lhs $ \diff' lhs' -> k (DeeperO diff') lhs'
+      wLHS (UselessArg diff) lhs k = wLHS diff lhs $ \diff' lhs' -> k (UselessArg diff') (Ignr lhs')
+
+      wConsBuffers :: SLVDiff i o i' o' -> ConsBuffers f e i j -> (forall j'. SLVDiff j o j' o' -> ConsBuffers f e i' j'  -> r) -> r
+      wConsBuffers Same cb k = k Same cb
+      wConsBuffers (DeeperO    diff) cb k = wConsBuffers diff cb $ \diff' cb' -> k (DeeperO diff') cb'
+      wConsBuffers diff ConsUnit k = k diff ConsUnit
+      wConsBuffers diff (ConsPair cb1 cb2) k = wConsBuffers diff cb2 $ \diff' cb2' -> wConsBuffers diff' cb1 $ \diff'' cb1' -> k diff'' (ConsPair cb1' cb2')
+      wConsBuffers (DeeperI    diff) ConsSingle k = k diff ConsSingle
+      wConsBuffers (UselessArg _) ConsSingle _ = error "impossible"
+
+      wTakeBuffers :: SLVDiff i' o i'' o' -> TakeBuffers (Value sh) e i i' -> (forall i'''. SLVDiff i o i''' o' -> TakeBuffers (Value sh) e i''' i'' -> r) -> r
+      wTakeBuffers Same tb k = k Same tb
+      wTakeBuffers diff TakeUnit k = k diff TakeUnit
+      wTakeBuffers diff (TakeSingle Here)      k = k (DeeperI diff) (TakeSingle Here)
+      wTakeBuffers (DeeperI diff) (TakeSingle (There t)) k = wTakeBuffers diff (TakeSingle t) $ \diff' (TakeSingle t') -> k (DeeperI diff') (TakeSingle (There t')) 
+      wTakeBuffers (DeeperO diff)     tb   k = wTakeBuffers diff tb  $ \diff' tb' -> k (DeeperO diff') tb'
+      wTakeBuffers (UselessArg diff)  tb   k = wTakeBuffers diff tb  $ \diff' tb' -> k (UselessArg diff') (tbThere tb')
+      wTakeBuffers diff (TakePair tb1 tb2) k = wTakeBuffers diff tb1 $ \diff' tb1' -> wTakeBuffers diff' tb2 $ \diff'' tb2' -> k diff'' (TakePair tb1' tb2')
+      
+      -- This is surprisingly difficult to write 'honestly', because we know that there are an equal number of DeeperI's and DeeperO's, but they can be in any order.
+      wNone :: SLVDiff x x i' o' -> ClusterAST op x x -> ClusterAST op i' o'
+      wNone !_ None = unsafeCoerce None
+      wNone _ _ = error "only none here"
+
+      wDiff :: SLVDiff i o i' o' -> i :> i'
+      wDiff Same = weakenId
+      wDiff (DeeperI diff) = weakenKeep $ wDiff diff
+      wDiff (DeeperO diff) = wDiff diff
+      wDiff (UselessArg diff) = weakenSucc' $ wDiff diff
+
 
 class TupRmonoid f where
   pair' :: f a -> f b -> f (a,b)

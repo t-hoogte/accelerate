@@ -279,7 +279,7 @@ evalLHS1 (Ignr     lhs) (Push i' (BAE _ _   )) env =       evalLHS1 lhs i' env
 
 evalLHS2 :: EvalOp op => LeftHandSideArgs body i scope -> BackendArgEnv op env i -> Env (EnvF op) env -> Env (FromArg' op env) (OutArgs body) -> BackendArgEnv op env scope
 evalLHS2 Base Empty _ Empty = Empty
-evalLHS2 (Reqr t1 t2 lhs) i env o = evalLHS2 lhs i env o -- TODO ignoring here?
+evalLHS2 (Reqr _ _ lhs) i env o = evalLHS2 lhs i env o
 evalLHS2 (Make t1 t2 lhs) i env (Push o (FromArg y)) =
   let (info, i') = unconsBuffers t2 i
   in putBuffers t1
