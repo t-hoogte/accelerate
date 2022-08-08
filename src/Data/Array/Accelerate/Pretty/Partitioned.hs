@@ -148,7 +148,7 @@ unCons ConsSingle (Pretty.Push env doc) = (doc, env)
 unCons (ConsPair l r) env = let (x, env') = unCons r env
                                 (y, env'') = unCons l env'
                             in  (x <> y, env'')
-
+unCons (ConsUnitFusedAway cb) (Pretty.Push env doc) = second (`Pretty.Push` doc) $ unCons cb env
 
 intermediate :: Modifier m -> Int -> Adoc -> Adoc
 intermediate m idx sh = group $ vsep [prettyModifier m, "(" <> sh <> ")", "%" <> pretty idx]
