@@ -49,6 +49,7 @@ import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.Trafo.Operation.Substitution (weaken)
 import Data.Functor.Identity
 import Data.Array.Accelerate.Pretty.Exp (IdxF(..))
+import qualified Data.Tree as T
 
 -- "open research question"
 -- -- Each set of ints corresponds to a set of Constructions, which themselves contain a set of ints (the things they depend on).
@@ -92,21 +93,26 @@ foldC :: (Label -> b -> b) -> b -> ClusterL -> b
 foldC f x (ExecL ls) = foldr f x ls
 foldC f x (NonExecL l) = f l x
 
-topSort :: Graph -> Labels -> ClusterL
-topSort _ (S.toList -> [l]) = ExecL [l]
-topSort (Graph _ fedges _) cluster = ExecL topsorted
+topSort :: Graph -> Labels -> [ClusterL]
+topSort _ (S.toList -> [l]) = [ExecL [l]]
+topSort (Graph _ fedges _) cluster = map ExecL topsorteds
   where
-    -- graphs are endomorphisms in the Kleisli category of the free semimodule monad
-    (graph, getAdj, _) =
-          G.graphFromEdges
+    buildGraph =
+            G.graphFromEdges
           . map (\(a,b) -> (a,a,b))
           . M.toList
           . flip (S.fold (\(x :-> y) -> M.adjust (y:) x)) fedges
           . M.fromList
           . map (,[])
           . S.toList
-          $ cluster
-    topsorted = map (view _1 . getAdj) $ G.topSort graph 
+    -- Make a graph of all these labels...
+    (graph, getAdj, _) = buildGraph cluster
+    -- .. split it into connected components, a cluster each,
+    components = map (S.fromList . map ((\(x,_,_)->x) . getAdj) . T.flatten) $ G.components graph
+    -- and make a graph of each of them...
+    graphs = map buildGraph components
+    -- .. and finally, topologically sort each of those to get the labels per cluster sorted on dependencies
+    topsorteds = map (\(graph', getAdj', _) -> map (view _1 . getAdj') $ G.topSort graph') graphs
 
 openReconstruct   :: MakesILP op
                   => LabelEnv aenv
@@ -177,7 +183,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
          CCmp env' expr     -> Exists $ Compute     (fromJust $ reindexExp  (mkReindexPartial env' env) expr)
          CAlc env' shr e sh -> Exists $ Alloc shr e (fromJust $ reindexVars (mkReindexPartial env' env) sh)
          CUnt env' evar     -> Exists $ Unit        (fromJust $ reindexVar  (mkReindexPartial env' env) evar)
-    makeAST env (cluster:ctail) prev = 
+    makeAST env (cluster:ctail) prev =
 
       -- TODO: use guards to fuse these two identical cases
       case makeCluster env cluster of
@@ -206,7 +212,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
 
     makeASTF :: forall env. LabelEnv env -> Label -> M.Map Label (Exists (PreOpenAcc (Cluster op) env)) -> Exists (PreOpenAfun (Cluster op) env)
     makeASTF env l prev = case makeCluster env (NonExecL l) of
-      NotFold CBod -> case makeAST env (subcluster l) prev of 
+      NotFold CBod -> case makeAST env (subcluster l) prev of
         --  fromJust $ l' ^. parent) prev of 
         Exists acc -> Exists $ Abody acc
       NotFold (CFun lhs l') -> createLHS lhs env $ \env' lhs' -> case makeASTF env' l' (M.map (\(Exists acc) -> Exists $ weakenAcc lhs' acc) prev) of
@@ -215,12 +221,12 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
       _ -> error "not a notfold"
 
     -- do the topological sorting for each set
-    clusters = map (\case
+    clusters = concatMap (\case
                       Execs ls -> topSort graph ls
-                      NonExec l -> NonExecL l) clusterslist
-    subclusters = M.map (map ( \case
+                      NonExec l -> [NonExecL l]) clusterslist
+    subclusters = M.map (concatMap ( \case
                       Execs ls -> topSort graph ls
-                      NonExec l -> NonExecL l)) subclustersmap
+                      NonExec l -> [NonExecL l])) subclustersmap
     subcluster l = subclusters M.! l
 
     makeCluster :: LabelEnv env -> ClusterL -> FoldType op env
@@ -247,7 +253,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
 
 weakenAcc :: LeftHandSide s t env env' -> PreOpenAcc op env a -> PreOpenAcc op env' a
 weakenAcc lhs =  runIdentity . reindexAcc (weakenReindex $ weakenWithLHS lhs)
- 
+
 
 -- | Internal datatype for `makeCluster`.
 
@@ -308,7 +314,7 @@ consCluster lextra (CCluster largs _ cIO cAST) op k = -- we can ignore the Backe
     consCluster' ltot Ordered ArgsNil ast lhs io = k $ CCluster ltot (mapArgs getClusterArg ltot) io (Bind lhs op ast)
     consCluster' ltot (Revert r) (a :>: toAdd) ast lhs io = case a of
       LOp (ArgArray In  _ _ _) _ _ -> consInArg  a ltot lhs ast io $ \ltot' -> consCluster' ltot' r toAdd
-      LOp (ArgArray Out _ _ _) _ _ -> consOutArg a ltot lhs ast io $ \ltot' -> consCluster' ltot' r toAdd 
+      LOp (ArgArray Out _ _ _) _ _ -> consOutArg a ltot lhs ast io $ \ltot' -> consCluster' ltot' r toAdd
       -- non-array arguments
       LOp (ArgExp _)           _ _ -> let (io', ast') = addExp io ast ExpPut in consCluster' (a :>: ltot) r toAdd ast' (EArg lhs) io'
       LOp (ArgVar _)           _ _ -> let (io', ast') = addExp io ast VarPut in consCluster' (a :>: ltot) r toAdd ast' (VArg lhs) io'
@@ -362,17 +368,17 @@ consInArg :: MakesILP op
            -> ClusterIO total' i' o'
            -> r)
          -> r
-consInArg a@(LOp (ArgArray In (ArrayR _ TupRunit) _ _) _ _) ltot lhs ast io k = 
+consInArg a@(LOp (ArgArray In (ArrayR _ TupRunit) _ _) _ _) ltot lhs ast io k =
   k (a:>:ltot) ast (Reqr TupRunit TupRunit lhs) (Trivial io)
 consInArg (LOp (ArgArray In (ArrayR sh (TupRpair l r)) sh' (TupRpair bufL bufR)) (Arr (TupRpair el er), _) b) ltot lhs ast io k =
-  consInArg (LOp (ArgArray In (ArrayR sh l) sh' bufL) (Arr el, mempty) b) ltot lhs ast io $ 
+  consInArg (LOp (ArgArray In (ArrayR sh l) sh' bufL) (Arr el, mempty) b) ltot lhs ast io $
     \ltot' ast' lhs' io' ->
       consInArg (LOp (ArgArray In (ArrayR sh r) sh' bufR) (Arr er, mempty) b) ltot' lhs' ast' io' $
-        \ltot'' ast'' lhs'' io'' -> 
+        \ltot'' ast'' lhs'' io'' ->
             k ltot'' ast'' (squish lhs'') io''
 consInArg a@(LOp (ArgArray In (ArrayR _ (TupRsingle _)) _ _) (Arr (TupRsingle (C.Const _)), _) _) ltot lhs ast io k =
   maybe
-    (let (ast', io') = addInput ast io 
+    (let (ast', io') = addInput ast io
     in k (a :>: ltot) ast' (Reqr (TupRsingle $ IdxF ZeroIdx) (TupRsingle $ IdxF ZeroIdx) $ Ignr lhs) io')
     (\lhs' -> k ltot ast lhs' io)
     (fuseInput a ltot lhs io)
@@ -382,7 +388,7 @@ consInArg _ _ _ _ _ _ = error "impossible combination of TypeR, ALabels and TupR
 -- Only works if the top of the lhsargs only contains Reqr and Ignr! This is the case in @consInArg@
 squish :: LeftHandSideArgs (In sh b -> In sh a -> args) i o -> LeftHandSideArgs (In sh (a,b) -> args) i o
 squish (Ignr lhs) = Ignr (squish lhs)
-squish (Reqr t1 t2 lhs) = case go lhs of 
+squish (Reqr t1 t2 lhs) = case go lhs of
   Reqr t3 t4 lhs' -> Reqr (TupRpair t3 t1) (TupRpair t4 t2) lhs'
   where
     -- search for the second reqr and weaken it up above the ignrs
@@ -407,10 +413,10 @@ consOutArg :: MakesILP op
               -> ClusterIO total' i' o'
               -> r)
            -> r
-consOutArg a@(LOp (ArgArray Out (ArrayR _ TupRunit) _ _) _ _) ltot lhs ast io k = 
+consOutArg a@(LOp (ArgArray Out (ArrayR _ TupRunit) _ _) _ _) ltot lhs ast io k =
   k (a:>:ltot) ast (Make TakeUnit ConsUnit lhs) (Trivial io)
 consOutArg (LOp (ArgArray Out (ArrayR sh (TupRpair l r)) sh' (TupRpair bufL bufR)) (Arr (TupRpair el er), _) b) ltot lhs ast io k =
-  consOutArg (LOp (ArgArray Out (ArrayR sh l) sh' bufL) (Arr el, mempty) b) ltot lhs ast io $ 
+  consOutArg (LOp (ArgArray Out (ArrayR sh l) sh' bufL) (Arr el, mempty) b) ltot lhs ast io $
     \ltot' ast' lhs' io' ->
       consOutArg (LOp (ArgArray Out (ArrayR sh r) sh' bufR) (Arr er, mempty) b) ltot' lhs' ast' io' $
         \ltot'' ast'' (Make t1 t2 (Make t3 t4 lhs'')) io'' ->
@@ -421,7 +427,7 @@ consOutArg a@(LOp (ArgArray Out (ArrayR _ (TupRsingle _)) _ _) (Arr (TupRsingle 
 consOutArg _ _ _ _ _ _ = error "impossible combination of TypeR, ALabels and TupR Buffer"
 
 
-addOutput :: MakesILP op 
+addOutput :: MakesILP op
           => LabelledArgOp op env (Out sh e)
           -> LabelledArgsOp op env total
           -> ClusterAST op scope o
@@ -468,7 +474,7 @@ applyDiagonalFusion :: ()
                        -> r)
                     -> r
 -- base case
-applyDiagonalFusion Here' (Input io) (Ignr lhs) ty k = k (Output Here SubTupRkeep ty io) (Make (TakeSingle Here) ConsSingle lhs) Here 
+applyDiagonalFusion Here' (Input io) (Ignr lhs) ty k = k (Output Here SubTupRkeep ty io) (Make (TakeSingle Here) ConsSingle lhs) Here
 -- recursive cases
 applyDiagonalFusion t io (Make tb1 tb2 lhs) ty k =
   pastOutputs tb1 tb2 t io $ \t' io' iok ->
@@ -514,7 +520,7 @@ weakenAST None = None
 weakenAST (Bind lhs op ast) = Bind (Ignr lhs) op $ weakenAST ast
 
 --Only call this with a single buffer!
-fuseInput :: MakesILP op 
+fuseInput :: MakesILP op
           => LabelledArgOp op env (In sh e)
           -> LabelledArgsOp op  env total
           -> LeftHandSideArgs added i scope
@@ -554,13 +560,13 @@ peelOutputs :: LabelledArgsOp op env total
             -> ConsBuffers (Sh sh) e shi i
             -> ClusterIO total shi result
             -> (forall t' result'
-               . ClusterIO t' i result' 
-              -> LabelledArgsOp op env t' 
+               . ClusterIO t' i result'
+              -> LabelledArgsOp op env t'
               -> r)
             -> r
 peelOutputs (_:>:ltot) t1 t2 (Trivial io) k = peelOutputs ltot t1 t2 io k
 peelOutputs ltot TakeUnit ConsUnit io k = k io ltot
-peelOutputs ltot (TakePair l1 r1) (ConsPair l2 r2) io k = 
+peelOutputs ltot (TakePair l1 r1) (ConsPair l2 r2) io k =
   peelOutputs ltot r1 r2 io $ \io' ltot' ->
     peelOutputs ltot' l1 l2 io' $ \io'' ltot'' ->
       k io'' ltot''
@@ -582,7 +588,7 @@ pastOutputs :: TakeBuffers (Value sh) e eo o
               -> (forall sh1 e1 i' b r2 o'
                  . Take (Value sh1 e1) i i'
                 -> Take (Value sh1 e1) result' b
-                -> ClusterIO t'' i' b 
+                -> ClusterIO t'' i' b
                 -> Take (Value sh1 e1) o o'
                 -> (forall a' b' o2
                    . Take (Value sh1 e1) result b'
@@ -621,7 +627,7 @@ pastOutputs (TakeSingle ts) ConsSingle (There' take') (Vertical t a io) k =
 pastOutputs (TakePair l1 r1) (ConsPair l2 r2) t io k =
   pastOutputs r1 r2 t io $ \t' io' iok ->
     pastOutputs l1 l2 t' io' $ \t'' io'' iok' ->
-      k t'' io'' $ \t1 t2 io''' t3 k' -> 
+      k t'' io'' $ \t1 t2 io''' t3 k' ->
         iok' t1 t2 io''' t3 $ \t4 io'''' t5 t6 tb1 cb1 ->
           iok t5 t4 io'''' t6 $ \t7 io5 t8 t9 tb2 cb2 ->
             k' t7 io5 t8 t9 (TakePair tb1 tb2) (ConsPair cb1 cb2)
