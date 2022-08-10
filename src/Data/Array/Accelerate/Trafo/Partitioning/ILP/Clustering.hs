@@ -95,7 +95,7 @@ foldC f x (NonExecL l) = f l x
 
 topSort :: Graph -> Labels -> [ClusterL]
 topSort _ (S.toList -> [l]) = [ExecL [l]]
-topSort (Graph _ fedges _) cluster = map ExecL topsorteds
+topSort (Graph _ fedges fpedges) cluster = map ExecL topsorteds
   where
     buildGraph =
             G.graphFromEdges
@@ -106,7 +106,9 @@ topSort (Graph _ fedges _) cluster = map ExecL topsorteds
           . map (,[])
           . S.toList
     -- Make a graph of all these labels and their incoming edges (for horizontal fusion)...
-    (graph, getAdj, _) = buildGraph $ S.union cluster $ S.unions $ S.map (\l -> S.map (\(a:->_)->a) $ S.filter (\(_:->b)->l==b) fedges) cluster
+    parents    = S.unions $ S.map (\l -> S.map (\(a:->_)->a) $ S.filter (\(_:->b)->l==b) fedges ) cluster
+    badparents = S.unions $ S.map (\l -> S.map (\(a:->_)->a) $ S.filter (\(_:->b)->l==b) fpedges) cluster
+    (graph, getAdj, _) = buildGraph $ S.union cluster $ parents S.\\ badparents
     -- .. split it into connected components and remove those parents from last step,
     components = map (S.intersection cluster . S.fromList . map ((\(x,_,_)->x) . getAdj) . T.flatten) $ G.components graph
     -- and make a graph of each of them...
