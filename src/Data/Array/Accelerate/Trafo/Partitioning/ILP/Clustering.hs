@@ -105,10 +105,10 @@ topSort (Graph _ fedges _) cluster = map ExecL topsorteds
           . M.fromList
           . map (,[])
           . S.toList
-    -- Make a graph of all these labels...
-    (graph, getAdj, _) = buildGraph cluster
-    -- .. split it into connected components, a cluster each,
-    components = map (S.fromList . map ((\(x,_,_)->x) . getAdj) . T.flatten) $ G.components graph
+    -- Make a graph of all these labels and their incoming edges (for horizontal fusion)...
+    (graph, getAdj, _) = buildGraph $ S.union cluster $ S.unions $ S.map (\l -> S.map (\(a:->_)->a) $ S.filter (\(_:->b)->l==b) fedges) cluster
+    -- .. split it into connected components and remove those parents from last step,
+    components = map (S.intersection cluster . S.fromList . map ((\(x,_,_)->x) . getAdj) . T.flatten) $ G.components graph
     -- and make a graph of each of them...
     graphs = map buildGraph components
     -- .. and finally, topologically sort each of those to get the labels per cluster sorted on dependencies
