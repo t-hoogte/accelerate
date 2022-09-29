@@ -59,7 +59,6 @@ makeILP (Info
 
     graphILP = ILP Minimise objFun myConstraints myBounds n
 
-    -- Placeholder, currently maximising the number of vertical/diagonal fusions.
     -- Since we want all clusters to have one 'iteration size', the final objFun should
     -- take care to never reward 'fusing' disjoint clusters, and then slightly penalise it.
     -- The alternative is O(n^2) edges, so this is worth the trouble!
@@ -67,11 +66,25 @@ makeILP (Info
     -- In the future, maybe we want this to be backend-dependent (add to MakesILP).
     -- Also future: add @IVO's IPU reward here.
     objFun :: Expression op
-    objFun = foldl' (\f (i :-> j) -> f .+. fused i j)
+    objFun = minimiseArrayReadsWrites
+
+    -- objective function that maximises the number of edges we fuse, and minimises the number of array reads
+    maximiseNumberOfFusedEdges = foldl' (\f (i :-> j) -> f .+. fused i j)
                     (int 0)
                     (S.toList fuseEdges)
 
-    myConstraints = acyclic <> infusible <> manifestC <> finalize (S.toList nodes)
+    -- objective function that maximises the number of fused away arrays, and thus minimises the number of array writes
+    maximiseArrayContraction = foldl' (\f l -> f .+. manifest l) (int 0) (S.toList nodes)
+
+    -- objective function that minimises the total number of array reads + writes
+    minimiseArrayReadsWrites = maximiseNumberOfFusedEdges .+. maximiseArrayContraction
+
+    -- objective function that minimises the number of clusters -- only works if the constraint below it is used!
+    minimiseNumberOfClusters  = c (Other "maximumClusterNumber")
+    -- removing this from myConstraints makes the ILP slightly smaller, but disables the use of this cost function
+    minimiseNumberOfClusters' = foldMap (\l -> pi l .<=. minimiseNumberOfClusters) nodes
+
+    myConstraints = acyclic <> infusible <> manifestC <> finalize (S.toList nodes) <> minimiseNumberOfClusters'
 
     -- x_ij <= pi_j - pi_i <= n*x_ij for all fusible edges
     acyclic = foldMap

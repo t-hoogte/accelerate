@@ -108,6 +108,7 @@ data Var (op :: Type -> Type)
   | ManifestOutput Label
     -- ^ 0 means manifest, 1 is like a `delayed array`.
     -- Binary variable; will we write the output to a manifest array, or is it fused away (i.e. all uses are in its cluster)?
+  | Other String
   | BackendSpecific (BackendVar op)
     -- ^ Vars needed to express backend-specific fusion rules.
     -- This is what allows backends to specify how each of the operations can fuse.
