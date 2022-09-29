@@ -68,10 +68,16 @@ makeILP (Info
     objFun :: Expression op
     objFun = minimiseArrayReadsWrites
 
-    -- objective function that maximises the number of edges we fuse, and minimises the number of array reads
+    -- objective function that maximises the number of edges we fuse, and minimises the number of array reads if you ignore horizontal fusion
     maximiseNumberOfFusedEdges = foldl' (\f (i :-> j) -> f .+. fused i j)
                     (int 0)
                     (S.toList fuseEdges)
+
+    -- TODO: a cost function that doesn't ignore horizontal fusion.
+    -- Idea: Each node $x$ with $n$ outgoing edges gets $n$ extra variables.
+    -- Each edge (fused or not) $(x,y)$ will require that one of these variables is equal to $pi y$.
+    -- The number of extra variables that are equal to 0 (the thing you maximise) is exactly equal to n - the number of clusters that read from $x$.
+    -- Also need a way for backpermute to not count as horizontal fusion when the accesses are in different orders.
 
     -- objective function that maximises the number of fused away arrays, and thus minimises the number of array writes
     maximiseArrayContraction = foldl' (\f l -> f .+. manifest l) (int 0) (S.toList nodes)

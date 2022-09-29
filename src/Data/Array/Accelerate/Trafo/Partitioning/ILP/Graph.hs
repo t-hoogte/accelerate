@@ -114,9 +114,8 @@ data Var (op :: Type -> Type)
     -- This is what allows backends to specify how each of the operations can fuse.
 
 deriving instance Eq   (BackendVar op) => Eq   (Var op)
-deriving instance Ord  (BackendVar op) => Ord  (Var op)
-deriving instance Show (BackendVar op) => Show (Var op)
-deriving instance Read (BackendVar op) => Read (Var op)
+deriving instance Ord  (BackendVar op) => Ord  (Var op) -- for translating to ILP format, see MIP.hs
+
 
 -- convenience synonyms
 pi :: Label -> Expression op
