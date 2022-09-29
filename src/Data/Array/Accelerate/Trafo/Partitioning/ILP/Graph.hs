@@ -64,7 +64,7 @@ data Edge = Label :-> Label
 
 -- | Safe constructor for edges: finds the lowest pairs of ancestors that are in the same subcomputation, and adds the constraint there.
 -- Useful if `y` uses some result of `x`, and there is no clear guarantee that they have the same origin. Always gives a legal edge,
--- and if `x != y` then it will never return an 'identity edge'.
+-- and if x and y are not equal nor ancestors of each other then it will never return an 'identity edge'.
 (-?>) :: Label -> Label -> Edge
 x@(Label _ a) -?> y@(Label _ b)
   -- all fromJusts are safe, because @level x > 0 => parent x ~ Just _@

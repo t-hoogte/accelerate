@@ -105,6 +105,11 @@ topSort (Graph _ fedges fpedges) cluster = map ExecL topsorteds
           . M.fromList
           . map (,[])
           . S.toList
+    -- for some reason, this doesn't work yet!
+    -- \xs -> (map f xs, map g xs) gets split, even though I really thought this would work
+    -- if @xs@ is concrete, it does seem to work? 
+    -- TODO: compare the graphs of @horizontal@ and @horizontal xs@
+    
     -- Make a graph of all these labels and their incoming edges (for horizontal fusion)...
     parents    = S.unions $ S.map (\l -> S.map (\(a:->_)->a) $ S.filter (\(_:->b)->l==b) fedges ) cluster
     badparents = S.unions $ S.map (\l -> S.map (\(a:->_)->a) $ S.filter (\(_:->b)->l==b) fpedges) cluster
@@ -672,3 +677,35 @@ tryUpdateList _ _ [] = Nothing
 tryUpdateList p f (x : xs)
   | p x = Just $ f x : xs
   | otherwise = tryUpdateList p f xs
+
+
+
+
+
+
+
+--------------------------------------------------------------------------------------
+
+-- data Combine' first second rest total where
+--   Horizontal :: Combine (In  a) (In a) xs (In  a, xs)
+--   Diagonal   :: Combine (Out a) (In a) xs (Out a, xs)
+--   Vertical   :: Combine (Out a) (In a) xs         xs
+
+-- data Combine first second fused where
+--   BaseCase  :: Combine () () ()
+--   Fusion    :: Combine' a b rest fused 
+--             -> Combine     as      bs      rest 
+--             -> Combine (a, as) (b, bs)     fused
+--   Intro1    :: Combine     as      bs      fused 
+--             -> Combine (a, as)     bs  (a, fused)
+--   Intro2    :: Combine     as      bs      fused 
+--             -> Combine     as  (b, bs) (a, fused)
+  
+-- data AlternativeCluster op args where
+--   Singleton :: op args -> SortArgs args sorted -> AlternativeCluster op sorted
+--   Multiple :: Combine first second args 
+--            -> AlternativeCluster op first 
+--            -> AlternativeCluster op second 
+--            -> AlternativeCluster op args
+
+-- type SortArgs args sorted = () -- TODO: some datatype which describes the permutation of those arguments
