@@ -109,6 +109,8 @@ data Var (op :: Type -> Type)
     -- ^ 0 means manifest, 1 is like a `delayed array`.
     -- Binary variable; will we write the output to a manifest array, or is it fused away (i.e. all uses are in its cluster)?
   | Other String
+    -- ^ For one-shot variables that don't deserve a constructor. These are also integer variables, and the responsibility is on the user to pick a unique name!
+    -- It is possible to add a variation for continuous variables too, see `allIntegers` in MIP.hs.
   | BackendSpecific (BackendVar op)
     -- ^ Vars needed to express backend-specific fusion rules.
     -- This is what allows backends to specify how each of the operations can fuse.
@@ -120,6 +122,9 @@ deriving instance Ord  (BackendVar op) => Ord  (Var op) -- for translating to IL
 -- convenience synonyms
 pi :: Label -> Expression op
 pi l      = c $ Pi l
+
+delayed :: Label -> Expression op
+delayed = notB . manifest
 manifest :: Label -> Expression op
 manifest l = c $ ManifestOutput l
 -- | Safe constructor for Fused variables
