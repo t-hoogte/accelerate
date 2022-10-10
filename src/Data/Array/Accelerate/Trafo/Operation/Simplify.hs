@@ -346,46 +346,37 @@ bindingEnv outputs (LeftHandSideWildcard _) (Exec op args)      env = foldl' add
         markCopy _ = (InfoBuffer Nothing Nothing [output])
 bindingEnv _ lhs _ env = bindEnv lhs env
 
-invalidate :: IdxSet env -> InfoEnv env -> InfoEnv env
-invalidate indices (InfoEnv env1) = InfoEnv env4
+-- Updates the InfoEnv, with the information that the buffers in 'indices' may
+-- have been updated. This breaks the 'is-copy-of' relation between buffers.
+invalidate :: forall env. IdxSet env -> InfoEnv env -> InfoEnv env
+invalidate indices infoEnv@(InfoEnv env1) =
+  InfoEnv
+    $ wupdateSetWeakened dropCopyTo indicesCopiesOf
+    $ wupdateSetWeakened dropCopyOf indicesCopiedTo
+    $ wremoveSet InfoNone indices' env1
   where
-    -- Drops the given indices from the InfoEnv, unless they are an alias
-    -- (InfoAlias). Those are not removed, but instead the info on the
-    -- variable of which they are an alias is removed.
-    -- Returns a list of removed Infos.
-    goDrop :: IdxSet env -> WEnv Info env -> (WEnv Info env, [Exists (Info env)])
-    goDrop indices' e1
-      | [] <- indices'' = (e2, dropped')
-      | otherwise = (dropped' ++) <$> goDrop (IdxSet.fromList indices'') e2
-      where
-        (infos, e2) = wupdatePrjSet update indices' e1
-        (indices'', dropped') = partitionEithers $ map splitAlias infos
+    indices' :: IdxSet env
+    indices' = IdxSet.map (weaken $ substituteOutput infoEnv) indices
 
-        update :: Info env t -> Info env t
-        update i@(InfoAlias _) = i -- Keep aliasses
-        update _ = InfoNone
+    findCopies :: Exists (Idx env) -> (IdxSet env, IdxSet env)
+    findCopies (Exists idx) = case infoFor idx infoEnv of
+      InfoAlias idx' -> internalError "Alias should be substituted already"
+      InfoBuffer _ (Just idx') copies -> (IdxSet.singleton idx', IdxSet.fromList' copies)
+      _ -> (IdxSet.empty, IdxSet.empty)
 
-        splitAlias :: Exists (Info env) -> Either (Exists (Idx env)) (Exists (Info env))
-        splitAlias (Exists (InfoAlias idx)) = Left $ Exists idx
-        splitAlias (Exists i) = Right $ Exists i
+    (indicesCopiesOf', indicesCopiedTo') = unzip $ map findCopies $ IdxSet.toList indices'
+    indicesCopiesOf = IdxSet.unions indicesCopiesOf'
+    indicesCopiedTo = IdxSet.unions indicesCopiedTo'
 
-    (env2, dropped) = goDrop indices env1
-    invalidatedCopies = dropped >>= \(Exists i) -> Exists <$> copiedTo i
-    invalidatedCopiedFrom = dropped >>= \case
-      Exists (InfoBuffer _ (Just idx) _) -> [Exists idx]
-      _ -> []
-    -- Remove copies of modified buffers
-    env3 = wremoveSet InfoNone (IdxSet.fromList invalidatedCopies) env2
-    -- The 'is-copy-of' relation is stored on both sides. If a copy is changed
-    -- we must thus update the Info stored in the original buffer to remove the
-    -- link between these buffers.
-    env4 = wupdateSetWeakened
-            (\k -> \case
-              InfoBuffer unitScalar copyOf copiedTo' -> InfoBuffer unitScalar copyOf $ filter (\idx -> k >:> idx `IdxSet.member` indices) copiedTo'
-              i -> i
-            )
-            (IdxSet.fromList invalidatedCopiedFrom)
-            env3
+    -- Forgets that this buffer is a copy of a buffer in indices'.
+    dropCopyOf :: env' :> env -> Info env' t -> Info env' t
+    dropCopyOf _ (InfoBuffer unitScalar _ c)
+      = InfoBuffer unitScalar Nothing c
+
+    -- Forgets that this buffer is copied to buffers in indices'
+    dropCopyTo :: env' :> env -> Info env' t -> Info env' t
+    dropCopyTo k (InfoBuffer unitScalar copyOf copiedTo')
+      = InfoBuffer unitScalar copyOf $ filter (\idx -> not $ k >:> idx `IdxSet.member` indices) copiedTo'
 
 outputArrays :: Args env args -> IdxSet env
 outputArrays = IdxSet.fromList . mapMaybe f . argsVars
