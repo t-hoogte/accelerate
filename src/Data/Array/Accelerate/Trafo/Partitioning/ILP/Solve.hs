@@ -69,10 +69,10 @@ makeILP (Info
     -- In the future, maybe we want this to be backend-dependent (add to MakesILP).
     -- Also future: add @IVO's IPU reward here.
     objFun :: Expression op
-    objFun = minimiseArrayReadsWrites
+    objFun = numberOfClusters
 
     -- objective function that maximises the number of edges we fuse, and minimises the number of array reads if you ignore horizontal fusion
-    maximiseNumberOfFusedEdges = foldl' (\f (i :-> j) -> f .+. fused i j)
+    numberOfUnfusedEdges = foldl' (\f (i :-> j) -> f .+. fused i j)
                     (int 0)
                     (S.toList fuseEdges)
 
@@ -84,7 +84,7 @@ makeILP (Info
     -- note, it's only quadratic in the number of consumers of a specific array.
     -- TODO: Because of backpermute, we actually need twice as many extra variables, where the second version is for the order it is accessed.
     -- problem: backpermutes live in the backend specific variables currently
-    minimiseNumberOfReads = nReads
+    numberOfReads = nReads
     (nReads, readConstraints, readBounds) = 
         foldl (\(a,b,c) (d,e,f)->(a.+.d,b<>e,c<>f)) (int 0, mempty, mempty)
       . flip evalState ""
@@ -92,33 +92,34 @@ makeILP (Info
       let consumers  = map (\(_ :-> j) -> j) . S.toList $ S.filter (\(i :-> _) -> i == l) fuseEdges
           nConsumers = length consumers
       readPis <- replicateM nConsumers readPiVar
-      (subConstraint, subBounds) <- flip foldMapM readPis $ \readPi -> do
-        useVars <- replicateM nConsumers useVar -- these are the n^2 variables
-        let constraint = foldMap (isEqual (c readPi) (pi l) . c) useVars
-        -- note that we set it to be equal to 1 here, >= 1 would also work but that is never optimal
+      (subConstraint, subBounds) <- flip foldMapM consumers $ \consumerL -> do
+        useVars <- replicateM nConsumers useVar -- these are the n^2 variables: For each consumer, n variables which each check the equality of pi to readpi
+        let constraint = foldMap (\(uv, rp) -> isEqualRangeN (c rp) (pi consumerL) (c uv)) (zip useVars readPis)
+        -- note that we set it to be equal to n-1 here, <n would also work but that is never optimal
         -- I don't know which version is easier/faster to solve!
-        return (constraint <> foldl (.+.) (int 0) (map c useVars) .==. int 1, foldMap binary useVars)
+        return (constraint <> foldl (.+.) (int 0) (map c useVars) .==. int (nConsumers-1), foldMap binary useVars)
       readPi0s <- replicateM nConsumers readPi0Var
-      return ( foldl (.+.) (int 0) (map c readPi0s)
+      return ( foldl (.+.) (int 0) (map (((-1) .*.) . c) readPi0s) -- using `(-1 .*.)` instead of `notB` for the same reason as in numberOfManifestArrays
              , subConstraint <> fold (zipWith (\p p0 -> c p .<=. timesN (c p0)) readPis readPi0s)
              , subBounds <> foldMap (\v -> lowerUpper 0 v n) readPis <> foldMap binary readPi0s)
 
-    readPiVar  = Other <$> freshName "ReadPi"
-    readPi0Var = Other <$> freshName "Read0Pi"
-    useVar = Other <$> freshName "ReadUse"
+    readPiVar  = Other <$> freshName "ReadPi" -- non-zero signifies that at least one consumer reads this array from a certain pi
+    readPi0Var = Other <$> freshName "Read0Pi" -- signifies whether the corresponding readPi variable is 0
+    useVar = Other <$> freshName "ReadUse" -- signifies whether a consumer corresponds with a readPi variable; because its pi == readpi
 
     -- objective function that maximises the number of fused away arrays, and thus minimises the number of array writes
-    maximiseArrayContraction = foldl' (\f l -> f .+. manifest l) (int 0) (S.toList nodes)
+    -- using .-. instead of notB to factor the constants out of the cost function; if we use (1 - manifest l) as elsewhere Gurobi thinks the 1 is a variable name
+    numberOfManifestArrays = foldl' (\f l -> f .-. manifest l) (int 0) (S.toList nodes)
 
     -- objective function that minimises the total number of array reads + writes
-    minimiseArrayReadsWrites = minimiseNumberOfReads .+. maximiseArrayContraction
+    numberOfArrayReadsWrites = numberOfReads .+. numberOfManifestArrays
 
     -- objective function that minimises the number of clusters -- only works if the constraint below it is used!
-    minimiseNumberOfClusters  = c (Other "maximumClusterNumber")
+    numberOfClusters  = c (Other "maximumClusterNumber")
     -- removing this from myConstraints makes the ILP slightly smaller, but disables the use of this cost function
-    minimiseNumberOfClusters' = foldMap (\l -> pi l .<=. minimiseNumberOfClusters) nodes
+    numberOfClustersConstraint = foldMap (\l -> pi l .<=. numberOfClusters) nodes
 
-    myConstraints = acyclic <> infusible <> manifestC <> finalize (S.toList nodes) <> minimiseNumberOfClusters' <> readConstraints
+    myConstraints = acyclic <> infusible <> manifestC <> numberOfClustersConstraint <> readConstraints <> finalize (S.toList nodes) 
 
     -- x_ij <= pi_j - pi_i <= n*x_ij for all edges
     acyclic = foldMap
@@ -140,13 +141,13 @@ makeILP (Info
     myBounds :: Bounds op
     --            0 <= pi_i <= n
     myBounds = foldMap (\i -> lowerUpper 0 (Pi i) n)
-                  (S.toList nodes)
+                  nodes
                <>  -- x_ij \in {0, 1}
                foldMap (\(i :-> j) -> binary $ Fused i j)
-                  (S.toList $ fuseEdges <> nofuseEdges)
+                  (fuseEdges <> nofuseEdges)
                <>
-               foldMap (\(i :-> j) -> binary (ManifestOutput i) <> binary (ManifestOutput j))
-                  (S.toList $ fuseEdges <> nofuseEdges)
+               foldMap (binary . ManifestOutput)
+                  nodes
                <>
                readBounds
 

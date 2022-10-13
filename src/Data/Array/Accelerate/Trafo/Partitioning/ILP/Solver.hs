@@ -46,7 +46,7 @@ instance Show Number where
 data Expression op where
   Constant :: Number -> Expression op
   (:+)  :: Expression op -> Expression op -> Expression op
-  (:*)  :: Number -> Var op -> Expression op 
+  (:*)  :: Number -> Var op -> Expression op
 deriving instance Show (Var op) => Show (Expression op)
 
 data Constraint op where
@@ -83,7 +83,7 @@ infixl 8 .*.
 (.+.) = (:+)
 (.-.)  :: Expression op -> Expression op -> Expression op
 e1 .-. e2 = e1 .+. ((-1) .*. e2)
-(.*.)  :: Int           -> Expression op -> Expression op 
+(.*.)  :: Int           -> Expression op -> Expression op
 i .*. (Constant (Number f)) = Constant $ Number $ (*i) . f
 i .*. (e1 :+ e2) = (:+) (i .*. e1) (i .*. e2)
 i .*. (Number f :* v) = (:*) (Number ((*i) . f)) v
@@ -140,13 +140,14 @@ andB a b r = orB (notB a) (notB b) (notB r)
 -- not sure if this encoding is new, nor whether it is the simplest, but I think it works.
 -- perhaps defining andB is easier than defining orB?
 orB :: Expression op -> Expression op -> Expression op -> Constraint op
-orB a b r = 
+orB a b r =
   (2 .*. r .<=. a .+. b) -- r can only be 1 if both a and b are 1, so this line fixes 3/4 cases
   <>
   (r .+. int 1 .>=. a .+. b) -- and this line forces r to be 1 if a and b are both 1, while not restricting the other cases
 
-iteB :: Expression op -> Expression op -> Expression op -> Expression op
-iteB cond t f = ((notB cond) .*. t) .+. (cond .*. f)
+isEqualRangeN :: Expression op -> Expression op -> Expression op -> Constraint op
+isEqualRangeN = isEqualRange timesN
 
-isEqual :: Expression op -> Expression op -> Expression op -> Constraint op
-isEqual a b r = r .<=. a .-. b <> r .<=. b .-. a
+-- given a function that multiplies by the size of the domain of the first two arguments, the third argument is a boolean (0=true) representing the equality.
+isEqualRange :: (Expression op -> Expression op) -> Expression op -> Expression op -> Expression op -> Constraint op
+isEqualRange f a b r = a .-. f r .<=. b <> b .<=. a .+. f r

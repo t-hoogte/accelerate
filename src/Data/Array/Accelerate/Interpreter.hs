@@ -301,11 +301,11 @@ instance PrettyKernel InterpretKernel where
 data InterpreterVariables = Order InOut Label
                           | DimensionsPerThread InOut Label
                           | IdleThreads InOut Side Label
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Show)
 data InOut = InArr | OutArr
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Show)
 data Side = Left | Right
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Show)
 pattern InDir, OutDir :: Label -> Graph.Var InterpretOp
 pattern InDir  l = BackendSpecific (Order  InArr l)
 pattern OutDir l = BackendSpecific (Order OutArr l)

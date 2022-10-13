@@ -55,7 +55,7 @@ import Data.Array.Accelerate.Representation.Type (TupR)
 import Data.Array.Accelerate.AST.LeftHandSide (LeftHandSide (LeftHandSideSingle, LeftHandSideWildcard, LeftHandSidePair, LeftHandSideUnit))
 import Data.Array.Accelerate.Representation.Shape (ShapeR)
 import Data.Bifunctor (first)
-
+import GHC.Stack
 
 -- | Directed edge (a :-> b): `b` depends on `a`.
 -- We only ever want to have these edges if a and b have the same parent, see `-?>` for a safe constructor.
@@ -117,6 +117,7 @@ data Var (op :: Type -> Type)
 
 deriving instance Eq   (BackendVar op) => Eq   (Var op)
 deriving instance Ord  (BackendVar op) => Ord  (Var op) -- for translating to ILP format, see MIP.hs
+deriving instance Show (BackendVar op) => Show (Var op)
 
 
 -- convenience synonyms
@@ -128,9 +129,9 @@ delayed = notB . manifest
 manifest :: Label -> Expression op
 manifest l = c $ ManifestOutput l
 -- | Safe constructor for Fused variables
-fused :: Label -> Label -> Expression op
+fused :: HasCallStack => Label -> Label -> Expression op
 fused x y = let x' :-> y' = x -?> y
-            in c $ Fused x' y'
+            in if x' /= y' then c $ Fused x' y' else error $ "reflexive fused variable " <> show x'
 
 data LabelledArgOp op env a = LOp (Arg env a) (ALabels a) (BackendArg op)
 type LabelledArgsOp op env = PreArgs (LabelledArgOp op env)
@@ -150,7 +151,7 @@ unLabelOp (LOp arg _ _ :>: args) = arg :>: unLabelOp args
 
 type BackendCluster op = PreArgs (BackendClusterArg op)
 
-class (Eq (BackendVar op), Ord (BackendVar op), Eq (BackendArg op)) => MakesILP op where
+class (Eq (BackendVar op), Ord (BackendVar op), Eq (BackendArg op), Show (BackendVar op)) => MakesILP op where
   -- Vars needed to express backend-specific fusion rules.
   type BackendVar op
   -- Information that the backend attaches to the argument for reconstruction,
@@ -350,6 +351,10 @@ mkFullGraph (Alet LeftHandSideUnit _ bnd scp) = do
   return $ (res1 <> res2)
          & l_res .~ (res2 ^. l_res)
 
+-- In contrast to the case above, this case does enforce a strict ordering. Yes, this could prevent fusion that should be legal,
+-- but (I think) not in the shapes that we actually get.
+-- TODO: check: I think we only ever really generate these non-unit letbindings for binding 1 infusible node (conditional, alloc) at a time?
+-- Could enforce this in the types
 mkFullGraph (Alet (lhs :: GLeftHandSide bnd env env') u bnd scp) = do
   l <- freshL
   bndRes <- mkFullGraph bnd
@@ -462,9 +467,7 @@ mkFullGraphF (Abody acc) = do
 
 mkFullGraphF (Alam lhs f) = do
   l <- freshL
-  currL.parent .= Just l
   (res, mylhs) <- zoomState lhs l (mkFullGraphF f)
-  currL.parent .= l ^. parent
   return $ res
          & l_res    ?~ l
          & info.graphI.graphNodes %~ S.insert l
