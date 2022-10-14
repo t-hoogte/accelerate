@@ -42,13 +42,15 @@ trimIds = S.filter (\(x:->y) -> x /= y)
 -- with parents `Nothing` as a different cluster than 'cluster 3' with parents `Just 5`.
 makeILP :: forall op. MakesILP op => Information op -> ILP op
 makeILP (Info
-          (Graph nodes (trimIds -> fuseEdges') (trimIds -> nofuseEdges))
+          (Graph nodes' (trimIds -> fuseEdges') (trimIds -> nofuseEdges))
           backendconstraints
           backendbounds
         ) = combine graphILP
   where
     -- Remove any redundant 'fusible' edges
     fuseEdges = fuseEdges' S.\\ nofuseEdges
+    edges = fuseEdges <> nofuseEdges
+    nodes = nodes' <> foldMap (\(i:->j)-> S.fromList [i,j]) edges
 
     combine :: ILP op -> ILP op
     combine (ILP dir fun cons bnds _) =
@@ -69,7 +71,7 @@ makeILP (Info
     -- In the future, maybe we want this to be backend-dependent (add to MakesILP).
     -- Also future: add @IVO's IPU reward here.
     objFun :: Expression op
-    objFun = numberOfClusters
+    objFun = numberOfArrayReadsWrites
 
     -- objective function that maximises the number of edges we fuse, and minimises the number of array reads if you ignore horizontal fusion
     numberOfUnfusedEdges = foldl' (\f (i :-> j) -> f .+. fused i j)
@@ -115,6 +117,12 @@ makeILP (Info
     numberOfArrayReadsWrites = numberOfReads .+. numberOfManifestArrays
 
     -- objective function that minimises the number of clusters -- only works if the constraint below it is used!
+    -- NOTE: this does not work remotely as well as you'd hope, because the ILP outputs clusters that get split afterwards.
+    -- This includes independent array operations, which might not be safe to fuse and get no real benefit from fusing,
+    -- but also includes independent alloc, compute, etc nodes which we don't even want to count in the first place!
+    -- It's possible to also give each array operation a 'exec-pi' variable, and change this to minimise the maximum of
+    -- these exec-pi values, in which case we are only left with the independent array operations problem.
+    -- To eliminate that one too, we'd need n^2 edges.
     numberOfClusters  = c (Other "maximumClusterNumber")
     -- removing this from myConstraints makes the ILP slightly smaller, but disables the use of this cost function
     numberOfClustersConstraint = foldMap (\l -> pi l .<=. numberOfClusters) nodes
@@ -127,7 +135,7 @@ makeILP (Info
                               ( fused i j )
                               ( pi j .-. pi i )
                               ( timesN $ fused i j ))
-                (fuseEdges <> nofuseEdges)
+                edges
     infusible = foldMap
                   (\(i :-> j) -> fused i j .==. int 1)
                   nofuseEdges
@@ -136,7 +144,7 @@ makeILP (Info
     -- TODO: final output is also manifest
     manifestC = foldMap
                 (\(i :-> j) -> notB (fused i j) `impliesB` manifest i)
-                (fuseEdges <> nofuseEdges)
+                edges
 
     myBounds :: Bounds op
     --            0 <= pi_i <= n
@@ -144,7 +152,7 @@ makeILP (Info
                   nodes
                <>  -- x_ij \in {0, 1}
                foldMap (\(i :-> j) -> binary $ Fused i j)
-                  (fuseEdges <> nofuseEdges)
+                  edges
                <>
                foldMap (binary . ManifestOutput)
                   nodes
