@@ -30,13 +30,12 @@ module Data.Array.Accelerate.AST.Idx (
   PairIdx(..)
 ) where
 
-import Language.Haskell.TH.Extra
-import Control.DeepSeq
-import Data.Type.Equality ((:~:)(Refl))
+import Data.Kind
+import Language.Haskell.TH.Extra                                    hiding ( Type )
 
 #ifndef ACCELERATE_INTERNAL_CHECKS
-import Data.Kind as Kind (Type)
-import Unsafe.Coerce (unsafeCoerce)
+import Data.Type.Equality                                           ( (:~:)(Refl) )
+import Unsafe.Coerce                                                ( unsafeCoerce )
 #endif
 
 
@@ -95,7 +94,12 @@ matchIdx _           _           = Nothing
 --
 -- For performance, it uses an Int under the hood.
 --
+<<<<<<< HEAD
 newtype Idx (env :: Kind.Type) (t :: Kind.Type) = UnsafeIdxConstructor { unsafeRunIdx :: Int } deriving ( Eq, Ord )
+=======
+newtype Idx :: Type -> Type -> Type where
+  UnsafeIdxConstructor :: { unsafeRunIdx :: Int } -> Idx env t
+>>>>>>> build fix for ghc-9.2
 
 {-# COMPLETE ZeroIdx, SuccIdx #-}
 
@@ -139,6 +143,8 @@ instance NFData (Idx env t) where
 {-# COMPLETE VoidIdx #-}
 pattern VoidIdx :: forall env t a. (env ~ ()) => () => a -> Idx env t
 pattern VoidIdx a <- (\case{} -> a)
+
+{-# COMPLETE VoidIdx #-}
 
 data PairIdx p a where
   PairIdxLeft  :: PairIdx (a, b) a
