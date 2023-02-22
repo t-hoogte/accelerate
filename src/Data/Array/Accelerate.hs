@@ -472,6 +472,10 @@ import GHC.Exts                                                     ( fromListN,
 import GHC.Generics                                                 ( Generic )
 import GHC.Stack
 
+-- $setup
+-- >>> :seti -XTypeOperators
+-- >>> import Data.Array.Accelerate
+
 
 -- Renamings
 -- ---------
