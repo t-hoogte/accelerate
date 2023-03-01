@@ -209,7 +209,7 @@ custom-setup
 
 flag debug
   manual:               True
-  default:              True
+  default:              False
   description:
     Enable kernel profiling and debug tracing messages.
     .

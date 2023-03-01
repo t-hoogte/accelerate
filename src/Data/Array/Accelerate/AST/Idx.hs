@@ -30,6 +30,7 @@ module Data.Array.Accelerate.AST.Idx (
   PairIdx(..)
 ) where
 
+import Control.DeepSeq
 import Data.Kind
 import Language.Haskell.TH.Extra                                    hiding ( Type )
 
@@ -94,13 +95,9 @@ matchIdx _           _           = Nothing
 --
 -- For performance, it uses an Int under the hood.
 --
-<<<<<<< HEAD
-newtype Idx (env :: Kind.Type) (t :: Kind.Type) = UnsafeIdxConstructor { unsafeRunIdx :: Int } deriving ( Eq, Ord )
-=======
 newtype Idx :: Type -> Type -> Type where
   UnsafeIdxConstructor :: { unsafeRunIdx :: Int } -> Idx env t
->>>>>>> build fix for ghc-9.2
-
+  deriving (Eq, Ord)
 {-# COMPLETE ZeroIdx, SuccIdx #-}
 
 pattern ZeroIdx :: forall envt t. () => forall env. (envt ~ (env, t)) => Idx envt t

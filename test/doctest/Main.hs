@@ -55,21 +55,17 @@ import System.Random
 import Criterion.Main
 
 main :: IO ()
-main = defaultMain [
-  bgroup "diagonal" 
-    [ bench "ILP-clusters" $ nf _ _
-    ]
-  ]
+main = print . runN @Interpreter $ diagonal (use $ fromList (Z:.10) [1 :: Int ..])
 
 dotp :: Acc (Vector Int) -> Acc (Vector Int) -> Acc (Scalar Int)
 dotp a b = fold (+) 0 $ zipWith (*) (map (+1) a) (map (`div` 2) b)
 
-diagonal :: (Shape sh, Num (Exp b), Elt b) 
-         => Acc (Array sh b) -> (Acc (Array sh b), Acc (Array sh b))
+diagonal :: (Shape sh, P.Num (Exp b), Elt b) 
+         => Acc (Array sh b) -> Acc (Array sh b, Array sh b)
 diagonal xs =
   let ys = map (+2) xs
       zs = map (+3) ys
-  in (ys, zs)
+  in T2 ys zs
 
 -- Neither of the backpermutes is allowed to fuse with the map: otherwise the other backpermute cannot be computed.
 -- Fusing both is possible, but only with work duplication (we still choose to never do that for now).
@@ -86,8 +82,8 @@ difficult acc = zip
 complex xs =
   let as = map (+1) xs
       bs = map (+2) xs
-      cs = gather bs as −− map (\a -> bs!a) as
-      ds = gather as bs −− map (\b -> as!b) bs
+      cs = gather bs as -- map (\a -> bs!a) as
+      ds = gather as bs -- map (\b -> as!b) bs
   in (cs, ds)
 
 npDifficult xs =
