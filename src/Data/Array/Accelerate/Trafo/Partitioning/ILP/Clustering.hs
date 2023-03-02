@@ -109,17 +109,29 @@ topSort (Graph _ fedges fpedges) cluster = map ExecL topsorteds
     -- \xs -> (map f xs, map g xs) gets split, even though I really thought this would work
     -- if @xs@ is concrete, it does seem to work? 
     -- TODO: compare the graphs of @horizontal@ and @horizontal xs@
-    
+    -- TODO: I changed stuff since I wrote the above; check whether it works now
+
     -- Make a graph of all these labels and their incoming edges (for horizontal fusion)...
-    parents    = S.unions $ S.map (\l -> S.map (\(a:->_)->a) $ S.filter (\(_:->b)->l==b) fedges ) cluster
-    badparents = S.unions $ S.map (\l -> S.map (\(a:->_)->a) $ S.filter (\(_:->b)->l==b) fpedges) cluster
-    (graph, getAdj, _) = buildGraph $ S.union cluster $ parents S.\\ badparents
+    fpparents =                    S.unions $ S.map (\l -> (S.\\ cluster) $ S.map (\(a:->_)->a) $ S.filter (\(_:->b)->l==b) fpedges) cluster
+    parents   = (S.\\ fpparents) $ S.unions $ S.map (\l -> (S.\\ cluster) $ S.map (\(a:->_)->a) $ S.filter (\(_:->b)->l==b) fedges ) cluster
+    parentsPlusEdges :: S.Set (Label, Int, Label) -- (Parent, Order, Source)
+    parentsPlusEdges = S.unions $ S.unions $ S.map (\l -> let relevantEdges = S.filter (\(a:->b)->l==a && b `S.member` cluster) (fedges S.\\ fpedges)
+                                                              orders :: S.Set Int
+                                                              orders = S.map (\(a:->b)-> readOrderOf b) relevantEdges
+                                                              ordersWithEdges = S.map (\o -> S.map (\(_:->b) -> (l,o,b)) $ S.filter (\(_:->b)-> readOrderOf b == o) relevantEdges) orders
+                                                          in ordersWithEdges) parents
+    (graph, getAdj, _) = buildGraph $ S.union cluster parents
+    -- TODO: this also 'connects' components through 'horizonal fusion' if they are in different orders.
+      -- To fix this: consider each edge from outside the cluster to inside the cluster: look at the sources (parents) and the read-order of those edges.
+      -- Whenever one parent has outgoing edges of varying read-orders, we should have multiple nodes for this parent, one per read-order.
+
     -- .. split it into connected components and remove those parents from last step,
     components = map (S.intersection cluster . S.fromList . map ((\(x,_,_)->x) . getAdj) . T.flatten) $ G.components graph
     -- and make a graph of each of them...
     graphs = map buildGraph components
     -- .. and finally, topologically sort each of those to get the labels per cluster sorted on dependencies
     topsorteds = map (\(graph', getAdj', _) -> map (view _1 . getAdj') $ G.topSort graph') graphs
+    readOrderOf = undefined --TODO
 
 openReconstruct   :: MakesILP op
                   => LabelEnv aenv
@@ -228,6 +240,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
       _ -> error "not a notfold"
 
     -- do the topological sorting for each set
+    -- TODO: add 'backend-specific' edges to the graph for sorting, see 3.3.1 in the PLDI paper
     clusters = concatMap (\case
                       Execs ls -> topSort graph ls
                       NonExec l -> [NonExecL l]) clusterslist
@@ -700,7 +713,7 @@ tryUpdateList p f (x : xs)
 --             -> Combine (a, as)     bs  (a, fused)
 --   Intro2    :: Combine     as      bs      fused 
 --             -> Combine     as  (b, bs) (a, fused)
-  
+
 -- data AlternativeCluster op args where
 --   Singleton :: op args -> SortArgs args sorted -> AlternativeCluster op sorted
 --   Multiple :: Combine first second args 

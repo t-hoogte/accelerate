@@ -84,8 +84,7 @@ makeILP (Info
     -- The number of extra variables that are equal to 0 (the thing you maximise) is exactly equal to n - the number of clusters that read from $x$.
     -- Then, we also need n^2 intermediate variables just to make these disjunction of conjunctions 
     -- note, it's only quadratic in the number of consumers of a specific array.
-    -- TODO: Because of backpermute, we actually need twice as many extra variables, where the second version is for the order it is accessed.
-    -- problem: backpermutes live in the backend specific variables currently
+    -- We also check for the 'order': horizontal fusion only happens when the two fused accesses are in the same order.
     numberOfReads = nReads
     (nReads, readConstraints, readBounds) = 
         foldl (\(a,b,c) (d,e,f)->(a.+.d,b<>e,c<>f)) (int 0, mempty, mempty)
@@ -94,10 +93,14 @@ makeILP (Info
       let consumers  = map (\(_ :-> j) -> j) . S.toList $ S.filter (\(i :-> _) -> i == l) fuseEdges
           nConsumers = length consumers
       readPis <- replicateM nConsumers readPiVar
+      readOrders <- replicateM nConsumers readOrderVar
       (subConstraint, subBounds) <- flip foldMapM consumers $ \consumerL -> do
         useVars <- replicateM nConsumers useVar -- these are the n^2 variables: For each consumer, n variables which each check the equality of pi to readpi
-        let constraint = foldMap (\(uv, rp) -> isEqualRangeN (c rp) (pi consumerL) (c uv)) (zip useVars readPis)
-        -- note that we set it to be equal to n-1 here, <n would also work but that is never optimal
+        let constraint = foldMap 
+              (\(uv, rp, ro) -> isEqualRangeN (c rp) (pi consumerL)         (c uv) 
+                                <> isEqualRangeN (c ro) (c $ OutDir consumerL) (c uv)) 
+              (zip3 useVars readPis readOrders)
+        -- note that we set it to be equal to n-1 here, smaller would also work but that is never optimal
         -- I don't know which version is easier/faster to solve!
         return (constraint <> foldl (.+.) (int 0) (map c useVars) .==. int (nConsumers-1), foldMap binary useVars)
       readPi0s <- replicateM nConsumers readPi0Var
@@ -105,6 +108,7 @@ makeILP (Info
              , subConstraint <> fold (zipWith (\p p0 -> c p .<=. timesN (c p0)) readPis readPi0s)
              , subBounds <> foldMap (\v -> lowerUpper 0 v n) readPis <> foldMap binary readPi0s)
 
+    readOrderVar = Other <$> freshName "ReadOrder"
     readPiVar  = Other <$> freshName "ReadPi" -- non-zero signifies that at least one consumer reads this array from a certain pi
     readPi0Var = Other <$> freshName "Read0Pi" -- signifies whether the corresponding readPi variable is 0
     useVar = Other <$> freshName "ReadUse" -- signifies whether a consumer corresponds with a readPi variable; because its pi == readpi

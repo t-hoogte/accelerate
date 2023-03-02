@@ -148,6 +148,7 @@ orB a b r =
 isEqualRangeN :: Expression op -> Expression op -> Expression op -> Constraint op
 isEqualRangeN = isEqualRange timesN
 
--- given a function that multiplies by the size of the domain of the first two arguments, the third argument is a boolean (0=true) representing the equality.
+-- given a function f that multiplies by the size of the domain of a and b, r can only be 0(true) when a and b are equal
+-- note that r can always be 1
 isEqualRange :: (Expression op -> Expression op) -> Expression op -> Expression op -> Expression op -> Constraint op
 isEqualRange f a b r = a .-. f r .<=. b <> b .<=. a .+. f r

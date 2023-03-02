@@ -56,6 +56,7 @@ import Data.Array.Accelerate.AST.LeftHandSide (LeftHandSide (LeftHandSideSingle,
 import Data.Array.Accelerate.Representation.Shape (ShapeR)
 import Data.Bifunctor (first)
 import GHC.Stack
+import qualified Debug.Trace
 
 -- | Directed edge (a :-> b): `b` depends on `a`.
 -- We only ever want to have these edges if a and b have the same parent, see `-?>` for a safe constructor.
@@ -108,6 +109,9 @@ data Var (op :: Type -> Type)
   | ManifestOutput Label
     -- ^ 0 means manifest, 1 is like a `delayed array`.
     -- Binary variable; will we write the output to a manifest array, or is it fused away (i.e. all uses are in its cluster)?
+  | InDir Label
+  -- ^ -3 can't fuse with anything, -2 for 'left to right', -1 for 'right to left', n for 'unpredictable, see computation n' (currently only backpermute)
+  | OutDir Label -- as InDir, but for the output of this label
   | Other String
     -- ^ For one-shot variables that don't deserve a constructor. These are also integer variables, and the responsibility is on the user to pick a unique name!
     -- It is possible to add a variation for continuous variables too, see `allIntegers` in MIP.hs.
@@ -166,7 +170,7 @@ class (Eq (BackendVar op), Ord (BackendVar op), Eq (BackendArg op), Show (Backen
   mkGraph :: op args -> LabelledArgs env args -> Label -> Information op
 
   -- using the ILP solution, attach the required information to each argument
-  labelLabelledArg :: M.Map (BackendVar op) Int -> Label -> LabelledArg env a -> LabelledArgOp op env a
+  labelLabelledArg :: M.Map (Var op) Int -> Label -> LabelledArg env a -> LabelledArgOp op env a
   getClusterArg :: LabelledArgOp op env a -> BackendClusterArg op a
 
   -- allow the backend to add constraints/bounds for every node
@@ -294,12 +298,12 @@ backendConstruc sol = M.mapWithKey f
       _ -> con
     g :: Label -> LabelledArgs env args -> LabelledArgsOp op env args
     g _ ArgsNil = ArgsNil
-    g l (arg :>: args) = labelLabelledArg smallermap l arg :>: g l args
-    -- using toAscList and fromAscList is probably slightly faster
-    smallermap :: Map (BackendVar op) Int
-    smallermap = M.fromList . map (first (\(BackendSpecific x) -> x)) . filter ((\case
-                                                        BackendSpecific{} -> True
-                                                        _ -> False) . fst) $ M.toList sol
+    g l (arg :>: args) = labelLabelledArg sol l arg :>: g l args
+    -- -- using toAscList and fromAscList is probably slightly faster
+    -- smallermap :: Map (BackendVar op) Int
+    -- smallermap = M.fromList . map (first (\(BackendSpecific x) -> x)) . filter ((\case
+    --                                                     BackendSpecific{} -> True
+    --                                                     _ -> False) . fst) $ M.toList sol
 
 
 -- strips underscores from constructor names
@@ -314,9 +318,9 @@ makeLenses ''Information
 makeFullGraph :: (MakesILP op)
               => PreOpenAcc op () a
               -> (Information op, Map Label (Construction op))
-makeFullGraph acc = (i, constrM)
+makeFullGraph acc = (i & constr <>~ maybe mempty (\l -> manifest l .==. int 0) output, constrM)
   where
-    (FGRes i _ constrM, _) = runState (mkFullGraph acc) (FGState LabelEnvNil (Label 0 Nothing) 0)
+    (FGRes i output constrM, _) = runState (mkFullGraph acc) (FGState LabelEnvNil (Label 0 Nothing) 0)
 
 makeFullGraphF :: (MakesILP op)
                => PreOpenAfun op () a
@@ -459,8 +463,10 @@ mkFullGraphF (Abody acc) = do
   l <- freshL
   currL.parent .= Just l
   res <- mkFullGraph acc
+  let output = snd $ Debug.Trace.traceShowId . ("bodyresult",) $ res ^. l_res
   currL.parent .= l ^. parent
-  return $ res
+  return $ res 
+         & info . constr <>~ maybe mempty (\l' -> manifest l' .==. int 0) output
          & l_res    ?~ l
          & info.graphI.graphNodes %~ S.insert l
          & construc %~ M.insert l CBod
