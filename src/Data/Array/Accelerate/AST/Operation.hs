@@ -41,7 +41,7 @@ module Data.Array.Accelerate.AST.Operation (
   expGroundVars, funGroundVars, arrayInstrsInExp, arrayInstrsInFun,
 
   encodeGroundR, encodeGroundsR, encodeGroundVar, encodeGroundVars,
-  rnfGroundR, rnfGroundsR, rnfGroundVar, rnfGroundVars,
+  rnfGroundR, rnfGroundsR, rnfGroundVar, rnfGroundVars, rnfUniqueness,
   liftGroundR, liftGroundsR, liftGroundVar, liftGroundVars,
 
   bufferImpossible, groundFunctionImpossible,
