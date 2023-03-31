@@ -107,6 +107,7 @@ import System.IO.Unsafe (unsafePerformIO)
 import Data.Array.Accelerate.Eval
 import qualified Data.Array.Accelerate.AST.Partitioned as P
 import Data.Functor.Identity
+import Data.Array.Accelerate.Trafo.LiveVars
 
 data Interpreter
 instance Backend Interpreter where
@@ -599,6 +600,9 @@ instance EvalOp InterpretOp where
   writeOutput r sh buf env n (Identity x) = writeBuffers (TupRsingle r) (veryUnsafeUnfreezeBuffers (TupRsingle r) $ varsGetVal buf env) n x
   readInput r sh buf env (BCA f) n = Identity <$> indexBuffers' (TupRsingle r) (varsGetVal buf env) (f n)
 
+  indexsh  gvs env = pure . Identity $ varsGetVal gvs env
+  indexsh' evs env = pure . Identity $ varsGetVal evs env
+  subtup s = Identity . subTup s . runIdentity
 
 evalClusterInterpreter :: Cluster InterpretOp args -> Args env args -> Val env -> IO ()
 evalClusterInterpreter c@(Cluster _ (Cluster' io _)) args env = doNTimes (iterationsize io args env) $ evalCluster c args env
