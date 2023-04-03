@@ -18,12 +18,10 @@
 {-# LANGUAGE TemplateHaskell     #-}
 {-# LANGUAGE TupleSections       #-}
 {-# LANGUAGE TypeApplications    #-}
-{-# LANGUAGE TypeFamilies        #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
 {-# LANGUAGE TypeOperators       #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns        #-}
-{-# LANGUAGE LambdaCase        #-}
 
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 {-# OPTIONS_HADDOCK prune #-}
@@ -83,7 +81,6 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
 import Lens.Micro ((.~), (&))
 import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Pretty.Partitioned ()
-import Data.Array.Accelerate.Pretty.Schedule
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.LeftHandSide (LeftHandSide (LeftHandSideWildcard, LeftHandSideUnit))
 import Data.Array.Accelerate.AST.Schedule
@@ -288,7 +285,7 @@ instance IsKernel InterpretKernel where
   type KernelOperation InterpretKernel = InterpretOp
   type KernelMetadata  InterpretKernel = NoKernelMetadata
 
-  compileKernel = const $ InterpretKernel
+  compileKernel = const InterpretKernel
 
 instance PrettyKernel InterpretKernel where
   -- PrettyKernelBody provides a Val but prettyOpWithArgs expects a Val', should we change them to have the
@@ -597,8 +594,8 @@ instance EvalOp InterpretOp where
     pure $ Push Empty (FromArg $ Value' x sh) -- We evaluated the backpermute at the start already, now simply relabel the shape info
   evalOp _ _ _ _ = undefined
 
-  writeOutput r sh buf env n (Identity x) = writeBuffers (TupRsingle r) (veryUnsafeUnfreezeBuffers (TupRsingle r) $ varsGetVal buf env) n x
-  readInput r sh buf env (BCA f) n = Identity <$> indexBuffers' (TupRsingle r) (varsGetVal buf env) (f n)
+  writeOutput r _ buf env n (Identity x) = writeBuffers (TupRsingle r) (veryUnsafeUnfreezeBuffers (TupRsingle r) $ varsGetVal buf env) n x
+  readInput r _ buf env (BCA f) n = Identity <$> indexBuffers' (TupRsingle r) (varsGetVal buf env) (f n)
 
   indexsh  gvs env = pure . Identity $ varsGetVal gvs env
   indexsh' evs env = pure . Identity $ varsGetVal evs env
@@ -611,12 +608,13 @@ evalClusterInterpreter c@(Cluster _ (Cluster' io _)) args env = doNTimes (iterat
 iterationsize :: ClusterIO args i o -> Args env args -> Val env -> Int
 iterationsize io args env = case io of
   P.Empty -> error "no size"
-  P.Output _ _ _ io' -> case args of ArgArray Out (ArrayR shr _) sh _ :>: args' -> arrsize shr (varsGetVal sh env)
+  P.Output {}   -> case args of ArgArray Out (ArrayR shr _) sh _ :>: _ -> arrsize shr (varsGetVal sh env)
   P.Vertical _ _ io' -> case args of -- skip past this one
     ArgVar _ :>: args' -> iterationsize io' args' env
-  P.Input  io'       -> case args of ArgArray In  (ArrayR shr _) sh _ :>: args' -> iterationsize io' args' env   -- -> arrsize shr (varsGetVal sh env)
-  P.MutPut io'       -> case args of ArgArray Mut (ArrayR shr _) sh _ :>: args' -> iterationsize io' args' env -- arrsize shr (varsGetVal sh env)
+  P.Input  io'       -> case args of ArgArray In  _ _ _ :>: args' -> iterationsize io' args' env   -- -> arrsize shr (varsGetVal sh env)
+  P.MutPut io'       -> case args of ArgArray Mut _ _ _ :>: args' -> iterationsize io' args' env -- arrsize shr (varsGetVal sh env)
   P.ExpPut' io' -> case args of _ :>: args' -> iterationsize io' args' env -- skip past this one
+  P.Trivial io' -> case args of _ :>: args' -> iterationsize io' args' env
 
 
 arrsize :: ShapeR sh -> sh -> Int
@@ -768,7 +766,7 @@ evalArrayInstrDefault aenv = EvalArrayInstr $ \instr arg -> case instr of
   Parameter var -> prj (varIdx var) aenv
 
 evalNoArrayInstr :: EvalArrayInstr NoArrayInstr
-evalNoArrayInstr = EvalArrayInstr $ \instr -> case instr of {}
+evalNoArrayInstr = EvalArrayInstr $ \case {}
 
 -- Evaluate a closed scalar expression
 --
