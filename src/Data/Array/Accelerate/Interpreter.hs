@@ -592,7 +592,9 @@ instance EvalOp InterpretOp where
     pure $ Push Empty (FromArg $ Value' (Identity $ evalFun f (evalArrayInstrDefault env) x) (Shape' shr sh))
   evalOp _ IBackpermute _ (Push (Push (Push _ (BAE sh _)) (BAE (Value' x _) _)) _) =
     pure $ Push Empty (FromArg $ Value' x sh) -- We evaluated the backpermute at the start already, now simply relabel the shape info
-  evalOp _ _ _ _ = undefined
+  evalOp i IGenerate env (Push (Push _ (BAE (Shape' shr sh) (BCA bp))) (BAE f _)) =
+    pure $ Push Empty (FromArg $ Value' (Identity $ evalFun f (evalArrayInstrDefault env) (linearIndexToSh shr (runIdentity sh) (bp i))) (Shape' shr sh))
+  evalOp _ _ _ _ = error "evalOp todo"
 
   writeOutput r _ buf env n (Identity x) = writeBuffers (TupRsingle r) (veryUnsafeUnfreezeBuffers (TupRsingle r) $ varsGetVal buf env) n x
   readInput r _ buf env (BCA f) n = Identity <$> indexBuffers' (TupRsingle r) (varsGetVal buf env) (f n)
@@ -627,6 +629,14 @@ doNTimes n f
   | n == 0 = pure ()
   | otherwise = f (n-1) >> doNTimes (n-1) f
 
+linearIndexToSh :: ShapeR sh -> sh -> Int -> sh
+linearIndexToSh ShapeRz () 0 = ()
+linearIndexToSh ShapeRz () _ = error "non-zero index in unit array"
+linearIndexToSh (ShapeRsnoc shr) (sh, outer) i = let
+  innerSize = arrsize shr sh
+  outerIndex = i `div` innerSize
+  innerIndex = linearIndexToSh shr sh (i `mod` innerSize)
+  in (innerIndex, outerIndex)
 
 
 
