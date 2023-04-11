@@ -226,7 +226,7 @@ type family Append f e xs where
   Append f e xs = (xs, f e)
 
 fromScalar :: forall e f xs. ScalarType e -> Append f e xs :~: (xs, f e)
-fromScalar _ = unsafeCoerce Refl -- I promise
+fromScalar _ = unsafeCoerce Refl -- trivially true for all cases, but there's a lot of them
 
 
 instance NFData (TakeBuffers f e exs xs) where
@@ -244,26 +244,29 @@ pattern ExpArg :: ()
                 => forall e args body scope. (args' ~ (e -> args), body' ~ (body, e), scope' ~ (scope, e))
                 => LeftHandSideArgs args body scope
                 -> LeftHandSideArgs args' body' scope'
-pattern ExpArg lhs <- (unExpArg -> Just (lhs, Refl))
+pattern ExpArg lhs <- (unExpArg -> Just (E lhs Refl))
 {-# COMPLETE Base, Reqr, Make, Adju, Ignr, ExpArg #-}
-unExpArg :: LeftHandSideArgs args' i' o' -> Maybe (LeftHandSideArgs args i o, (args', i', o') :~: (e -> args, (i, e), (o, e)))
-unExpArg (EArg lhs) = Just (unsafeCoerce lhs, unsafeCoerce Refl)
-unExpArg (VArg lhs) = Just (unsafeCoerce lhs, unsafeCoerce Refl)
-unExpArg (FArg lhs) = Just (unsafeCoerce lhs, unsafeCoerce Refl)
+unExpArg :: LeftHandSideArgs args' i' o' -> Maybe (ExpArgExistential args' i' o')
+unExpArg (EArg lhs) = Just (E lhs Refl)
+unExpArg (VArg lhs) = Just (E lhs Refl)
+unExpArg (FArg lhs) = Just (E lhs Refl)
 unExpArg _ = Nothing
+data ExpArgExistential args i o where
+  E :: LeftHandSideArgs args i o -> (args', i', o') :~: (e -> args, (i,e), (o,e)) -> ExpArgExistential args' i' o'
 
 pattern ExpPut' :: ()
                 => forall e args i o. (args' ~ (e -> args), i' ~ (i, e), o' ~ (o, e))
                 => ClusterIO args  i  o
                 -> ClusterIO args' i' o'
-pattern ExpPut' io <- (unExpPut' -> Just (io, Refl))
+pattern ExpPut' io <- (unExpPut' -> Just (P io Refl))
 {-# COMPLETE Empty, Vertical, Input, Output, MutPut, ExpPut', Trivial #-}
-unExpPut' :: ClusterIO args' i' o' -> Maybe (ClusterIO args i o, (args', i', o') :~: (e -> args, (i, e), (o, e)))
-unExpPut' (ExpPut io) = Just (unsafeCoerce io, unsafeCoerce Refl)
-unExpPut' (VarPut io) = Just (unsafeCoerce io, unsafeCoerce Refl)
-unExpPut' (FunPut io) = Just (unsafeCoerce io, unsafeCoerce Refl)
+unExpPut' :: ClusterIO args' i' o' -> Maybe (ExpPutExistential args' i' o')
+unExpPut' (ExpPut io) = Just (P io Refl)
+unExpPut' (VarPut io) = Just (P io Refl)
+unExpPut' (FunPut io) = Just (P io Refl)
 unExpPut' _ = Nothing
-
+data ExpPutExistential args i o where
+  P :: ClusterIO args i o -> (args', i', o') :~: (e -> args, (i, e), (o, e)) -> ExpPutExistential args' i' o'
 
 
 
@@ -395,7 +398,7 @@ data ToArg env a where
          -> GroundVars env sh
          -> GroundVars env (Buffers e)
          -> ToArg env (Sh sh e)
-  Others :: Arg env a -> ToArg env a
+  Others :: String -> Arg env a -> ToArg env a
 
 
 -- getIn :: LeftHandSideArgs body i o -> i -> InArgs body

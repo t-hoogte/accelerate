@@ -57,6 +57,7 @@ import Data.Array.Accelerate.Representation.Shape (ShapeR)
 import Data.Composition ((.*))
 import Data.Array.Accelerate.Pretty.Exp (IdxF(..))
 import Data.Array.Accelerate.AST.Idx (Idx (..))
+import Data.Array.Accelerate.Pretty.Operation
 
 
 type BackendArgs op env = PreArgs (BackendClusterArg2 op env)
@@ -122,8 +123,8 @@ makeBackendArg args env (Cluster info (Cluster' io ast)) = let o = getOutputEnv 
     lhsEnvArgs (Make t1 t2 lhs) env = case takeBuffers t1 env of
       (Info (Compose (BEE (ArrArg r sh buf) f)), env') -> bimap (valueToOut f :>:) (ArgArray Out r sh buf :>:) $ lhsEnvArgs lhs env'
       _ -> error "urk"
-    lhsEnvArgs (ExpArg lhs) (Push env (BEE (Others arg) f)) = bimap (f :>:) (arg :>:) $ lhsEnvArgs lhs env
-    lhsEnvArgs (Adju   lhs) (Push env (BEE (Others arg) f)) = bimap (f :>:) (arg :>:) $ lhsEnvArgs lhs env
+    lhsEnvArgs (ExpArg lhs) (Push env (BEE (Others _ arg) f)) = bimap (f :>:) (arg :>:) $ lhsEnvArgs lhs env
+    lhsEnvArgs (Adju   lhs) (Push env (BEE (Others _ arg) f)) = bimap (f :>:) (arg :>:) $ lhsEnvArgs lhs env
     lhsEnvArgs (Ignr lhs) (Push env _) = lhsEnvArgs lhs env
 
     lhsArgsEnv :: LeftHandSideArgs body env' scope -> BackendEnv op env scope -> BackendArgs op env body -> BackendEnv op env env'
@@ -144,8 +145,12 @@ makeBackendArg args env (Cluster info (Cluster' io ast)) = let o = getOutputEnv 
     getOutputEnv (Vertical t r io) (arg@(ArgVar vars) :>: args) (info :>: infos) = put' t (BEE (ArrArg r (toGrounds vars) (error "accessing a fused away buffer")) (varToValue $ def arg env info)) (getOutputEnv io args infos) -- there is no buffer!
     getOutputEnv (Input io) (arg@(ArgArray In r sh buf) :>: args) (info :>: infos) = Push (getOutputEnv io args infos) (BEE (ArrArg r sh buf) (inToValue $ def arg env info))
     getOutputEnv (Output t s e io) (arg@(ArgArray Out r sh buf) :>: args) (info :>: infos) = put' t (BEE (ArrArg (ArrayR (arrayRshape r) e) sh (biggenBuffers s buf)) (outToValue $ shrinkOrGrow $ def arg env info)) (getOutputEnv io args infos)
-    getOutputEnv (MutPut     io) (arg :>: args) (info :>: infos) = Push (getOutputEnv io args infos) (BEE (Others arg) (def arg env info))
-    getOutputEnv (ExpPut'    io) (arg :>: args) (info :>: infos) = Push (getOutputEnv io args infos) (BEE (Others arg) (def arg env info))
+    getOutputEnv (MutPut     io) (arg :>: args) (info :>: infos) = Push (getOutputEnv io args infos) (BEE (Others "mut" arg) (def arg env info))
+    getOutputEnv (ExpPut     io) (arg :>: args) (info :>: infos) = Push (getOutputEnv io args infos) (BEE (Others "exp" arg) (def arg env info))
+    getOutputEnv (VarPut     io) (arg :>: args) (info :>: infos) = Push (getOutputEnv io args infos) (BEE (Others "var" arg) (def arg env info))
+    getOutputEnv (FunPut     io) (arg :>: args) (info :>: infos) = Push (getOutputEnv io args infos) (BEE (Others "fun" arg) (def arg env info))
+    
+    -- getOutputEnv (ExpPut'    io) (arg :>: args) (info :>: infos) = Push (getOutputEnv io args infos) (BEE (Others arg) (def arg env info))
     getOutputEnv (Trivial    io) (_   :>: args) (_    :>: infos) = getOutputEnv io args infos
 
     biggenBuffers :: SubTupR e e' -> GroundVars env (Buffers e') -> GroundVars env (Buffers e)
@@ -221,7 +226,7 @@ type family Distribute' f a = b | b -> a where
   -- Distribute' f (Sh sh e) = Sh sh (f e)
 distUnit :: forall f a. Distribute' f a ~ () => a :~: ()
 distUnit = unsafeCoerce Refl
-distPair :: forall f a b c. Distribute' f a ~ (Distribute' f b, f c) => a :~: (a, b)
+distPair :: forall f a b c. Distribute' f a ~ (Distribute' f b, f c) => a :~: (b, c)
 distPair = unsafeCoerce Refl
 
 evalCluster :: forall op env args. (EvalOp op) => Cluster op args -> Args env args -> Env (EnvF op) env -> Index op -> EvalMonad op ()
@@ -328,6 +333,10 @@ instance StaticClusterAnalysis op => TupRmonoid (Compose (BackendEnvElem op env)
    = Compose $ BEE (ArrArg (ArrayR shr (TupRpair r (proofToR proof))) shvars (TupRpair bufs (proofToR' @Buffer proof))) (shrinkOrGrow info)
   injL _ _ = error "value not in arrarg"
 
+  injR :: StaticClusterAnalysis op 
+    => Compose (BackendEnvElem op env) (Value sh) b
+    -> TupUnitsProof a
+    -> Compose (BackendEnvElem op env) (Value sh) (a, b)
   injR (Compose (BEE (ArrArg (ArrayR shr r) shvars bufs) info)) proof
    = Compose $ BEE (ArrArg (ArrayR shr (TupRpair (proofToR proof) r)) shvars (TupRpair (proofToR' @Buffer proof) bufs)) (shrinkOrGrow info)
   injR _ _ = error "value not in arrarg"
