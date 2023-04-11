@@ -896,8 +896,7 @@ main = do
   let nclusters   = P.length initial'
       npoints     = P.length points'
 
-      solve :: Vector (Cluster Float) -> String 
-      solve       = test @UniformScheduleFun @InterpretKernel . kmeans (use points) . use
+      solve       = run1 @Interpreter (kmeans (use points))
 
       initial :: Vector (Cluster Float)
       initial = A.fromList (Z:.nclusters) initial'
@@ -907,11 +906,11 @@ main = do
 
   -- Warm up first by printing the expected results
   --
-  -- putStrLn $ "number of points: " P.++ show npoints
-  -- putStrLn $ "final clusters:\n"  P.++
-    -- unlines (P.map show (A.toList (solve initial)))
+  putStrLn $ "number of points: " P.++ show npoints
+  putStrLn $ "final clusters:\n"  P.++
+    unlines (P.map show (A.toList (solve initial)))
 
-  putStrLn $ solve initial
+  print $ solve initial
 
 
 type Point' = (Float, Float)
