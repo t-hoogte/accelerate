@@ -58,6 +58,7 @@ import Data.Composition ((.*))
 import Data.Array.Accelerate.Pretty.Exp (IdxF(..))
 import Data.Array.Accelerate.AST.Idx (Idx (..))
 import Data.Array.Accelerate.Pretty.Operation
+import qualified Debug.Trace
 
 
 type BackendArgs op env = PreArgs (BackendClusterArg2 op env)
@@ -339,6 +340,12 @@ instance StaticClusterAnalysis op => TupRmonoid (Compose (BackendEnvElem op env)
     -> Compose (BackendEnvElem op env) (Value sh) (a, b)
   injR (Compose (BEE (ArrArg (ArrayR shr r) shvars bufs) info)) proof
    = Compose $ BEE (ArrArg (ArrayR shr (TupRpair (proofToR proof) r)) shvars (TupRpair (proofToR' @Buffer proof) bufs)) (shrinkOrGrow info)
+  injR (Compose (BEE (Others s arg) _)) _ = Debug.Trace.trace s $ case arg of
+    ArgVar{} -> error "v"
+    ArgExp{} -> error "e"
+    ArgFun{} -> error "f"
+    ArgArray m _ _ _ -> error $ show m
+    _ -> error s
   injR _ _ = error "value not in arrarg"
 
 instance StaticClusterAnalysis op => TupRmonoid (Compose (BackendEnvElem op env) (Sh sh)) where
