@@ -321,6 +321,22 @@ instance StaticClusterAnalysis op => TupRmonoid (Compose (BackendEnvElem op env)
     = Compose $ BEE
                   (ArrArg (ArrayR shr (TupRpair ar cr)) shvars (TupRpair abufs cbufs))
                   (pairinfo b d)
+  pair' (Compose (BEE (Others s arg) _)) _ = Debug.Trace.trace ("fst"<>s) $ 
+    case arg of
+    ArgVar{} -> error "v"
+    ArgExp{} -> error "e"
+    ArgFun{} -> error "f"
+    ArgArray m _ _ _ -> error $ show m
+    _ -> 
+      error s
+  pair' _ (Compose (BEE (Others s arg) _)) = Debug.Trace.trace ("snd"<>s) $ 
+    case arg of
+    ArgVar{} -> error "v"
+    ArgExp{} -> error "e"
+    ArgFun{} -> error "f"
+    ArgArray m _ _ _ -> error $ show m
+    _ -> 
+      error s
   pair' _ _ = error "value not in arrarg"
 
   unpair' (Compose (BEE (ArrArg (ArrayR shr (TupRpair ar cr)) shvars (TupRpair abufs cbufs)) infos))

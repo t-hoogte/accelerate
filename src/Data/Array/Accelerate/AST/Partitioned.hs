@@ -14,6 +14,7 @@
 {-# LANGUAGE TypeFamilyDependencies#-}
 {-# LANGUAGE TypeOperators         #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
@@ -52,12 +53,14 @@ import Control.DeepSeq (NFData (rnf))
 import Data.Array.Accelerate.Trafo.Operation.Simplify (SimplifyOperation(..))
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (BackendCluster, MakesILP (BackendClusterArg))
 import Data.Kind (Type)
-import Data.Array.Accelerate.Type (ScalarType)
+import Data.Array.Accelerate.Type (ScalarType (..), SingleType (..), NumType (..), IntegralType (..))
 import Data.Array.Accelerate.AST.Environment ((:>), weakenId, (.>), weakenSucc', weakenKeep, Env, prj')
 import Data.Array.Accelerate.Trafo.Operation.Substitution (weaken, Sink)
 import Data.Functor.Identity
 import Data.Functor.Compose
 import Data.Array.Accelerate.Pretty.Exp (IdxF (..))
+
+import qualified Debug.Trace
 
 -- In this model, every thread has one input element per input array,
 -- and one output element per output array. That works perfectly for
@@ -227,7 +230,7 @@ type family Append f e xs where
 
 fromScalar :: forall e f xs. ScalarType e -> Append f e xs :~: (xs, f e)
 fromScalar _ = unsafeCoerce Refl -- trivially true for all cases, but there's a lot of them
-
+                                 -- yes, I tried it for vector types too
 
 instance NFData (TakeBuffers f e exs xs) where
   rnf TakeUnit = ()
@@ -371,9 +374,10 @@ type family InArgs a = b | b -> a where
   InArgs  ()       = ()
   InArgs  (a -> x) = (InArgs x, InArg a)
 
+-- unsafeCoerce is needed because fundeps are stupid and we can't inverse type families, but take'Take below shows that this makes sense
 takeTake' :: Take (InArg a) (InArgs axs) (InArgs xs) -> Take' a axs xs
 takeTake' Here = unsafeCoerce Here'
-takeTake' (There t) = unsafeCoerce There' $ takeTake' $ unsafeCoerce t
+takeTake' (There t) = unsafeCoerce $ There' $ takeTake' $ unsafeCoerce t
 
 take'Take :: Take' a axs xs -> Take (InArg a) (InArgs axs) (InArgs xs)
 take'Take Here' = Here
@@ -504,6 +508,13 @@ data SLVDiff i o i' o' where
   DeeperI :: SLVDiff i o i' o' -> SLVDiff (i, x)  o     (i', x) o'
   DeeperO :: SLVDiff i o i' o' -> SLVDiff i      (o, y)  i'    (o', y)
   UselessArg :: SLVDiff i o i' o' -> SLVDiff i o (i', x) (o', x)
+deriving instance Show (SLVDiff a b c d)
+-- -- only sometimes: DeeperI (UselessArg (DeeperO Same)) is a counterexample!
+-- slvDiffPreservesIdentitySometimes :: SLVDiff x x y z -> Maybe (y :~: z)
+-- slvDiffPreservesIdentitySometimes = \case
+--   Same -> Just Refl
+--   UselessArg d -> slvDiffPreservesIdentitySometimes d
+  
 
 instance ShrinkArg (BackendClusterArg op) => SLVOperation (Cluster op) where
   slvOperation (Cluster b (Cluster' io ast :: Cluster' op args)) = Just $ ShrinkOperation shrinkOperation
@@ -588,8 +599,19 @@ instance ShrinkArg (BackendClusterArg op) => SLVOperation (Cluster op) where
 
       -- This is surprisingly difficult to write 'honestly', because we know that there are an equal number of DeeperI's and DeeperO's, but they can be in any order.
       wNone :: SLVDiff x x i' o' -> ClusterAST op x x -> ClusterAST op i' o'
-      wNone !_ None = unsafeCoerce None
+      wNone diff None
+        | check diff = unsafeCoerce None -- quick untyped check: equal numbers of deeperI and deeperO in any order make identities, but uselessargs ruin the day
+        | otherwise = Debug.Trace.trace ("HERE"<>show diff) $ unsafeCoerce None -- introducing segfaults
+        --error "this is not always true, unsafecoerce here was probably a problem"
       wNone _ _ = error "only none here"
+
+      -- does wNone hold?
+      check :: SLVDiff a b c d -> Int -> String
+      check Same n = if n==0 then "yes" else "no"
+      check (UselessArg d) n | n==0 =check d 0
+                             | otherwise = "no"
+      check (DeeperI d) n = check d (n+1)
+      check (DeeperO d) n = check d (n-1)
 
       wDiff :: SLVDiff i o i' o' -> i :> i'
       wDiff Same = weakenId

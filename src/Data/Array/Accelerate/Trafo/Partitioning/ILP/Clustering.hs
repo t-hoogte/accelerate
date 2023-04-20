@@ -50,6 +50,7 @@ import Data.Array.Accelerate.Trafo.Operation.Substitution (weaken)
 import Data.Functor.Identity
 import Data.Array.Accelerate.Pretty.Exp (IdxF(..))
 import qualified Data.Tree as T
+import qualified Debug.Trace
 
 -- "open research question"
 -- -- Each set of ints corresponds to a set of Constructions, which themselves contain a set of ints (the things they depend on).
@@ -66,6 +67,12 @@ Within each cluster (Labels), we do a topological sort using the edges in Graph
 Data.Graph (containers) has a nice topological sort.
 -}
 
+map !?! key = case map M.!? key of
+  Just x -> x
+  Nothing -> Debug.Trace.trace ("error: map "<> show map <> "does not contain key " <> show key) undefined
+
+instance Show (Exists a) where
+  show (Exists x) = "exis"
 
 -- Note that the return type `a` is not existentially qualified: The caller of this function tells
 -- us what the result type should be (namely, what it was before fusion). We use unsafe tricks to
@@ -207,7 +214,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
       -- TODO: use guards to fuse these two identical cases
       case makeCluster env cluster of
       NotFold con -> case con of
-        CLHS (mylhs :: MyGLHS a) b u -> case prev M.! b of
+        CLHS (mylhs :: MyGLHS a) b u -> case prev !?! b of
           Exists bnd -> createLHS mylhs env $ \env' lhs ->
             case makeAST env' ctail (M.map (\(Exists acc) -> Exists $ weakenAcc lhs acc) prev) of
               Exists scp
@@ -242,7 +249,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
     findTopOfF :: [ClusterL] -> ClusterL
     findTopOfF [] = error "empty list"
     findTopOfF [x] = x
-    findTopOfF (x@(NonExecL l):xs) = case construct M.! l of
+    findTopOfF (x@(NonExecL l):xs) = case construct !?! l of
       CBod -> findTopOfF xs
       CFun _ l' -> findTopOfF $ filter (\(NonExecL l'') -> l'' /= l') xs ++ [x]
       -- findTopOfF $ filter (\(NonExecL l) -> Just l /= p) xs ++ [x]
@@ -255,12 +262,12 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
     subclusters = M.map (concatMap ( \case
                       Execs ls -> topSort graph ls
                       NonExec l -> [NonExecL l])) subclustersmap
-    subcluster l = subclusters M.! l
+    subcluster l = subclusters !?! l
 
     makeCluster :: LabelEnv env -> ClusterL -> FoldType op env
     makeCluster env (ExecL ls) =
        foldr1 (flip fuseCluster)
-                    $ map ( \l -> case construct M.! l of
+                    $ map ( \l -> case construct !?! l of
                               -- At first thought, this `fromJust` might error if we fuse an array away.
                               -- It does not: The array will still be in the environment, but after we finish
                               -- the `foldr1`, the input argument will dissapear. The output argument does not:
@@ -269,7 +276,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
                               CExe env' args op -> InitFold op (fromJust $ reindexLabelledArgsOp (mkReindexPartial env' env) args)
                               _                 -> error "avoid this next refactor" -- c -> NotFold c
                           ) ls
-    makeCluster _ (NonExecL l) = NotFold $ construct M.! l
+    makeCluster _ (NonExecL l) = NotFold $ construct !?! l
 
     fuseCluster :: FoldType op env -> FoldType op env -> FoldType op env
     fuseCluster (Fold cluster) (InitFold op largs) =

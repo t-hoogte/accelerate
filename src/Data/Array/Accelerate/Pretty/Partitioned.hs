@@ -8,6 +8,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications    #-}
 {-# LANGUAGE TypeOperators       #-}
+{-# LANGUAGE StandaloneDeriving       #-}
 {-# LANGUAGE ViewPatterns        #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 -- |
@@ -271,12 +272,16 @@ data PartialVal env where
   PEnd  ::                           PartialVal env
   PSkip :: PartialVal env         -> PartialVal (env, t)
   PPush :: PartialVal env -> Adoc -> PartialVal (env, t)
+deriving instance Show (PartialVal env)
 
 pSkips :: ConsBuffers f t env env' -> PartialVal env' -> PartialVal env
 pSkips ConsUnit = id
 pSkips ConsSingle = PSkip
 pSkips (ConsPair l r) = pSkips r . pSkips l
-pSkips (ConsUnitFusedAway x) = \(PPush env y) -> PPush (pSkips x env) y
+pSkips (ConsUnitFusedAway x) = \case
+  PPush env y -> PPush (pSkips x env) y
+  PSkip env -> PSkip (pSkips x env)
+  PEnd -> error "huh"
 
 pEnvTail :: PartialVal (env, t) -> PartialVal env
 pEnvTail PEnd          = PEnd

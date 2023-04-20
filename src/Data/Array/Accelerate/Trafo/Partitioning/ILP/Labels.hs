@@ -218,7 +218,7 @@ getLabelsArg (ArgFun fun)                  env = getLabelsFun fun    env
 -- Maybe we should only return the sh labels for input arrays?
 getLabelsArg (ArgArray _ _ shVars buVars) env = let (Arr x,             buLabs         ) = getLabelsTup buVars env
                                                     (Arr y,                      shLabs) = getLabelsTup shVars env
-                                                in  (Debug.Trace.trace ("\n\ngetLabelsArg: buffer alabel:" <> show x <> "\nshape alabel:" <> show y <> "\nbuf labels:" <> show buLabs <> "\nshape labels:" <> show shLabs) $ 
+                                                in ( --Debug.Trace.trace ("\n\ngetLabelsArg: buffer alabel:" <> show x <> "\nshape alabel:" <> show y <> "\nbuf labels:" <> show buLabs <> "\nshape labels:" <> show shLabs) $ 
                                                   unBuffers $ Arr x, buLabs <> shLabs)
 
 getLabelsTup :: TupR (Var a env) b -> LabelEnv env -> ALabels (m sh b)

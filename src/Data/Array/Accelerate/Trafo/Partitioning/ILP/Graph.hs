@@ -289,6 +289,19 @@ data Construction (op :: Type -> Type) where
   CCmp  :: LabelEnv env -> Exp env a                                                     -> Construction op
   CAlc  :: LabelEnv env -> ShapeR sh -> ScalarType e -> ExpVars env sh                   -> Construction op
   CUnt  :: LabelEnv env -> ExpVar env e                                                  -> Construction op
+instance Show (Construction op) where
+  show CExe{} = "exe"
+  show CExe'{} = "exe'"
+  show CUse{} = "use"
+  show CITE{} = "ite"
+  show CWhl{} = "whl"
+  show CLHS{} = "lhs"
+  show CFun{} = "fun"
+  show CBod{}  = "bod"
+  show CRet{} = "ret"
+  show CCmp{} = "cmp"
+  show CAlc{} = "alc"
+  show CUnt{} = "unt"
 
 backendConstruc :: forall op. (MakesILP op) => Solution op -> Map Label (Construction op) -> Map Label (Construction op)
 backendConstruc sol = M.mapWithKey f
