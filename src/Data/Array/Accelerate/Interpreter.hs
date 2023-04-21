@@ -164,8 +164,8 @@ instance StaticClusterAnalysis InterpretOp where
   shToVar      (BCA f) = BCA f
   shrinkOrGrow (BCA f) = BCA f
   addTup       (BCA f) = BCA f
-  justUnit = BCA undefined
-
+  unitToVar    (BCA f) = BCA f
+  varToUnit    (BCA f) = BCA f
   def _ _ _ = BCA id
 
 -- we can implement stencils using clamp, mirror or wrap with backpermute and zipwith(map), but for stencils using function we need a little extra.

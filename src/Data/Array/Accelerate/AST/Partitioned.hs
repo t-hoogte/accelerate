@@ -61,6 +61,7 @@ import Data.Functor.Compose
 import Data.Array.Accelerate.Pretty.Exp (IdxF (..))
 
 import qualified Debug.Trace
+import Data.Maybe (fromJust)
 
 -- In this model, every thread has one input element per input array,
 -- and one output element per output array. That works perfectly for
@@ -123,6 +124,8 @@ data LeftHandSideArgs body env scope where
   -- Does nothing to this part of the environment
   Ignr :: LeftHandSideArgs              body   env             scope
        -> LeftHandSideArgs              body  (env, e)        (scope, e)
+  Triv :: LeftHandSideArgs              body   env             scope
+       -> LeftHandSideArgs (m sh ()  -> body) (env, Var' sh)  (scope, Var' sh)
   -- Expressions, variables and functions are not fused
   EArg :: LeftHandSideArgs              body   env             scope
        -> LeftHandSideArgs (Exp'   e -> body) (env, Exp' e)   (scope, Exp' e)
@@ -155,7 +158,7 @@ data ClusterIO args input output where
   FunPut :: ClusterIO              args   input             output
          -> ClusterIO (Fun'   e -> args) (input, Fun' e)   (output, Fun' e)
   Trivial :: ClusterIO args input output
-          -> ClusterIO (m sh () -> args) input output
+          -> ClusterIO (m sh () -> args) (input, Var' sh) (output, Var' sh)
 
 
 instance NFData' (IdxF f env) where
@@ -195,7 +198,7 @@ data ConsBuffers (f :: Type -> Type) e exs xs where
   ConsPair :: ConsBuffers f e         exs  xs
            -> ConsBuffers f e'      e'exs exs
            -> ConsBuffers f (e, e') e'exs  xs
-  ConsUnitFusedAway :: ConsBuffers f e exs xs -> ConsBuffers f e (exs, y) (xs, y)
+  -- ConsUnitFusedAway :: ConsBuffers f e exs xs -> ConsBuffers f e (exs, y) (xs, y)
 
 tbThere :: TakeBuffers f x exs xs -> TakeBuffers f x (exs, y) (xs, y)
 tbThere TakeUnit = TakeUnit
@@ -211,7 +214,7 @@ cbWeaken :: ConsBuffers f e exs xs -> xs :> exs
 cbWeaken ConsUnit = weakenId
 cbWeaken ConsSingle = weakenSucc' weakenId
 cbWeaken (ConsPair l r) = cbWeaken r .> cbWeaken l
-cbWeaken (ConsUnitFusedAway cb) = weakenKeep $ cbWeaken cb
+-- cbWeaken (ConsUnitFusedAway cb) = weakenKeep $ cbWeaken cb
 
 tbHere :: forall e f xs. TypeR e -> TakeBuffers f e (Append f e xs) xs
 tbHere TupRunit = TakeUnit
@@ -241,7 +244,7 @@ instance NFData (ConsBuffers f e exs xs) where
   rnf ConsUnit = ()
   rnf ConsSingle = ()
   rnf (ConsPair l r) = rnf l `seq` rnf r
-  rnf (ConsUnitFusedAway c) = rnf c
+  -- rnf (ConsUnitFusedAway c) = rnf c
 
 pattern ExpArg :: ()
                 => forall e args body scope. (args' ~ (e -> args), body' ~ (body, e), scope' ~ (scope, e))
@@ -320,7 +323,7 @@ mkBase (Output _ _ _ ci) = Ignr (mkBase ci)
 mkBase (MutPut   ci) = Ignr (mkBase ci)
 mkBase (ExpPut'   ci) = Ignr (mkBase ci)
 mkBase (Vertical _ _ ci) = Ignr (mkBase ci)
-mkBase (Trivial ci) = mkBase ci
+mkBase (Trivial ci) = Ignr $ mkBase ci
 
 fromArgsTake :: forall env a ab b. Take a ab b -> Take (FromArg env a) (FromArgs env ab) (FromArgs env b)
 fromArgsTake Here = Here
@@ -507,28 +510,25 @@ data SLVDiff i o i' o' where
   Same :: SLVDiff i o i o
   DeeperI :: SLVDiff i o i' o' -> SLVDiff (i, x)  o     (i', x) o'
   DeeperO :: SLVDiff i o i' o' -> SLVDiff i      (o, y)  i'    (o', y)
-  UselessArg :: SLVDiff i o i' o' -> SLVDiff i o (i', x) (o', x)
-deriving instance Show (SLVDiff a b c d)
--- -- only sometimes: DeeperI (UselessArg (DeeperO Same)) is a counterexample!
--- slvDiffPreservesIdentitySometimes :: SLVDiff x x y z -> Maybe (y :~: z)
--- slvDiffPreservesIdentitySometimes = \case
---   Same -> Just Refl
---   UselessArg d -> slvDiffPreservesIdentitySometimes d
-  
+deriving instance Show (SLVDiff a b c d)  
 
 instance ShrinkArg (BackendClusterArg op) => SLVOperation (Cluster op) where
   slvOperation (Cluster b (Cluster' io ast :: Cluster' op args)) = Just $ ShrinkOperation shrinkOperation
     where
       shrinkOperation :: SubArgs args args' -> Args env args' -> Args env' args -> ShrunkOperation (Cluster op) env
       shrinkOperation subArgs args' args = ShrunkOperation (Cluster (shrinkArgs subArgs b) cluster') args'
-        where cluster' = case slvIO subArgs args' args io of SLVIO io' diff -> Cluster' io' $ diffAST diff ast
+        where cluster' = case slvIO subArgs args' args io of 
+                SLVIO io' diff -> Cluster' io' $ diffAST diff ast
 
       slvIO :: SubArgs a a' -> Args env a' -> Args env' a -> ClusterIO a i o -> SLVIO a' i o
       slvIO SubArgsNil ArgsNil ArgsNil Empty = SLVIO Empty Same
-      slvIO (SubArgsDead sa) (_:>:a') (_:>:a) (Trivial io') = case slvIO sa a' a io' of SLVIO io'' diff -> SLVIO (VarPut io'') (UselessArg diff)
-      slvIO (SubArgsLive SubArgKeep              sa) (_:>:a') (_:>:a) (Trivial io') = case slvIO sa a' a io' of SLVIO io'' diff -> SLVIO (Trivial io'') diff
-      slvIO (SubArgsLive (SubArgOut SubTupRskip) sa) (_:>:a') (_:>:a) (Trivial io') = case slvIO sa a' a io' of SLVIO io'' diff -> SLVIO (Trivial io'') diff
-      slvIO (SubArgsLive (SubArgOut SubTupRkeep) sa) (_:>:a') (_:>:a) (Trivial io') = case slvIO sa a' a io' of SLVIO io'' diff -> SLVIO (Trivial io'') diff
+      slvIO (SubArgsLive SubArgKeep              sa) (_:>:a') (_:>:a) (Trivial io') = case slvIO sa a' a io' of SLVIO io'' diff -> SLVIO (Trivial io'') (DeeperI $ DeeperO diff)
+      slvIO (SubArgsLive (SubArgOut SubTupRskip) sa) (_:>:a') (_:>:a) (Trivial io') = case slvIO sa a' a io' of SLVIO io'' diff -> SLVIO (Trivial io'') (DeeperI $ DeeperO diff)
+      slvIO (SubArgsLive (SubArgOut SubTupRkeep) sa) (_:>:a') (_:>:a) (Trivial io') = case slvIO sa a' a io' of SLVIO io'' diff -> SLVIO (Trivial io'') (DeeperI $ DeeperO diff)
+      slvIO (SubArgsDead subargs) (ArgVar _ :>: args') (ArgArray Out (ArrayR shr _) _ _ :>: args) (Trivial io') 
+        = case slvIO subargs args' args io' of 
+          SLVIO io'' diff -> 
+              SLVIO (VarPut io'') (DeeperI $ DeeperO diff)
       slvIO (SubArgsDead subargs) (ArgVar _ :>: args') (ArgArray Out (ArrayR shr _) _ _ :>: args) (Output t _ te io')
         = case slvIO subargs args' args io' of
           SLVIO io'' diff ->
@@ -557,7 +557,7 @@ instance ShrinkArg (BackendClusterArg op) => SLVOperation (Cluster op) where
       wTakeO (DeeperI d) t k = wTakeO d t $ \d' t' -> k (DeeperI d') t'
       wTakeO (DeeperO d) Here k = k (DeeperO $ DeeperO d) Here
       wTakeO (DeeperO d) (There t) k = wTakeO d t $ \d' t' -> k (DeeperO d') (There t')
-      wTakeO (UselessArg d) t k = wTakeO d t $ \d' t' -> k (UselessArg d') (There t')
+      -- wTakeO (VarArg d) t k = wTakeO d t $ \d' t' -> k (VarArg d') (There t')
 
       diffAST :: SLVDiff i o i' o' -> ClusterAST op i o -> ClusterAST op i' o'
       diffAST Same a = a
@@ -577,16 +577,16 @@ instance ShrinkArg (BackendClusterArg op) => SLVOperation (Cluster op) where
       wLHS (DeeperI diff) (VArg       lhs) k = wLHS diff lhs $ \diff' lhs' -> k (DeeperI diff') (VArg lhs')
       wLHS (DeeperI diff) (FArg       lhs) k = wLHS diff lhs $ \diff' lhs' -> k (DeeperI diff') (FArg lhs')
       wLHS (DeeperO    diff) lhs k = wLHS diff lhs $ \diff' lhs' -> k (DeeperO diff') lhs'
-      wLHS (UselessArg diff) lhs k = wLHS diff lhs $ \diff' lhs' -> k (UselessArg diff') (Ignr lhs')
+      -- wLHS (VarArg diff) lhs k = wLHS diff lhs $ \diff' lhs' -> k (VarArg diff') (Ignr lhs')
 
       wConsBuffers :: SLVDiff i o i' o' -> ConsBuffers f e i j -> (forall j'. SLVDiff j o j' o' -> ConsBuffers f e i' j'  -> r) -> r
       wConsBuffers Same cb k = k Same cb
       wConsBuffers (DeeperO    diff) cb k = wConsBuffers diff cb $ \diff' cb' -> k (DeeperO diff') cb'
       wConsBuffers diff (ConsPair cb1 cb2) k = wConsBuffers diff cb2 $ \diff' cb2' -> wConsBuffers diff' cb1 $ \diff'' cb1' -> k diff'' (ConsPair cb1' cb2')
       wConsBuffers (DeeperI    diff) ConsSingle k = k diff ConsSingle
-      wConsBuffers (UselessArg diff) ConsSingle k = wConsBuffers diff ConsSingle $ \diff' consSingle -> k (UselessArg diff') (ConsUnitFusedAway consSingle)
+      -- wConsBuffers (VarArg diff) ConsSingle k = wConsBuffers diff ConsSingle $ \diff' consSingle -> k (VarArg diff') (ConsUnitFusedAway consSingle)
       wConsBuffers diff ConsUnit k = k diff ConsUnit
-      wConsBuffers _ ConsUnitFusedAway{} _ = error "cufa gets introduced here"
+      -- wConsBuffers _ ConsUnitFusedAway{} _ = error "cufa shouldn't exist _before_ SLV"
 
       wTakeBuffers :: SLVDiff i' o i'' o' -> TakeBuffers (Value sh) e i i' -> (forall i'''. SLVDiff i o i''' o' -> TakeBuffers (Value sh) e i''' i'' -> r) -> r
       wTakeBuffers Same tb k = k Same tb
@@ -594,30 +594,25 @@ instance ShrinkArg (BackendClusterArg op) => SLVOperation (Cluster op) where
       wTakeBuffers diff (TakeSingle Here)      k = k (DeeperI diff) (TakeSingle Here)
       wTakeBuffers (DeeperI diff) (TakeSingle (There t)) k = wTakeBuffers diff (TakeSingle t) $ \diff' (TakeSingle t') -> k (DeeperI diff') (TakeSingle (There t'))
       wTakeBuffers (DeeperO diff)     tb   k = wTakeBuffers diff tb  $ \diff' tb' -> k (DeeperO diff') tb'
-      wTakeBuffers (UselessArg diff)  tb   k = wTakeBuffers diff tb  $ \diff' tb' -> k (UselessArg diff') (tbThere tb')
+      -- wTakeBuffers (VarArg diff)  tb   k = wTakeBuffers diff tb  $ \diff' tb' -> k (VarArg diff') (tbThere tb')
       wTakeBuffers diff (TakePair tb1 tb2) k = wTakeBuffers diff tb1 $ \diff' tb1' -> wTakeBuffers diff' tb2 $ \diff'' tb2' -> k diff'' (TakePair tb1' tb2')
 
-      -- This is surprisingly difficult to write 'honestly', because we know that there are an equal number of DeeperI's and DeeperO's, but they can be in any order.
+      -- this follows directly from the types, but is very tricky to write without 
       wNone :: SLVDiff x x i' o' -> ClusterAST op x x -> ClusterAST op i' o'
-      wNone diff None
-        | check diff = unsafeCoerce None -- quick untyped check: equal numbers of deeperI and deeperO in any order make identities, but uselessargs ruin the day
-        | otherwise = Debug.Trace.trace ("HERE"<>show diff) $ unsafeCoerce None -- introducing segfaults
-        --error "this is not always true, unsafecoerce here was probably a problem"
+      wNone diff None = case thing diff of (Refl, Refl) -> None 
       wNone _ _ = error "only none here"
 
-      -- does wNone hold?
-      check :: SLVDiff a b c d -> Int -> String
-      check Same n = if n==0 then "yes" else "no"
-      check (UselessArg d) n | n==0 =check d 0
-                             | otherwise = "no"
-      check (DeeperI d) n = check d (n+1)
-      check (DeeperO d) n = check d (n-1)
+      -- should just remove SLVDiff probably, this shows that it's quite useless now that I simplified the annoying one away 
+      thing :: SLVDiff i o i' o' -> (i :~: i', o :~: o')
+      thing Same = (Refl, Refl)
+      thing (DeeperI diff) = case thing diff of (Refl, Refl) -> (Refl, Refl)
+      thing (DeeperO diff) = case thing diff of (Refl, Refl) -> (Refl, Refl)
 
       wDiff :: SLVDiff i o i' o' -> i :> i'
       wDiff Same = weakenId
       wDiff (DeeperI diff) = weakenKeep $ wDiff diff
       wDiff (DeeperO diff) = wDiff diff
-      wDiff (UselessArg diff) = weakenSucc' $ wDiff diff
+      -- wDiff (VarArg diff) = weakenSucc' $ wDiff diff
 
 
 class TupRmonoid f where
@@ -695,7 +690,7 @@ unconsBuffers ConsSingle (Env.Push env s) = (Info $ Compose s, env)
 unconsBuffers (ConsPair l r) env = case unconsBuffers r env of
   (r', env') -> case unconsBuffers l env' of
     (l', env'') -> (l' `pair` r', env'')
-unconsBuffers (ConsUnitFusedAway cb) (Env.Push env s) = second (`Env.Push` s) $ unconsBuffers cb env
+-- unconsBuffers (ConsUnitFusedAway cb) (Env.Push env s) = second (`Env.Push` s) $ unconsBuffers cb env
 
 consBuffers :: TupRmonoid (Compose f g) => ConsBuffers g e exs xs -> f (g e) -> Env f xs -> Env f exs
 consBuffers ConsUnit _ env = env
@@ -703,7 +698,7 @@ consBuffers ConsSingle s env = Env.Push env s
 consBuffers (ConsPair l r) lr env = let
   (Compose l', Compose r') = unpair' $ Compose lr
   in consBuffers r r' $ consBuffers l l' env
-consBuffers (ConsUnitFusedAway cb) s (Env.Push env t) = Env.Push (consBuffers cb s env) t
+-- consBuffers (ConsUnitFusedAway cb) s (Env.Push env t) = Env.Push (consBuffers cb s env) t
 
 tupRindex :: TupRmonoid (Compose f g) => Env f env -> TupR (IdxF g env) a -> TupInfo (Compose f g) a
 tupRindex env = tupRfold . mapTupR (\(IdxF idx) -> Compose $ prj' idx env)
