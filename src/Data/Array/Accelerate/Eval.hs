@@ -59,6 +59,7 @@ import Data.Array.Accelerate.Pretty.Exp (IdxF(..))
 import Data.Array.Accelerate.AST.Idx (Idx (..))
 import Data.Array.Accelerate.Pretty.Operation
 import qualified Debug.Trace
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (Label)
 
 
 type BackendArgs op env = PreArgs (BackendClusterArg2 op env)
@@ -104,8 +105,8 @@ makeBackendArg args env (Cluster info (Cluster' io ast)) = let o = getOutputEnv 
   where
     fromAST :: ClusterAST op i o -> BackendEnv op env o -> BackendEnv op env i
     fromAST None o = o
-    fromAST (Bind lhs op ast) o = let o' = fromAST ast o
-                                  in lhsArgsEnv lhs o' (uncurry (onOp op) (first' onlyOut $ lhsEnvArgs lhs o') env)
+    fromAST (Bind lhs op l ast) o = let o' = fromAST ast o
+                                    in lhsArgsEnv lhs o' (uncurry (onOp op) (first' onlyOut $ lhsEnvArgs lhs o') env)
 
     onlyOut :: BackendArgs op env args -> Args env args -> BackendArgs op env (OutArgsOf args)
     onlyOut ArgsNil ArgsNil = ArgsNil
@@ -205,7 +206,7 @@ class (StaticClusterAnalysis op, Monad (EvalMonad op), TupRmonoid (Embed' op))
   subtup :: SubTupR e e' -> Embed' op e -> Embed' op e'
 
 
-  evalOp :: Index op -> op args -> Env (EnvF op) env -> BackendArgEnv op env (InArgs args) -> (EvalMonad op) (Env (FromArg' op env) (OutArgs args))
+  evalOp :: Index op -> Label -> op args -> Env (EnvF op) env -> BackendArgEnv op env (InArgs args) -> (EvalMonad op) (Env (FromArg' op env) (OutArgs args))
   writeOutput :: ScalarType e -> GroundVars env sh -> GroundVars env (Buffers e) -> Env (EnvF op) env -> Index op -> Embed' op e -> EvalMonad op ()
   readInput :: ScalarType e -> GroundVars env sh -> GroundVars env (Buffers e) -> Env (EnvF op) env -> BackendClusterArg2 op env (In sh e) -> Index op -> EvalMonad op (Embed' op e)
 
@@ -266,9 +267,9 @@ evalIO2 n (Output t s _ io) (ArgArray Out (arrayRtype -> ~(TupRsingle r)) sh buf
 evalAST :: forall op i o env. EvalOp op => Index op -> ClusterAST op i o -> Env (EnvF op) env -> BackendArgEnv op env i -> (EvalMonad op) (Env (FromArg' op env) o)
 evalAST _ None _ Empty = pure Empty
 evalAST n None env (Push i (BAE x _)) = flip Push (FromArg x) <$> evalAST n None env i
-evalAST n (Bind lhs op ast) env i = do
+evalAST n (Bind lhs op l ast) env i = do
   let i' = evalLHS1 lhs i env
-  o' <- evalOp n op env i'
+  o' <- evalOp n l op env i'
   let scope = evalLHS2 lhs i env o'
   evalAST n ast env scope
 

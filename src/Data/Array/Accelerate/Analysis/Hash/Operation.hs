@@ -91,7 +91,7 @@ encodeSubTupR (SubTupRpair a b) = intHost $(hashQ "pair") <> encodeSubTupR a <> 
 
 encodeClusterAST :: EncodeOperation op => ClusterAST op env result -> Builder
 encodeClusterAST None = intHost $(hashQ "None")
-encodeClusterAST (Bind lhs op ast) = intHost $(hashQ "Bind") <> encodeLeftHandSideArgs lhs <> encodeOperation op <> encodeClusterAST ast
+encodeClusterAST (Bind lhs op l ast) = intHost $(hashQ "Bind") <> encodeLeftHandSideArgs lhs <> encodeOperation op <> encodeClusterAST ast
 
 encodeLeftHandSideArgs :: LeftHandSideArgs body env scope -> Builder
 encodeLeftHandSideArgs _ = intHost $(hashQ "If I just don't hash this, that's fine right? :)")

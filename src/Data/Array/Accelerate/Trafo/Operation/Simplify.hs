@@ -427,7 +427,8 @@ simplifyArg env (ArgArray m repr sh buffers)
     -- Output buffers may not be substituted by buffers with the same content.
     substituteBuffer
       | In <- m = substitute
-      | otherwise = substituteOutput
+      | Out <- m = substituteOutput
+      | Mut <- m = const weakenId
 
 bindEnv :: GLeftHandSide t env env' -> InfoEnv env -> InfoEnv env'
 bindEnv lhs (InfoEnv env') = InfoEnv $ go lhs $ weaken k env'

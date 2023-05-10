@@ -174,7 +174,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
     makeAST _ [] _ = error "empty AST"
     makeAST env [cluster] prev = case makeCluster env cluster of
       Fold (CCluster args info cio cast) -> Exists $ Exec (Cluster info (Cluster' cio cast)) $ unLabelOp args
-      InitFold o args -> unfused o args $
+      InitFold o l args -> unfused o l args $
                             \(CCluster args' info cio cast) ->
                                 Exists $ Exec (Cluster info (Cluster' cio cast)) (unLabelOp args')
       NotFold con -> case con of
@@ -276,15 +276,15 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
                               -- the `foldr1`, the input argument will dissapear. The output argument does not:
                               -- we clean that up in the SLV pass, if this was vertical fusion. If this is diagonal fusion,
                               -- it stays.
-                              CExe env' args op -> InitFold op (fromJust $ reindexLabelledArgsOp (mkReindexPartial env' env) args)
+                              CExe env' args op -> InitFold op l (fromJust $ reindexLabelledArgsOp (mkReindexPartial env' env) args)
                               _                 -> error "avoid this next refactor" -- c -> NotFold c
                           ) ls
     makeCluster _ (NonExecL l) = NotFold $ construct M.! l
 
     fuseCluster :: FoldType op env -> FoldType op env -> FoldType op env
-    fuseCluster (Fold cluster) (InitFold op largs) =
-      consCluster largs cluster op Fold
-    fuseCluster (InitFold op largs) x = unfused op largs $ \c -> fuseCluster (Fold c) x
+    fuseCluster (Fold cluster) (InitFold op l largs) =
+      consCluster l largs cluster op Fold
+    fuseCluster (InitFold op l largs) x = unfused op l largs $ \c -> fuseCluster (Fold c) x
     fuseCluster Fold{} Fold{} = error "fuseCluster got non-leaf as second argument" -- Should never happen
     fuseCluster NotFold{}   _ = error "fuseCluster encountered NotFold" -- Should only occur in singleton clusters
     fuseCluster _   NotFold{} = error "fuseCluster encountered NotFold" -- Should only occur in singleton clusters
@@ -297,7 +297,7 @@ weakenAcc lhs =  runIdentity . reindexAcc (weakenReindex $ weakenWithLHS lhs)
 
 data FoldType op env
   = forall args. Fold (ConstructingCluster op args env)
-  | forall args. InitFold (op args) (LabelledArgsOp op env args)
+  | forall args. InitFold (op args) Label (LabelledArgsOp op env args)
   | NotFold (Construction op)
 
 -- contains all elements of a Cluster and the LabelledArgsOp
@@ -308,17 +308,18 @@ data ConstructingCluster op args env where
            -> ClusterAST op input output
            -> ConstructingCluster op args env
 
-unfused :: MakesILP op => op args -> LabelledArgsOp op env args -> (forall args'. ConstructingCluster op args' env -> r) -> r
-unfused op largs = consCluster largs (CCluster ArgsNil ArgsNil Empty None) op
+unfused :: MakesILP op => op args -> Label -> LabelledArgsOp op env args -> (forall args'. ConstructingCluster op args' env -> r) -> r
+unfused op l largs = consCluster l largs (CCluster ArgsNil ArgsNil Empty None) op
 
 consCluster :: forall env args extra op r
              . MakesILP op
-            => LabelledArgsOp op env extra
+            => Label
+            -> LabelledArgsOp op env extra
             -> ConstructingCluster op args env
             -> op extra
             -> (forall args'. ConstructingCluster op args' env -> r)
             -> r
-consCluster lextra (CCluster largs _ cIO cAST) op k = -- we can ignore the BackendCluster that is already present, because the same information is also in the `largs`
+consCluster l lextra (CCluster largs _ cIO cAST) op k = -- we can ignore the BackendCluster that is already present, because the same information is also in the `largs`
   mkReverse lextra $ \rev lartxe->
     consCluster' largs rev lartxe cAST (mkBase cIO) cIO
   where
@@ -349,7 +350,7 @@ consCluster lextra (CCluster largs _ cIO cAST) op k = -- we can ignore the Backe
                  -> LeftHandSideArgs added i scope
                  -> ClusterIO total i o
                  -> r
-    consCluster' ltot Ordered ArgsNil ast lhs io = k $ CCluster ltot (mapArgs getClusterArg ltot) io (Bind lhs op ast)
+    consCluster' ltot Ordered ArgsNil ast lhs io = k $ CCluster ltot (mapArgs getClusterArg ltot) io (Bind lhs op l ast)
     consCluster' ltot (Revert r) (a :>: toAdd) ast lhs io = case a of
       LOp (ArgArray In  _ _ _) _ _ -> consInArg  a ltot lhs ast io $ \ltot' -> consCluster' ltot' r toAdd
       LOp (ArgArray Out _ _ _) _ _ -> consOutArg a ltot lhs ast io $ \ltot' -> consCluster' ltot' r toAdd
@@ -574,7 +575,7 @@ ttb t (ConsPair l r) k =
 
 weakenAST :: ClusterAST op scope o -> ClusterAST op (scope, x) (o, x)
 weakenAST None = None
-weakenAST (Bind lhs op ast) = Bind (Ignr lhs) op $ weakenAST ast
+weakenAST (Bind lhs op l ast) = Bind (Ignr lhs) op l $ weakenAST ast
 
 --Only call this with a single buffer!
 fuseInput :: MakesILP op
@@ -698,7 +699,7 @@ addInput  :: ClusterAST op scope o
           -> (ClusterAST op (scope, Value sh e) (o, Value sh e)
             , ClusterIO (In sh e -> total) (i, Value sh e) (o, Value sh e))
 addInput None io = (None, Input io)
-addInput (Bind lhs op ast) io = first (Bind (Ignr lhs) op) $ addInput ast io
+addInput (Bind lhs op l ast) io = first (Bind (Ignr lhs) op l) $ addInput ast io
 
 -- use one of the IO constructors {ExpPut, VarPut, FunPut} as third argument
 addExp  :: ClusterIO total i o
@@ -708,7 +709,7 @@ addExp  :: ClusterIO total i o
            , ClusterAST op (scope, e) (o, e)
            )
 addExp io None constructor = (constructor io, None)
-addExp io (Bind lhs op ast) constructor = second (Bind (Ignr lhs) op) $ addExp io ast constructor
+addExp io (Bind lhs op l ast) constructor = second (Bind (Ignr lhs) op l) $ addExp io ast constructor
 
 
 

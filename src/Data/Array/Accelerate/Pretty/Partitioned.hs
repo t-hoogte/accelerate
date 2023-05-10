@@ -41,7 +41,7 @@ instance PrettyOp op => PrettyOp (Cluster' op) where
     where
       opNames :: ClusterAST op env result -> [Adoc]
       opNames None             = ["}"]
-      opNames (Bind _ op next) = prettyOp op : opNames next
+      opNames (Bind _ op _ next) = prettyOp op : opNames next
 
   prettyOpWithArgs env (Cluster' io ast) args = case ops of
     [op']      -> group $ hang 2 $ vsep [ annotate Execute "execute", op' ]
@@ -101,7 +101,7 @@ clusterEnv env = \cio args -> (input cio args, output cio args)
 prettyClusterAST :: PrettyOp op => PartialVal result -> ClusterAST op env result -> (PartialVal env, Int -> Pretty.Val env -> [Adoc])
 -- prettyClusterAST = undefined
 prettyClusterAST envResult None = (envResult, \_ _ -> [])
-prettyClusterAST envResult (Bind lhs op next) =
+prettyClusterAST envResult (Bind lhs op _ next) =
   ( backward lhs envOut
   , \fresh envIn ->
       let

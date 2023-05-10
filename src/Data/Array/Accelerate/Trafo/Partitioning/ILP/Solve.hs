@@ -59,8 +59,9 @@ makeILP (Info
                          n
     -- n is used in some of the constraints, as an upperbound on the number of clusters.
     -- We add a small constant to be safe, as some variables have ranges from -3 to number of nodes.
+    -- Then, we also multiply by 2, as some variables range from -n to n
     n :: Int
-    n = 5 + S.size nodes
+    n = 10 + 2 * S.size nodes
 
     graphILP = ILP Minimise objFun myConstraints myBounds n
 

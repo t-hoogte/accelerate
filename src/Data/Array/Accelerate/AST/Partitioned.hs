@@ -62,6 +62,7 @@ import Data.Array.Accelerate.Pretty.Exp (IdxF (..))
 
 import qualified Debug.Trace
 import Data.Maybe (fromJust)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (Label)
 
 -- In this model, every thread has one input element per input array,
 -- and one output element per output array. That works perfectly for
@@ -101,6 +102,7 @@ data ClusterAST op env result where
   -- `Bind _ x y` reads as `do x; in the resulting environment, do y`
   Bind :: LeftHandSideArgs body env scope
        -> op body
+       -> Label
        -> ClusterAST op scope result
        -> ClusterAST op env   result
 
@@ -487,7 +489,7 @@ instance NFData (Take x xargs args) where
 
 instance NFData' op => NFData (ClusterAST op env result) where
   rnf None = ()
-  rnf (Bind lhsArgs op ast) = rnf lhsArgs `seq` rnf' op `seq` rnf ast
+  rnf (Bind lhsArgs op l ast) = rnf lhsArgs `seq` rnf' op `seq` rnf ast
 
 instance NFData (LeftHandSideArgs body env scope) where
   rnf Base = ()
@@ -626,3 +628,4 @@ consBuffers (ConsPair l r) lr env = let
 
 tupRindex :: TupRmonoid (Compose f g) => Env f env -> TupR (IdxF g env) a -> TupInfo (Compose f g) a
 tupRindex env = tupRfold . mapTupR (\(IdxF idx) -> Compose $ prj' idx env)
+
