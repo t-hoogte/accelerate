@@ -6,14 +6,15 @@
 {-# LANGUAGE GADTs             #-}
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuantifiedConstraints #-}
 {-# LANGUAGE RankNTypes        #-}
+{-# LANGUAGE StandaloneDeriving#-}
 {-# LANGUAGE TemplateHaskell   #-}
-{-# LANGUAGE TypeOperators     #-}
 {-# LANGUAGE TypeFamilies      #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
-{-# LANGUAGE QuantifiedConstraints #-}
-{-# OPTIONS_HADDOCK hide #-}
+{-# LANGUAGE TypeOperators     #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# OPTIONS_HADDOCK hide #-}
 -- |
 -- Module      : Data.Array.Accelerate.Representation.Type
 -- Copyright   : [2008..2020] The Accelerate Team
@@ -54,10 +55,7 @@ data TupR s a where
   TupRsingle :: s a                  -> TupR s a
   TupRpair   :: TupR s a -> TupR s b -> TupR s (a, b)
 
-instance Show (TupR ScalarType a) where
-  show TupRunit       = "()"
-  show (TupRsingle t) = show t
-  show (TupRpair a b) = "(" ++ show a ++ "," ++ show b ++ ")"
+deriving instance (forall a. Show (s a)) => Show (TupR s t)
 
 formatTypeR :: Format r (TypeR a -> r)
 formatTypeR = later $ \case

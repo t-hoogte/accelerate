@@ -85,10 +85,6 @@ data ALabel t where
   NotArr :: ALabel (t e) -- matches on `Var' e`, `Exp' e` and `Fun' e` (is typecorrect on arrays, but wish it wasn't)
 deriving instance Show (ALabel t)
 
-instance Show (TupR (C.Const ELabel) a) where
-  show TupRunit       = "()"
-  show (TupRsingle t) = show t
-  show (TupRpair a b) = "(" ++ show a ++ "," ++ show b ++ ")"
 
 
 matchALabel :: ALabel (m sh s) -> ALabel (m' sh' t) -> Maybe ((sh,s) :~: (sh',t))
