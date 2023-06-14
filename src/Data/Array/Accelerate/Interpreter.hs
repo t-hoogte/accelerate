@@ -18,12 +18,10 @@
 {-# LANGUAGE TemplateHaskell     #-}
 {-# LANGUAGE TupleSections       #-}
 {-# LANGUAGE TypeApplications    #-}
-{-# LANGUAGE TypeFamilies        #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
 {-# LANGUAGE TypeOperators       #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns        #-}
-{-# LANGUAGE LambdaCase        #-}
 
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 {-# OPTIONS_HADDOCK prune #-}
@@ -83,7 +81,6 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
 import Lens.Micro ((.~), (&))
 import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Pretty.Partitioned ()
-import Data.Array.Accelerate.Pretty.Schedule
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.LeftHandSide (LeftHandSide (LeftHandSideWildcard, LeftHandSideUnit))
 import Data.Array.Accelerate.AST.Schedule
@@ -107,6 +104,8 @@ import System.IO.Unsafe (unsafePerformIO)
 import Data.Array.Accelerate.Eval
 import qualified Data.Array.Accelerate.AST.Partitioned as P
 import Data.Functor.Identity
+import Data.Array.Accelerate.Trafo.LiveVars
+import qualified Debug.Trace
 
 data Interpreter
 instance Backend Interpreter where
@@ -114,6 +113,9 @@ instance Backend Interpreter where
   type Kernel Interpreter = InterpretKernel
 
 
+map !?! key = case map M.!? key of
+  Just x -> x
+  Nothing -> Debug.Trace.trace ("error: map "<> show map <> "does not contain key " <> show key) undefined
 
 
 -- Pushes backpermute information through the cluster and stores it in the arguments, for use at the start of the loop (indexing) and in generates.
@@ -162,8 +164,8 @@ instance StaticClusterAnalysis InterpretOp where
   shToVar      (BCA f) = BCA f
   shrinkOrGrow (BCA f) = BCA f
   addTup       (BCA f) = BCA f
-  justUnit = BCA undefined
-
+  unitToVar    (BCA f) = BCA f
+  varToUnit    (BCA f) = BCA f
   def _ _ _ = BCA id
 
 -- we can implement stencils using clamp, mirror or wrap with backpermute and zipwith(map), but for stencils using function we need a little extra.
@@ -287,7 +289,7 @@ instance IsKernel InterpretKernel where
   type KernelOperation InterpretKernel = InterpretOp
   type KernelMetadata  InterpretKernel = NoKernelMetadata
 
-  compileKernel = const $ InterpretKernel
+  compileKernel = const InterpretKernel
 
 instance PrettyKernel InterpretKernel where
   -- PrettyKernelBody provides a Val but prettyOpWithArgs expects a Val', should we change them to have the
@@ -317,8 +319,8 @@ instance MakesILP InterpretOp where
   -- this ensures that e.g. multiple inputs of the same array
   -- in different orders won't fuse horizontally, and that
   -- the correct one will be used by each consumer
-  labelLabelledArg solution l (L arg@(ArgArray In  _ _ _) al) = LOp arg al . Just $ (solution M.! Graph.InDir  l, (solution M.! BackendSpecific (DimensionsPerThread  InArr l), solution M.! BackendSpecific (IdleThreads  InArr Left l), solution M.! BackendSpecific (IdleThreads  InArr Right l)))
-  labelLabelledArg solution l (L arg@(ArgArray Out _ _ _) al) = LOp arg al . Just $ (solution M.! Graph.OutDir l, (solution M.! BackendSpecific (DimensionsPerThread OutArr l), solution M.! BackendSpecific (IdleThreads OutArr Left l), solution M.! BackendSpecific (IdleThreads OutArr Right l)))
+  labelLabelledArg solution l (L arg@(ArgArray In  _ _ _) al) = LOp arg al . Just $ (solution !?! Graph.InDir  l, (solution !?! BackendSpecific (DimensionsPerThread  InArr l), solution !?! BackendSpecific (IdleThreads  InArr Left l), solution !?! BackendSpecific (IdleThreads  InArr Right l)))
+  labelLabelledArg solution l (L arg@(ArgArray Out _ _ _) al) = LOp arg al . Just $ (solution !?! Graph.OutDir l, (solution !?! BackendSpecific (DimensionsPerThread OutArr l), solution !?! BackendSpecific (IdleThreads OutArr Left l), solution !?! BackendSpecific (IdleThreads OutArr Right l)))
   labelLabelledArg _ _ (L arg al) = LOp arg al Nothing
 
   getClusterArg (LOp ArgArray{} _ (Just (_, (x, y, z)))) = ArrayInfo x y z
@@ -449,7 +451,10 @@ instance NFData' InterpretOp where
   rnf' (IScan1 dir lookup) = lookup `seq` dir `seq` ()
   rnf' (IFold1 lookup) = lookup `seq` ()
   rnf' (IAppend side n) = side `seq` n `seq` ()
-  rnf' _ = ()
+  rnf' IMap = ()
+  rnf' IBackpermute = ()
+  rnf' IGenerate = ()
+  rnf' IPermute = ()
 
 instance PrettyOp InterpretOp where
   prettyOp IMap         = "map"
@@ -594,11 +599,16 @@ instance EvalOp InterpretOp where
     pure $ Push Empty (FromArg $ Value' (Identity $ evalFun f (evalArrayInstrDefault env) x) (Shape' shr sh))
   evalOp _ IBackpermute _ (Push (Push (Push _ (BAE sh _)) (BAE (Value' x _) _)) _) =
     pure $ Push Empty (FromArg $ Value' x sh) -- We evaluated the backpermute at the start already, now simply relabel the shape info
-  evalOp _ _ _ _ = undefined
+  evalOp i IGenerate env (Push (Push _ (BAE (Shape' shr sh) (BCA bp))) (BAE f _)) =
+    pure $ Push Empty (FromArg $ Value' (Identity $ evalFun f (evalArrayInstrDefault env) (linearIndexToSh shr (runIdentity sh) (bp i))) (Shape' shr sh))
+  evalOp _ _ _ _ = error "evalOp todo"
 
-  writeOutput r sh buf env n (Identity x) = writeBuffers (TupRsingle r) (veryUnsafeUnfreezeBuffers (TupRsingle r) $ varsGetVal buf env) n x
-  readInput r sh buf env (BCA f) n = Identity <$> indexBuffers' (TupRsingle r) (varsGetVal buf env) (f n)
+  writeOutput r _ buf env n (Identity x) = writeBuffers (TupRsingle r) (veryUnsafeUnfreezeBuffers (TupRsingle r) $ varsGetVal buf env) n x
+  readInput r _ buf env (BCA f) n = Identity <$> indexBuffers' (TupRsingle r) (varsGetVal buf env) (f n)
 
+  indexsh  gvs env = pure . Identity $ varsGetVal gvs env
+  indexsh' evs env = pure . Identity $ varsGetVal evs env
+  subtup s = Identity . subTup s . runIdentity
 
 evalClusterInterpreter :: Cluster InterpretOp args -> Args env args -> Val env -> IO ()
 evalClusterInterpreter c@(Cluster _ (Cluster' io _)) args env = doNTimes (iterationsize io args env) $ evalCluster c args env
@@ -607,12 +617,13 @@ evalClusterInterpreter c@(Cluster _ (Cluster' io _)) args env = doNTimes (iterat
 iterationsize :: ClusterIO args i o -> Args env args -> Val env -> Int
 iterationsize io args env = case io of
   P.Empty -> error "no size"
-  P.Output _ _ _ io' -> case args of ArgArray Out (ArrayR shr _) sh _ :>: args' -> arrsize shr (varsGetVal sh env)
+  P.Output {}   -> case args of ArgArray Out (ArrayR shr _) sh _ :>: _ -> arrsize shr (varsGetVal sh env)
   P.Vertical _ _ io' -> case args of -- skip past this one
     ArgVar _ :>: args' -> iterationsize io' args' env
-  P.Input  io'       -> case args of ArgArray In  (ArrayR shr _) sh _ :>: args' -> iterationsize io' args' env   -- -> arrsize shr (varsGetVal sh env)
-  P.MutPut io'       -> case args of ArgArray Mut (ArrayR shr _) sh _ :>: args' -> iterationsize io' args' env -- arrsize shr (varsGetVal sh env)
+  P.Input  io'       -> case args of ArgArray In  _ _ _ :>: args' -> iterationsize io' args' env   -- -> arrsize shr (varsGetVal sh env)
+  P.MutPut io'       -> case args of ArgArray Mut _ _ _ :>: args' -> iterationsize io' args' env -- arrsize shr (varsGetVal sh env)
   P.ExpPut' io' -> case args of _ :>: args' -> iterationsize io' args' env -- skip past this one
+  P.Trivial io' -> case args of _ :>: args' -> iterationsize io' args' env
 
 
 arrsize :: ShapeR sh -> sh -> Int
@@ -625,6 +636,14 @@ doNTimes n f
   | n == 0 = pure ()
   | otherwise = f (n-1) >> doNTimes (n-1) f
 
+linearIndexToSh :: ShapeR sh -> sh -> Int -> sh
+linearIndexToSh ShapeRz () 0 = ()
+linearIndexToSh ShapeRz () _ = error "non-zero index in unit array"
+linearIndexToSh (ShapeRsnoc shr) (sh, outer) i = let
+  innerSize = arrsize shr sh
+  outerIndex = i `div` innerSize
+  innerIndex = linearIndexToSh shr sh (i `mod` innerSize)
+  in (innerIndex, outerIndex)
 
 
 
@@ -664,7 +683,7 @@ doNTimes n f
 --       pure $ PushFA (Value x outSh) Empty
 --   | otherwise = do -- combine input with output using f
 --       lookupmap <- readIORef lookup
---       let y = lookupmap M.! firstOfRow i sh (idleLeft infoX)
+--       let y = lookupmap !?! firstOfRow i sh (idleLeft infoX)
 --       let z = evalFun f env y x
 --       writeIORef lookup (M.insert (firstOfRow i sh (idleLeft infoX)) z lookupmap)
 --       pure $ PushFA (Value z outSh) Empty
@@ -675,7 +694,7 @@ doNTimes n f
 --       pure $ PushFA (Value x sh) Empty
 --   | otherwise = do -- combine input with previous output using f
 --       lookupmap <- readIORef lookup
---       let y = lookupmap M.! (i - 1)
+--       let y = lookupmap !?! (i - 1)
 --       let z = evalFun f env y x
 --       writeIORef lookup $ M.insert i z lookupmap
 --       pure $ PushFA (Value z sh) Empty
@@ -764,7 +783,7 @@ evalArrayInstrDefault aenv = EvalArrayInstr $ \instr arg -> case instr of
   Parameter var -> prj (varIdx var) aenv
 
 evalNoArrayInstr :: EvalArrayInstr NoArrayInstr
-evalNoArrayInstr = EvalArrayInstr $ \instr -> case instr of {}
+evalNoArrayInstr = EvalArrayInstr $ \case {}
 
 -- Evaluate a closed scalar expression
 --
