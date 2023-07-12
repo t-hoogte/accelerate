@@ -232,37 +232,37 @@ distPair = unsafeCoerce Refl
 evalCluster :: forall op env args. (EvalOp op) => Cluster op args -> Args env args -> Env (EnvF op) env -> Index op -> EvalMonad op ()
 evalCluster c@(Cluster _ (Cluster' io ast)) args env ix = do
   let ba = makeBackendArg args env c
-  i <- evalIO1 ix io args ba env
+  i <- evalI ix io args ba env
   o <- evalAST ix ast env i
-  evalIO2 @op ix io args env o
+  evalO @op ix io args env o
 
-evalIO1 :: forall op args i o env. EvalOp op => Index op -> ClusterIO args i o -> Args env args -> BackendArgs op env args -> Env (EnvF op) env -> (EvalMonad op) (BackendArgEnv op env i)
-evalIO1 _ P.Empty                                     ArgsNil    ArgsNil    _ = pure Empty
-evalIO1 n (Input io) (ArgArray In (ArrayR shr (TupRsingle tp)) sh buf :>: args) (info :>: infos) env
+evalI :: forall op args i o env. EvalOp op => Index op -> ClusterIO args i o -> Args env args -> BackendArgs op env args -> Env (EnvF op) env -> (EvalMonad op) (BackendArgEnv op env i)
+evalI _ P.Empty                                     ArgsNil    ArgsNil    _ = pure Empty
+evalI n (Input io) (ArgArray In (ArrayR shr (TupRsingle tp)) sh buf :>: args) (info :>: infos) env
   | ScalarArrayDict _ _ <- scalarArrayDict tp =
     (\env' e sh -> Push env' (BAE (Value' e (Shape' shr sh)) $ inToValue info))
-    <$> evalIO1 n io args infos env
+    <$> evalI n io args infos env
     <*> readInput @op tp sh buf env info n
     <*> indexsh @op sh env
-evalIO1 _ (Input io) (ArgArray _ (ArrayR _ TupRunit) _ _ :>: _) _ _ = error "unit"
-evalIO1 _ (Input io) (ArgArray _ (ArrayR _ (TupRpair _ _)) _ _ :>: _) _ _ = error "pair"
-evalIO1 n (Vertical _ r io) (ArgVar vars         :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> (flip BAE (varToSh info) . Shape' (arrayRshape r) <$> indexsh' @op vars env)
-evalIO1 n (Output _ _ _ io) (ArgArray Out r sh _ :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> (flip BAE (outToSh $ shrinkOrGrow info) . Shape' (arrayRshape r) <$> indexsh @op sh env)
-evalIO1 n (Trivial      io) (ArgArray _ _ sh _ :>: args)(info :>: infos) env    = Push <$> evalIO1 n io args infos env <*> pure (BAE (fromGrounds sh) $ unitToVar info)
-evalIO1 n (ExpPut'      io) (ArgExp e              :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> pure (BAE e info)
-evalIO1 n (ExpPut'      io) (ArgVar e              :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> pure (BAE e info)
-evalIO1 n (ExpPut'      io) (ArgFun e              :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> pure (BAE e info)
-evalIO1 n (MutPut       io) (ArgArray Mut (ArrayR shr t) sh buf :>: args) (info :>: infos) env = Push <$> evalIO1 n io args infos env <*> pure (BAE (ArrayDescriptor shr sh buf, t) info)
+evalI _ (Input io) (ArgArray _ (ArrayR _ TupRunit) _ _ :>: _) _ _ = error "unit"
+evalI _ (Input io) (ArgArray _ (ArrayR _ (TupRpair _ _)) _ _ :>: _) _ _ = error "pair"
+evalI n (Vertical _ r io) (ArgVar vars         :>: args) (info :>: infos) env = Push <$> evalI n io args infos env <*> (flip BAE (varToSh info) . Shape' (arrayRshape r) <$> indexsh' @op vars env)
+evalI n (Output _ _ _ io) (ArgArray Out r sh _ :>: args) (info :>: infos) env = Push <$> evalI n io args infos env <*> (flip BAE (outToSh $ shrinkOrGrow info) . Shape' (arrayRshape r) <$> indexsh @op sh env)
+evalI n (Trivial      io) (ArgArray _ _ sh _ :>: args)(info :>: infos) env    = Push <$> evalI n io args infos env <*> pure (BAE (fromGrounds sh) $ unitToVar info)
+evalI n (ExpPut'      io) (ArgExp e              :>: args) (info :>: infos) env = Push <$> evalI n io args infos env <*> pure (BAE e info)
+evalI n (ExpPut'      io) (ArgVar e              :>: args) (info :>: infos) env = Push <$> evalI n io args infos env <*> pure (BAE e info)
+evalI n (ExpPut'      io) (ArgFun e              :>: args) (info :>: infos) env = Push <$> evalI n io args infos env <*> pure (BAE e info)
+evalI n (MutPut       io) (ArgArray Mut (ArrayR shr t) sh buf :>: args) (info :>: infos) env = Push <$> evalI n io args infos env <*> pure (BAE (ArrayDescriptor shr sh buf, t) info)
 
-evalIO2 :: forall op args i o env. EvalOp op => Index op -> ClusterIO args i o -> Args env args -> Env (EnvF op) env -> Env (FromArg' op env) o -> (EvalMonad op) ()
-evalIO2 _ P.Empty ArgsNil _ Empty = pure ()
-evalIO2 n (Vertical t _ io) (_ :>: args) env (take' t -> (_, o)) = evalIO2 @op n io args env o
-evalIO2 n (Input        io) (_ :>: args) env (PushFA _       o)  = evalIO2 @op n io args env o
-evalIO2 n (MutPut       io) (_ :>: args) env (PushFA _       o)  = evalIO2 @op n io args env o
-evalIO2 n (ExpPut'      io) (_ :>: args) env (PushFA _       o)  = evalIO2 @op n io args env o
-evalIO2 n (Trivial      io) (_ :>: args) env (PushFA _       o)  = evalIO2 @op n io args env o
-evalIO2 n (Output t s _ io) (ArgArray Out (arrayRtype -> ~(TupRsingle r)) sh buf :>: args) env o
-  = let (FromArg (Value' x _), o') = take' t o in writeOutput @op r sh buf env n (subtup @op s x) >> evalIO2 @op n io args env o'
+evalO :: forall op args i o env. EvalOp op => Index op -> ClusterIO args i o -> Args env args -> Env (EnvF op) env -> Env (FromArg' op env) o -> (EvalMonad op) ()
+evalO _ P.Empty ArgsNil _ Empty = pure ()
+evalO n (Vertical t _ io) (_ :>: args) env (take' t -> (_, o)) = evalO @op n io args env o
+evalO n (Input        io) (_ :>: args) env (PushFA _       o)  = evalO @op n io args env o
+evalO n (MutPut       io) (_ :>: args) env (PushFA _       o)  = evalO @op n io args env o
+evalO n (ExpPut'      io) (_ :>: args) env (PushFA _       o)  = evalO @op n io args env o
+evalO n (Trivial      io) (_ :>: args) env (PushFA _       o)  = evalO @op n io args env o
+evalO n (Output t s _ io) (ArgArray Out (arrayRtype -> ~(TupRsingle r)) sh buf :>: args) env o
+  = let (FromArg (Value' x _), o') = take' t o in writeOutput @op r sh buf env n (subtup @op s x) >> evalO @op n io args env o'
 
 evalAST :: forall op i o env. EvalOp op => Index op -> ClusterAST op i o -> Env (EnvF op) env -> BackendArgEnv op env i -> (EvalMonad op) (Env (FromArg' op env) o)
 evalAST _ None _ Empty = pure Empty

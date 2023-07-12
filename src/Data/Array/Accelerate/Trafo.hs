@@ -33,7 +33,7 @@ module Data.Array.Accelerate.Trafo (
   Function, EltFunctionR,
   convertExp, convertFun,
 
-  test,
+  test, convertAccWithObj, convertAfunWithObj,
 ) where
 
 import Data.Array.Accelerate.Sugar.Array                  ( ArraysR )
@@ -75,6 +75,7 @@ import Formatting
 import System.IO.Unsafe
 import Data.Array.Accelerate.Debug.Internal.Flags                   hiding ( when )
 import Data.Array.Accelerate.Debug.Internal.Timed
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (Objective(..))
 #endif
 
 -- TODO: simplifications commented out, because they REMOVE PERMUTE
@@ -110,13 +111,17 @@ test f
 
     partitioned = 
       Operation.simplifyFun $ 
-      NewNewFusion.convertAfun operation
+      NewNewFusion.convertAfun ArrayReadsWrites operation
 
     slvpartitioned = 
       -- Operation.simplifyFun $ 
       Operation.stronglyLiveVariablesFun partitioned
 
     schedule = convertScheduleFun @sched @kernel slvpartitioned
+
+
+
+
 
 -- HOAS -> de Bruijn conversion
 -- ----------------------------
@@ -140,12 +145,29 @@ convertAccWith
 convertAccWith config
   = phase' "codegen"     rnfSchedule convertSchedule
   . phase  "partition-live-vars"    ({-Operation.simplify . -} Operation.stronglyLiveVariables)
-  . phase  "array-fusion"           ({-Operation.simplify . -} NewNewFusion.convertAccWith config)
+  . phase  "array-fusion"           ({-Operation.simplify . -} NewNewFusion.convertAccWith config ArrayReadsWrites)
   . phase  "operation-live-vars"    ({-Operation.simplify . -} Operation.stronglyLiveVariables)
   . phase  "desugar"                ({-Operation.simplify . -} desugar)
   . phase  "array-split-lets"       LetSplit.convertAcc
   -- phase "vectorise-sequences"    Vectorise.vectoriseSeqAcc `when` vectoriseSequences
   . phase  "sharing-recovery"       (Sharing.convertAccWith config)
+
+
+convertAccWithObj
+  :: forall sched kernel arrs.
+     (DesugarAcc (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel, Operation.NFData' (Graph.BackendClusterArg (KernelOperation kernel)),  Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))
+  => Objective
+  -> Acc arrs
+  -> sched kernel () (ScheduleOutput sched (DesugaredArrays (ArraysR arrs)) -> ())
+convertAccWithObj obj
+  = phase' "codegen"     rnfSchedule convertSchedule
+  . phase  "partition-live-vars"    ({-Operation.simplify . -} Operation.stronglyLiveVariables)
+  . phase  "array-fusion"           ({-Operation.simplify . -} NewNewFusion.convertAccWith defaultOptions obj)
+  . phase  "operation-live-vars"    ({-Operation.simplify . -} Operation.stronglyLiveVariables)
+  . phase  "desugar"                ({-Operation.simplify . -} desugar)
+  . phase  "array-split-lets"       LetSplit.convertAcc
+  -- phase "vectorise-sequences"    Vectorise.vectoriseSeqAcc `when` vectoriseSequences
+  . phase  "sharing-recovery"       (Sharing.convertAccWith defaultOptions)
 
 
 -- | Convert a unary function over array computations, incorporating sharing
@@ -167,12 +189,28 @@ convertAfunWith
 convertAfunWith config
   = phase' "codegen"     rnfSchedule convertScheduleFun
   . phase  "partition-live-vars"    ({- Operation.simplifyFun . -} Operation.stronglyLiveVariablesFun)
-  . phase  "array-fusion"           ({- Operation.simplifyFun . -} NewNewFusion.convertAfunWith config)
+  . phase  "array-fusion"           ({- Operation.simplifyFun . -} NewNewFusion.convertAfunWith config ArrayReadsWrites)
   . phase  "operation-live-vars"    ({- Operation.simplifyFun . -} Operation.stronglyLiveVariablesFun)
   . phase  "desugar"                ({- Operation.simplifyFun . -} desugarAfun)
   . phase  "array-split-lets"       LetSplit.convertAfun
   -- phase "vectorise-sequences"    Vectorise.vectoriseSeqAfun  `when` vectoriseSequences
   . phase  "sharing-recovery"       (Sharing.convertAfunWith config)
+
+convertAfunWithObj
+  :: forall sched kernel f.
+     (Afunction f, DesugarAcc (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel, Operation.NFData' (Graph.BackendClusterArg (KernelOperation kernel)),  Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))
+  => Objective
+  -> f
+  -> sched kernel () (Scheduled sched (DesugaredAfun (ArraysFunctionR f)))
+convertAfunWithObj obj
+  = phase' "codegen"     rnfSchedule convertScheduleFun
+  . phase  "partition-live-vars"    ({- Operation.simplifyFun . -} Operation.stronglyLiveVariablesFun)
+  . phase  "array-fusion"           ({- Operation.simplifyFun . -} NewNewFusion.convertAfunWith defaultOptions obj)
+  . phase  "operation-live-vars"    ({- Operation.simplifyFun . -} Operation.stronglyLiveVariablesFun)
+  . phase  "desugar"                ({- Operation.simplifyFun . -} desugarAfun)
+  . phase  "array-split-lets"       LetSplit.convertAfun
+  -- phase "vectorise-sequences"    Vectorise.vectoriseSeqAfun  `when` vectoriseSequences
+  . phase  "sharing-recovery"       (Sharing.convertAfunWith defaultOptions)
 
 
 -- | Convert a closed scalar expression, incorporating sharing observation and

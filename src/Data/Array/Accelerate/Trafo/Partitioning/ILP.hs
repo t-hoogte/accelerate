@@ -8,7 +8,7 @@ module Data.Array.Accelerate.Trafo.Partitioning.ILP where
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
     ( MakesILP, Information(Info), makeFullGraph, Construction, makeFullGraphF, Graph, backendConstruc ) 
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve
-    ( interpretSolution, makeILP, splitExecs, ClusterLs ) 
+    ( interpretSolution, makeILP, splitExecs, ClusterLs, Objective ) 
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering
     ( reconstruct, reconstructF )
 import Data.Array.Accelerate.AST.Partitioned
@@ -28,7 +28,7 @@ import Data.Function ((&))
 
 
 cbcFusion, gurobiFusion, cplexFusion, glpsolFusion, lpSolveFusion, scipFusion 
-  :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => OperationAcc op () a -> PartitionedAcc op () a
+  :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Objective -> OperationAcc op () a -> PartitionedAcc op () a
 cbcFusion     = ilpFusion cbc
 gurobiFusion  = ilpFusion gurobiCl
 cplexFusion   = ilpFusion cplex
@@ -37,7 +37,7 @@ lpSolveFusion = ilpFusion lpSolve
 scipFusion    = ilpFusion scip
 
 cbcFusionF, gurobiFusionF, cplexFusionF, glpsolFusionF, lpSolveFusionF, scipFusionF 
-  :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => OperationAfun op () a -> PartitionedAfun op () a
+  :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Objective -> OperationAfun op () a -> PartitionedAfun op () a
 cbcFusionF     = ilpFusionF cbc
 gurobiFusionF  = ilpFusionF gurobiCl
 cplexFusionF   = ilpFusionF cplex
@@ -45,23 +45,24 @@ glpsolFusionF  = ilpFusionF glpsol
 lpSolveFusionF = ilpFusionF lpSolve
 scipFusionF    = ilpFusionF scip
 
-ilpFusion  :: (MakesILP op, ILPSolver s op, Pretty.PrettyOp (Cluster op)) => s -> OperationAcc  op () a -> PartitionedAcc op () a
+ilpFusion  :: (MakesILP op, ILPSolver s op, Pretty.PrettyOp (Cluster op)) => s -> Objective -> OperationAcc  op () a -> PartitionedAcc op () a
 ilpFusion  = ilpFusion' makeFullGraph  reconstruct
 
-ilpFusionF :: (MakesILP op, ILPSolver s op, Pretty.PrettyOp (Cluster op)) => s -> OperationAfun op () a -> PartitionedAfun op () a
+ilpFusionF :: (MakesILP op, ILPSolver s op, Pretty.PrettyOp (Cluster op)) => s -> Objective -> OperationAfun op () a -> PartitionedAfun op () a
 ilpFusionF = ilpFusion' makeFullGraphF reconstructF
 
 ilpFusion' :: (MakesILP op, ILPSolver s op) 
            => (x -> (Information op, Map Label (Construction op))) 
            -> (Graph -> [ClusterLs] -> Map Label [ClusterLs] -> Map Label (Construction op) -> y) 
            -> s 
+           -> Objective
            -> x 
            -> y
-ilpFusion' k1 k2 s acc = fusedAcc
+ilpFusion' k1 k2 s obj acc = fusedAcc
   where
     (info@(Info graph _ _), constrM') = k1 acc
     constrM = backendConstruc solution constrM'
-    ilp                               = makeILP info
+    ilp                               = makeILP obj info
     solution                          = solve' ilp
     interpreted                       = interpretSolution solution
     (labelClusters, labelClustersM)   = splitExecs interpreted constrM

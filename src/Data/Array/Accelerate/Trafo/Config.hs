@@ -27,6 +27,7 @@ import Data.Array.Accelerate.Debug.Internal.Flags                   as F
 import Data.Word
 import System.IO.Unsafe
 import Foreign.Storable
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (Objective(..))
 
 
 data Config = Config

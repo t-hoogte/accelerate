@@ -574,6 +574,14 @@ data TupInfo f a where
   Info :: f a -> TupInfo f a
   NoInfo :: TupUnitsProof a -> TupInfo f a
 
+
+instance TupRmonoid (TupR f) where
+  pair' = TupRpair
+  unpair' (TupRpair l r) = (l, r)
+  unpair' _ = error "nope"
+  injL t p = TupRpair t (proofToR p)
+  injR t p = TupRpair (proofToR p) t
+
 proofToR :: TupUnitsProof a -> TupR f a
 proofToR OneUnit = TupRunit
 proofToR (MoreUnits l r) = TupRpair (proofToR l) (proofToR r)

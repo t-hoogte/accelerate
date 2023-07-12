@@ -44,6 +44,7 @@ import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
 
 #ifdef ACCELERATE_DEBUG
 import System.IO.Unsafe -- for debugging
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (Objective)
 #endif
 
 -- Array Fusion
@@ -54,19 +55,20 @@ import System.IO.Unsafe -- for debugging
 convertAccWith
     :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op))
     => Config
+    -> Objective
     -> OperationAcc op () a
     -> PartitionedAcc op () a
 convertAccWith _ = withSimplStats gurobiFusion
 
-convertAcc :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => OperationAcc op () a -> PartitionedAcc op () a
+convertAcc :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => Objective -> OperationAcc op () a -> PartitionedAcc op () a
 convertAcc = convertAccWith defaultOptions
 
 -- | Apply the fusion transformation to a function of array arguments
 --
-convertAfun :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => OperationAfun op () f -> PartitionedAfun op () f
+convertAfun :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => Objective -> OperationAfun op () f -> PartitionedAfun op () f
 convertAfun = convertAfunWith defaultOptions
 
-convertAfunWith :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => Config -> OperationAfun op () f -> PartitionedAfun op () f
+convertAfunWith :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => Config -> Objective -> OperationAfun op () f -> PartitionedAfun op () f
 convertAfunWith _ = withSimplStats gurobiFusionF
 
 

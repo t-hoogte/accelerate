@@ -36,12 +36,21 @@ import Data.Foldable
 trimIds :: S.Set Edge -> S.Set Edge
 trimIds = S.filter (\(x:->y) -> x /= y)
 
+data Objective 
+  = NumClusters
+  | ArrayReads
+  | ArrayReadsWrites
+  | IntermediateArrays
+  | FusedEdges
+  deriving (Show, Bounded, Enum)
+  
+
 -- Makes the ILP. Note that this function 'appears' to ignore the Label levels completely!
 -- We could add some assertions, but if all the input is well-formed (no labels, constraints, etc
 -- that reward putting non-siblings in the same cluster) this is fine: We will interpret 'cluster 3'
 -- with parents `Nothing` as a different cluster than 'cluster 3' with parents `Just 5`.
-makeILP :: forall op. MakesILP op => Information op -> ILP op
-makeILP (Info
+makeILP :: forall op. MakesILP op => Objective -> Information op -> ILP op
+makeILP obj (Info
           (Graph nodes' (trimIds -> fuseEdges') (trimIds -> nofuseEdges))
           backendconstraints
           backendbounds
@@ -63,7 +72,7 @@ makeILP (Info
     n :: Int
     n = 10 + 2 * S.size nodes
 
-    graphILP = ILP Minimise objFun myConstraints myBounds n
+    graphILP = ILP minmax objFun myConstraints myBounds n
 
     -- Since we want all clusters to have one 'iteration size', the final objFun should
     -- take care to never reward 'fusing' disjoint clusters, and then slightly penalise it.
@@ -72,7 +81,14 @@ makeILP (Info
     -- In the future, maybe we want this to be backend-dependent (add to MakesILP).
     -- Also future: add @IVO's IPU reward here.
     objFun :: Expression op
-    objFun = numberOfArrayReadsWrites
+    minmax :: OptDir
+    (minmax,objFun) = case obj of
+      NumClusters         -> (Minimise, numberOfClusters)
+      ArrayReads          -> (Minimise, numberOfReads)
+      ArrayReadsWrites    -> (Minimise, numberOfArrayReadsWrites)
+      IntermediateArrays  -> (Minimise, numberOfManifestArrays)
+      FusedEdges          -> (Minimise, numberOfUnfusedEdges)
+
 
     -- objective function that maximises the number of edges we fuse, and minimises the number of array reads if you ignore horizontal fusion
     numberOfUnfusedEdges = foldl' (\f (i :-> j) -> f .+. fused i j)

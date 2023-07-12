@@ -479,7 +479,7 @@ mkFullGraphF (Abody acc) = do
   l <- freshL
   currL.parent .= Just l
   res <- mkFullGraph acc
-  let output = snd $ Debug.Trace.traceShowId . ("bodyresult",) $ res ^. l_res
+  let output = res ^. l_res
   currL.parent .= l ^. parent
   return $ res 
          & info . constr <>~ maybe mempty (\l' -> manifest l' .==. int 0) output
