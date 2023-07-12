@@ -102,7 +102,7 @@ makeILP obj (Info
     -- Then, we also need n^2 intermediate variables just to make these disjunction of conjunctions 
     -- note, it's only quadratic in the number of consumers of a specific array.
     -- We also check for the 'order': horizontal fusion only happens when the two fused accesses are in the same order.
-    numberOfReads = nReads
+    numberOfReads =  nReads .+. numberOfUnfusedEdges
     (nReads, readConstraints, readBounds) = 
         foldl (\(a,b,c) (d,e,f)->(a.+.d,b<>e,c<>f)) (int 0, mempty, mempty)
       . flip evalState ""
@@ -117,11 +117,9 @@ makeILP obj (Info
               (\(uv, rp, ro) -> isEqualRangeN (c rp) (pi consumerL)         (c uv) 
                                 <> isEqualRangeN (c ro) (c $ OutDir consumerL) (c uv)) 
               (zip3 useVars readPis readOrders)
-        -- note that we set it to be equal to n-1 here, smaller would also work but that is never optimal
-        -- I don't know which version is easier/faster to solve!
-        return (constraint <> foldl (.+.) (int 0) (map c useVars) .==. int (nConsumers-1), foldMap binary useVars)
+        return (constraint <> foldl (.+.) (int 0) (map c useVars) .<=. int (nConsumers-1), foldMap binary useVars)
       readPi0s <- replicateM nConsumers readPi0Var
-      return ( foldl (.+.) (int 0) (map (((-1) .*.) . c) readPi0s) -- using `(-1 .*.)` instead of `notB` for the same reason as in numberOfManifestArrays
+      return ( foldl (.+.) (int 0) (map c readPi0s) 
              , subConstraint <> fold (zipWith (\p p0 -> c p .<=. timesN (c p0)) readPis readPi0s)
              , subBounds <> foldMap (\v -> lowerUpper 0 v n) readPis <> foldMap binary readPi0s)
 

@@ -40,11 +40,11 @@ import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Trafo.Partitioning.ILP (gurobiFusion, gurobiFusionF)
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP)
 import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (Objective)
 
 
 #ifdef ACCELERATE_DEBUG
 import System.IO.Unsafe -- for debugging
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (Objective)
 #endif
 
 -- Array Fusion

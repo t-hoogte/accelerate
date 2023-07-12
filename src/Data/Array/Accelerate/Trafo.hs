@@ -81,9 +81,10 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (Objective(..))
 -- TODO: simplifications commented out, because they REMOVE PERMUTE
 test
   :: forall sched kernel f. (Afunction f, DesugarAcc (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), Pretty.PrettyKernel kernel, IsSchedule sched, IsKernel kernel, Pretty.PrettySchedule sched, Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))
-  => f
+  => Objective
+  -> f
   -> String
-test f
+test obj f
   = "OriginalAcc:\n"
   ++ Pretty.renderForTerminal (Pretty.prettyPreOpenAfun configPlain prettyOpenAcc Empty original)
   ++ "\n\nDesugared OperationAcc:\n"
@@ -111,7 +112,7 @@ test f
 
     partitioned = 
       Operation.simplifyFun $ 
-      NewNewFusion.convertAfun ArrayReadsWrites operation
+      NewNewFusion.convertAfun obj operation
 
     slvpartitioned = 
       -- Operation.simplifyFun $ 
