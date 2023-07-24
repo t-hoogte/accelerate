@@ -41,7 +41,6 @@ import qualified Prelude as P
 import Control.Applicative
 import Control.Monad                                    
 import Data.Binary                                      ( decodeFile, encodeFile )
-import Data.Label                                       ( get )
 
 import Data.Array.Accelerate.Interpreter
 

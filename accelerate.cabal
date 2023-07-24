@@ -726,7 +726,6 @@ test-suite doctest
         -- , doctest                       >= 0.11
         , criterion
         , binary
-        , fclabels
         , normaldistribution
         , array
         , random
