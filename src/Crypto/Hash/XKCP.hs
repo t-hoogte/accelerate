@@ -29,7 +29,7 @@ import Data.Word
 import Foreign.C.Types
 import Foreign.Ptr
 import Language.Haskell.TH.Syntax
-import System.IO.Unsafe
+import System.IO.Unsafe 
 
 import qualified Data.ByteString                                    as S
 import qualified Data.ByteString.Lazy                               as L

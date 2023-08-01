@@ -4,7 +4,6 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE TupleSections #-}
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve where
 
 
@@ -37,14 +36,14 @@ import Data.Foldable
 trimIds :: S.Set Edge -> S.Set Edge
 trimIds = S.filter (\(x:->y) -> x /= y)
 
-data Objective
+data Objective 
   = NumClusters
   | ArrayReads
   | ArrayReadsWrites
   | IntermediateArrays
   | FusedEdges
   deriving (Show, Bounded, Enum)
-
+  
 
 -- Makes the ILP. Note that this function 'appears' to ignore the Label levels completely!
 -- We could add some assertions, but if all the input is well-formed (no labels, constraints, etc
@@ -104,7 +103,7 @@ makeILP obj (Info
     -- note, it's only quadratic in the number of consumers of a specific array.
     -- We also check for the 'order': horizontal fusion only happens when the two fused accesses are in the same order.
     numberOfReads =  nReads .+. numberOfUnfusedEdges
-    (nReads, readConstraints, readBounds) =
+    (nReads, readConstraints, readBounds) = 
         foldl (\(a,b,c) (d,e,f)->(a.+.d,b<>e,c<>f)) (int 0, mempty, mempty)
       . flip evalState ""
       . forM (S.toList nodes) $ \l -> do
@@ -114,13 +113,13 @@ makeILP obj (Info
       readOrders <- replicateM nConsumers readOrderVar
       (subConstraint, subBounds) <- flip foldMapM consumers $ \consumerL -> do
         useVars <- replicateM nConsumers useVar -- these are the n^2 variables: For each consumer, n variables which each check the equality of pi to readpi
-        let constraint = foldMap
-              (\(uv, rp, ro) -> isEqualRangeN (c rp) (pi consumerL)         (c uv)
-                                <> isEqualRangeN (c ro) (c $ OutDir consumerL) (c uv))
+        let constraint = foldMap 
+              (\(uv, rp, ro) -> isEqualRangeN (c rp) (pi consumerL)         (c uv) 
+                                <> isEqualRangeN (c ro) (c $ OutDir consumerL) (c uv)) 
               (zip3 useVars readPis readOrders)
         return (constraint <> foldl (.+.) (int 0) (map c useVars) .<=. int (nConsumers-1), foldMap binary useVars)
       readPi0s <- replicateM nConsumers readPi0Var
-      return ( foldl (.+.) (int 0) (map c readPi0s)
+      return ( foldl (.+.) (int 0) (map c readPi0s) 
              , subConstraint <> fold (zipWith (\p p0 -> c p .<=. timesN (c p0)) readPis readPi0s)
              , subBounds <> foldMap (\v -> lowerUpper 0 v n) readPis <> foldMap binary readPi0s)
 
@@ -144,16 +143,25 @@ makeILP obj (Info
     -- these exec-pi values, in which case we are only left with the independent array operations problem.
     -- To eliminate that one too, we'd need n^2 edges.
     numberOfClusters  = c (Other "maximumClusterNumber")
-    execpi l = Other <$> freshName ("Exec" <> show l <> "Pi")
     -- removing this from myConstraints makes the ILP slightly smaller, but disables the use of this cost function
-    (numberOfClustersConstraint, nClustersBounds) = --foldMap (\l -> pi l .<=. numberOfClusters) nodes
-      (\epis -> let epimap = M.fromList epis in 
-        foldMap (\(l,epi) -> (c epi .<=. numberOfClusters, lowerUpper 0 epi n)) epis
-      <> (foldMap (\(i:->j) -> between (fused i j) (c (epimap M.! i) .-. c (epimap M.! j)) (timesN $ fused i j)) edges,mempty)) 
-      $ flip evalState "" $ forM (S.toList nodes) $ \l -> (l,) <$> execpi l
+    numberOfClustersConstraint = case obj of NumClusters -> foldMap (\l -> pi l .<=. numberOfClusters) nodes
+                                             _ -> mempty
+
+    -- attempt at execpi:
+    -- this failed because it was adding one for _all_ labels, not just exec. Need to find out which ones they are first somehow!
+    -- execpi l = Other <$> freshName ("Exec" <> show l <> "Pi")
+    -- -- removing this from myConstraints makes the ILP slightly smaller, but disables the use of this cost function
+    -- (numberOfClustersConstraint, nClustersBounds) = --foldMap (\l -> pi l .<=. numberOfClusters) nodes
+    --   (\epis -> let epimap = M.fromList epis in 
+    --     foldMap (\(l,epi) -> (c epi .<=. numberOfClusters, lowerUpper 0 epi n)) epis
+    --   <> (foldMap (\(i:->j) -> between (fused i j) (c (epimap M.! i) .-. c (epimap M.! j)) (timesN $ fused i j)) edges,mempty)) 
+    --   $ flip evalState "" $ forM (S.toList nodes) $ \l -> (l,) <$> execpi l
 
 
-    myConstraints = acyclic <> infusible <> manifestC <> numberOfClustersConstraint <> readConstraints <> finalize (S.toList nodes)
+
+
+
+    myConstraints = acyclic <> infusible <> manifestC <> numberOfClustersConstraint <> readConstraints <> finalize (S.toList nodes) 
 
     -- x_ij <= pi_j - pi_i <= n*x_ij for all edges
     acyclic = foldMap
@@ -184,8 +192,6 @@ makeILP obj (Info
                   nodes
                <>
                readBounds
-               <>
-               nClustersBounds
 
 
 -- Extract the fusion information (ordered list of clusters of Labels) (head is the first cluster).

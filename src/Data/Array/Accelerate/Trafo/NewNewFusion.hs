@@ -30,6 +30,8 @@ module Data.Array.Accelerate.Trafo.NewNewFusion (
 
   convertAcc,  convertAccWith,
   convertAfun, convertAfunWith,
+  
+  Benchmarking(..), convertAccBench, convertAccBenchF
 
 ) where
 
@@ -37,15 +39,25 @@ import Data.Array.Accelerate.AST.Operation
 import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.Trafo.Config
 import Data.Array.Accelerate.Error
-import Data.Array.Accelerate.Trafo.Partitioning.ILP (gurobiFusion, gurobiFusionF)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP (gurobiFusion, gurobiFusionF, greedy, greedyF, no, noF)
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP)
 import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (Objective)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (Objective (..))
 
 
 #ifdef ACCELERATE_DEBUG
 import System.IO.Unsafe -- for debugging
 #endif
+
+data Benchmarking = GreedyFusion | NoFusion
+
+convertAccBench :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Benchmarking -> OperationAcc op () a -> PartitionedAcc op () a
+convertAccBench GreedyFusion = withSimplStats (greedy FusedEdges)
+convertAccBench NoFusion = withSimplStats (no FusedEdges)
+convertAccBenchF :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Benchmarking -> OperationAfun op () a -> PartitionedAfun op () a
+convertAccBenchF GreedyFusion = withSimplStats (greedyF FusedEdges)
+convertAccBenchF NoFusion = withSimplStats (noF FusedEdges)
+
 
 -- Array Fusion
 -- ============

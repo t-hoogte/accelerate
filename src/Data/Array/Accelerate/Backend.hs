@@ -51,7 +51,7 @@ module Data.Array.Accelerate.Backend (
   Pretty.PrettyOp(..),
   Execute(..),
   Operation.NFData'(..),
-  Operation.ShrinkArg(..), runWithObj, runNWithObj,
+  Operation.ShrinkArg(..), runWithObj, runNWithObj, runNBench, Benchmarking(..)
 ) where
 
 import qualified Data.Array.Accelerate.Smart as Smart
@@ -79,6 +79,7 @@ import qualified Data.Array.Accelerate.AST.Operation as Operation
 import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Graph
 import Data.Array.Accelerate.Eval (EvalOp)
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (Objective)
+import Data.Array.Accelerate.Trafo.NewNewFusion (Benchmarking(..))
 
 class
   ( Desugar.DesugarAcc (Operation backend)
@@ -160,6 +161,16 @@ runNWithObj
 runNWithObj obj f = schedule `seq` sugarFunction (afunctionRepr @f) $ executeAfun (afunctionGroundR @f) schedule
   where
     schedule = convertAfunWithObj @(Schedule backend) @(Kernel backend) obj f
+
+runNBench
+  :: forall backend f.
+     (Afunction f, Backend backend)
+  => Benchmarking
+  -> f
+  -> AfunctionR f
+runNBench b f = schedule `seq` sugarFunction (afunctionRepr @f) $ executeAfun (afunctionGroundR @f) schedule
+  where
+    schedule = convertAfunBench @(Schedule backend) @(Kernel backend) b f
 
 sugarFunction
   :: forall f.

@@ -115,6 +115,7 @@ data Var (op :: Type -> Type)
   | Other String
     -- ^ For one-shot variables that don't deserve a constructor. These are also integer variables, and the responsibility is on the user to pick a unique name!
     -- It is possible to add a variation for continuous variables too, see `allIntegers` in MIP.hs.
+    -- We currently use this in Solve.hs for cost functions.
   | BackendSpecific (BackendVar op)
     -- ^ Vars needed to express backend-specific fusion rules.
     -- This is what allows backends to specify how each of the operations can fuse.
