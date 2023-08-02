@@ -78,15 +78,15 @@ Data.Graph (containers) has a nice topological sort.
 -- Note that the return type `a` is not existentially qualified: The caller of this function tells
 -- us what the result type should be (namely, what it was before fusion). We use unsafe tricks to
 -- fulfill this contract: if something goes wrong during fusion or at the caller, bad things happen.
-reconstruct :: forall op a. MakesILP op => Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> PreOpenAcc (Cluster op) () a
-reconstruct a b c d = case openReconstruct LabelEnvNil a b c d of
+reconstruct :: forall op a. MakesILP op => Bool -> Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> PreOpenAcc (Cluster op) () a
+reconstruct a b c d e = case openReconstruct a LabelEnvNil b c d e of
           -- see [NOTE unsafeCoerce result type]
           Exists res -> unsafeCoerce @(PartitionedAcc op () _)
                                      @(PartitionedAcc op () a)
                                      res
 
-reconstructF :: forall op a. MakesILP op => Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> PreOpenAfun (Cluster op) () a
-reconstructF a b c d = case openReconstructF LabelEnvNil a b (Label 1 Nothing) c d of
+reconstructF :: forall op a. MakesILP op => Bool -> Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> PreOpenAfun (Cluster op) () a
+reconstructF a b c d e = case openReconstructF a LabelEnvNil b c (Label 1 Nothing) d e of
           -- see [NOTE unsafeCoerce result type]
           Exists res -> unsafeCoerce @(PartitionedAfun op () _)
                                      @(PartitionedAfun op () a)
@@ -101,9 +101,10 @@ foldC :: (Label -> b -> b) -> b -> ClusterL -> b
 foldC f x (ExecL ls) = foldr f x ls
 foldC f x (NonExecL l) = f l x
 
-topSort :: Graph -> Labels -> [ClusterL]
-topSort _ (S.toList -> [l]) = [ExecL [l]]
-topSort (Graph _ fedges fpedges) cluster = map ExecL topsorteds
+topSort :: Bool -> Graph -> Labels -> [ClusterL]
+topSort _ _ (S.toList -> [l]) = [ExecL [l]]
+-- topSort True _ ls = map (ExecL . pure) $ S.toList ls -- TODO no, need to sort them first
+topSort singletons (Graph _ fedges fpedges) cluster = if singletons then concatMap (map (ExecL . pure)) topsorteds else map ExecL topsorteds
   where
     buildGraph =
             G.graphFromEdges
@@ -142,25 +143,27 @@ topSort (Graph _ fedges fpedges) cluster = map ExecL topsorteds
     readOrderOf = undefined --TODO
 
 openReconstruct   :: MakesILP op
-                  => LabelEnv aenv
+                  => Bool
+                  -> LabelEnv aenv
                   -> Graph
                   -> [ClusterLs]
                   -> M.Map Label [ClusterLs]
                   -> M.Map Label (Construction op)
                   -> Exists (PreOpenAcc (Cluster op) aenv)
-openReconstruct  a b c d e = (\(Left x) -> x) $ openReconstruct' a b c Nothing d e
+openReconstruct  a b c d e f = (\(Left x) -> x) $ openReconstruct' a b c d Nothing e f
 openReconstructF  :: MakesILP op
-                  => LabelEnv aenv
+                  => Bool
+                  -> LabelEnv aenv
                   -> Graph
                   -> [ClusterLs]
                   -> Label
                   -> M.Map Label [ClusterLs]
                   -> M.Map Label (Construction op)
                   -> Exists (PreOpenAfun (Cluster op) aenv)
-openReconstructF a b c l d e= (\(Right x) -> x) $ openReconstruct' a b c (Just l) d e
+openReconstructF a b c d l e f= (\(Right x) -> x) $ openReconstruct' a b c d (Just l) e f
 
-openReconstruct' :: forall op aenv. MakesILP op => LabelEnv aenv -> Graph -> [ClusterLs] -> Maybe Label -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> Either (Exists (PreOpenAcc (Cluster op) aenv)) (Exists (PreOpenAfun (Cluster op) aenv))
-openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = case mlab of
+openReconstruct' :: forall op aenv. MakesILP op => Bool -> LabelEnv aenv -> Graph -> [ClusterLs] -> Maybe Label -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> Either (Exists (PreOpenAcc (Cluster op) aenv)) (Exists (PreOpenAfun (Cluster op) aenv))
+openReconstruct' singletons labelenv graph clusterslist mlab subclustersmap construct = case mlab of
   Just l  -> Right $ makeASTF labelenv l mempty
   Nothing -> Left $ makeAST labelenv clusters mempty
   where
@@ -260,10 +263,10 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
     -- do the topological sorting for each set
     -- TODO: add 'backend-specific' edges to the graph for sorting, see 3.3.1 in the PLDI paper
     clusters = concatMap (\case
-                      Execs ls -> topSort graph ls
+                      Execs ls -> topSort singletons graph ls
                       NonExec l -> [NonExecL l]) clusterslist
     subclusters = M.map (concatMap ( \case
-                      Execs ls -> topSort graph ls
+                      Execs ls -> topSort singletons graph ls
                       NonExec l -> [NonExecL l])) subclustersmap
     subcluster l = subclusters M.! l
 

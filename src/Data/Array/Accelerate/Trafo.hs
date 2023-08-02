@@ -70,13 +70,11 @@ import Data.Array.Accelerate.Pretty.Print (configPlain, Val (Empty))
 import qualified Debug.Trace
 import Data.Text.Lazy (unpack)
 
-#ifdef ACCELERATE_DEBUG
 import Formatting
 import System.IO.Unsafe
 import Data.Array.Accelerate.Debug.Internal.Flags                   hiding ( when )
 import Data.Array.Accelerate.Debug.Internal.Timed
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (Objective(..))
-#endif
 
 defaultObjective = IntermediateArrays
 
