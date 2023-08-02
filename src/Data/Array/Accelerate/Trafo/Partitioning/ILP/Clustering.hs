@@ -133,11 +133,12 @@ topSort singletons (Graph _ fedges fpedges) cluster = if singletons then concatM
     -- TODO: this also 'connects' components through 'horizonal fusion' if they are in different orders.
       -- To fix this: consider each edge from outside the cluster to inside the cluster: look at the sources (parents) and the read-order of those edges.
       -- Whenever one parent has outgoing edges of varying read-orders, we should have multiple nodes for this parent, one per read-order.
+      -- this is important: otherwise we end up fusing loops with different iteration sizes!
 
     -- .. split it into connected components and remove those parents from last step,
     components = map (S.intersection cluster . S.fromList . map ((\(x,_,_)->x) . getAdj) . T.flatten) $ G.components graph
     -- and make a graph of each of them...
-    graphs = map buildGraph components
+    graphs = if singletons then [buildGraph cluster] else map buildGraph components
     -- .. and finally, topologically sort each of those to get the labels per cluster sorted on dependencies
     topsorteds = map (\(graph', getAdj', _) -> map (view _1 . getAdj') $ G.topSort graph') graphs
     readOrderOf = undefined --TODO

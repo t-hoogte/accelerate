@@ -50,6 +50,7 @@ import System.IO.Unsafe -- for debugging
 #endif
 
 data Benchmarking = GreedyFusion | NoFusion
+  deriving (Show, Eq)
 
 convertAccBench :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Benchmarking -> OperationAcc op () a -> PartitionedAcc op () a
 convertAccBench GreedyFusion = withSimplStats (greedy FusedEdges)
