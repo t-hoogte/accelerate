@@ -75,13 +75,14 @@ import System.IO.Unsafe
 import Data.Array.Accelerate.Debug.Internal.Flags                   hiding ( when )
 import Data.Array.Accelerate.Debug.Internal.Timed
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (Objective(..))
+import Data.Array.Accelerate.Trafo.NewNewFusion (Benchmarking)
 
 defaultObjective = IntermediateArrays
 
 -- TODO: simplifications commented out, because they REMOVE PERMUTE
 test
   :: forall sched kernel f. (Afunction f, DesugarAcc (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), Pretty.PrettyKernel kernel, IsSchedule sched, IsKernel kernel, Pretty.PrettySchedule sched, Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))
-  => Objective
+  => Either Objective Benchmarking
   -> f
   -> String
 test obj f
@@ -111,8 +112,10 @@ test obj f
       $ Sharing.convertAfunWith defaultOptions f
 
     partitioned = 
-      Operation.simplifyFun $ 
-      NewNewFusion.convertAfun obj operation
+      -- Operation.simplifyFun $ 
+      case obj of
+        Left objective -> NewNewFusion.convertAfun objective operation
+        Right b -> NewNewFusion.convertAccBenchF b operation
 
     slvpartitioned = 
       -- Operation.simplifyFun $ 
