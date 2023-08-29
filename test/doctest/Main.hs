@@ -54,7 +54,7 @@ import System.Random
 import Criterion.Main
 
 main :: IO ()
-main = print . runN @Interpreter $ diagonal (use $ fromList (Z:.10) [1 :: Int ..])
+main = print . runN @Interpreter $ difficult (use $ fromList (Z:.20) $ [1..])
 
 dotp :: Acc (Vector Int) -> Acc (Vector Int) -> Acc (Scalar Int)
 dotp a b = fold (+) 0 $ zipWith (*) (map (+1) a) (map (`div` 2) b)
