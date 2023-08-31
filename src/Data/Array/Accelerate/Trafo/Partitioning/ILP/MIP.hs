@@ -43,7 +43,7 @@ instance (MakesILP op, MIP.IsSolver s IO) => ILPSolver s op where
   solve :: s -> ILP op -> IO (Maybe (Solution op))
   solve s (ILP dir obj constr bnds n) = makeSolution names <$> MIP.solve s options problem
     where
-      options = MIP.SolveOptions{ MIP.solveTimeLimit   = Nothing
+      options = MIP.SolveOptions{ MIP.solveTimeLimit   = Just 60
                                 , MIP.solveLogger      = putStrLn . ("AccILPSolver: "      ++)
                                 , MIP.solveErrorLogger = putStrLn . ("AccILPSolverError: " ++)
                                 , MIP.solveCondensedSolution = False }

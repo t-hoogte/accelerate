@@ -51,7 +51,7 @@ module Data.Array.Accelerate.Backend (
   Pretty.PrettyOp(..),
   Execute(..),
   Operation.NFData'(..),
-  Operation.ShrinkArg(..),
+  Operation.ShrinkArg(..), runWithObj, runNWithObj, runNBench, Benchmarking(..)
 ) where
 
 import qualified Data.Array.Accelerate.Smart as Smart
@@ -78,6 +78,8 @@ import System.IO.Unsafe (unsafePerformIO)
 import qualified Data.Array.Accelerate.AST.Operation as Operation
 import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Graph
 import Data.Array.Accelerate.Eval (EvalOp)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (Objective)
+import Data.Array.Accelerate.Trafo.NewNewFusion (Benchmarking(..))
 
 class
   ( Desugar.DesugarAcc (Operation backend)
@@ -112,6 +114,12 @@ runWith config acc
     repr = Sugar.arraysR @t
     schedule = convertAccWith @(Schedule backend) @(Kernel backend) config acc
 
+runWithObj :: forall backend t. (Sugar.Arrays t, Backend backend) => Objective -> Smart.Acc t -> t
+runWithObj obj acc = Sugar.toArr $ sugarArrays repr $ unsafePerformIO $ executeAcc (desugarArraysR repr) schedule
+  where
+    repr = Sugar.arraysR @t
+    schedule = convertAccWithObj @(Schedule backend) @(Kernel backend) obj acc
+
 run1
   :: forall backend s t.
      (Sugar.Arrays s, Sugar.Arrays t, Backend backend)
@@ -143,6 +151,26 @@ runNWith
 runNWith config f = schedule `seq` sugarFunction (afunctionRepr @f) $ executeAfun (afunctionGroundR @f) schedule
   where
     schedule = convertAfunWith @(Schedule backend) @(Kernel backend) config f
+
+runNWithObj
+  :: forall backend f.
+     (Afunction f, Backend backend)
+  => Objective
+  -> f
+  -> AfunctionR f
+runNWithObj obj f = schedule `seq` sugarFunction (afunctionRepr @f) $ executeAfun (afunctionGroundR @f) schedule
+  where
+    schedule = convertAfunWithObj @(Schedule backend) @(Kernel backend) obj f
+
+runNBench
+  :: forall backend f.
+     (Afunction f, Backend backend)
+  => Benchmarking
+  -> f
+  -> AfunctionR f
+runNBench b f = schedule `seq` sugarFunction (afunctionRepr @f) $ executeAfun (afunctionGroundR @f) schedule
+  where
+    schedule = convertAfunBench @(Schedule backend) @(Kernel backend) b f
 
 sugarFunction
   :: forall f.

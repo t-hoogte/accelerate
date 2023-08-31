@@ -78,15 +78,15 @@ Data.Graph (containers) has a nice topological sort.
 -- Note that the return type `a` is not existentially qualified: The caller of this function tells
 -- us what the result type should be (namely, what it was before fusion). We use unsafe tricks to
 -- fulfill this contract: if something goes wrong during fusion or at the caller, bad things happen.
-reconstruct :: forall op a. MakesILP op => Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> PreOpenAcc (Cluster op) () a
-reconstruct a b c d = case openReconstruct LabelEnvNil a b c d of
+reconstruct :: forall op a. MakesILP op => Bool -> Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> PreOpenAcc (Cluster op) () a
+reconstruct a b c d e = case openReconstruct a LabelEnvNil b c d e of
           -- see [NOTE unsafeCoerce result type]
           Exists res -> unsafeCoerce @(PartitionedAcc op () _)
                                      @(PartitionedAcc op () a)
                                      res
 
-reconstructF :: forall op a. MakesILP op => Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> PreOpenAfun (Cluster op) () a
-reconstructF a b c d = case openReconstructF LabelEnvNil a b (Label 1 Nothing) c d of
+reconstructF :: forall op a. MakesILP op => Bool -> Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> PreOpenAfun (Cluster op) () a
+reconstructF a b c d e = case openReconstructF a LabelEnvNil b c (Label 1 Nothing) d e of
           -- see [NOTE unsafeCoerce result type]
           Exists res -> unsafeCoerce @(PartitionedAfun op () _)
                                      @(PartitionedAfun op () a)
@@ -101,9 +101,10 @@ foldC :: (Label -> b -> b) -> b -> ClusterL -> b
 foldC f x (ExecL ls) = foldr f x ls
 foldC f x (NonExecL l) = f l x
 
-topSort :: Graph -> Labels -> [ClusterL]
-topSort _ (S.toList -> [l]) = [ExecL [l]]
-topSort (Graph _ fedges fpedges) cluster = map ExecL topsorteds
+topSort :: Bool -> Graph -> Labels -> [ClusterL]
+topSort _ _ (S.toList -> [l]) = [ExecL [l]]
+-- topSort True _ ls = map (ExecL . pure) $ S.toList ls -- TODO no, need to sort them first
+topSort singletons (Graph _ fedges fpedges) cluster = if singletons then concatMap (map (ExecL . pure)) topsorteds else map ExecL topsorteds
   where
     buildGraph =
             G.graphFromEdges
@@ -132,35 +133,38 @@ topSort (Graph _ fedges fpedges) cluster = map ExecL topsorteds
     -- TODO: this also 'connects' components through 'horizonal fusion' if they are in different orders.
       -- To fix this: consider each edge from outside the cluster to inside the cluster: look at the sources (parents) and the read-order of those edges.
       -- Whenever one parent has outgoing edges of varying read-orders, we should have multiple nodes for this parent, one per read-order.
+      -- this is important: otherwise we end up fusing loops with different iteration sizes!
 
     -- .. split it into connected components and remove those parents from last step,
     components = map (S.intersection cluster . S.fromList . map ((\(x,_,_)->x) . getAdj) . T.flatten) $ G.components graph
     -- and make a graph of each of them...
-    graphs = map buildGraph components
+    graphs = if singletons then [buildGraph cluster] else map buildGraph components
     -- .. and finally, topologically sort each of those to get the labels per cluster sorted on dependencies
     topsorteds = map (\(graph', getAdj', _) -> map (view _1 . getAdj') $ G.topSort graph') graphs
     readOrderOf = undefined --TODO
 
 openReconstruct   :: MakesILP op
-                  => LabelEnv aenv
+                  => Bool
+                  -> LabelEnv aenv
                   -> Graph
                   -> [ClusterLs]
                   -> M.Map Label [ClusterLs]
                   -> M.Map Label (Construction op)
                   -> Exists (PreOpenAcc (Cluster op) aenv)
-openReconstruct  a b c d e = (\(Left x) -> x) $ openReconstruct' a b c Nothing d e
+openReconstruct  a b c d e f = (\(Left x) -> x) $ openReconstruct' a b c d Nothing e f
 openReconstructF  :: MakesILP op
-                  => LabelEnv aenv
+                  => Bool
+                  -> LabelEnv aenv
                   -> Graph
                   -> [ClusterLs]
                   -> Label
                   -> M.Map Label [ClusterLs]
                   -> M.Map Label (Construction op)
                   -> Exists (PreOpenAfun (Cluster op) aenv)
-openReconstructF a b c l d e= (\(Right x) -> x) $ openReconstruct' a b c (Just l) d e
+openReconstructF a b c d l e f= (\(Right x) -> x) $ openReconstruct' a b c d (Just l) e f
 
-openReconstruct' :: forall op aenv. MakesILP op => LabelEnv aenv -> Graph -> [ClusterLs] -> Maybe Label -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> Either (Exists (PreOpenAcc (Cluster op) aenv)) (Exists (PreOpenAfun (Cluster op) aenv))
-openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = case mlab of
+openReconstruct' :: forall op aenv. MakesILP op => Bool -> LabelEnv aenv -> Graph -> [ClusterLs] -> Maybe Label -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> Either (Exists (PreOpenAcc (Cluster op) aenv)) (Exists (PreOpenAfun (Cluster op) aenv))
+openReconstruct' singletons labelenv graph clusterslist mlab subclustersmap construct = case mlab of
   Just l  -> Right $ makeASTF labelenv l mempty
   Nothing -> Left $ makeAST labelenv clusters mempty
   where
@@ -174,7 +178,7 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
     makeAST _ [] _ = error "empty AST"
     makeAST env [cluster] prev = case makeCluster env cluster of
       Fold (CCluster args info cio cast) -> Exists $ Exec (Cluster info (Cluster' cio cast)) $ unLabelOp args
-      InitFold o args -> unfused o args $
+      InitFold o l args -> unfused o l args $
                             \(CCluster args' info cio cast) ->
                                 Exists $ Exec (Cluster info (Cluster' cio cast)) (unLabelOp args')
       NotFold con -> case con of
@@ -260,10 +264,10 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
     -- do the topological sorting for each set
     -- TODO: add 'backend-specific' edges to the graph for sorting, see 3.3.1 in the PLDI paper
     clusters = concatMap (\case
-                      Execs ls -> topSort graph ls
+                      Execs ls -> topSort singletons graph ls
                       NonExec l -> [NonExecL l]) clusterslist
     subclusters = M.map (concatMap ( \case
-                      Execs ls -> topSort graph ls
+                      Execs ls -> topSort singletons graph ls
                       NonExec l -> [NonExecL l])) subclustersmap
     subcluster l = subclusters M.! l
 
@@ -276,15 +280,15 @@ openReconstruct' labelenv graph clusterslist mlab subclustersmap construct = cas
                               -- the `foldr1`, the input argument will dissapear. The output argument does not:
                               -- we clean that up in the SLV pass, if this was vertical fusion. If this is diagonal fusion,
                               -- it stays.
-                              CExe env' args op -> InitFold op (fromJust $ reindexLabelledArgsOp (mkReindexPartial env' env) args)
+                              CExe env' args op -> InitFold op l (fromJust $ reindexLabelledArgsOp (mkReindexPartial env' env) args)
                               _                 -> error "avoid this next refactor" -- c -> NotFold c
                           ) ls
     makeCluster _ (NonExecL l) = NotFold $ construct M.! l
 
     fuseCluster :: FoldType op env -> FoldType op env -> FoldType op env
-    fuseCluster (Fold cluster) (InitFold op largs) =
-      consCluster largs cluster op Fold
-    fuseCluster (InitFold op largs) x = unfused op largs $ \c -> fuseCluster (Fold c) x
+    fuseCluster (Fold cluster) (InitFold op l largs) =
+      consCluster l largs cluster op Fold
+    fuseCluster (InitFold op l largs) x = unfused op l largs $ \c -> fuseCluster (Fold c) x
     fuseCluster Fold{} Fold{} = error "fuseCluster got non-leaf as second argument" -- Should never happen
     fuseCluster NotFold{}   _ = error "fuseCluster encountered NotFold" -- Should only occur in singleton clusters
     fuseCluster _   NotFold{} = error "fuseCluster encountered NotFold" -- Should only occur in singleton clusters
@@ -297,7 +301,7 @@ weakenAcc lhs =  runIdentity . reindexAcc (weakenReindex $ weakenWithLHS lhs)
 
 data FoldType op env
   = forall args. Fold (ConstructingCluster op args env)
-  | forall args. InitFold (op args) (LabelledArgsOp op env args)
+  | forall args. InitFold (op args) Label (LabelledArgsOp op env args)
   | NotFold (Construction op)
 
 -- contains all elements of a Cluster and the LabelledArgsOp
@@ -308,17 +312,18 @@ data ConstructingCluster op args env where
            -> ClusterAST op input output
            -> ConstructingCluster op args env
 
-unfused :: MakesILP op => op args -> LabelledArgsOp op env args -> (forall args'. ConstructingCluster op args' env -> r) -> r
-unfused op largs = consCluster largs (CCluster ArgsNil ArgsNil Empty None) op
+unfused :: MakesILP op => op args -> Label -> LabelledArgsOp op env args -> (forall args'. ConstructingCluster op args' env -> r) -> r
+unfused op l largs = consCluster l largs (CCluster ArgsNil ArgsNil Empty None) op
 
 consCluster :: forall env args extra op r
              . MakesILP op
-            => LabelledArgsOp op env extra
+            => Label
+            -> LabelledArgsOp op env extra
             -> ConstructingCluster op args env
             -> op extra
             -> (forall args'. ConstructingCluster op args' env -> r)
             -> r
-consCluster lextra (CCluster largs _ cIO cAST) op k = -- we can ignore the BackendCluster that is already present, because the same information is also in the `largs`
+consCluster l lextra (CCluster largs _ cIO cAST) op k = -- we can ignore the BackendCluster that is already present, because the same information is also in the `largs`
   mkReverse lextra $ \rev lartxe->
     consCluster' largs rev lartxe cAST (mkBase cIO) cIO
   where
@@ -349,7 +354,7 @@ consCluster lextra (CCluster largs _ cIO cAST) op k = -- we can ignore the Backe
                  -> LeftHandSideArgs added i scope
                  -> ClusterIO total i o
                  -> r
-    consCluster' ltot Ordered ArgsNil ast lhs io = k $ CCluster ltot (mapArgs getClusterArg ltot) io (Bind lhs op ast)
+    consCluster' ltot Ordered ArgsNil ast lhs io = k $ CCluster ltot (mapArgs getClusterArg ltot) io (Bind lhs op l ast)
     consCluster' ltot (Revert r) (a :>: toAdd) ast lhs io = case a of
       LOp (ArgArray In  _ _ _) _ _ -> consInArg  a ltot lhs ast io $ \ltot' -> consCluster' ltot' r toAdd
       LOp (ArgArray Out _ _ _) _ _ -> consOutArg a ltot lhs ast io $ \ltot' -> consCluster' ltot' r toAdd
@@ -574,7 +579,7 @@ ttb t (ConsPair l r) k =
 
 weakenAST :: ClusterAST op scope o -> ClusterAST op (scope, x) (o, x)
 weakenAST None = None
-weakenAST (Bind lhs op ast) = Bind (Ignr lhs) op $ weakenAST ast
+weakenAST (Bind lhs op l ast) = Bind (Ignr lhs) op l $ weakenAST ast
 
 --Only call this with a single buffer!
 fuseInput :: MakesILP op
@@ -698,7 +703,7 @@ addInput  :: ClusterAST op scope o
           -> (ClusterAST op (scope, Value sh e) (o, Value sh e)
             , ClusterIO (In sh e -> total) (i, Value sh e) (o, Value sh e))
 addInput None io = (None, Input io)
-addInput (Bind lhs op ast) io = first (Bind (Ignr lhs) op) $ addInput ast io
+addInput (Bind lhs op l ast) io = first (Bind (Ignr lhs) op l) $ addInput ast io
 
 -- use one of the IO constructors {ExpPut, VarPut, FunPut} as third argument
 addExp  :: ClusterIO total i o
@@ -708,7 +713,7 @@ addExp  :: ClusterIO total i o
            , ClusterAST op (scope, e) (o, e)
            )
 addExp io None constructor = (constructor io, None)
-addExp io (Bind lhs op ast) constructor = second (Bind (Ignr lhs) op) $ addExp io ast constructor
+addExp io (Bind lhs op l ast) constructor = second (Bind (Ignr lhs) op l) $ addExp io ast constructor
 
 
 

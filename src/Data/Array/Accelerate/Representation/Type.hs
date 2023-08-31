@@ -13,6 +13,7 @@
 {-# LANGUAGE TypeFamilyDependencies #-}
 {-# LANGUAGE QuantifiedConstraints #-}
 {-# OPTIONS_HADDOCK hide #-}
+{-# LANGUAGE UndecidableInstances #-}
 -- |
 -- Module      : Data.Array.Accelerate.Representation.Type
 -- Copyright   : [2008..2020] The Accelerate Team
@@ -65,6 +66,18 @@ formatTypeR = later $ \case
   TupRpair a b -> bformat (parenthesised (formatTypeR % "," % formatTypeR)) a b
 
 type TypeR = TupR ScalarType
+
+-- class IsTypeR a where
+--   typeR :: TypeR a
+
+-- instance (IsTypeR a, IsTypeR b) => IsTypeR (a,b) where
+--   typeR = TupRpair typeR typeR
+
+-- instance IsTypeR () where
+--   typeR = TupRunit
+
+-- instance IsScalar a => IsTypeR a where
+--   typeR = TupRsingle scalarType 
 
 data TupleIdx s t where
   TupleIdxLeft  :: TupleIdx l t -> TupleIdx (l, r) t

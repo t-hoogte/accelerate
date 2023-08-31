@@ -36,12 +36,21 @@ import Data.Foldable
 trimIds :: S.Set Edge -> S.Set Edge
 trimIds = S.filter (\(x:->y) -> x /= y)
 
+data Objective 
+  = NumClusters
+  | ArrayReads
+  | ArrayReadsWrites
+  | IntermediateArrays
+  | FusedEdges
+  deriving (Show, Bounded, Enum)
+  
+
 -- Makes the ILP. Note that this function 'appears' to ignore the Label levels completely!
 -- We could add some assertions, but if all the input is well-formed (no labels, constraints, etc
 -- that reward putting non-siblings in the same cluster) this is fine: We will interpret 'cluster 3'
 -- with parents `Nothing` as a different cluster than 'cluster 3' with parents `Just 5`.
-makeILP :: forall op. MakesILP op => Information op -> ILP op
-makeILP (Info
+makeILP :: forall op. MakesILP op => Objective -> Information op -> ILP op
+makeILP obj (Info
           (Graph nodes' (trimIds -> fuseEdges') (trimIds -> nofuseEdges))
           backendconstraints
           backendbounds
@@ -59,10 +68,11 @@ makeILP (Info
                          n
     -- n is used in some of the constraints, as an upperbound on the number of clusters.
     -- We add a small constant to be safe, as some variables have ranges from -3 to number of nodes.
+    -- Then, we also multiply by 2, as some variables range from -n to n
     n :: Int
-    n = 5 + S.size nodes
+    n = 10 + 2 * S.size nodes
 
-    graphILP = ILP Minimise objFun myConstraints myBounds n
+    graphILP = ILP minmax objFun myConstraints myBounds n
 
     -- Since we want all clusters to have one 'iteration size', the final objFun should
     -- take care to never reward 'fusing' disjoint clusters, and then slightly penalise it.
@@ -71,7 +81,14 @@ makeILP (Info
     -- In the future, maybe we want this to be backend-dependent (add to MakesILP).
     -- Also future: add @IVO's IPU reward here.
     objFun :: Expression op
-    objFun = numberOfArrayReadsWrites
+    minmax :: OptDir
+    (minmax,objFun) = case obj of
+      NumClusters         -> (Minimise, numberOfClusters)
+      ArrayReads          -> (Minimise, numberOfReads)
+      ArrayReadsWrites    -> (Minimise, numberOfArrayReadsWrites)
+      IntermediateArrays  -> (Minimise, numberOfManifestArrays)
+      FusedEdges          -> (Minimise, numberOfUnfusedEdges)
+
 
     -- objective function that maximises the number of edges we fuse, and minimises the number of array reads if you ignore horizontal fusion
     numberOfUnfusedEdges = foldl' (\f (i :-> j) -> f .+. fused i j)
@@ -85,7 +102,7 @@ makeILP (Info
     -- Then, we also need n^2 intermediate variables just to make these disjunction of conjunctions 
     -- note, it's only quadratic in the number of consumers of a specific array.
     -- We also check for the 'order': horizontal fusion only happens when the two fused accesses are in the same order.
-    numberOfReads = nReads
+    numberOfReads =  nReads .+. numberOfUnfusedEdges
     (nReads, readConstraints, readBounds) = 
         foldl (\(a,b,c) (d,e,f)->(a.+.d,b<>e,c<>f)) (int 0, mempty, mempty)
       . flip evalState ""
@@ -100,11 +117,9 @@ makeILP (Info
               (\(uv, rp, ro) -> isEqualRangeN (c rp) (pi consumerL)         (c uv) 
                                 <> isEqualRangeN (c ro) (c $ OutDir consumerL) (c uv)) 
               (zip3 useVars readPis readOrders)
-        -- note that we set it to be equal to n-1 here, smaller would also work but that is never optimal
-        -- I don't know which version is easier/faster to solve!
-        return (constraint <> foldl (.+.) (int 0) (map c useVars) .==. int (nConsumers-1), foldMap binary useVars)
+        return (constraint <> foldl (.+.) (int 0) (map c useVars) .<=. int (nConsumers-1), foldMap binary useVars)
       readPi0s <- replicateM nConsumers readPi0Var
-      return ( foldl (.+.) (int 0) (map (((-1) .*.) . c) readPi0s) -- using `(-1 .*.)` instead of `notB` for the same reason as in numberOfManifestArrays
+      return ( foldl (.+.) (int 0) (map c readPi0s) 
              , subConstraint <> fold (zipWith (\p p0 -> c p .<=. timesN (c p0)) readPis readPi0s)
              , subBounds <> foldMap (\v -> lowerUpper 0 v n) readPis <> foldMap binary readPi0s)
 
@@ -129,7 +144,22 @@ makeILP (Info
     -- To eliminate that one too, we'd need n^2 edges.
     numberOfClusters  = c (Other "maximumClusterNumber")
     -- removing this from myConstraints makes the ILP slightly smaller, but disables the use of this cost function
-    numberOfClustersConstraint = foldMap (\l -> pi l .<=. numberOfClusters) nodes
+    numberOfClustersConstraint = case obj of NumClusters -> foldMap (\l -> pi l .<=. numberOfClusters) nodes
+                                             _ -> mempty
+
+    -- attempt at execpi:
+    -- this failed because it was adding one for _all_ labels, not just exec. Need to find out which ones they are first somehow!
+    -- execpi l = Other <$> freshName ("Exec" <> show l <> "Pi")
+    -- -- removing this from myConstraints makes the ILP slightly smaller, but disables the use of this cost function
+    -- (numberOfClustersConstraint, nClustersBounds) = --foldMap (\l -> pi l .<=. numberOfClusters) nodes
+    --   (\epis -> let epimap = M.fromList epis in 
+    --     foldMap (\(l,epi) -> (c epi .<=. numberOfClusters, lowerUpper 0 epi n)) epis
+    --   <> (foldMap (\(i:->j) -> between (fused i j) (c (epimap M.! i) .-. c (epimap M.! j)) (timesN $ fused i j)) edges,mempty)) 
+    --   $ flip evalState "" $ forM (S.toList nodes) $ \l -> (l,) <$> execpi l
+
+
+
+
 
     myConstraints = acyclic <> infusible <> manifestC <> numberOfClustersConstraint <> readConstraints <> finalize (S.toList nodes) 
 
