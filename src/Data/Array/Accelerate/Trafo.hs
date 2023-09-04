@@ -33,7 +33,7 @@ module Data.Array.Accelerate.Trafo (
   Function, EltFunctionR,
   convertExp, convertFun,
 
-  test, convertAccWithObj, convertAfunWithObj, convertAccBench, convertAfunBench,
+  test, testWithObjective, convertAccWithObj, convertAfunWithObj, convertAccBench, convertAfunBench,
 ) where
 
 import Data.Array.Accelerate.Sugar.Array                  ( ArraysR )
@@ -79,13 +79,19 @@ import Data.Array.Accelerate.Trafo.NewNewFusion (Benchmarking)
 
 defaultObjective = IntermediateArrays
 
--- TODO: simplifications commented out, because they REMOVE PERMUTE
 test
   :: forall sched kernel f. (Afunction f, DesugarAcc (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), Pretty.PrettyKernel kernel, IsSchedule sched, IsKernel kernel, Pretty.PrettySchedule sched, Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))
-  => Either Objective Benchmarking
+  => f
+  -> String
+test = testWithObjective @sched @kernel @f defaultObjective
+
+-- TODO: simplifications commented out, because they REMOVE PERMUTE
+testWithObjective
+  :: forall sched kernel f. (Afunction f, DesugarAcc (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), Pretty.PrettyKernel kernel, IsSchedule sched, IsKernel kernel, Pretty.PrettySchedule sched, Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))
+  => Objective
   -> f
   -> String
-test obj f
+testWithObjective obj f
   = "OriginalAcc:\n"
   ++ Pretty.renderForTerminal (Pretty.prettyPreOpenAfun configPlain prettyOpenAcc Empty original)
   ++ "\n\nDesugared OperationAcc:\n"
@@ -113,9 +119,7 @@ test obj f
 
     partitioned = 
       -- Operation.simplifyFun $ 
-      case obj of
-        Left objective -> NewNewFusion.convertAfun objective operation
-        Right b -> NewNewFusion.convertAccBenchF b operation
+       NewNewFusion.convertAfun obj operation
 
     slvpartitioned = 
       -- Operation.simplifyFun $ 
