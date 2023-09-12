@@ -53,9 +53,9 @@ data Env f env where
   Push  :: Env f env -> f t -> Env f (env, t)
 
 data PartialEnv f env where
-  PEnd   :: PartialEnv f env
-  PPush  :: PartialEnv f env -> f t -> PartialEnv f (env, t)
-  PNone  :: PartialEnv f env ->        PartialEnv f (env, t)
+  PEnd  :: PartialEnv f env
+  PPush :: PartialEnv f env -> f t -> PartialEnv f (env, t)
+  PNone :: PartialEnv f env ->        PartialEnv f (env, t)
 
 type Val = Env Identity
 

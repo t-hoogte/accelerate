@@ -52,11 +52,6 @@ import Data.Maybe
 import Data.Type.Equality
 import Data.Array.Accelerate.Representation.Shape (shapeType)
 
---TODO remove
--- stronglyLiveVariables, stronglyLiveVariablesFun :: a -> a
--- stronglyLiveVariables = id
--- stronglyLiveVariablesFun = id
-
 stronglyLiveVariablesFun :: SLVOperation op => PreOpenAfun op () t -> PreOpenAfun op () t
 stronglyLiveVariablesFun acc = acc' ReEnvEnd
   where
@@ -65,53 +60,50 @@ stronglyLiveVariablesFun acc = acc' ReEnvEnd
 stronglyLiveVariables :: SLVOperation op => PreOpenAcc op () t -> PreOpenAcc op () t
 stronglyLiveVariables acc = fromEither' $ acc' ReEnvEnd SubTupRkeep
   where
-    LVAnalysis _ _ acc' = stronglyLiveVariables' emptyLivenessEnv (mapTupR (const Shared) $ groundsR acc) acc
+    LVAnalysis _ acc' = stronglyLiveVariables' emptyLivenessEnv returnImplicationsLive (mapTupR (const Shared) $ groundsR acc) acc
 
 stronglyLiveVariablesFun' :: SLVOperation op => LivenessEnv env -> PreOpenAfun op env t -> LVAnalysisFun (PreOpenAfun op) env t
 stronglyLiveVariablesFun' liveness (Alam lhs f)
-  | liveness1 <- pushLivenessEnv lhs noReturnImplications liveness
+  | liveness1 <- lEnvPushLHS lhs liveness
   , LVAnalysisFun liveness2 f' <- stronglyLiveVariablesFun' liveness1 f
-  , liveness3 <- dropLivenessEnv lhs liveness2
+  , (lhs', liveness3) <- lEnvStrengthenLHS lhs liveness2
   = LVAnalysisFun
       liveness3
       $ \re -> if
-        | BindLiveness lhs' re' <- bind lhs re liveness2 ->
-          Alam lhs' $ f' re'
+        | BindLiveness lhs'' re' <- bind lhs' re ->
+          Alam lhs'' $ f' re'
 stronglyLiveVariablesFun' liveness (Abody body)
-  | LVAnalysis liveness1 returnImplications body' <- stronglyLiveVariables' liveness (mapTupR (const Shared) $ groundsR body) body
-  , liveness2 <- foldl' (\e (Exists (ReturnImplication set)) -> setIndicesLive (IdxSet.toList set) e) liveness1 $ flattenTupR returnImplications
+  | LVAnalysis liveness1 body' <- stronglyLiveVariables' liveness returnImplicationsLive (mapTupR (const Shared) $ groundsR body) body
   = LVAnalysisFun
-      liveness2
+      liveness1
       $ \re -> Abody $ fromEither' $ body' re SubTupRkeep
 
 stronglyLiveVariablesFun'' :: SLVOperation op => LivenessEnv env -> Uniquenesses t -> PreOpenAfun op env (s -> t) -> LVAnalysisFun (PreOpenAfun op) env (s -> t)
 stronglyLiveVariablesFun'' liveness us (Alam lhs (Abody body))
-  | liveness1 <- pushLivenessEnv lhs noReturnImplications liveness
-  , LVAnalysis liveness2 returnImplications body' <- stronglyLiveVariables' liveness1 us body
-  , liveness3 <- foldl' (\e (Exists (ReturnImplication indices)) -> setIndicesLive (IdxSet.toList indices) e) liveness2 $ flattenTupR returnImplications
-  , liveness4 <- dropLivenessEnv lhs liveness3
+  | liveness1 <- lEnvPushLHS lhs liveness
+  , LVAnalysis liveness2 body' <- stronglyLiveVariables' liveness1 returnImplicationsLive us body
+  , (lhs', liveness3) <- lEnvStrengthenLHS lhs liveness2
   = LVAnalysisFun
-      liveness4
+      liveness3
       $ \re -> if
-        | BindLiveness lhs' re' <- bind lhs re liveness3 ->
-          Alam lhs' $ Abody $ fromEither' $ body' re' SubTupRkeep
+        | BindLiveness lhs'' re' <- bind lhs' re ->
+          Alam lhs'' $ Abody $ fromEither' $ body' re' SubTupRkeep
 stronglyLiveVariablesFun'' _ _ _ = internalError "Function impossible"
 
 fromEither' :: Either a a -> a
 fromEither' (Left  x) = x
 fromEither' (Right x) = x
 
-stronglyLiveVariables' :: SLVOperation op => LivenessEnv env -> Uniquenesses t -> PreOpenAcc op env t -> LVAnalysis (PreOpenAcc op) env t
-stronglyLiveVariables' liveness us = \case
+stronglyLiveVariables' :: SLVOperation op => LivenessEnv env -> ReturnImplications env t -> Uniquenesses t -> PreOpenAcc op env t -> LVAnalysis (PreOpenAcc op) env t
+stronglyLiveVariables' liveness returns us = \case
   Exec op args
     | Just (ShrinkOperation shrinkOp) <- slvOperation op
     -- We can shrink this operation to output to part of its buffers.
     , input <- IdxSet.fromList $ inputs args
     , output <- IdxSet.fromList $ outputs args
-    , liveness1 <- setLivenessImplications output input liveness ->
+    , liveness1 <- addLiveImplications output input liveness ->
       LVAnalysis
         liveness1
-        noReturnImplications
         $ \re s -> if
           | Refl <- subTupUnit s
           , allDead re output ->
@@ -127,10 +119,9 @@ stronglyLiveVariables' liveness us = \case
     -- buffers, then the entire operation is live.
     | free <- IdxSet.fromList $ map (\(Exists (Var _ idx)) -> Exists idx) $ argsVars args
     , output <- IdxSet.fromList $ outputs args
-    , liveness1 <- setLivenessImplications output free liveness ->
+    , liveness1 <- addLiveImplications output free liveness ->
       LVAnalysis
         liveness1
-        noReturnImplications
         $ \re s -> if
           | Refl <- subTupUnit s
           , allDead re output ->
@@ -139,24 +130,18 @@ stronglyLiveVariables' liveness us = \case
           | Refl <- subTupUnit s
           , args' <- reEnvArgs re args ->
             Right $ Exec op args' -- Live
-
-  Return vars ->
-    let
-      returnImplications = mapTupR (\(Var _ idx) -> ReturnImplication $ IdxSet.singleton idx) vars
-    in
+  Return vars
+    | liveness1 <- returnVars returns vars liveness ->
       LVAnalysis
-        liveness
-        returnImplications
+        liveness1
         $ \re s -> Right $ Return $ expectJust $ reEnvVars re $ subTupR s vars
-  Compute expr ->
-    let
-      -- If the LHS of the binding is live, then all free variables of this
-      -- expression are live as well.
-      free = expGroundVars expr
-    in
+  Compute expr
+    -- If the LHS of the binding is live, then all free variables of this
+    -- expression are live as well.
+    | free <- expGroundVars expr
+    , liveness1 <- returnIndices returns (IdxSet.fromVarList free) liveness ->
       LVAnalysis
-        liveness
-        (TupRsingle $ ReturnImplication $ IdxSet.fromVarList free)
+        liveness1
         $ \re s ->
           let
             tp = expType expr
@@ -167,26 +152,23 @@ stronglyLiveVariables' liveness us = \case
               _ | DeclareSubVars lhs _ vars <- declareSubVars tp s
                 -> Right $ Compute $ Let lhs expr' $ returnExpVars $ vars weakenId
   Alet lhs us' bnd body
-    | LVAnalysis liveness1 retBnd bnd' <- stronglyLiveVariables' liveness  us' bnd
-    , liveness2 <- pushLivenessEnv lhs retBnd liveness1
-    , LVAnalysis liveness3 ret   body' <- stronglyLiveVariables' liveness2 us body
-    , droppedRetBnd <- mapTupR (droppedReturnImplications lhs) ret ->
+    | liveness1 <- lEnvPushLHS lhs liveness
+    , LVAnalysis liveness2 body' <- stronglyLiveVariables' liveness1 (returnImplicationsWeakenByLHS lhs returns) us body
+    , (lhs', liveness3, returns') <- lEnvStrengthenLHSReturn lhs liveness2
+    , LVAnalysis liveness4 bnd' <- stronglyLiveVariables' liveness3 returns' us' bnd ->
       LVAnalysis
-        (dropLivenessEnv lhs liveness3)
-        (mapTupR (strengthenReturnImplications liveness3 $ strengthenWithLHS lhs) ret)
-        $ \re s -> case bindSub lhs re $ propagateReturnLiveness s droppedRetBnd liveness3 of
+        liveness4
+        $ \re s -> case bindSub lhs' re of
           BindLivenessSub subTup' lhsFull lhsSub re' -> case (bnd' re subTup', body' re' s) of
             (Left bnd'',  Left body'')  -> Left  $ mkAlet lhsFull us' bnd'' body''
             (Left bnd'',  Right body'') -> Right $ mkAlet lhsFull us' bnd'' body''
             (Right bnd'', Left body'')  -> Left  $ mkAlet lhsSub (subTupR subTup' us') bnd'' body''
             (Right bnd'', Right body'') -> Right $ mkAlet lhsSub (subTupR subTup' us') bnd'' body''
-  Alloc shr tp sh ->
-    let
-      free = IdxSet.fromVars sh
-    in
+  Alloc shr tp sh
+    | free <- IdxSet.fromVars sh
+    , liveness1 <- returnIndices returns free liveness ->
       LVAnalysis
-        liveness
-        (TupRsingle $ ReturnImplication free)
+        liveness1
         $ \re s ->
           case s of
             SubTupRskip -> Right $ Return TupRunit
@@ -194,29 +176,25 @@ stronglyLiveVariables' liveness us = \case
   Use tp size buffer ->
     LVAnalysis
       liveness
-      noReturnImplications
       $ \_ s ->
         case s of
           SubTupRskip -> Right $ Return TupRunit
           SubTupRkeep -> Right $ Use tp size buffer
-  Unit var ->
-    let
-      free = IdxSet.singleton $ varIdx var
-    in
+  Unit var
+    | free <- IdxSet.singleton $ varIdx var
+    , liveness1 <- returnIndices returns free liveness ->
       LVAnalysis
-        liveness
-        (TupRsingle $ ReturnImplication free)
+        liveness1
         $ \re s ->
           case s of
             SubTupRskip -> Right $ Return TupRunit
             SubTupRkeep -> Right $ Unit $ expectJust $ reEnvVar re var
   Acond condition true false
     | liveness1 <- setLive (varIdx condition) liveness
-    , LVAnalysis liveness2 retTrue  true'  <- stronglyLiveVariables' liveness1 us true
-    , LVAnalysis liveness3 retFalse false' <- stronglyLiveVariables' liveness2 us false ->
+    , LVAnalysis liveness2 true'  <- stronglyLiveVariables' liveness1 returns us true
+    , LVAnalysis liveness3 false' <- stronglyLiveVariables' liveness2 returns us false ->
       LVAnalysis
         liveness3
-        (joinReturnImplications retTrue retFalse)
         $ \re s ->
           let condition' = expectJust $ reEnvVar re condition
           in case (true' re s, false' re s) of
@@ -236,7 +214,6 @@ stronglyLiveVariables' liveness us = \case
     , LVAnalysisFun liveness3 step'      <- stronglyLiveVariablesFun'' liveness2 us' step ->
       LVAnalysis
         liveness3
-        noReturnImplications
         $ \re _ ->
           Left $ Awhile us' (condition' re) (step' re) $ expectJust $ reEnvVars re initial
   where
