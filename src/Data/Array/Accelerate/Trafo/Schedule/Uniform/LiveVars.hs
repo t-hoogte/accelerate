@@ -56,34 +56,39 @@ stronglyLiveVariablesFun' liveness = \case
     | LVAnalysis' liveness2 body' <- stronglyLiveVariables' liveness body
       -> LVAnalysisFun liveness2 $ \re -> Sbody $ body' re
   Slam lhs f
-    | liveness1 <-
-      setIndicesLive
-        (mapMaybe (\(Exists (Var tp idx)) -> if isOutput tp then Just $ Exists idx else Nothing) $ lhsVars lhs)
-        (pushLivenessEnv lhs noReturnImplications liveness)
-    , LVAnalysisFun liveness2 f' <- stronglyLiveVariablesFun' liveness1 f
+    | liveness1 <- lEnvPushLHS lhs liveness
+    , liveness2 <-
+      setIdxSetLive
+        (IdxSet.fromList
+          $ mapMaybe (\(Exists (Var tp idx)) -> if isOutput tp then Just $ Exists idx else Nothing)
+          $ lhsVars lhs)
+        liveness1
+    , LVAnalysisFun liveness3 f' <- stronglyLiveVariablesFun' liveness2 f
+    , (lhs', liveness4) <- lEnvStrengthenLHS lhs liveness3
       -> LVAnalysisFun
-          (dropLivenessEnv lhs liveness2)
+          liveness4
           $ \re -> if -- A one-way "multi way if" to pattern match on a GADT
-            | BindLiveness lhs' re' <- bind lhs re liveness2
-              -> Slam lhs' $ f' re'
+            | BindLiveness lhs'' re' <- bind lhs' re
+              -> Slam lhs'' $ f' re'
 
 stronglyLiveVariables' :: LivenessEnv env -> UniformSchedule kernel env -> LVAnalysis' (UniformSchedule kernel) env
 stronglyLiveVariables' liveness = \case
   Return -> LVAnalysis' liveness $ const Return
   Alet lhs binding body ->
     let
-      liveness1 = analyseBinding (weakenWithLHS lhs) (lhsIndices lhs) binding $ pushLivenessEnv lhs noReturnImplications liveness
+      liveness1 = analyseBinding (weakenWithLHS lhs) (lhsIndices lhs) binding $ lEnvPushLHS lhs liveness
       LVAnalysis' liveness2 body' = stronglyLiveVariables' liveness1 body
+      (lhs', liveness3) = lEnvStrengthenLHS lhs liveness2
     in
       LVAnalysis'
-        (dropLivenessEnv lhs liveness2)
+        liveness3
         $ \re -> if -- A one-way "multi way if" to pattern match on a GADT
-          | BindLiveness lhs' re' <- bind lhs re liveness2 -> case lhs' of
+          | BindLiveness lhs'' re' <- bind lhs' re -> case lhs'' of
             LeftHandSideWildcard _ -> body' re' -- Entire binding wasn't used
-            _ -> Alet lhs' (reEnvBinding re binding) (body' re')
+            _ -> Alet lhs'' (reEnvBinding re binding) (body' re')
   Effect (SignalAwait signals) (Effect (SignalResolve resolvers) Return) ->
     let
-      liveness1 = setLivenessImplications (IdxSet.fromList $ map Exists resolvers) (IdxSet.fromList $ map Exists signals) liveness
+      liveness1 = addLiveImplications (IdxSet.fromList $ map Exists resolvers) (IdxSet.fromList $ map Exists signals) liveness
     in
       LVAnalysis'
         liveness1
@@ -142,31 +147,31 @@ analyseBinding k lhs binding liveness = case binding of
       -- expression are live as well.
       free = map (\(Exists (Var _ idx)) -> Exists $ k >:> idx) $ expGroundVars expr
     in
-      setLivenessImplications lhs (IdxSet.fromList free) liveness
+      addLiveImplications lhs (IdxSet.fromList free) liveness
   NewSignal
     | IdxSet (_ `PPush` _ `PPush` _) <- lhs ->
       -- If the signal is live, then the resolver is live as well.
-      setLivenessImplies
-        (SuccIdx ZeroIdx) 
-        (IdxSet.singleton ZeroIdx)
+      addLiveImplies
+        (SuccIdx ZeroIdx)
+        (ZeroIdx)
         liveness
     | otherwise -> liveness
   NewRef _
     | IdxSet (_ `PPush` _ `PPush` _) <- lhs ->
       -- If the Ref is live, then the OutputRef is live as well.
-      setLivenessImplies
-        (SuccIdx ZeroIdx) 
-        (IdxSet.singleton ZeroIdx)
+      addLiveImplies
+        (SuccIdx ZeroIdx)
+        (ZeroIdx)
         liveness
     | otherwise -> liveness
   Alloc _ _ sh ->
     -- If this buffer is live, then the shape variables are live as well.
-    setLivenessImplications lhs (IdxSet.fromVars $ mapTupR (weaken k) sh) liveness
+    addLiveImplications lhs (IdxSet.fromVars $ mapTupR (weaken k) sh) liveness
   Use _ _ _ -> liveness
   Unit (Var _ idx) -> -- If the lhs is live, then the argument of Unit is live as well.
-    setLivenessImplications lhs (IdxSet.singleton $ k >:> idx) liveness
+    addLiveImplications lhs (IdxSet.singleton $ k >:> idx) liveness
   RefRead (Var _ idx) -> -- If the lhs is live, then the Ref is live as well.
-    setLivenessImplications lhs (IdxSet.singleton $ k >:> idx) liveness
+    addLiveImplications lhs (IdxSet.singleton $ k >:> idx) liveness
 
 reEnvBinding :: ReEnv env subenv -> Binding env t -> Binding subenv t
 reEnvBinding re = \case
@@ -179,10 +184,10 @@ reEnvBinding re = \case
   RefRead var      -> RefRead $ expectJust $ reEnvVar re var
 
 analyseEffect :: Effect kernel env -> LivenessEnv env -> LivenessEnv env
-analyseEffect (Exec _ _ args) liveness = setIndicesLive (argsIndices args) liveness
-analyseEffect (SignalAwait signals) liveness = setIndicesLive (map Exists signals) liveness
+analyseEffect (Exec _ _ args) liveness = setIdxSetLive (IdxSet.fromList $ argsIndices args) liveness
+analyseEffect (SignalAwait signals) liveness = setIdxSetLive (IdxSet.fromList $ map Exists signals) liveness
 analyseEffect (SignalResolve _) liveness = liveness
-analyseEffect (RefWrite ref value) liveness = setLivenessImplies (varIdx ref) (IdxSet.singleton $ varIdx value) liveness
+analyseEffect (RefWrite ref value) liveness = addLiveImplies (varIdx ref) (varIdx value) liveness
 
 reEnvEffect :: ReEnv env subenv -> Effect kernel env -> UniformSchedule kernel subenv -> UniformSchedule kernel subenv
 reEnvEffect re = \case

@@ -18,14 +18,14 @@
 
 module Data.Array.Accelerate.AST.IdxSet (
   IdxSet(..),
-  member, varMember, intersect, union, unions, (\\), (>>=), insert, insertVar, skip, skip',
+  member, varMember, overlaps, intersect, union, unions, (\\), (>>=), insert, insertVar, skip, skip',
   push, empty, isEmpty, drop, drop', remove, partialEnvRemoveSet,
   fromList, fromList', fromVarList, fromVars, map,
-  singleton, singletonVar, first,
+  singleton, singletonVar, first, null,
   toList
 ) where
 
-import Prelude hiding (drop, (>>=), map)
+import Prelude hiding (drop, (>>=), map, null)
 
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Var
@@ -42,6 +42,13 @@ member idx (IdxSet set) = isJust $ prjPartial idx set
 
 varMember :: Var s env t -> IdxSet env -> Bool
 varMember (Var _ idx) = member idx
+
+overlaps :: IdxSet env -> IdxSet env -> Bool
+overlaps (IdxSet (PPush _ _)) (IdxSet (PPush _ _)) = True
+overlaps (IdxSet (PPush a _)) (IdxSet (PNone b  )) = overlaps (IdxSet a) (IdxSet b)
+overlaps (IdxSet (PNone a  )) (IdxSet (PPush b _)) = overlaps (IdxSet a) (IdxSet b)
+overlaps (IdxSet (PNone a  )) (IdxSet (PNone b  )) = overlaps (IdxSet a) (IdxSet b)
+overlaps _ _ = False
 
 intersect :: IdxSet env -> IdxSet env -> IdxSet env
 intersect (IdxSet a) (IdxSet b) = IdxSet $ intersectPartialEnv (\_ _ -> Present) a b
@@ -128,6 +135,11 @@ first (IdxSet (PPush _ _))                  = Just $ Exists ZeroIdx
 first (IdxSet (PNone env))
   | Just (Exists idx) <- first (IdxSet env) = Just $ Exists $ SuccIdx idx
 first _                                     = Nothing
+
+null :: IdxSet env -> Bool
+null (IdxSet (PPush _ _)) = False
+null (IdxSet (PNone env)) = null (IdxSet env)
+null _ = True
 
 instance Show (IdxSet env) where
   showsPrec p = showsPrec p . fmap (\(Exists idx) -> idxToInt idx) . toList
