@@ -130,13 +130,10 @@ addLiveImplies = \idx1 idx2 env -> fromMaybe (setLive idx2 env) $ go idx1 idx2 e
 
 -- If any of impliedBy becomes live, then implies are live.
 addLiveImplications :: IdxSet env -> IdxSet env -> LivenessEnv env -> LivenessEnv env
-addLiveImplications impliedBy implies (LPush env l)
-  | not (ZeroIdx `IdxSet.member` impliedBy || ZeroIdx `IdxSet.member` implies)
-  = LPush (addLiveImplications (IdxSet.drop impliedBy) (IdxSet.drop implies) env) l
 addLiveImplications impliedBy implies env
   | anyIsLive impliedBy env
   = setIdxSetLive implies env
-addLiveImplications impliedBy implies env
+  | otherwise
   = addLiveImplicationsCurrentlyUnknown impliedBy implies env
 
 -- If any of impliedBy becomes live, then implies are live.
