@@ -51,6 +51,8 @@ import Data.Functor.Identity
 import Data.Array.Accelerate.Pretty.Exp (IdxF(..))
 import qualified Data.Tree as T
 import qualified Debug.Trace
+import GHC.Exts (SpecConstrAnnotation)
+import Data.Array.Accelerate.Representation.Shape (shapeType)
 
 -- "open research question"
 -- -- Each set of ints corresponds to a set of Constructions, which themselves contain a set of ints (the things they depend on).
@@ -177,10 +179,10 @@ openReconstruct' singletons labelenv graph clusterslist mlab subclustersmap cons
     makeAST :: forall env. LabelEnv env -> [ClusterL] -> M.Map Label (Exists (PreOpenAcc (Cluster op) env)) -> Exists (PreOpenAcc (Cluster op) env)
     makeAST _ [] _ = error "empty AST"
     makeAST env [cluster] prev = case makeCluster env cluster of
-      Fold (CCluster args info cio cast) -> Exists $ Exec (Cluster info (Cluster' cio cast)) $ unLabelOp args
-      InitFold o l args -> unfused o l args $
-                            \(CCluster args' info cio cast) ->
-                                Exists $ Exec (Cluster info (Cluster' cio cast)) (unLabelOp args')
+      -- Fold (CCluster args info cio cast) -> Exists $ Exec (Cluster info (Cluster' cio cast)) $ unLabelOp args
+      -- InitFold o l args -> unfused o l args $
+      --                       \(CCluster args' info cio cast) ->
+      --                           Exists $ Exec (Cluster info (Cluster' cio cast)) (unLabelOp args')
       NotFold con -> case con of
          CExe {}    -> error "should be Fold/InitFold!"
          CExe'{}    -> error "should be Fold/InitFold!"
@@ -286,9 +288,9 @@ openReconstruct' singletons labelenv graph clusterslist mlab subclustersmap cons
     makeCluster _ (NonExecL l) = NotFold $ construct M.! l
 
     fuseCluster :: FoldType op env -> FoldType op env -> FoldType op env
-    fuseCluster (Fold cluster) (InitFold op l largs) =
-      consCluster l largs cluster op Fold
-    fuseCluster (InitFold op l largs) x = unfused op l largs $ \c -> fuseCluster (Fold c) x
+    fuseCluster (Fold cluster cargs) (InitFold op l largs) =
+      consCluster l largs op cargs cluster Fold
+    fuseCluster (InitFold op l largs) x = unfused op l largs $ \c cargs -> fuseCluster (Fold c cargs) x
     fuseCluster Fold{} Fold{} = error "fuseCluster got non-leaf as second argument" -- Should never happen
     fuseCluster NotFold{}   _ = error "fuseCluster encountered NotFold" -- Should only occur in singleton clusters
     fuseCluster _   NotFold{} = error "fuseCluster encountered NotFold" -- Should only occur in singleton clusters
@@ -296,424 +298,20 @@ openReconstruct' singletons labelenv graph clusterslist mlab subclustersmap cons
 weakenAcc :: LeftHandSide s t env env' -> PreOpenAcc op env a -> PreOpenAcc op env' a
 weakenAcc lhs =  runIdentity . reindexAcc (weakenReindex $ weakenWithLHS lhs)
 
-
 -- | Internal datatype for `makeCluster`.
 
 data FoldType op env
-  = forall args. Fold (ConstructingCluster op args env)
+  = forall args. Fold (Cluster op args) (LabelledArgsOp op env args)
   | forall args. InitFold (op args) Label (LabelledArgsOp op env args)
   | NotFold (Construction op)
 
--- contains all elements of a Cluster and the LabelledArgsOp
-data ConstructingCluster op args env where
-  CCluster :: LabelledArgsOp op env args
-           -> BackendCluster op args -- you can get this from the labelledargs, why is it here?
-           -> ClusterIO args input output
-           -> ClusterAST op input output
-           -> ConstructingCluster op args env
-
-unfused :: MakesILP op => op args -> Label -> LabelledArgsOp op env args -> (forall args'. ConstructingCluster op args' env -> r) -> r
-unfused op l largs = consCluster l largs (CCluster ArgsNil ArgsNil Empty None) op
-
-consCluster :: forall env args extra op r
-             . MakesILP op
-            => Label
-            -> LabelledArgsOp op env extra
-            -> ConstructingCluster op args env
-            -> op extra
-            -> (forall args'. ConstructingCluster op args' env -> r)
-            -> r
-consCluster l lextra (CCluster largs _ cIO cAST) op k = -- we can ignore the BackendCluster that is already present, because the same information is also in the `largs`
-  mkReverse lextra $ \rev lartxe->
-    consCluster' largs rev lartxe cAST (mkBase cIO) cIO
-  where
-    -- The new, extra operation has args `extra`.
-    -- We have already added the args in `added`,
-    -- but still need to add the args in `toAdd`.
-    -- In total, we now have a (decomposed) cluster of args `total`:
-    -- The CIO divides it into `i` and `o`,
-    -- The CAST contains the existing computation from `scope` to `o`,
-    -- whereas the `LHSArgs` cons' the `added` args in front using `i`.
-
-    -- We simply recurse down the `toAdd` args until `toAdd ~ ()` and
-    -- `added ~ extra`, when we can use the extra operation to construct
-    -- the total cluster. All results are passed in these accumulating parameters.
-
-    -- In each step, we check whether the argument array is already mentioned
-    -- in the operations that follow it: If so, we fuse them (making both arguments
-    -- point to the same place in the environment), otherwise we simply add a new one. 
-
-    -- note that this function has a lot of type safety (recursing wrongly is very difficult),
-    -- except for two details: Whether or not to fuse is a choice, and the call to `k`
-    -- works with any cluster/args. The first requires diligence, the second occurs
-    -- only in the very first line (which is, visually, correct).
-    consCluster' :: LabelledArgsOp op env total
-                 -> Reverse' extra added toAdd
-                 -> LabelledArgsOp op env toAdd
-                 -> ClusterAST op scope o
-                 -> LeftHandSideArgs added i scope
-                 -> ClusterIO total i o
-                 -> r
-    consCluster' ltot Ordered ArgsNil ast lhs io = k $ CCluster ltot (mapArgs getClusterArg ltot) io (Bind lhs op l ast)
-    consCluster' ltot (Revert r) (a :>: toAdd) ast lhs io = case a of
-      LOp (ArgArray In  _ _ _) _ _ -> consInArg  a ltot lhs ast io $ \ltot' -> consCluster' ltot' r toAdd
-      LOp (ArgArray Out _ _ _) _ _ -> consOutArg a ltot lhs ast io $ \ltot' -> consCluster' ltot' r toAdd
-      -- non-array arguments
-      LOp (ArgExp _)           _ _ -> let (io', ast') = addExp io ast ExpPut in consCluster' (a :>: ltot) r toAdd ast' (EArg lhs) io'
-      LOp (ArgVar _)           _ _ -> let (io', ast') = addExp io ast VarPut in consCluster' (a :>: ltot) r toAdd ast' (VArg lhs) io'
-      LOp (ArgFun _)           _ _ -> let (io', ast') = addExp io ast FunPut in consCluster' (a :>: ltot) r toAdd ast' (FArg lhs) io'
-      LOp (ArgArray Mut _ _ _) _ _ -> let (io', ast') = addExp io ast MutPut in consCluster' (a :>: ltot) r toAdd ast' (Adju lhs) io'
-
--- remove an argument
-foo :: Take' (x sh e) total total' -> LabelledArgsOp op env total -> PreArgs (LabelledArgOp op env) total'
-foo Here' (_ :>: as) = as
-foo (There' t) (a :>: as) = a :>: foo t as
 
 
--- Incrementally applying arguments reverses their order, which makes the types messy.
--- As a solution, we first reverse the arguments to be added, so that we end up
--- with the original order! This datatype keeps track of the proof that peeling off args
--- one-by-one from the reversed type yields the original type, which matches the operation.
--- 
--- Building a `Reverse` (and the initial reversing) is awkward, which is why we have `mkReverse`.
--- Using them (peeling off Revert until we're done) is much easier, and happens in the recursion
--- of `consCluster'`.
-type Reverse xs sx = Reverse' xs () sx
-data Reverse' tot acc rev where
-  Ordered :: Reverse' tot     tot       ()
-  Revert  :: Reverse' tot (a -> x)      y
-          -> Reverse' tot       x (a -> y)
-
-mkReverse :: forall env xs op r
-           . LabelledArgsOp op env xs
-          -> (forall sx. Reverse xs sx -> LabelledArgsOp op env sx -> r)
-          -> r
-mkReverse xs k = rev Ordered ArgsNil xs
-  where
-    rev :: Reverse' xs ys zs
-        -> LabelledArgsOp op env zs
-        -> LabelledArgsOp op env ys
-        -> r
-    rev a zs ArgsNil = k a zs
-    rev a zs (arg :>: args) = rev (Revert a) (arg :>: zs) args
-
--- for each buffer in the arg, this will either fuse it with an existing input buffer or add a new one
-consInArg :: MakesILP op
-         => LabelledArgOp op env (In sh e)
-         -> LabelledArgsOp op  env total
-         -> LeftHandSideArgs added i scope
-         -> ClusterAST op scope o
-         -> ClusterIO total i o
-         -> (forall total' i' o' scope'
-            . LabelledArgsOp op env total'
-           -> ClusterAST op scope' o'
-           -> LeftHandSideArgs (In sh e -> added) i' scope'
-           -> ClusterIO total' i' o'
-           -> r)
-         -> r
-consInArg a@(LOp (ArgArray In (ArrayR _ TupRunit) _ _) _ _) ltot lhs ast io k =
-  k (a:>:ltot) (weakenAST ast) (Triv lhs) (Trivial io)
-consInArg (LOp (ArgArray In (ArrayR sh (TupRpair l r)) sh' (TupRpair bufL bufR)) (Arr (TupRpair el er), _) b) ltot lhs ast io k =
-  consInArg (LOp (ArgArray In (ArrayR sh l) sh' bufL) (Arr el, mempty) b) ltot lhs ast io $
-    \ltot' ast' lhs' io' ->
-      consInArg (LOp (ArgArray In (ArrayR sh r) sh' bufR) (Arr er, mempty) b) ltot' lhs' ast' io' $
-        \ltot'' ast'' lhs'' io'' ->
-            k ltot'' ast'' (squish lhs'') io''
-consInArg a@(LOp (ArgArray In (ArrayR _ (TupRsingle _)) _ _) (Arr (TupRsingle (C.Const _)), _) _) ltot lhs ast io k =
-  maybe
-    (let (ast', io') = addInput ast io
-    in k (a :>: ltot) ast' (Reqr (TupRsingle $ IdxF ZeroIdx) (TupRsingle $ IdxF ZeroIdx) $ Ignr lhs) io')
-    (\lhs' -> k ltot ast lhs' io)
-    (fuseInput a ltot lhs io)
-consInArg _ _ _ _ _ _ = error "impossible combination of TypeR, ALabels and TupR Buffer"
-
-
--- Only works if the top of the lhsargs only contains Reqr and Ignr! This is the case in @consInArg@
-squish :: LeftHandSideArgs (In sh b -> In sh a -> args) i o -> LeftHandSideArgs (In sh (a,b) -> args) i o
-squish = \case
-  (Ignr lhs) -> Ignr (squish lhs)
-  (Reqr t1 t2 lhs) -> case go lhs of
-    Left (Reqr t3 t4 lhs') -> Reqr (TupRpair t3 t1) (TupRpair t4 t2) lhs'
-    Right (Refl, lhs') -> Reqr (TupRpair TupRunit t1) (TupRpair TupRunit t2) lhs'
-    _ -> error "go should always give a Reqr/triv"
-  (Triv lhs) -> case go lhs of
-    Left (Reqr t1 t2 lhs') -> Ignr $ Reqr (TupRpair t1 TupRunit) (TupRpair t2 TupRunit) lhs'
-    Right (Refl, _) -> error "change type of Triv to support this"
-  _ -> error "squish encountered non-reqr, non-ignr, non-triv"
-  where
-    -- search for the second reqr and weaken it up above the ignrs, or IGNoRe the Triv
-    go :: LeftHandSideArgs (In sh a -> args) i o -> Either (LeftHandSideArgs (In sh a -> args) i o) (a:~:(), LeftHandSideArgs args i o)
-    go (Reqr a b c) = Left $ Reqr a b c
-    go (Triv lhs') = Right (Refl, Ignr lhs')
-    go (Ignr lhs') = case go lhs' of
-      Left (Reqr a b lhs'') -> Left $ Reqr (mapTupR succIdxF a) (mapTupR succIdxF b) $ Ignr lhs''
-      Right (Refl, lhs'') -> Right (Refl, Ignr lhs'')
-      _ -> error "go should always give a reqr/triv"
-
-
-consOutArg :: MakesILP op
-           => LabelledArgOp op env (Out sh e)
-           -> LabelledArgsOp op  env total
-           -> LeftHandSideArgs added i scope
-           -> ClusterAST op scope o
-           -> ClusterIO total i o
-           -> (forall total' i' o' scope'
-               . LabelledArgsOp op env total'
-              -> ClusterAST op scope' o'
-              -> LeftHandSideArgs (Out sh e -> added) i' scope'
-              -> ClusterIO total' i' o'
-              -> r)
-           -> r
-consOutArg a@(LOp (ArgArray Out (ArrayR _ TupRunit) _ _) _ _) ltot lhs ast io k =
-  addOutput a ltot ast io lhs $ \ast' io' ltot' lhs' ->
-    k ltot' ast' lhs' io'
-consOutArg (LOp (ArgArray Out (ArrayR sh (TupRpair l r)) sh' (TupRpair bufL bufR)) (Arr (TupRpair el er), _) b) ltot lhs ast io k =
-  case (l,r) of
-    (TupRunit, TupRunit) -> error "change Triv's type to support this"
-    (TupRunit, _) -> consOutArg (LOp (ArgArray Out (ArrayR sh r) sh' bufR) (Arr er, mempty) b) ltot lhs ast io $
-      \ltot'' ast'' (Make t1 t2 lhs'') io'' -> k ltot'' ast'' (Make (TakePair TakeUnit t1) (ConsPair ConsUnit t2) lhs'') io'' 
-    (_, TupRunit) -> consOutArg (LOp (ArgArray Out (ArrayR sh l) sh' bufL) (Arr el, mempty) b) ltot lhs ast io $
-      \ltot'' ast'' (Make t1 t2 lhs'') io'' -> k ltot'' ast'' (Make (TakePair t1 TakeUnit) (ConsPair t2 ConsUnit) lhs'') io''
-    _ -> consOutArg (LOp (ArgArray Out (ArrayR sh l) sh' bufL) (Arr el, mempty) b) ltot lhs ast io $
-      \ltot' ast' lhs' io' -> 
-        consOutArg (LOp (ArgArray Out (ArrayR sh r) sh' bufR) (Arr er, mempty) b) ltot' lhs' ast' io' $
-          \ltot'' ast'' (Make t1 t2 (Make t3 t4 lhs'')) io'' -> 
-            k ltot'' ast'' (Make (TakePair t3 t1) (ConsPair t4 t2) lhs'') io''
-consOutArg a@(LOp (ArgArray Out (ArrayR _ (TupRsingle _)) _ _) (Arr (TupRsingle (C.Const _)), _) _) ltot lhs ast io k =
-  addOutput a ltot ast io lhs $ \ast' io' ltot' lhs' ->
-    k ltot' ast' lhs' io'
-consOutArg _ _ _ _ _ _ = error "impossible combination of TypeR, ALabels and TupR Buffer"
-
-
-addOutput :: MakesILP op
-          => LabelledArgOp op env (Out sh e)
-          -> LabelledArgsOp op env total
-          -> ClusterAST op scope o
-          -> ClusterIO total i o
-          -> LeftHandSideArgs added i scope
-          -> (forall o' total' i' scope'
-              . ClusterAST op scope' o'
-             -> ClusterIO (Out sh e -> total') i' o'
-             -> LabelledArgsOp op env (Out sh e -> total')
-             -> LeftHandSideArgs (Out sh e -> added) i' scope'
-             -> r)
-          -> r
-addOutput a@(LOp (ArgArray Out (ArrayR _ TupRunit) _ _) _ _) ltot ast io lhs k
-  = k (weakenAST ast) (Trivial io) (a :>: ltot) (Triv lhs)
-addOutput a@(LOp (ArgArray Out (ArrayR _ ty) _ _) _ _) ltot ast io lhs k
-  | Just r <- checkDiagonalFusion a ltot $ \t -> applyDiagonalFusion t io lhs ty $ \io' lhs' _ -> k ast io' (a :>: foo t ltot) lhs'
-  = r -- diagonal fusion
-  | otherwise -- no fusion
-  = k (weakenAST ast) (Output Here SubTupRkeep ty io) (a :>: ltot) (Make (TakeSingle Here) ConsSingle lhs)
-
--- Takes the corresponding input argument out, for diagonal fusing.
-checkDiagonalFusion :: MakesILP op
-                    => LabelledArgOp op env (Out sh e)
-                    -> LabelledArgsOp op env total
-                    -> (forall total'. Take' (In sh e) total total' -> r)
-                    -> Maybe r
-checkDiagonalFusion _ ArgsNil _ = Nothing
-checkDiagonalFusion (LOp _ (a1, _) o1) (LOp (ArgArray In _ _ _) (a2, _) o2 :>: _) k
-  | Just Refl <- matchALabel a1 a2
-  , o1 == o2 = Just $ k Here'
-checkDiagonalFusion arg (_ :>: args) k = checkDiagonalFusion arg args $ k . There'
-
--- the IO now gets an output and no input
--- the LHS gets a Sh instead of a Value for input
--- We half-shuffle: The input of this lhs changes from Value to Sh and it gets moved to the front
--- but the output of this lhs stays intact
-applyDiagonalFusion :: ()
-                    => Take' (In sh e) total total'
-                    -> ClusterIO total i o
-                    -> LeftHandSideArgs added i scope
-                    -> TypeR e
-                    -> (forall i'
-                        . ClusterIO (Out sh e -> total') (i', Sh sh e) o
-                       -> LeftHandSideArgs (Out sh e -> added) (i', Sh sh e) scope
-                       -> Take (Value sh e) i i'
-                       -> r)
-                    -> r
--- base cases
-applyDiagonalFusion _ _ _ TupRpair{} _ = error "pair"
-applyDiagonalFusion _ _ _ TupRunit   _ = error "trivial: we don't bother fusing unit arrays, the duplication of shape info gets simplified away later (I think)"
-applyDiagonalFusion Here' (Input io) (Ignr lhs) (TupRsingle ty) k = k (Output Here SubTupRkeep (TupRsingle ty) io) (Make (TakeSingle Here) ConsSingle lhs) Here
--- recursive cases
-applyDiagonalFusion t io (Make tb1 tb2 lhs) ty k =
-  pastOutputs tb1 tb2 t io $ \t' io' iok ->
-    applyDiagonalFusion t' io' lhs ty $ \(Output a b c io'') (Make (TakeSingle ts) ConsSingle lhs') t1 ->
-      -- _ tb1 $ \ tb1' ->
-        iok t1 a io'' ts $ \a' io''' t1' ts' tb1' tb2' ->
-          k (Output a' b c io''') (Make (TakeSingle ts') ConsSingle $ Make tb1' tb2' lhs') t1'
--- Reqr:
-applyDiagonalFusion t io (Reqr ti to lhs) ty k =
-  applyDiagonalFusion t io lhs ty $ \io' (Make (TakeSingle ts) ConsSingle lhs') t1 ->
-    -- these takeStrengthenF's can only fail when this operation was already using its own output
-    k io' (Make (TakeSingle ts) ConsSingle $ Reqr (mapTupR (`takeStrengthenF` t1) ti) (mapTupR (`takeStrengthenF` ts) to) lhs') t1
--- Ignr:
-applyDiagonalFusion (There' t) (Input        io) (Ignr lhs) ty k = applyDiagonalFusion t io lhs ty $ \(Output a b c io') (Make ts ConsSingle lhs') t1 ->                       k (Output (There a) b c $ Input   io') (Make (tbThere ts) ConsSingle $ Ignr lhs') (There t1)
-applyDiagonalFusion (There' t) (ExpPut       io) (Ignr lhs) ty k = applyDiagonalFusion t io lhs ty $ \(Output a b c io') (Make ts ConsSingle lhs') t1 ->                       k (Output (There a) b c $ ExpPut  io') (Make (tbThere ts) ConsSingle $ Ignr lhs') (There t1)
-applyDiagonalFusion (There' t) (VarPut       io) (Ignr lhs) ty k = applyDiagonalFusion t io lhs ty $ \(Output a b c io') (Make ts ConsSingle lhs') t1 ->                       k (Output (There a) b c $ VarPut  io') (Make (tbThere ts) ConsSingle $ Ignr lhs') (There t1)
-applyDiagonalFusion (There' t) (Trivial      io) (Ignr lhs) ty k = applyDiagonalFusion t io lhs ty $ \(Output a b c io') (Make ts ConsSingle lhs') t1 ->                       k (Output (There a) b c $ Trivial io') (Make (tbThere ts) ConsSingle $ Ignr lhs') (There t1)
-applyDiagonalFusion (There' t) (FunPut       io) (Ignr lhs) ty k = applyDiagonalFusion t io lhs ty $ \(Output a b c io') (Make ts ConsSingle lhs') t1 ->                       k (Output (There a) b c $ FunPut  io') (Make (tbThere ts) ConsSingle $ Ignr lhs') (There t1)
-applyDiagonalFusion (There' t) (MutPut       io) (Ignr lhs) ty k = applyDiagonalFusion t io lhs ty $ \(Output a b c io') (Make ts ConsSingle lhs') t1 ->                       k (Output (There a) b c $ MutPut  io') (Make (tbThere ts) ConsSingle $ Ignr lhs') (There t1)
-applyDiagonalFusion (There' t) (Output x y z io) (Ignr lhs) ty k = applyDiagonalFusion t io lhs ty $ \(Output a b c io') (Make ts ConsSingle lhs') t1 -> ttake a x $ \a' x' -> k (Output a' b c $ Output x' y z  io') (Make (tbThere ts) ConsSingle $ Ignr lhs') (There t1)
-applyDiagonalFusion (There' t) (Vertical x y io) (Ignr lhs) ty k = applyDiagonalFusion t io lhs ty $ \(Output a b c io') (Make ts ConsSingle lhs') t1 -> ttake a x $ \a' x' -> k (Output a' b c $ Vertical x' y  io') (Make (tbThere ts) ConsSingle $ Ignr lhs') (There t1)
--- Adju, EArg, VArg, FArg are timilar to Ignr:
-applyDiagonalFusion (There' t) (MutPut       io) (Adju lhs) ty k = applyDiagonalFusion t io lhs ty $ \(Output a b c io') (Make ts ConsSingle lhs') t1 ->                       k (Output (There a) b c $ MutPut  io') (Make (tbThere ts) ConsSingle $ Adju lhs') (There t1)
-applyDiagonalFusion (There' t) (ExpPut       io) (EArg lhs) ty k = applyDiagonalFusion t io lhs ty $ \(Output a b c io') (Make ts ConsSingle lhs') t1 ->                       k (Output (There a) b c $ ExpPut  io') (Make (tbThere ts) ConsSingle $ EArg lhs') (There t1)
-applyDiagonalFusion (There' t) (VarPut       io) (VArg lhs) ty k = applyDiagonalFusion t io lhs ty $ \(Output a b c io') (Make ts ConsSingle lhs') t1 ->                       k (Output (There a) b c $ VarPut  io') (Make (tbThere ts) ConsSingle $ VArg lhs') (There t1)
-applyDiagonalFusion (There' t) (Trivial      io) (VArg lhs) ty k = applyDiagonalFusion t io lhs ty $ \(Output a b c io') (Make ts ConsSingle lhs') t1 ->                       k (Output (There a) b c $ Trivial io') (Make (tbThere ts) ConsSingle $ VArg lhs') (There t1)
-applyDiagonalFusion (There' t) (FunPut       io) (FArg lhs) ty k = applyDiagonalFusion t io lhs ty $ \(Output a b c io') (Make ts ConsSingle lhs') t1 ->                       k (Output (There a) b c $ FunPut  io') (Make (tbThere ts) ConsSingle $ FArg lhs') (There t1)
-
-applyDiagonalFusion Here' _ _ _ _ = error "This operation wasn't igoring its own output"
-
-
-
-ttb :: Take x a b -> ConsBuffers f y c a -> (forall d. Take x c d -> ConsBuffers f y d b -> r) -> r
-ttb t ConsUnit k = k t ConsUnit
-ttb t ConsSingle k = k (There t) ConsSingle
-ttb t (ConsPair l r) k =
-  ttb t l $ \t' l' ->
-    ttb t' r $ \t'' r' ->
-      k t'' (ConsPair l' r')
-
-weakenAST :: ClusterAST op scope o -> ClusterAST op (scope, x) (o, x)
-weakenAST None = None
-weakenAST (Bind lhs op l ast) = Bind (Ignr lhs) op l $ weakenAST ast
-
---Only call this with a single buffer!
-fuseInput :: MakesILP op
-          => LabelledArgOp op env (In sh e)
-          -> LabelledArgsOp op  env total
-          -> LeftHandSideArgs added i scope
-          -> ClusterIO total i result
-          -> Maybe (LeftHandSideArgs (In sh e -> added) i scope)
--- Base case, no fusion
-fuseInput _ ArgsNil _ Empty = Nothing
--- The happy path: Fusion!
-fuseInput
-  (LOp _ (a1, _) o1)
-  (LOp (ArgArray In _ _ _) (a2, _) o2 :>: _)
-  (Ignr lhs)
-  (Input _)
-  | Just Refl <- matchALabel a1 a2
-  , o1 == o2 =
-    Just $ Reqr (TupRsingle $ IdxF ZeroIdx) (TupRsingle $ IdxF ZeroIdx) $ Ignr lhs
--- The rest are recursive cases
-fuseInput x as (Make t1 t2 lhs) io =
-  peelOutputs as t1 t2 io $ \io' as' ->
-    (\(Reqr a b c) -> Reqr (mapTupR (weaken $ cbWeaken t2) a) (mapTupR (weaken $ tbWeaken t1) b) (Make t1 t2 c))
-    <$> fuseInput x as' lhs io'
-fuseInput x as (Reqr t t2 lhs) io = (\(Reqr a b c) -> Reqr a b (Reqr t t2 c)) <$> fuseInput x as lhs io
-fuseInput x (_ :>: as) (Adju lhs) (MutPut       io) = (\(Reqr a b c) -> Reqr (there' a) (there' b) $ Adju c) <$> fuseInput x as lhs io
-fuseInput x (_ :>: as) (EArg lhs) (ExpPut'      io) = (\(Reqr a b c) -> Reqr (there' a) (there' b) $ EArg c) <$> fuseInput x as lhs io
-fuseInput x (_ :>: as) (VArg lhs) (ExpPut'      io) = (\(Reqr a b c) -> Reqr (there' a) (there' b) $ VArg c) <$> fuseInput x as lhs io
-fuseInput x (_ :>: as) (FArg lhs) (ExpPut'      io) = (\(Reqr a b c) -> Reqr (there' a) (there' b) $ FArg c) <$> fuseInput x as lhs io
-fuseInput x (_ :>: as) (VArg lhs) (Trivial      io) = (\(Reqr a b c) -> Reqr (there' a) (there' b) $ VArg c) <$> fuseInput x as lhs io
-fuseInput x (_ :>: as) (Triv lhs) (Trivial      io) = (\(Reqr a b c) -> Reqr (there' a) (there' b) $ Triv c) <$> fuseInput x as lhs io
-fuseInput x (_ :>: as) (Ignr lhs) (Output _ _ _ io) = (\(Reqr a b c) -> Reqr (there' a) (there' b) $ Ignr c) <$> fuseInput x as lhs io
-fuseInput x (_ :>: as) (Ignr lhs) (Input        io) = (\(Reqr a b c) -> Reqr (there' a) (there' b) $ Ignr c) <$> fuseInput x as lhs io
-fuseInput x (_ :>: as) (Ignr lhs) (MutPut       io) = (\(Reqr a b c) -> Reqr (there' a) (there' b) $ Ignr c) <$> fuseInput x as lhs io
-fuseInput x (_ :>: as) (Ignr lhs) (ExpPut'      io) = (\(Reqr a b c) -> Reqr (there' a) (there' b) $ Ignr c) <$> fuseInput x as lhs io
-fuseInput x (_ :>: as) (Ignr lhs) (Vertical _ _ io) = (\(Reqr a b c) -> Reqr (there' a) (there' b) $ Ignr c) <$> fuseInput x as lhs io
-fuseInput x (_ :>: as) (Ignr lhs) (Trivial      io) = (\(Reqr a b c) -> Reqr (there' a) (there' b) $ Ignr c) <$> fuseInput x as lhs io
-
--- also peels verticals and trivials
-peelOutputs :: LabelledArgsOp op env total
-            -> TakeBuffers (Value sh) e eo o
-            -> ConsBuffers (Sh sh) e shi i
-            -> ClusterIO total shi result
-            -> (forall t' result'
-               . ClusterIO t' i result'
-              -> LabelledArgsOp op env t'
-              -> r)
-            -> r
-peelOutputs ltot TakeUnit ConsUnit io k = k io ltot
-peelOutputs ltot (TakePair l1 r1) (ConsPair l2 r2) io k =
-  peelOutputs ltot r1 r2 io $ \io' ltot' ->
-    peelOutputs ltot' l1 l2 io' $ \io'' ltot'' ->
-      k io'' ltot''
-peelOutputs (_ :>: ltot) (TakeSingle _) ConsSingle (Output _ _ _ io) k = k io ltot
-peelOutputs (_ :>: ltot) (TakeSingle _) ConsSingle (Vertical _ _ io) k = k io ltot
-peelOutputs _ TakeUnit     ConsSingle _ _ = error "unit in single"
-peelOutputs _ TakeSingle{} ConsUnit   _ _ = error "unit in single"
-peelOutputs _ TakeSingle{} ConsPair{} _ _ = error "pair in single"
-peelOutputs _ TakePair{}   ConsSingle _ _ = error "pair in single"
--- peelOutputs _ _ ConsUnitFusedAway{} _ _ = error "impossible here"
-
--- go past outputs and verticals and trivials, and give a continuation which slaps them back on
-pastOutputs :: TakeBuffers (Value sh) e eo o
-            -> ConsBuffers (Sh sh) e shi i
-            -> Take' (In sh2 e2) total total'
-            -> ClusterIO total shi result
-            -> (forall t' t'' result'
-               . Take' (In sh2 e2) t' t''
-              -> ClusterIO t' i result'
-              -> (forall sh1 e1 i' b r2 o'
-                 . Take (Value sh1 e1) i i'
-                -> Take (Value sh1 e1) result' b
-                -> ClusterIO t'' i' b
-                -> Take (Value sh1 e1) o o'
-                -> (forall a' b' o2
-                   . Take (Value sh1 e1) result b'
-                  -> ClusterIO total' a' b'
-                  -> Take (Value sh1 e1) shi a'
-                  -> Take (Value sh1 e1) eo o2
-                  -> TakeBuffers (Value sh) e o2 o'
-                  -> ConsBuffers (Sh sh) e a' i'
-                  -> r2)
-                -> r2)
-              -> r)
-            -> r
--- trivial recursive case, as a warmup to the nested existentials
--- pastOutputs tb1 tb2 (There' t) (Trivial io) k =
---   pastOutputs tb1 tb2 t io $ \t' io' iok ->
---     k t' io' $ \t1 t2 io'' t3 k' ->
---       iok t1 t2 io'' t3 $ \t4 io''' t5 t6 tb3 cb ->
---         k' t4 (Trivial io''') t5 t6 tb3 cb
--- takeUnits case, mirror of the trivial case
-pastOutputs TakeUnit ConsUnit t io k =
-  k t io $ \t1 t2 io' t3 k' ->
-    k' t2 io' t1 t3 TakeUnit ConsUnit
--- takeSingles case, the "real" base-case
-pastOutputs (TakeSingle ts) ConsSingle (There' take') (Output t st ty io) k =
-  k take' io $ \t1 t2 io' t3 k' ->
-    ttake t2 t $ \t2' t' ->
-      ttake t3 ts $ \t3' ts' ->
-        k' t2' (Output t' st ty io') (There t1) t3' (TakeSingle ts') ConsSingle
--- the same for vertical
-pastOutputs (TakeSingle ts) ConsSingle (There' take') (Vertical t a io) k =
-  k take' io $ \t1 t2 io' t3 k' ->
-    ttake t2 t $ \t2' t' ->
-      ttake t3 ts $ \t3' ts' ->
-        k' t2' (Vertical t' a io') (There t1) t3' (TakeSingle ts') ConsSingle
--- takePair case: the double recursion
-pastOutputs (TakePair l1 r1) (ConsPair l2 r2) t io k =
-  pastOutputs r1 r2 t io $ \t' io' iok ->
-    pastOutputs l1 l2 t' io' $ \t'' io'' iok' ->
-      k t'' io'' $ \t1 t2 io''' t3 k' ->
-        iok' t1 t2 io''' t3 $ \t4 io'''' t5 t6 tb1 cb1 ->
-          iok t5 t4 io'''' t6 $ \t7 io5 t8 t9 tb2 cb2 ->
-            k' t7 io5 t8 t9 (TakePair tb1 tb2) (ConsPair cb1 cb2)
-pastOutputs _ _ _ _ _ = error "A unit or pair was hiding in a TakeSingle, I think"
-
--- Only call for a single buffer!
-addInput  :: ClusterAST op scope o
-          -> ClusterIO total i o
-          -> (ClusterAST op (scope, Value sh e) (o, Value sh e)
-            , ClusterIO (In sh e -> total) (i, Value sh e) (o, Value sh e))
-addInput None io = (None, Input io)
-addInput (Bind lhs op l ast) io = first (Bind (Ignr lhs) op l) $ addInput ast io
-
--- use one of the IO constructors {ExpPut, VarPut, FunPut} as third argument
-addExp  :: ClusterIO total i o
-        -> ClusterAST op scope o
-        -> (forall total' i' o'. ClusterIO total' i' o' -> ClusterIO (e -> total') (i', e) (o', e))
-        -> ( ClusterIO (e -> total) (i, e) (o, e)
-           , ClusterAST op (scope, e) (o, e)
-           )
-addExp io None constructor = (constructor io, None)
-addExp io (Bind lhs op l ast) constructor = second (Bind (Ignr lhs) op l) $ addExp io ast constructor
+unfused :: forall op args env r. MakesILP op => op args -> Label -> LabelledArgsOp op env args -> (forall args'. Cluster op args' -> LabelledArgsOp op env args' -> r) -> r
+unfused op l largs k = singleton (unOpLabels largs) op $ 
+  \c@(Op (SLVOp (SOp (SOAOp (_op :: op argsToo) soas) (SA sort _unsort)) sa)) ->
+    case unsafeCoerce Refl of -- we know that `_op` is the same as `op`
+      (Refl :: args :~: argsToo) -> k c (slv sa $ sort $ soaExpand splitLabelledArgsOp soas largs)
 
 
 
@@ -738,31 +336,23 @@ tryUpdateList p f (x : xs)
 
 
 
+consCluster :: forall env args extra op r
+             . MakesILP op
+            => Label
+            -> LabelledArgsOp op env extra
+            -> op extra
+            -> LabelledArgsOp op env args
+            -> Cluster op args
+            -> (forall args'. Cluster op args' -> LabelledArgsOp op env args' -> r)
+            -> r
+consCluster l lop op lcluster cluster k = unfused op l lop $ \c lop' ->
+  fuse (unOpLabels lop') (unOpLabels lcluster) lop' lcluster c cluster fuseVertically $ flip k
 
+fuseVertically :: LabelledArgOp op env (Out sh e) -> LabelledArgOp op env (In sh e) -> LabelledArgOp op env (Var' sh)
+fuseVertically
+  (LOp (ArgArray Out (ArrayR shr _) sh _) (_, ls) b)
+  (LOp (ArgArray In _ _ _) (_, ls') _)
+  = LOp (ArgVar $ groundToExpVar (shapeType shr) sh) (NotArr, ls<>ls') b
 
-
---------------------------------------------------------------------------------------
-
--- data Combine' first second rest total where
---   Horizontal :: Combine (In  a) (In a) xs (In  a, xs)
---   Diagonal   :: Combine (Out a) (In a) xs (Out a, xs)
---   Vertical   :: Combine (Out a) (In a) xs         xs
-
--- data Combine first second fused where
---   BaseCase  :: Combine () () ()
---   Fusion    :: Combine' a b rest fused 
---             -> Combine     as      bs      rest 
---             -> Combine (a, as) (b, bs)     fused
---   Intro1    :: Combine     as      bs      fused 
---             -> Combine (a, as)     bs  (a, fused)
---   Intro2    :: Combine     as      bs      fused 
---             -> Combine     as  (b, bs) (a, fused)
-
--- data AlternativeCluster op args where
---   Singleton :: op args -> SortArgs args sorted -> AlternativeCluster op sorted
---   Multiple :: Combine first second args 
---            -> AlternativeCluster op first 
---            -> AlternativeCluster op second 
---            -> AlternativeCluster op args
-
--- type SortArgs args sorted = () -- TODO: some datatype which describes the permutation of those arguments
+instance NFData' op => NFData' (Cluster op) where
+  rnf' = undefined

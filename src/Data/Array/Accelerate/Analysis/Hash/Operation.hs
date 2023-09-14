@@ -39,7 +39,7 @@ class EncodeOperation op where
   encodeOperation :: op t -> Builder
 
 instance (MakesILP op, EncodeOperation op) => EncodeOperation (Cluster op) where
-  encodeOperation (Cluster backendCluster cluster') = encodePreArgs encodeBackendClusterArg backendCluster <> encodeCluster' cluster'
+  -- encodeOperation (Cluster backendCluster cluster') = encodePreArgs encodeBackendClusterArg backendCluster <> encodeCluster' cluster'
 
 encodePreArgs :: (forall t. arg t -> Builder) -> PreArgs arg f -> Builder
 encodePreArgs f (a :>: as) = intHost $(hashQ ":>:") <> f a <> encodePreArgs f as
@@ -67,34 +67,34 @@ encodeModifier In  = intHost $(hashQ "In")
 encodeModifier Out = intHost $(hashQ "Out")
 encodeModifier Mut = intHost $(hashQ "Mut")
 
-encodeCluster' :: EncodeOperation op => Cluster' op args -> Builder
-encodeCluster' (Cluster' io ast) = encodeClusterIO io <> encodeClusterAST ast
+-- encodeCluster' :: EncodeOperation op => Cluster' op args -> Builder
+-- encodeCluster' (Cluster' io ast) = encodeClusterIO io <> encodeClusterAST ast
 
-encodeClusterIO :: ClusterIO args input output -> Builder
-encodeClusterIO Empty                 = intHost $(hashQ "Empty")
-encodeClusterIO (Vertical t repr io)  = intHost $(hashQ "Vertical") <> encodeTake t <> encodeArrayType repr <> encodeClusterIO io
-encodeClusterIO (Input io)            = intHost $(hashQ "Input") <> encodeClusterIO io
-encodeClusterIO (Output t subT tp io) = intHost $(hashQ "Output") <> encodeTake t <> encodeSubTupR subT <> encodeTypeR tp <> encodeClusterIO io
-encodeClusterIO (MutPut io)           = intHost $(hashQ "MutPut") <> encodeClusterIO io
-encodeClusterIO (ExpPut io)           = intHost $(hashQ "ExpPut") <> encodeClusterIO io
-encodeClusterIO (VarPut io)           = intHost $(hashQ "VarPut") <> encodeClusterIO io
-encodeClusterIO (FunPut io)           = intHost $(hashQ "FunPut") <> encodeClusterIO io
-encodeClusterIO (Trivial io)          = intHost $(hashQ "Trivial") <> encodeClusterIO io
+-- encodeClusterIO :: ClusterIO args input output -> Builder
+-- encodeClusterIO Empty                 = intHost $(hashQ "Empty")
+-- encodeClusterIO (Vertical t repr io)  = intHost $(hashQ "Vertical") <> encodeTake t <> encodeArrayType repr <> encodeClusterIO io
+-- encodeClusterIO (Input io)            = intHost $(hashQ "Input") <> encodeClusterIO io
+-- encodeClusterIO (Output t subT tp io) = intHost $(hashQ "Output") <> encodeTake t <> encodeSubTupR subT <> encodeTypeR tp <> encodeClusterIO io
+-- encodeClusterIO (MutPut io)           = intHost $(hashQ "MutPut") <> encodeClusterIO io
+-- encodeClusterIO (ExpPut io)           = intHost $(hashQ "ExpPut") <> encodeClusterIO io
+-- encodeClusterIO (VarPut io)           = intHost $(hashQ "VarPut") <> encodeClusterIO io
+-- encodeClusterIO (FunPut io)           = intHost $(hashQ "FunPut") <> encodeClusterIO io
+-- encodeClusterIO (Trivial io)          = intHost $(hashQ "Trivial") <> encodeClusterIO io
 
-encodeTake :: Take x xargs args -> Builder
-encodeTake = intHost . idxToInt . takeIdx
+-- encodeTake :: Take x xargs args -> Builder
+-- encodeTake = intHost . idxToInt . takeIdx
 
 encodeSubTupR :: SubTupR s t -> Builder
 encodeSubTupR SubTupRskip       = intHost $(hashQ "skip")
 encodeSubTupR SubTupRkeep       = intHost $(hashQ "keep")
 encodeSubTupR (SubTupRpair a b) = intHost $(hashQ "pair") <> encodeSubTupR a <> encodeSubTupR b
 
-encodeClusterAST :: EncodeOperation op => ClusterAST op env result -> Builder
-encodeClusterAST None = intHost $(hashQ "None")
-encodeClusterAST (Bind lhs op l ast) = intHost $(hashQ "Bind") <> encodeLeftHandSideArgs lhs <> encodeOperation op <> encodeClusterAST ast
+-- encodeClusterAST :: EncodeOperation op => ClusterAST op env result -> Builder
+-- encodeClusterAST None = intHost $(hashQ "None")
+-- encodeClusterAST (Bind lhs op l ast) = intHost $(hashQ "Bind") <> encodeLeftHandSideArgs lhs <> encodeOperation op <> encodeClusterAST ast
 
-encodeLeftHandSideArgs :: LeftHandSideArgs body env scope -> Builder
-encodeLeftHandSideArgs _ = intHost $(hashQ "If I just don't hash this, that's fine right? :)")
+-- encodeLeftHandSideArgs :: LeftHandSideArgs body env scope -> Builder
+-- encodeLeftHandSideArgs _ = intHost $(hashQ "If I just don't hash this, that's fine right? :)")
 -- encodeLeftHandSideArgs Base = intHost $(hashQ "Base")
 -- encodeLeftHandSideArgs (Reqr t1 t2 lhs) = intHost $(hashQ "Reqr") <> encodeTake t1 <> encodeTake t2 <> encodeLeftHandSideArgs lhs
 -- encodeLeftHandSideArgs (Make t lhs) = intHost $(hashQ "Make") <> encodeTake t <> encodeLeftHandSideArgs lhs

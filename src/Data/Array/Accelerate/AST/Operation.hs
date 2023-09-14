@@ -59,7 +59,7 @@ module Data.Array.Accelerate.AST.Operation (
   module Data.Array.Accelerate.AST.Exp,
 
   NFData'(..)
-,reindexAcc,toGrounds,fromGrounds,weakenThroughReindex,fuseArgsWith) where
+,reindexAcc,toGrounds,fromGrounds,weakenThroughReindex,fuseArgsWith,argsFromList,expToGroundVar) where
 
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Exp
@@ -237,6 +237,10 @@ fuseArgsWith (a :>: as) (b :>: bs) f = f a b :>: fuseArgsWith as bs f
 argsToList :: PreArgs a t -> [Exists a]
 argsToList ArgsNil = []
 argsToList (a :>: as) = Exists a : argsToList as
+
+argsFromList :: [Exists a] -> Exists (PreArgs a)
+argsFromList [] = Exists ArgsNil
+argsFromList (Exists a : as) = case argsFromList as of Exists args -> Exists (a :>: args)
 
 -- | A single argument to an operation.
 --
@@ -542,6 +546,10 @@ groundToExpVar (TupRsingle t)   (TupRsingle (Var _ ix)) = TupRsingle (Var t ix)
 groundToExpVar (TupRpair t1 t2) (TupRpair v1 v2)        = groundToExpVar t1 v1 `TupRpair` groundToExpVar t2 v2
 groundToExpVar TupRunit         TupRunit                = TupRunit
 groundToExpVar _                _                       = internalError "Impossible pair"
+expToGroundVar :: ExpVars env e -> GroundVars env e
+expToGroundVar  TupRunit = TupRunit
+expToGroundVar  (TupRsingle (Var a ix)) = TupRsingle $ Var (GroundRscalar a) ix 
+expToGroundVar  (TupRpair x y) = TupRpair (expToGroundVar x) (expToGroundVar y)
 
 class NFData' f where
   rnf' :: f a -> ()

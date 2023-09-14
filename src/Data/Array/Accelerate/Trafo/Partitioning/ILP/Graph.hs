@@ -153,8 +153,10 @@ reindexLabelledArgsOp :: Applicative f => ReindexPartial f env env' -> LabelledA
 reindexLabelledArgsOp = reindexPreArgs reindexLabelledArgOp
 
 unLabelOp :: LabelledArgsOp op env args -> Args env args
-unLabelOp ArgsNil              = ArgsNil
-unLabelOp (LOp arg _ _ :>: args) = arg :>: unLabelOp args
+unLabelOp = mapArgs $ \(LOp arg _ _) -> arg
+
+unOpLabels :: LabelledArgsOp op env args -> LabelledArgs env args
+unOpLabels = mapArgs $ \(LOp arg l _) -> L arg l
 
 type BackendCluster op = PreArgs (BackendClusterArg op)
 
