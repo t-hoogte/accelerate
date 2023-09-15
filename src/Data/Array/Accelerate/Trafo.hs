@@ -119,7 +119,7 @@ testWithObjective obj f
 
     partitioned = 
       -- Operation.simplifyFun $ 
-       NewNewFusion.convertAfun obj operation
+      NewNewFusion.convertAfun obj operation
 
     slvpartitioned = 
       -- Operation.simplifyFun $ 
