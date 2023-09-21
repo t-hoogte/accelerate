@@ -166,7 +166,10 @@ setLive = \idx env -> uncurry setIdxSetLive $ go idx env
       Live -> (IdxSet.skip newSet, LPush env' Live)
       Unknown implies impliedBy
         | idx `IdxSet.member` impliedBy ->
-          (IdxSet.skip $ implies `IdxSet.union` newSet, LPush env' Live)
+          -- This variable may be present in the implied-by set of other variables,
+          -- hence we need to add it to the IdxSet and potentially mark other variables
+          -- live in the next iteration of setIdxSetLive.
+          (IdxSet.push $ implies `IdxSet.union` newSet, LPush env' Live)
         | otherwise ->
           (IdxSet.skip $ newSet, LPush env' $ Unknown (IdxSet.remove idx implies) impliedBy)
       where
@@ -186,7 +189,10 @@ setIdxSetLive = \set env ->
       Unknown implies impliedBy
         -- Does this variable become live?
         | ZeroIdx `IdxSet.member` liveSet || IdxSet.overlaps tailLiveSet impliedBy ->
-          (IdxSet.skip $ implies `IdxSet.union` newSet, LPush env' Live)
+          -- This variable may be present in the implied-by set of other variables,
+          -- hence we need to add it to the IdxSet and potentially mark other variables
+          -- live in the next iteration of setIdxSetLive.
+          (IdxSet.push $ implies `IdxSet.union` newSet, LPush env' Live)
         | otherwise ->
           (IdxSet.skip newSet, LPush env' $ Unknown (implies IdxSet.\\ tailLiveSet) impliedBy)
       where
@@ -204,7 +210,7 @@ isLive ZeroIdx       (LPush _   l) = case l of
 
 anyIsLive :: IdxSet env -> LivenessEnv env -> Bool
 anyIsLive (IdxSet PEnd) _ = False
-anyIsLive indices (LPush env Live)
+anyIsLive indices (LPush _ Live)
   | ZeroIdx `IdxSet.member` indices = True
 anyIsLive indices (LPush env _) = anyIsLive (IdxSet.drop indices) env
 
