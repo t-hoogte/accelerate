@@ -106,10 +106,11 @@ testWithObjective obj f
   ++ Pretty.renderForTerminal (Pretty.prettySchedule schedule)
   where
     operation
-      -- = Operation.simplifyFun
-      = Operation.stronglyLiveVariablesFun
-      -- $ Operation.simplifyFun
-      $ desugared
+      = 
+      -- Operation.simplifyFun $
+      Operation.stronglyLiveVariablesFun $
+      -- Operation.simplifyFun $
+       desugared
     desugared =
         desugarAfun @(KernelOperation kernel)
       $ original

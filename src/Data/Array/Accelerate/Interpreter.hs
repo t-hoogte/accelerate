@@ -658,6 +658,7 @@ instance EvalOp InterpretOp where
   indexsh' evs env = pure . Identity $ varsGetVal evs env
   subtup s = Identity . subTup s . runIdentity
   
+writeOutputInterpreter :: TypeR e -> Vars s env (Buffers e) -> Val env -> Int -> e -> IO ()
 writeOutputInterpreter r buf env n x = writeBuffers r (veryUnsafeUnfreezeBuffers r $ varsGetVal buf env) n x
 
 evalClusterInterpreter :: Cluster InterpretOp args -> Args env args -> Val env -> IO ()

@@ -64,13 +64,25 @@ data SLVedOp op args where
         -> SLVedOp op args'
 
 slv  :: SubArgs args args' -> PreArgs f args -> PreArgs f args'
-slv = undefined
+slv SubArgsNil ArgsNil = ArgsNil
+slv (SubArgsDead    sas) (arg:>:args) = undefined    arg :>: slv sas args
+slv (SubArgsLive SubArgKeep sas) (arg:>:args) = arg :>: slv sas args
+slv _ _ = error "not soa'ed"
 slv' :: SubArgs args args' -> PreArgs f args' -> PreArgs f args
-slv' = undefined
+slv' SubArgsNil ArgsNil = ArgsNil
+slv' (SubArgsDead    sas) (arg:>:args) = undefined    arg :>: slv' sas args
+slv' (SubArgsLive SubArgKeep sas) (arg:>:args) = arg :>: slv' sas args
+slv' _ _ = error "not soa'ed"
 slvIn  :: () -> SubArgs args args' -> Env f (InArgs args') -> Env f (InArgs args)
-slvIn = undefined
+slvIn _ SubArgsNil Empty = Empty
+slvIn _ (SubArgsDead    sas) (Push env x) = Push (slvIn () sas env) (undefined    x)
+slvIn _ (SubArgsLive SubArgKeep sas) (Push env x) = Push (slvIn () sas env) x
+slvIn _ _ _ = error "not soa'ed"
 slvOut :: () -> SubArgs args args' -> Env f (OutArgs args) -> Env f (OutArgs args')
-slvOut = undefined
+slvOut _ SubArgsNil Empty = Empty
+slvOut _ (SubArgsDead    sas) env = slvOut () sas $ undefined env
+slvOut _ (SubArgsLive SubArgKeep sas) env = undefined (slvOut () sas $ undefined env) (undefined sas env)
+slvOut _ _ _ = error "not soa'ed"
 
 -- a wrapper around operations which sorts the (term and type level) arguments on global labels, to line the arguments up for Fusion
 data SortedOp op args where
@@ -242,8 +254,8 @@ varToIn :: Arg env (Var' sh) -> Arg env (In sh e)
 varToIn (ArgVar sh) = ArgArray In (ArrayR (evarToShR sh) er) (mapTupR (\(Var t ix)->Var (GroundRscalar t) ix) sh) er
   where er = error "accessing fused away array"
 outToIn :: Arg env (Out sh e) -> Arg env (In sh e)
-outToIn (ArgArray Out x y _) = ArgArray In x y er
-  where er = error "accessing fused away array"
+outToIn (ArgArray Out x y z) = ArgArray In x y z
+  -- where er = error "accessing fused away array"
 
 both :: (forall sh e. f (Out sh e) -> f (In sh e) -> f (Var' sh)) -> Fusion largs rargs args -> PreArgs f largs -> PreArgs f rargs -> PreArgs f args
 both _ EmptyF ArgsNil ArgsNil = ArgsNil
@@ -412,8 +424,10 @@ singleton largs op k = mkSOAs largs $ \soas ->
     k (Op $ SLVOp (SOp (SOAOp op soas) sa) (subargsId $ sort $ soaExpand undefined soas largs))
 
 sortArgs :: LabelledArgs env args -> (forall sorted. SortedArgs args sorted -> r) -> r
-sortArgs args k = if nub ls /= ls then error "not sure if this works" -- this means that some arguments have identical sets of labels. This should only be a problem if two array arguments share labelsets.
-                                  else k $ SA
+sortArgs args k = 
+  -- if nub ls /= ls then error "not sure if this works" -- this means that some arguments have identical sets of labels. This should only be a problem if two array arguments share labelsets.
+  -- else 
+    k $ SA
     (\args -> case argsFromList . map snd . sortOn fst . zip ls  . argsToList $ args of Exists a -> unsafeCoerce a)
     (\srts -> case argsFromList . map snd . sortOn fst . zip ls' . argsToList $ srts of Exists a -> unsafeCoerce a)
   where
@@ -451,11 +465,12 @@ mkSOA _ _ = error "pair or unit in a tuprsingle somewhere"
 
 
 instance SLVOperation (Cluster op) where
-  slvOperation (Op op) = case slvOperation op of
-    Nothing -> Nothing
-    Just (ShrinkOperation f) -> Just $ ShrinkOperation (\sub args' args -> case f sub args' args of
-      ShrunkOperation so args'' -> ShrunkOperation (Op so) args'' )
-  slvOperation (Fused f l r) = Just $ fuseSLV f (fromJust $ slvOperation l) (fromJust $ slvOperation r)
+  slvOperation = const Nothing
+  -- slvOperation (Op op) = case slvOperation op of
+  --   Nothing -> Nothing
+  --   Just (ShrinkOperation f) -> Just $ ShrinkOperation (\sub args' args -> case f sub args' args of
+  --     ShrunkOperation so args'' -> ShrunkOperation (Op so) args'' )
+  -- slvOperation (Fused f l r) = Just $ fuseSLV f (fromJust $ slvOperation l) (fromJust $ slvOperation r)
     where
       fuseSLV :: Fusion l r a -> ShrinkOperation (Cluster op) l -> ShrinkOperation (Cluster op) r -> ShrinkOperation (Cluster op) a
       fuseSLV f (ShrinkOperation l) (ShrinkOperation r) = ShrinkOperation (\sub args' args -> 

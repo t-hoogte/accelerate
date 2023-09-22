@@ -179,10 +179,10 @@ openReconstruct' singletons labelenv graph clusterslist mlab subclustersmap cons
     makeAST :: forall env. LabelEnv env -> [ClusterL] -> M.Map Label (Exists (PreOpenAcc (Cluster op) env)) -> Exists (PreOpenAcc (Cluster op) env)
     makeAST _ [] _ = error "empty AST"
     makeAST env [cluster] prev = case makeCluster env cluster of
-      -- Fold (CCluster args info cio cast) -> Exists $ Exec (Cluster info (Cluster' cio cast)) $ unLabelOp args
-      -- InitFold o l args -> unfused o l args $
-      --                       \(CCluster args' info cio cast) ->
-      --                           Exists $ Exec (Cluster info (Cluster' cio cast)) (unLabelOp args')
+      Fold c args -> Exists $ Exec c $ unLabelOp args
+      InitFold o l args -> unfused o l args $
+                            \c args' ->
+                                Exists $ Exec c (unLabelOp args')
       NotFold con -> case con of
          CExe {}    -> error "should be Fold/InitFold!"
          CExe'{}    -> error "should be Fold/InitFold!"
@@ -355,4 +355,4 @@ fuseVertically
   = LOp (ArgVar $ groundToExpVar (shapeType shr) sh) (NotArr, ls<>ls') b
 
 instance NFData' op => NFData' (Cluster op) where
-  rnf' = undefined
+  rnf' c = () -- TODO

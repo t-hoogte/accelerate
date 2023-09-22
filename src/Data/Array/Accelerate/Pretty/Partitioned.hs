@@ -55,8 +55,11 @@ import Data.Bifunctor (second)
 --       separator = "; "
 
 instance PrettyOp op => PrettyOp (Cluster op) where
-  -- prettyOp (Cluster _ c) = prettyOp c
-  -- prettyOpWithArgs env (Cluster _ c) = prettyOpWithArgs env c
+  prettyOp (Fused _ l r) = "Fused (" <> prettyOp l <> ", " <> prettyOp r
+  prettyOp (Op (SLVOp (SOp (SOAOp op _) _) _)) = prettyOp op
+  prettyOpWithArgs env (Fused f l r) args = "Fused (" <> prettyOpWithArgs env l (left f args) <> ", " <> prettyOpWithArgs env r (right f args)
+  prettyOpWithArgs env (Op (SLVOp (SOp (SOAOp op soa) (SA _ unsort)) sa)) args = prettyOpWithArgs env op (soaShrink combine soa . unsort . slv' sa $ args)
+
 
 -- clusterEnv :: forall env f input output. Pretty.Val env -> ClusterIO f input output -> Args env f -> (Pretty.Val input, PartialVal output)
 -- clusterEnv env = \cio args -> (input cio args, output cio args)

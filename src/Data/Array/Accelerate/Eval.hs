@@ -199,136 +199,138 @@ type family Embed (op :: Type -> Type) a where
 data Value' op sh e = Value' (Embed' op e) (Sh' op sh e)
 data Sh' op sh e = Shape' (ShapeR sh) (Embed' op sh)
 
+splitFromArg' :: (EvalOp op) => FromArg' op env (Value sh (l,r)) -> (FromArg' op env (Value sh l), FromArg' op env (Value sh r))
+splitFromArg' (FromArg v) = bimap FromArg FromArg $ unpair' v
 
-evalCluster :: forall op env args. (EvalOp op) => Cluster op args -> BackendCluster op args -> Args env args -> FEnv op env -> Index op -> EvalMonad op ()
+pairInArg :: (EvalOp op) => Arg env (arg (l,r)) -> BackendArgEnvElem op env (InArg (arg l)) ->  BackendArgEnvElem op env (InArg (arg r)) ->  BackendArgEnvElem op env (InArg (arg (l,r)))
+pairInArg (ArgArray In  _ _ _) l r = getCompose $ pair' (Compose l) (Compose r)
+pairInArg (ArgArray Out _ _ _) l r = getCompose $ pair' (Compose l) (Compose r)
+pairInArg _ _ _ = error "SOA'd non-array args"
+
+evalCluster :: (EvalOp op) => Cluster op args -> BackendCluster op args -> Args env args -> FEnv op env -> Index op -> EvalMonad op ()
 evalCluster c b args env ix = do
   let ba = makeBackendArg args env c b
-  input <- readInputs args ba
-  output <- evalOps c input args
-  writeOutputs args output
+  input <- readInputs ix args ba env
+  output <- evalOps ix c input args env
+  writeOutputs ix args output env
+
+evalOps :: (EvalOp op) => Index op -> Cluster op args -> BackendArgEnv op env (InArgs args) -> Args env args -> FEnv op env -> EvalMonad op (EmbedEnv op env (OutArgs args))
+evalOps ix c ba args env = case c of
+  Op (SLVOp (SOp (SOAOp op soas) (SA f g)) sa) -> slvOut () sa . outargs f (g $ slv' sa args) . soaOut splitFromArg' (soaShrink combine soas $ g $ slv' sa args) soas <$> evalOp ix undefined op env (soaIn pairInArg (g $ slv' sa args) soas $ inargs g $ slvIn () sa ba) 
+  Fused f l r -> do
+    lin <- leftIn f ba env
+    lout <- evalOps ix l lin (left f args) env
+    let rin = rightIn f lout ba
+    rout <- evalOps ix r rin (right f args) env
+    return $ totalOut f lout rout
+
+
+readInputs :: forall args env op. (EvalOp op) => Index op -> Args env args -> BackendArgs op env args -> FEnv op env -> EvalMonad op (BackendArgEnv op env (InArgs args))
+readInputs _ ArgsNil ArgsNil env = pure Empty
+readInputs ix (arg :>: args) (bca :>: bcas) env = case arg of
+  ArgVar x -> flip Push (BAE x bca) <$> readInputs ix args bcas env
+  ArgExp x -> flip Push (BAE x bca) <$> readInputs ix args bcas env
+  ArgFun x -> flip Push (BAE x bca) <$> readInputs ix args bcas env
+  ArgArray Mut (ArrayR shr r) sh buf -> flip Push (BAE (ArrayDescriptor shr sh buf, r) bca) <$> readInputs ix args bcas env
+  ArgArray Out (ArrayR shr _) sh _   -> (\sh' -> flip Push (BAE (Shape' shr sh') (outToSh bca))) <$> indexsh @op sh env <*> readInputs ix args bcas env
+  ArgArray In  (ArrayR shr r) sh buf -> case r of
+    TupRsingle t -> (\env v sh' -> Push env (BAE (Value' v (Shape' shr sh')) (inToValue bca))) <$> readInputs ix args bcas env <*> readInput t sh buf env bca ix <*> indexsh @op sh env
+    TupRunit -> (\sh' -> flip Push (BAE (Value' (unit @op) (Shape' shr sh')) (inToValue bca))) <$> indexsh @op sh env <*> readInputs ix args bcas env
+    TupRpair{} -> error "not SOA'd"
+
+writeOutputs :: forall args env op. (EvalOp op) => Index op -> Args env args -> EmbedEnv op env (OutArgs args) -> FEnv op env -> EvalMonad op ()
+writeOutputs ix ArgsNil Empty _ = pure ()
+writeOutputs ix (ArgArray Out (ArrayR _ r) sh buf :>: args) (PushFA env (Value' x _)) env'
+  | TupRsingle t <- r = writeOutput @op t sh buf env' ix x >> writeOutputs ix args env env'
+  | otherwise = error "not soa'd"
+writeOutputs ix (ArgVar _           :>: args) env env' = writeOutputs ix args env env'
+writeOutputs ix (ArgExp _           :>: args) env env' = writeOutputs ix args env env'
+writeOutputs ix (ArgFun _           :>: args) env env' = writeOutputs ix args env env'
+writeOutputs ix (ArgArray In  _ _ _ :>: args) env env' = writeOutputs ix args env env'
+writeOutputs ix (ArgArray Mut _ _ _ :>: args) env env' = writeOutputs ix args env env'
+
+leftIn :: forall largs rargs args op env. (EvalOp op) => Fusion largs rargs args -> BackendArgEnv op env (InArgs args) -> FEnv op env -> EvalMonad op (BackendArgEnv op env (InArgs largs))
+leftIn EmptyF Empty _ = pure Empty
+leftIn (Vertical ar f) (Push env (BAE x b)) env'= Push <$> leftIn f env env' <*> ((`BAE` varToSh b) . Shape' (evarToShR x) <$> indexsh' @op x env')
+leftIn (Horizontal  f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
+leftIn (Diagonal    f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
+leftIn (IntroI1     f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
+leftIn (IntroI2     f) (Push env _  ) env' =                  leftIn f env env'
+leftIn (IntroO1     f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
+leftIn (IntroO2     f) (Push env _  ) env' =                  leftIn f env env'
+leftIn (IntroL      f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
+leftIn (IntroR      f) (Push env _  ) env' =                  leftIn f env env'
+
+rightIn :: (EvalOp op) 
+        => Fusion largs rargs args
+        -> EmbedEnv op env (OutArgs largs)
+        -> BackendArgEnv op env  ( InArgs  args)
+        -> BackendArgEnv op env  ( InArgs rargs)
+rightIn EmptyF Empty Empty = Empty
+rightIn (Vertical ar f) (PushFA lenv fa) (Push env (BAE _ b)) = Push (rightIn f lenv env) (BAE fa $ varToValue b)
+rightIn (Horizontal  f)         lenv     (Push env bae      ) = Push (rightIn f lenv env) bae
+rightIn (Diagonal    f) (PushFA lenv fa) (Push env (BAE _ b)) = Push (rightIn f lenv env) (BAE fa $ shToValue b)
+rightIn (IntroI1     f)         lenv     (Push env _        ) =       rightIn f lenv env
+rightIn (IntroI2     f)         lenv     (Push env bae      ) = Push (rightIn f lenv env) bae
+rightIn (IntroO1     f) (PushFA lenv _ ) (Push env _        ) =       rightIn f lenv env
+rightIn (IntroO2     f)         lenv     (Push env bae      ) = Push (rightIn f lenv env) bae
+rightIn (IntroL      f)         lenv     (Push env _        ) =       rightIn f (unsafeCoerce lenv) env
+rightIn (IntroR      f)         lenv     (Push env bae      ) = Push (rightIn f lenv env) bae
+
+inargs :: forall op env args args'
+        . (EvalOp op) 
+        => (forall f. PreArgs f args -> PreArgs f args')
+        -> BackendArgEnv op env (InArgs args)
+        -> BackendArgEnv op env (InArgs args')
+inargs f 
+  | Refl <- inargslemma @args
+  = toEnv . f . fromEnv
   where
-    evalOps :: forall args. Cluster op args -> BackendArgEnv op env (InArgs args) -> Args env args -> EvalMonad op (EmbedEnv op env (OutArgs args))
-    evalOps c ba args = case c of
-      Op (SLVOp (SOp (SOAOp op soas) (SA f g)) sa) -> slvOut () sa . outargs f (g $ slv' sa args) . soaOut splitFromArg' (soaShrink combine soas $ g $ slv' sa args) soas <$> evalOp ix undefined op env (soaIn pairInArg (g $ slv' sa args) soas $ inargs g $ slvIn () sa ba) 
-      Fused f l r -> do
-        lin <- leftIn f ba env
-        lout <- evalOps l lin (left f args)
-        let rin = rightIn f lout ba
-        rout <- evalOps r rin (right f args)
-        return $ totalOut f lout rout
-
-    splitFromArg' :: FromArg' op env (Value sh (l,r)) -> (FromArg' op env (Value sh l), FromArg' op env (Value sh r))
-    splitFromArg' (FromArg v) = bimap FromArg FromArg $ unpair' v
-
-    pairInArg :: Arg env (arg (l,r)) -> BackendArgEnvElem op env (InArg (arg l)) ->  BackendArgEnvElem op env (InArg (arg r)) ->  BackendArgEnvElem op env (InArg (arg (l,r)))
-    pairInArg (ArgArray In  _ _ _) l r = getCompose $ pair' (Compose l) (Compose r)
-    pairInArg (ArgArray Out _ _ _) l r = getCompose $ pair' (Compose l) (Compose r)
-    pairInArg _ _ _ = error "SOA'd non-array args"
-
-    readInputs :: forall args. Args env args -> BackendArgs op env args -> EvalMonad op (BackendArgEnv op env (InArgs args))
-    readInputs ArgsNil ArgsNil = pure Empty
-    readInputs (arg :>: args) (bca :>: bcas) = case arg of
-      ArgVar x -> flip Push (BAE x bca) <$> readInputs args bcas
-      ArgExp x -> flip Push (BAE x bca) <$> readInputs args bcas
-      ArgFun x -> flip Push (BAE x bca) <$> readInputs args bcas
-      ArgArray Mut (ArrayR shr r) sh buf -> flip Push (BAE (ArrayDescriptor shr sh buf, r) bca) <$> readInputs args bcas
-      ArgArray Out (ArrayR shr _) sh _   -> (\sh' -> flip Push (BAE (Shape' shr sh') (outToSh bca))) <$> indexsh @op sh env <*> readInputs args bcas
-      ArgArray In  (ArrayR shr r) sh buf -> case r of
-        TupRsingle t -> (\env v sh' -> Push env (BAE (Value' v (Shape' shr sh')) (inToValue bca))) <$> readInputs args bcas <*> readInput t sh buf env bca ix <*> indexsh @op sh env
-        TupRunit -> (\sh' -> flip Push (BAE (Value' (unit @op) (Shape' shr sh')) (inToValue bca))) <$> indexsh @op sh env <*> readInputs args bcas
-        TupRpair{} -> error "not SOA'd"
-
-    writeOutputs :: forall args. Args env args -> EmbedEnv op env (OutArgs args) -> EvalMonad op ()
-    writeOutputs ArgsNil Empty = pure ()
-    writeOutputs (ArgArray Out (ArrayR _ r) sh buf :>: args) (PushFA env' (Value' x _)) 
-      | TupRsingle t <- r = writeOutput @op t sh buf env ix x >> writeOutputs args env'
-      | otherwise = error "not soa'd"
-    writeOutputs (ArgVar _ :>: args) env = writeOutputs args env
-    writeOutputs (ArgExp _ :>: args) env = writeOutputs args env
-    writeOutputs (ArgFun _ :>: args) env = writeOutputs args env
-    writeOutputs (ArgArray In  _ _ _ :>: args) env = writeOutputs args env
-    writeOutputs (ArgArray Mut _ _ _ :>: args) env = writeOutputs args env
-
-    leftIn :: forall largs rargs args. Fusion largs rargs args -> BackendArgEnv op env (InArgs args) -> FEnv op env -> EvalMonad op (BackendArgEnv op env (InArgs largs))
-    leftIn EmptyF Empty _ = pure Empty
-    leftIn (Vertical ar f) (Push env (BAE x b)) env'= Push <$> leftIn f env env' <*> ((`BAE` varToSh b) . Shape' (evarToShR x) <$> indexsh' @op x env')
-    leftIn (Horizontal  f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
-    leftIn (Diagonal    f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
-    leftIn (IntroI1     f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
-    leftIn (IntroI2     f) (Push env _  ) env' =                  leftIn f env env'
-    leftIn (IntroO1     f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
-    leftIn (IntroO2     f) (Push env _  ) env' =                  leftIn f env env'
-    leftIn (IntroL      f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
-    leftIn (IntroR      f) (Push env _  ) env' =                  leftIn f env env'
-
-    rightIn :: forall largs rargs args
-             . Fusion largs rargs args
-            -> EmbedEnv op env (OutArgs largs)
-            -> BackendArgEnv op env  ( InArgs  args)
-            -> BackendArgEnv op env  ( InArgs rargs)
-    rightIn EmptyF Empty Empty = Empty
-    rightIn (Vertical ar f) (PushFA lenv fa) (Push env (BAE _ b)) = Push (rightIn f lenv env) (BAE fa $ varToValue b)
-    rightIn (Horizontal  f)         lenv     (Push env bae      ) = Push (rightIn f lenv env) bae
-    rightIn (Diagonal    f) (PushFA lenv fa) (Push env (BAE _ b)) = Push (rightIn f lenv env) (BAE fa $ shToValue b)
-    rightIn (IntroI1     f)         lenv     (Push env _        ) =       rightIn f lenv env
-    rightIn (IntroI2     f)         lenv     (Push env bae      ) = Push (rightIn f lenv env) bae
-    rightIn (IntroO1     f) (PushFA lenv _ ) (Push env _        ) =       rightIn f lenv env
-    rightIn (IntroO2     f)         lenv     (Push env bae      ) = Push (rightIn f lenv env) bae
-    rightIn (IntroL      f)         lenv     (Push env _        ) =       rightIn f (unsafeCoerce lenv) env
-    rightIn (IntroR      f)         lenv     (Push env bae      ) = Push (rightIn f lenv env) bae
-
-    inargs :: forall op env args args'
-            . (forall f. PreArgs f args -> PreArgs f args')
-           -> BackendArgEnv op env (InArgs args)
-           -> BackendArgEnv op env (InArgs args')
-    inargs f 
-      | Refl <- inargslemma @args
-      = toEnv . f . fromEnv
-      where
-        fromEnv :: forall args. BackendArgEnv op env args -> PreArgs (BAEEInArg op env) (InArgs' args)
-        fromEnv Empty = ArgsNil
-        fromEnv (Push env (x :: BackendArgEnvElem op env t)) 
-          | Refl <- inarglemma @t = BAEEInArg x :>: fromEnv env
-        toEnv :: forall args. PreArgs (BAEEInArg op env) args -> BackendArgEnv op env (InArgs args)
-        toEnv ArgsNil = Empty
-        toEnv (BAEEInArg x :>: args) = Push (toEnv args) x
+    fromEnv :: forall args. BackendArgEnv op env args -> PreArgs (BAEEInArg op env) (InArgs' args)
+    fromEnv Empty = ArgsNil
+    fromEnv (Push env (x :: BackendArgEnvElem op env t)) 
+      | Refl <- inarglemma @t = BAEEInArg x :>: fromEnv env
+    toEnv :: forall args. PreArgs (BAEEInArg op env) args -> BackendArgEnv op env (InArgs args)
+    toEnv ArgsNil = Empty
+    toEnv (BAEEInArg x :>: args) = Push (toEnv args) x
 
 
-    totalOut :: forall largs rargs args
-              . Fusion largs rargs args
-             -> EmbedEnv op env (OutArgs largs)
-             -> EmbedEnv op env (OutArgs rargs)
-             -> EmbedEnv op env (OutArgs args)
-    totalOut EmptyF Empty Empty = Empty
-    totalOut (Vertical ar f) (Push l _)      r    =       totalOut f l r
-    totalOut (Horizontal f)       l         r    =       totalOut f l r
-    totalOut (Diagonal   f) (Push l o)      r    = Push (totalOut f l r) o
-    totalOut (IntroI1    f)       l         r    =       totalOut f l r
-    totalOut (IntroI2    f)       l         r    =       totalOut f l r
-    totalOut (IntroO1    f) (Push l o)      r    = Push (totalOut f l r) o
-    totalOut (IntroO2    f)       l   (Push r o) = Push (totalOut f l r) o
-    totalOut (IntroL     f)       l         r    = unsafeCoerce $ totalOut f (unsafeCoerce l) r
-    totalOut (IntroR     f)       l         r    = unsafeCoerce $ totalOut f l (unsafeCoerce r)
+totalOut :: (EvalOp op) 
+         => Fusion largs rargs args
+         -> EmbedEnv op env (OutArgs largs)
+         -> EmbedEnv op env (OutArgs rargs)
+         -> EmbedEnv op env (OutArgs args)
+totalOut EmptyF Empty Empty = Empty
+totalOut (Vertical ar f) (Push l _)      r    =       totalOut f l r
+totalOut (Horizontal f)       l         r    =       totalOut f l r
+totalOut (Diagonal   f) (Push l o)      r    = Push (totalOut f l r) o
+totalOut (IntroI1    f)       l         r    =       totalOut f l r
+totalOut (IntroI2    f)       l         r    =       totalOut f l r
+totalOut (IntroO1    f) (Push l o)      r    = Push (totalOut f l r) o
+totalOut (IntroO2    f)       l   (Push r o) = Push (totalOut f l r) o
+totalOut (IntroL     f)       l         r    = unsafeCoerce $ totalOut f (unsafeCoerce l) r
+totalOut (IntroR     f)       l         r    = unsafeCoerce $ totalOut f l (unsafeCoerce r)
 
-    outargs :: forall op env args args'
-              . (forall f. PreArgs f args -> PreArgs f args')
-            -> Args env args
-            -> EmbedEnv op env (OutArgs args)
-            -> EmbedEnv op env (OutArgs args')
-    outargs f args 
-      | Refl <- inargslemma @args = toEnv . f . fromEnv args
-      where
-        -- coerces are safe, just me being lazy
-        fromEnv :: forall args. Args env args -> EmbedEnv op env (OutArgs args) -> PreArgs (FAOutArg op env) args
-        fromEnv ArgsNil Empty = ArgsNil
-        fromEnv (a :>: args) out = case a of
-          ArgArray Out _ _ _ -> case out of
-            Push out' x -> FAOutJust x :>: fromEnv args out'
-          _ -> FAOutNothing :>: fromEnv args (unsafeCoerce out)
-        toEnv :: forall args. PreArgs (FAOutArg op env) args -> EmbedEnv op env (OutArgs args)
-        toEnv ArgsNil = Empty
-        toEnv (FAOutJust x :>: args) = Push (toEnv args) x
-        toEnv (FAOutNothing :>: args) = unsafeCoerce $ toEnv args
+outargs :: forall args args' env op
+         . (EvalOp op) 
+        => (forall f. PreArgs f args -> PreArgs f args')
+        -> Args env args
+        -> EmbedEnv op env (OutArgs args)
+        -> EmbedEnv op env (OutArgs args')
+outargs f args 
+  | Refl <- inargslemma @args = toEnv . f . fromEnv args
+  where
+    -- coerces are safe, just me being lazy
+    fromEnv :: forall args. Args env args -> EmbedEnv op env (OutArgs args) -> PreArgs (FAOutArg op env) args
+    fromEnv ArgsNil Empty = ArgsNil
+    fromEnv (a :>: args) out = case a of
+      ArgArray Out _ _ _ -> case out of
+        Push out' x -> FAOutJust x :>: fromEnv args out'
+      _ -> FAOutNothing :>: fromEnv args (unsafeCoerce out)
+    toEnv :: forall args. PreArgs (FAOutArg op env) args -> EmbedEnv op env (OutArgs args)
+    toEnv ArgsNil = Empty
+    toEnv (FAOutJust x :>: args) = Push (toEnv args) x
+    toEnv (FAOutNothing :>: args) = unsafeCoerce $ toEnv args
 
 newtype BAEEInArg op env arg = BAEEInArg (BackendArgEnvElem op env (InArg arg))
 data FAOutArg (op :: Type -> Type) env arg where
