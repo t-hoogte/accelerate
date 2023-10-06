@@ -80,14 +80,14 @@ Data.Graph (containers) has a nice topological sort.
 -- Note that the return type `a` is not existentially qualified: The caller of this function tells
 -- us what the result type should be (namely, what it was before fusion). We use unsafe tricks to
 -- fulfill this contract: if something goes wrong during fusion or at the caller, bad things happen.
-reconstruct :: forall op a. MakesILP op => Bool -> Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> PreOpenAcc (Cluster op) () a
+reconstruct :: forall op a. MakesILP op => Bool -> Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> PreOpenAcc (Clustered op) () a
 reconstruct a b c d e = case openReconstruct a LabelEnvNil b c d e of
           -- see [NOTE unsafeCoerce result type]
           Exists res -> unsafeCoerce @(PartitionedAcc op () _)
                                      @(PartitionedAcc op () a)
                                      res
 
-reconstructF :: forall op a. MakesILP op => Bool -> Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> PreOpenAfun (Cluster op) () a
+reconstructF :: forall op a. MakesILP op => Bool -> Graph -> [ClusterLs] -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> PreOpenAfun (Clustered op) () a
 reconstructF a b c d e = case openReconstructF a LabelEnvNil b c (Label 1 Nothing) d e of
           -- see [NOTE unsafeCoerce result type]
           Exists res -> unsafeCoerce @(PartitionedAfun op () _)
@@ -152,7 +152,7 @@ openReconstruct   :: MakesILP op
                   -> [ClusterLs]
                   -> M.Map Label [ClusterLs]
                   -> M.Map Label (Construction op)
-                  -> Exists (PreOpenAcc (Cluster op) aenv)
+                  -> Exists (PreOpenAcc (Clustered op) aenv)
 openReconstruct  a b c d e f = (\(Left x) -> x) $ openReconstruct' a b c d Nothing e f
 openReconstructF  :: MakesILP op
                   => Bool
@@ -162,10 +162,10 @@ openReconstructF  :: MakesILP op
                   -> Label
                   -> M.Map Label [ClusterLs]
                   -> M.Map Label (Construction op)
-                  -> Exists (PreOpenAfun (Cluster op) aenv)
+                  -> Exists (PreOpenAfun (Clustered op) aenv)
 openReconstructF a b c d l e f= (\(Right x) -> x) $ openReconstruct' a b c d (Just l) e f
 
-openReconstruct' :: forall op aenv. MakesILP op => Bool -> LabelEnv aenv -> Graph -> [ClusterLs] -> Maybe Label -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> Either (Exists (PreOpenAcc (Cluster op) aenv)) (Exists (PreOpenAfun (Cluster op) aenv))
+openReconstruct' :: forall op aenv. MakesILP op => Bool -> LabelEnv aenv -> Graph -> [ClusterLs] -> Maybe Label -> M.Map Label [ClusterLs] -> M.Map Label (Construction op) -> Either (Exists (PreOpenAcc (Clustered op) aenv)) (Exists (PreOpenAfun (Clustered op) aenv))
 openReconstruct' singletons labelenv graph clusterslist mlab subclustersmap construct = case mlab of
   Just l  -> Right $ makeASTF labelenv l mempty
   Nothing -> Left $ makeAST labelenv clusters mempty
@@ -176,7 +176,7 @@ openReconstruct' singletons labelenv graph clusterslist mlab subclustersmap cons
     -- Those are stored in the 'prev' argument.
     -- Note also that we currently assume that the final cluster is the return argument: If all computations are relevant
     -- and our analysis is sound, the return argument should always appear last. If not.. oops
-    makeAST :: forall env. LabelEnv env -> [ClusterL] -> M.Map Label (Exists (PreOpenAcc (Cluster op) env)) -> Exists (PreOpenAcc (Cluster op) env)
+    makeAST :: forall env. LabelEnv env -> [ClusterL] -> M.Map Label (Exists (PreOpenAcc (Clustered op) env)) -> Exists (PreOpenAcc (Clustered op) env)
     makeAST _ [] _ = error "empty AST"
     makeAST env [cluster] prev = case makeCluster env cluster of
       Fold c args -> Exists $ Exec c $ unLabelOp args
@@ -191,22 +191,22 @@ openReconstruct' singletons labelenv graph clusterslist mlab subclustersmap cons
             (Exists tacc, Exists facc) -> Exists $ Acond
               (fromJust $ reindexVar (mkReindexPartial env' env) c)
               -- [See NOTE unsafeCoerce result type]
-              (unsafeCoerce @(PreOpenAcc (Cluster op) env _)
-                            @(PreOpenAcc (Cluster op) env _)
+              (unsafeCoerce @(PreOpenAcc (Clustered op) env _)
+                            @(PreOpenAcc (Clustered op) env _)
                             tacc)
-              (unsafeCoerce @(PreOpenAcc (Cluster op) env _)
-                            @(PreOpenAcc (Cluster op) env _)
+              (unsafeCoerce @(PreOpenAcc (Clustered op) env _)
+                            @(PreOpenAcc (Clustered op) env _)
                             facc)
          CWhl env' c b i u -> case (subcluster c, subcluster b) of
            (findTopOfF -> c', findTopOfF -> b') -> case (makeASTF env c' prev, makeASTF env b' prev) of
             (Exists cfun, Exists bfun) -> Exists $ Awhile
               u
               -- [See NOTE unsafeCoerce result type]
-              (unsafeCoerce @(PreOpenAfun (Cluster op) env _)
-                            @(PreOpenAfun (Cluster op) env (_ -> PrimBool))
+              (unsafeCoerce @(PreOpenAfun (Clustered op) env _)
+                            @(PreOpenAfun (Clustered op) env (_ -> PrimBool))
                             cfun)
-              (unsafeCoerce @(PreOpenAfun (Cluster op) env _)
-                            @(PreOpenAfun (Cluster op) env (_ -> _))
+              (unsafeCoerce @(PreOpenAfun (Clustered op) env _)
+                            @(PreOpenAfun (Clustered op) env (_ -> _))
                             bfun)
               (fromJust $ reindexVars (mkReindexPartial env' env) i)
          CLHS {} -> error "let without scope"
@@ -225,8 +225,8 @@ openReconstruct' singletons labelenv graph clusterslist mlab subclustersmap cons
           Exists bnd -> createLHS mylhs env $ \env' lhs ->
             case makeAST env' ctail (M.map (\(Exists acc) -> Exists $ weakenAcc lhs acc) prev) of
               Exists scp
-                | bnd' <- unsafeCoerce @(PreOpenAcc (Cluster op) env _) -- [See NOTE unsafeCoerce result type]
-                                       @(PreOpenAcc (Cluster op) env a)
+                | bnd' <- unsafeCoerce @(PreOpenAcc (Clustered op) env _) -- [See NOTE unsafeCoerce result type]
+                                       @(PreOpenAcc (Clustered op) env a)
                                        bnd
                   -> Exists $ Alet lhs
                       u -- (makeUniqueness lhs bnd') -- TODO @Ivo: `u` is the old uniquenesses of this lhs, do we just take that?
@@ -243,7 +243,7 @@ openReconstruct' singletons labelenv graph clusterslist mlab subclustersmap cons
                   _ -> error "nope"
                 NonExecL _ -> makeAST env ctail $ foldC (`M.insert` res) prev cluster
 
-    makeASTF :: forall env. LabelEnv env -> Label -> M.Map Label (Exists (PreOpenAcc (Cluster op) env)) -> Exists (PreOpenAfun (Cluster op) env)
+    makeASTF :: forall env. LabelEnv env -> Label -> M.Map Label (Exists (PreOpenAcc (Clustered op) env)) -> Exists (PreOpenAfun (Clustered op) env)
     makeASTF env l prev = case makeCluster env (NonExecL l) of
       NotFold CBod -> case makeAST env (subcluster l) prev of
         --  fromJust $ l' ^. parent) prev of 
@@ -301,18 +301,20 @@ weakenAcc lhs =  runIdentity . reindexAcc (weakenReindex $ weakenWithLHS lhs)
 -- | Internal datatype for `makeCluster`.
 
 data FoldType op env
-  = forall args. Fold (Cluster op args) (LabelledArgsOp op env args)
+  = forall args. Fold (Clustered op args) (LabelledArgsOp op env args)
   | forall args. InitFold (op args) Label (LabelledArgsOp op env args)
   | NotFold (Construction op)
 
 
 
-unfused :: forall op args env r. MakesILP op => op args -> Label -> LabelledArgsOp op env args -> (forall args'. Cluster op args' -> LabelledArgsOp op env args' -> r) -> r
-unfused op l largs k = singleton (unOpLabels largs) op $ 
-  \c@(Op (SLVOp (SOp (SOAOp (_op :: op argsToo) soas) (SA sort _unsort)) sa)) ->
+unfused :: forall op args env r. MakesILP op => op args -> Label -> LabelledArgsOp op env args -> (forall args'. Clustered op args' -> LabelledArgsOp op env args' -> r) -> r
+unfused op l largs k = singleton largs op $ 
+  \c@(Clustered (Op (SLVOp (SOp (SOAOp (_op :: op argsToo) soas) (SA sort _unsort)) sa)) b) ->
     case unsafeCoerce Refl of -- we know that `_op` is the same as `op`
-      (Refl :: args :~: argsToo) -> k c (slv sa $ sort $ soaExpand splitLabelledArgsOp soas largs)
+      (Refl :: args :~: argsToo) -> k c (slv louttovar sa $ sort $ soaExpand splitLabelledArgsOp soas largs)
 
+louttovar :: LabelledArgOp op env (Out sh e) -> LabelledArgOp op env (Var' sh)
+louttovar (LOp a (_,ls) b) = LOp (outvar a) (NotArr, ls) b -- unsafe marker: maybe this NotArr ends up a problem?
 
 
 {- [NOTE unsafeCoerce result type]
@@ -342,8 +344,8 @@ consCluster :: forall env args extra op r
             -> LabelledArgsOp op env extra
             -> op extra
             -> LabelledArgsOp op env args
-            -> Cluster op args
-            -> (forall args'. Cluster op args' -> LabelledArgsOp op env args' -> r)
+            -> Clustered op args
+            -> (forall args'. Clustered op args' -> LabelledArgsOp op env args' -> r)
             -> r
 consCluster l lop op lcluster cluster k = unfused op l lop $ \c lop' ->
   fuse (unOpLabels lop') (unOpLabels lcluster) lop' lcluster c cluster fuseVertically $ flip k
@@ -354,5 +356,5 @@ fuseVertically
   (LOp (ArgArray In _ _ _) (_, ls') _)
   = LOp (ArgVar $ groundToExpVar (shapeType shr) sh) (NotArr, ls<>ls') b
 
-instance NFData' op => NFData' (Cluster op) where
+instance NFData' op => NFData' (Clustered op) where
   rnf' c = () -- TODO

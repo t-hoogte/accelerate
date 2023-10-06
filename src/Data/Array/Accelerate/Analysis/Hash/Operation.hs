@@ -38,8 +38,9 @@ hashOperation op args
 class EncodeOperation op where
   encodeOperation :: op t -> Builder
 
-instance (MakesILP op, EncodeOperation op) => EncodeOperation (Cluster op) where
-  -- encodeOperation (Cluster backendCluster cluster') = encodePreArgs encodeBackendClusterArg backendCluster <> encodeCluster' cluster'
+instance (MakesILP op, EncodeOperation op) => EncodeOperation (Clustered op) where
+  encodeOperation (Clustered cluster backendCluster) = 
+    encodePreArgs encodeBackendClusterArg backendCluster <> encodeCluster cluster
 
 encodePreArgs :: (forall t. arg t -> Builder) -> PreArgs arg f -> Builder
 encodePreArgs f (a :>: as) = intHost $(hashQ ":>:") <> f a <> encodePreArgs f as
@@ -67,8 +68,8 @@ encodeModifier In  = intHost $(hashQ "In")
 encodeModifier Out = intHost $(hashQ "Out")
 encodeModifier Mut = intHost $(hashQ "Mut")
 
--- encodeCluster' :: EncodeOperation op => Cluster' op args -> Builder
--- encodeCluster' (Cluster' io ast) = encodeClusterIO io <> encodeClusterAST ast
+encodeCluster :: EncodeOperation op => Cluster op args -> Builder
+encodeCluster _ = intHost $(hashQ "todo") -- TODO
 
 -- encodeClusterIO :: ClusterIO args input output -> Builder
 -- encodeClusterIO Empty                 = intHost $(hashQ "Empty")

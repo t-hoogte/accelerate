@@ -73,6 +73,7 @@ import System.IO.Unsafe (unsafePerformIO)
 
 import Data.Array.Accelerate.Pretty.Operation
 import Data.Functor.Identity
+import Data.Array.Accelerate.AST.Partitioned (Clustered)
 
 instance IsSchedule UniformScheduleFun where
   type ScheduleInput  UniformScheduleFun a = Input a
@@ -930,7 +931,7 @@ data CompiledKernel kenv fenv kernel where
 compileKernel'
   :: forall fenv kernel args.
      IsKernel kernel
-  => Cluster (KernelOperation kernel) args
+  => Clustered (KernelOperation kernel) args
   -> Args fenv args
   -> CompiledKernel () fenv kernel
 compileKernel' cluster args =

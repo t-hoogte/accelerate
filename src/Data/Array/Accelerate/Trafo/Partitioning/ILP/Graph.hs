@@ -168,6 +168,10 @@ class (Eq (BackendVar op), Ord (BackendVar op), Eq (BackendArg op), Show (Backen
   type BackendArg op
   -- Information that the backend attaches to the cluster, for use in interpreting/code generation.
   data BackendClusterArg op arg
+  combineBackendClusterArg :: BackendClusterArg op (Out sh e) -> BackendClusterArg op (In sh e) -> BackendClusterArg op (Var' sh)
+  encodeBackendClusterArg :: BackendClusterArg op arg -> Builder
+
+
   -- | This function only needs to do the backend-specific things, that is, things which depend on the definition of @op@.
   -- That includes "BackendVar op's" and all their constraints/bounds, but also some (in)fusible edges.
   -- As a conveniece, fusible edges have already been made from all (non-Out) labels in the LabelArgs to the current label.
@@ -181,7 +185,6 @@ class (Eq (BackendVar op), Ord (BackendVar op), Eq (BackendArg op), Show (Backen
   -- allow the backend to add constraints/bounds for every node
   finalize :: [Label] -> Constraint op
 
-  encodeBackendClusterArg :: BackendClusterArg op arg -> Builder
 
 -- Control flow cannot be fused, so we make separate ILPs for e.g.
 -- then-branch and else-branch. In the future, a possible optimisation is to

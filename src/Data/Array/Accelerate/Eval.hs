@@ -47,6 +47,7 @@ import Unsafe.Coerce (unsafeCoerce)
 import Data.Array.Accelerate.Representation.Shape (ShapeR (..))
 import Data.Composition ((.*))
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (Label)
+import Data.Array.Accelerate.AST.Var (varsType)
 
 
 type BackendArgs op env = PreArgs (BackendClusterArg2 op env)
@@ -97,7 +98,7 @@ makeBackendArg args env c b = go args c (defaultOuts args b)
       backL = go (left  f args) l (backleft f backR outputs)
       in fuseBack f backL backR
     go args (Op (SLVOp (SOp (SOAOp op soa) (SA sort unsort)) sa)) outputs = 
-      slv sa . sort . soaExpand uncombineB soa $ onOp @op op (forgetIn (soaShrink combine soa $ unsort $ slv' sa args) $ soaShrink combineB soa $ unsort $ slv' sa $ inventIn args outputs) (soaShrink combine soa $ unsort $ slv' sa args) env
+      slv (shToVar . outToSh) sa . sort . soaExpand uncombineB soa $ onOp @op op (forgetIn (soaShrink combine soa $ unsort $ slv' varToOut sa args) $ soaShrink combineB soa $ unsort $ slv' (shToOut . varToSh) sa $ inventIn args outputs) (soaShrink combine soa $ unsort $ slv' varToOut sa args) env
 
     combineB   :: BackendClusterArg2 op env (f l) -> BackendClusterArg2 op env (f r) -> BackendClusterArg2 op env (f (l,r))
     combineB   = unsafeCoerce $ pairinfo   @op
@@ -180,6 +181,7 @@ class (StaticClusterAnalysis op, Monad (EvalMonad op), TupRmonoid (Embed' op))
   type family EnvF op :: Type -> Type
 
   unit :: Embed' op ()
+  embed :: EnvF op a -> Embed' op a
 
   -- TODO most of these functions should probably be unnecesary, but adding them is the easiest way to get things working right now
   indexsh :: GroundVars env sh -> FEnv op env -> EvalMonad op (Embed' op sh)
@@ -214,9 +216,9 @@ evalCluster c b args env ix = do
   output <- evalOps ix c input args env
   writeOutputs ix args output env
 
-evalOps :: (EvalOp op) => Index op -> Cluster op args -> BackendArgEnv op env (InArgs args) -> Args env args -> FEnv op env -> EvalMonad op (EmbedEnv op env (OutArgs args))
+evalOps :: forall op args env. (EvalOp op) => Index op -> Cluster op args -> BackendArgEnv op env (InArgs args) -> Args env args -> FEnv op env -> EvalMonad op (EmbedEnv op env (OutArgs args))
 evalOps ix c ba args env = case c of
-  Op (SLVOp (SOp (SOAOp op soas) (SA f g)) sa) -> slvOut () sa . outargs f (g $ slv' sa args) . soaOut splitFromArg' (soaShrink combine soas $ g $ slv' sa args) soas <$> evalOp ix undefined op env (soaIn pairInArg (g $ slv' sa args) soas $ inargs g $ slvIn () sa ba) 
+  Op (SLVOp (SOp (SOAOp op soas) (SA f g)) sa) -> slvOut args sa . outargs f (g $ slv' varToOut sa args) . soaOut splitFromArg' (soaShrink combine soas $ g $ slv' varToOut sa args) soas <$> evalOp ix undefined op env (soaIn pairInArg (g $ slv' varToOut sa args) soas $ inargs g $ slvIn (`bvartosh` env) sa ba) 
   Fused f l r -> do
     lin <- leftIn f ba env
     lout <- evalOps ix l lin (left f args) env
@@ -224,6 +226,8 @@ evalOps ix c ba args env = case c of
     rout <- evalOps ix r rin (right f args) env
     return $ totalOut f lout rout
 
+bvartosh :: forall op sh e env. EvalOp op => BackendArgEnvElem op env (Var' sh) -> FEnv op env -> BackendArgEnvElem op env (Sh sh e)
+bvartosh (BAE e b) env = BAE (Shape' (varsToShapeR e) (fromTupR (unit @op) $ mapTupR (embed @op) $ varsGet' e env)) (varToSh b)
 
 readInputs :: forall args env op. (EvalOp op) => Index op -> Args env args -> BackendArgs op env args -> FEnv op env -> EvalMonad op (BackendArgEnv op env (InArgs args))
 readInputs _ ArgsNil ArgsNil env = pure Empty
@@ -242,6 +246,7 @@ writeOutputs :: forall args env op. (EvalOp op) => Index op -> Args env args -> 
 writeOutputs ix ArgsNil Empty _ = pure ()
 writeOutputs ix (ArgArray Out (ArrayR _ r) sh buf :>: args) (PushFA env (Value' x _)) env'
   | TupRsingle t <- r = writeOutput @op t sh buf env' ix x >> writeOutputs ix args env env'
+  | TupRunit <- r = writeOutputs ix args env env'
   | otherwise = error "not soa'd"
 writeOutputs ix (ArgVar _           :>: args) env env' = writeOutputs ix args env env'
 writeOutputs ix (ArgExp _           :>: args) env env' = writeOutputs ix args env env'
@@ -251,7 +256,7 @@ writeOutputs ix (ArgArray Mut _ _ _ :>: args) env env' = writeOutputs ix args en
 
 leftIn :: forall largs rargs args op env. (EvalOp op) => Fusion largs rargs args -> BackendArgEnv op env (InArgs args) -> FEnv op env -> EvalMonad op (BackendArgEnv op env (InArgs largs))
 leftIn EmptyF Empty _ = pure Empty
-leftIn (Vertical ar f) (Push env (BAE x b)) env'= Push <$> leftIn f env env' <*> ((`BAE` varToSh b) . Shape' (evarToShR x) <$> indexsh' @op x env')
+leftIn (Vertical ar f) (Push env (BAE x b)) env'= Push <$> leftIn f env env' <*> ((`BAE` varToSh b) . Shape' (varsToShapeR x) <$> indexsh' @op x env')
 leftIn (Horizontal  f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
 leftIn (Diagonal    f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
 leftIn (IntroI1     f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'

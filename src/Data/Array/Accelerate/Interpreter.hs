@@ -120,7 +120,7 @@ map !?! key = case map M.!? key of
 
 
 -- Pushes backpermute information through the cluster and stores it in the arguments, for use at the start of the loop (indexing) and in generates.
--- makeBackpermuteArg :: Args env args -> Val env -> Cluster InterpretOp args -> BackendArgs InterpretOp env args
+-- makeBackpermuteArg :: Args env args -> Val env -> Clustered InterpretOp args -> BackendArgs InterpretOp env args
 -- makeBackpermuteArg = makeBackendArg
 
 instance Eq (BackendClusterArg2 InterpretOp env arg) where
@@ -291,7 +291,7 @@ instance SLVOperation InterpretOp where
   slvOperation _            = Nothing
 
 data InterpretKernel env where
-  InterpretKernel :: Cluster InterpretOp args -> Args env args -> InterpretKernel env
+  InterpretKernel :: Clustered InterpretOp args -> Args env args -> InterpretKernel env
 
 instance NFData' InterpretKernel where
   rnf' (InterpretKernel cluster args) = undefined cluster `seq` rnfArgs args
@@ -661,10 +661,10 @@ instance EvalOp InterpretOp where
 writeOutputInterpreter :: TypeR e -> Vars s env (Buffers e) -> Val env -> Int -> e -> IO ()
 writeOutputInterpreter r buf env n x = writeBuffers r (veryUnsafeUnfreezeBuffers r $ varsGetVal buf env) n x
 
-evalClusterInterpreter :: Cluster InterpretOp args -> Args env args -> Val env -> IO ()
-evalClusterInterpreter c args env = 
-  let b = makeBackendArg args env c undefined in
-  doNTimes (iterationsize c b) $ evalCluster c undefined args env
+evalClusterInterpreter :: Clustered InterpretOp args -> Args env args -> Val env -> IO ()
+evalClusterInterpreter (Clustered c b) args env = 
+  let b' = makeBackendArg args env c b in
+  doNTimes (iterationsize c b') $ evalCluster c b args env
 -- evalClusterInterpreter c@(Cluster _ (Cluster' io _)) args env = doNTimes (iterationsize io args env) $ evalCluster c args env
 
 
