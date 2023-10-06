@@ -1,4 +1,4 @@
-name: ci
+name: CI
 
 # Trigger the workflow on push or pull request
 on:
@@ -21,8 +21,8 @@ on:
     - cron: '0 0 * * 0'
 
 jobs:
-  build:
-    name: ${{ matrix.os }} ghc-${{ matrix.ghc }} ${{ matrix.mode }}
+  cabal:
+    name: cabal | ${{ matrix.os }}-${{ matrix.arch }} ghc-${{ matrix.ghc }} ${{ matrix.mode }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -47,10 +47,7 @@ jobs:
         exclude:
           - os: 'windows-latest'
             mode: 'debug'
-          - os: 'windows-latest'
-            arch: "ARM64"
-          - os: 'ubuntu-latest'
-            arch: "ARM64"
+          - arch: "ARM64"
 
     steps:
       - uses: actions/checkout@v3
@@ -103,10 +100,10 @@ jobs:
           path: |
             ${{ steps.setup-haskell.outputs.cabal-store }}
             dist-newstyle
-          key: ${{ runner.os }}-${{ matrix.ghc }}-${{ matrix.mode }}-${{ hashFiles('cabal.project.freeze') }}
+          key: ${{ runner.os }}-${{ matrix.arch }}-${{ matrix.ghc }}-${{ matrix.mode }}-cabal-${{ hashFiles('cabal.project.freeze') }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.ghc }}-${{ matrix.mode }}-${{ hashFiles('cabal.project.freeze') }}
-            ${{ runner.os }}-${{ matrix.ghc }}-${{ matrix.mode }}-
+            ${{ runner.os }}-${{ matrix.arch }}-${{ matrix.ghc }}-${{ matrix.mode }}-cabal-${{ hashFiles('cabal.project.freeze') }}
+            ${{ runner.os }}-${{ matrix.arch }}-${{ matrix.ghc }}-${{ matrix.mode }}-cabal-
 
       - name: Build dependencies
         run: cabal build --only-dependencies

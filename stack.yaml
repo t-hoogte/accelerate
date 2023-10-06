@@ -2,18 +2,17 @@
 # For advanced use and comprehensive documentation of the format, please see:
 # https://docs.haskellstack.org/en/stable/yaml_configuration/
 
-resolver: lts-21.12
-
-allow-newer: true
+resolver: lts-21.7
 
 packages:
 - .
 
 extra-deps:
-- MIP-0.1.1.0
 - OptDir-0.0.4
 - bytestring-encoding-0.1.2.0
 - fclabels-2.0.5.1
+- MIP-0.1.1.0
+
 
 # Override default flag values for local packages and extra-deps
 # flags: {}
@@ -40,3 +39,4 @@ extra-deps:
 # compiler-check: newer-minor
 #
 # vim: nospell
+

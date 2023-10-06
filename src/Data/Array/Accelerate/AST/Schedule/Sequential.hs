@@ -33,6 +33,7 @@ import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
+import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.AST.Operation                          hiding (PreOpenAcc(..), PreOpenAfun(..))
 import qualified Data.Array.Accelerate.AST.Operation as Operation
@@ -41,7 +42,7 @@ import qualified Data.Array.Accelerate.AST.Partitioned as Partition
 import Data.Array.Accelerate.AST.Kernel
 import Data.Array.Accelerate.AST.Schedule
 import Data.Array.Accelerate.AST.Schedule.Uniform ( SArg(..), SArgs )
-import Data.Array.Accelerate.Trafo.Schedule.Uniform ( compileKernel', CompiledKernel(..), rnfSArgs )
+import Data.Array.Accelerate.Trafo.Schedule.Uniform ( compileKernel', CompiledKernel(..), rnfSArg, rnfSArgs )
 import Data.Array.Accelerate.AST.Execute
 import Control.Concurrent.MVar
 import Data.Typeable                                                ( (:~:)(..) )

@@ -48,22 +48,7 @@ import Unsafe.Coerce                                                ( unsafeCoer
 data Idx env t where
   ZeroIdx ::              Idx (env, t) t
   SuccIdx :: Idx env t -> Idx (env, s) t
-
-instance Eq (Idx env t) where
-  ZeroIdx    == ZeroIdx     = True
-  SuccIdx ix == SuccIdx ix' = ix == ix'
-  _          == _           = False
-
-instance Ord (Idx env t) where
-  ZeroIdx    < SuccIdx _   = True
-  SuccIdx ix < SuccIdx ix' = ix < ix'
-  _          < _           = False
-
-  ZeroIdx    <= _           = True
-  SuccIdx ix <= SuccIdx ix' = ix <= ix'
-  _          <= _           = False
-
-
+  deriving (Eq, Ord)
 
 idxToInt :: Idx env t -> Int
 idxToInt ZeroIdx       = 0
