@@ -28,7 +28,7 @@ module Data.Array.Accelerate.AST.Environment (
   partialUpdate, partialRemove, partialEnvToList, partialEnvSingleton, partialEnvPush,
   partialEnvSameKeys, partialEnvSub, partialEnvSkipLHS,
 
-  Skip(..), skipIdx, chainSkip, skipWeakenIdx,
+  Skip(..), skipIdx, chainSkip, skipWeakenIdx, lhsSkip,
 
   prjUpdate', prjReplace', update', updates', mapEnv,
   (:>)(..), weakenId, weakenSucc, weakenSucc', weakenEmpty,
@@ -235,7 +235,7 @@ data Skip env env' where
   SkipNone :: Skip env env
 
 skipIdx :: Skip env env' -> Idx env t -> Maybe (Idx env' t)
-skipIdx SkipNone     idx           = Just idx
+skipIdx SkipNone     idx = Just idx
 skipIdx (SkipSucc s) idx = case skipIdx s idx of
   Just (SuccIdx idx') -> Just idx'
   _                   -> Nothing
@@ -247,6 +247,14 @@ chainSkip skipL SkipNone         = skipL
 skipWeakenIdx :: Skip env env' -> env' :> env
 skipWeakenIdx (SkipSucc s) = weakenSucc $ skipWeakenIdx s
 skipWeakenIdx SkipNone     = weakenId
+
+lhsSkip :: forall s t env1 env2. LeftHandSide s t env1 env2 -> Skip env2 env1
+lhsSkip = (`go` SkipNone)
+  where
+    go :: LeftHandSide s t' env env' -> Skip env2 env' -> Skip env2 env
+    go (LeftHandSideSingle _)   accum = SkipSucc accum
+    go (LeftHandSideWildcard _) accum = accum
+    go (LeftHandSidePair l1 l2) accum = go l1 $ go l2 accum
 
 prjUpdate' :: (f t -> (f t, a)) -> Idx env t -> Env f env -> (Env f env, a)
 prjUpdate' f ZeroIdx       (Push env v) = (Push env v', a)

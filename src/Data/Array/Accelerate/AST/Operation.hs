@@ -27,7 +27,7 @@
 module Data.Array.Accelerate.AST.Operation (
   PreOpenAcc(..), PreOpenAfun(..),
   OperationAcc, OperationAfun,
-  Uniqueness(..), Uniquenesses, shared, unique,
+  Uniqueness(..), Uniquenesses, shared, unique, pairUniqueness,
 
   GroundR(..), GroundsR, GroundVar, GroundVars, GLeftHandSide, Var(..), Vars,
   HasGroundsR(..), groundToExpVar,
@@ -214,6 +214,10 @@ unique = mapTupR f
     f :: GroundR s -> Uniqueness s
     f (GroundRbuffer _) = Unique
     f _                 = Shared
+
+pairUniqueness :: Uniquenesses (s, t) -> (Uniquenesses s, Uniquenesses t)
+pairUniqueness (TupRpair u1 u2)    = (u1, u2)
+pairUniqueness (TupRsingle Shared) = (TupRsingle Shared, TupRsingle Shared)
 
 rnfUniqueness :: Uniqueness t -> ()
 rnfUniqueness Unique = ()

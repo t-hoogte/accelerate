@@ -39,7 +39,7 @@ module Data.Array.Accelerate.Trafo.Exp.Substitution (
 
   -- ** Rebuilding terms
   RebuildableExp(..), rebuildLHS,
-  lhsFullVars, lhsVars, lhsIndices,
+  lhsFullVars, lhsVars, lhsIndices, lhsTake,
 
   RebuildArrayInstr, rebuildArrayInstrOpenExp, rebuildArrayInstrFun,
   rebuildArrayInstrMap,
@@ -104,6 +104,19 @@ lhsIndices = go IdxSet.empty
     go set (LeftHandSideSingle _) = IdxSet.push set
     go set (LeftHandSideWildcard _) = set
     go set (LeftHandSidePair l1 l2) = go (go set l1) l2
+
+lhsTake :: LeftHandSide s t env1 env2 -> IdxSet env2 -> TupR u t -> [Exists u]
+lhsTake = \lhs set values -> fst $ go [] lhs set values
+  where
+    go :: [Exists u] -> LeftHandSide s t env1 env2 -> IdxSet env2 -> TupR u t -> ([Exists u], IdxSet env1)
+    go accum (LeftHandSideSingle _) set (TupRsingle value)
+      | ZeroIdx `IdxSet.member` set = (Exists value : accum, IdxSet.drop set)
+      | otherwise = (accum, IdxSet.drop set)
+    go accum (LeftHandSidePair lhs1 lhs2) set (TupRpair values1 values2)
+      | (accum', set') <- go accum lhs2 set values2
+      = go accum' lhs1 set' values1
+    go accum (LeftHandSideWildcard _) set _ = (accum, set)
+    go _ _ _ _ = internalError "Tuple mismatch"
 
 bindingIsTrivial :: LeftHandSide s a env1 env2 -> Vars s env2 b -> Maybe (a :~: b)
 bindingIsTrivial lhs vars

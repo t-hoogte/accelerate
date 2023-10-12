@@ -26,7 +26,7 @@ module Data.Array.Accelerate.Trafo.SkipEnvironment
     skipStrengthenPartialEnv, skipStrengthenPartialEnv',
     skipStrengthenIdxSet, skipStrengthenIdxSet',
     skipTakePartialEnv', skipTakeIdxSet',
-    lhsSkip', skipReverse
+    lhsSkip', skipReverse, skipWeakenIdx'
   ) where
 
 import Data.Array.Accelerate.AST.Environment
@@ -55,6 +55,10 @@ skipReverse = (`go` SkipNone')
     go :: Skip env1 env -> Skip' env env2 -> Skip' env1 env2
     go (SkipSucc s) accum = go s (SkipSucc' accum)
     go SkipNone     accum = accum
+
+skipWeakenIdx' :: Skip' env env' -> env' :> env
+skipWeakenIdx' (SkipSucc' s) = weakenSucc' $ skipWeakenIdx' s
+skipWeakenIdx' SkipNone'     = weakenId
 
 type SEnv f env = SEnv' f env env
 

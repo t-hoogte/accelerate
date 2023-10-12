@@ -52,16 +52,6 @@ encodeArg (ArgVar var) = intHost $(hashQ "Var") <> encodeTupR encodeExpVar var
 encodeArg (ArgExp exp) = intHost $(hashQ "Exp") <> encodeOpenExp exp
 encodeArg (ArgFun fun) = intHost $(hashQ "Fun") <> encodeOpenFun fun
 
-encodeGroundVars :: GroundVars env t -> Builder
-encodeGroundVars = encodeTupR encodeGroundVar
-
-encodeGroundVar :: GroundVar env t -> Builder
-encodeGroundVar (Var tp ix) = encodeGroundR tp <> encodeIdx ix
-
-encodeGroundR :: GroundR t -> Builder
-encodeGroundR (GroundRscalar tp) = intHost $(hashQ "Scalar") <> encodeScalarType tp
-encodeGroundR (GroundRbuffer tp) = intHost $(hashQ "Buffer") <> encodeScalarType tp
-
 encodeModifier :: Modifier m -> Builder
 encodeModifier In  = intHost $(hashQ "In")
 encodeModifier Out = intHost $(hashQ "Out")
