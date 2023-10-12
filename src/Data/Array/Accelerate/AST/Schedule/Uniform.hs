@@ -19,7 +19,7 @@
 
 module Data.Array.Accelerate.AST.Schedule.Uniform (
   UniformSchedule(..), UniformScheduleFun(..),
-  SArg(..), SArgs,
+  SArg(..), SArgs, sargVars, sargOutputVars, sargBufferVars,
   Input, Output, inputSingle, outputSingle, inputR, outputR, InputOutputR(..),
   Binding(..), Effect(..),
   BaseR(..), BasesR, BaseVar, BaseVars, BLeftHandSide,
@@ -29,7 +29,7 @@ module Data.Array.Accelerate.AST.Schedule.Uniform (
   await, resolve,
   signalResolverImpossible, scalarSignalResolverImpossible,
   rnfBaseR,
-  directlyAwaits, reorder, trivialBinding, trivialSchedule, trivialEffect,
+  directlyAwaits1, reorder, trivialBinding, trivialSchedule, trivialEffect,
 
   -- ** Free variables
   freeVars, funFreeVars, effectFreeVars, bindingFreeVars,
@@ -45,8 +45,8 @@ import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
-import Data.Array.Accelerate.AST.Operation   as Operation           hiding (PreOpenAcc(..), PreOpenAfun(..))
-import Data.Array.Accelerate.AST.Partitioned as Partitioned         hiding (PartitionedAcc, PartitionedAfun)
+import qualified Data.Array.Accelerate.AST.Operation as Operation hiding (PreOpenAcc(..), PreOpenAfun(..))
+import Data.Array.Accelerate.AST.Partitioned as Partitioned       hiding (PreOpenAcc(..), PreOpenAfun(..), PartitionedAcc, PartitionedAfun)
 import Data.Array.Accelerate.AST.Kernel
 import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Control.Concurrent.MVar
@@ -315,6 +315,24 @@ sargVars :: SArgs env t -> [Exists (Idx env)]
 sargVars (a :>: as) = sargVar a : sargVars as
 sargVars ArgsNil    = []
 
+sargOutputVar :: SArg env t -> Maybe (Exists (Idx env))
+sargOutputVar (SArgScalar    v) = Nothing
+sargOutputVar (SArgBuffer In v) = Nothing
+sargOutputVar (SArgBuffer _  v) = Just $ Exists $ varIdx v
+
+sargOutputVars :: SArgs env t -> [Exists (Idx env)]
+sargOutputVars (a :>: as) = maybe id (:) (sargOutputVar a) $ sargOutputVars as
+sargOutputVars ArgsNil    = []
+
+sargBufferVar :: SArg env t -> Maybe (Exists (Idx env))
+sargBufferVar (SArgScalar    v) = Nothing
+sargBufferVar (SArgBuffer In v) = Nothing
+sargBufferVar (SArgBuffer _  v) = Just $ Exists $ varIdx v
+
+sargBufferVars :: SArgs env t -> [Exists (Idx env)]
+sargBufferVars (a :>: as) = maybe id (:) (sargOutputVar a) $ sargBufferVars as
+sargBufferVars ArgsNil    = []
+
 signalResolverImpossible :: GroundsR SignalResolver -> a
 signalResolverImpossible (TupRsingle (GroundRscalar tp)) = scalarSignalResolverImpossible tp
 
@@ -332,9 +350,9 @@ rnfBaseR (BaseRrefWrite ground) = rnfGroundR ground
 -- Returns a list of signals on which the schedule waits before doing any
 -- work. Assumes that the schedule starts with SignalAwait; the schedule
 -- can be reordered to assure this by using 'reorder'.
-directlyAwaits :: UniformSchedule kernel env -> ([Idx env Signal], UniformSchedule kernel env)
-directlyAwaits (Effect (SignalAwait signals) next) = (signals, next)
-directlyAwaits schedule = ([], schedule)
+directlyAwaits1 :: UniformSchedule kernel env -> ([Idx env Signal], UniformSchedule kernel env)
+directlyAwaits1 (Effect (SignalAwait signals) next) = (signals, next)
+directlyAwaits1 schedule = ([], schedule)
 
 -- Reorders a schedule.
 -- Moves SignalAwait to the front of the schedule if possible.

@@ -460,7 +460,9 @@ library
         Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve
         Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
         Data.Array.Accelerate.Trafo.Partitioning.Stream
+        Data.Array.Accelerate.Trafo.Schedule.Partial
         Data.Array.Accelerate.Trafo.Schedule.Uniform
+        Data.Array.Accelerate.Trafo.Schedule.Uniform.Future
         Data.Array.Accelerate.Trafo.Schedule.Uniform.LiveVars
         Data.Array.Accelerate.Trafo.Schedule.Uniform.Simplify
         Data.Array.Accelerate.Trafo.Schedule.Uniform.Substitution

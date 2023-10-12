@@ -35,9 +35,8 @@ import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.AST.LeftHandSide
-import Data.Array.Accelerate.AST.Operation                          hiding (PreOpenAcc(..), PreOpenAfun(..))
 import qualified Data.Array.Accelerate.AST.Operation as Operation
-import Data.Array.Accelerate.AST.Partitioned                        hiding (PartitionedAcc, PartitionedAfun)
+import Data.Array.Accelerate.AST.Partitioned                        hiding (PreOpenAcc(..), PreOperationAfun(..), PartitionedAcc, PartitionedAfun)
 import qualified Data.Array.Accelerate.AST.Partitioned as Partition
 import Data.Array.Accelerate.AST.Kernel
 import Data.Array.Accelerate.AST.Schedule

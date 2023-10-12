@@ -28,6 +28,7 @@
 -- Portability : non-portable (GHC extensions)
 --
 module Data.Array.Accelerate.AST.Partitioned (
+  module Data.Array.Accelerate.AST.Operation,
   module Data.Array.Accelerate.AST.Partitioned,
   GroundR(..), GroundsR, GroundVar, GroundVars, NFData'(..), Arg(..),
   AccessGroundR(..),
@@ -35,7 +36,8 @@ module Data.Array.Accelerate.AST.Partitioned (
   Exp', Var', Fun', In, Out, Mut
 ) where
 
-import Data.Array.Accelerate.AST.Operation
+import Data.Array.Accelerate.AST.Idx
+import Data.Array.Accelerate.AST.Operation hiding (OperationAcc, OperationAfun)
 
 import Prelude hiding ( take )
 import Data.Bifunctor

@@ -31,8 +31,14 @@ module Data.Array.Accelerate.Trafo.Schedule.Uniform.Simplify (
 
   -- Utilities
   forkUnless, fork, forks, serial,
-) where
 
+  -- Construction DSL
+  BuildSchedule, BuildScheduleFun, funConstruct,
+  buildAcond, buildAwhile, buildEffect, buildFork, buildSpawn,
+  buildLet, buildReturn, buildSeq,
+  buildFunBody, buildFunLam,
+) where
+import Debug.Trace
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.IdxSet (IdxSet)
@@ -481,7 +487,7 @@ collectForks = (`go` [])
     go u = (u :)
 
 forksGroupCommonAwait :: forall kernel env env'. env' :?> env -> InfoEnv env -> [UniformSchedule kernel env'] -> UniformSchedule kernel env'
-forksGroupCommonAwait k env = serializeDependentForks k env . go . map (\b -> let (signals, b') = directlyAwaits b in (IdxSet.fromList' signals, b'))
+forksGroupCommonAwait k env = serializeDependentForks k env . go . map (\b -> let (signals, b') = directlyAwaits1 b in (IdxSet.fromList' signals, b'))
   where
     go :: [(IdxSet env', UniformSchedule kernel env')] -> [UniformSchedule kernel env']
     go [] = []
@@ -507,7 +513,7 @@ forksGroupCommonAwait k env = serializeDependentForks k env . go . map (\b -> le
         awaitedByAllList :: [Idx env' Signal]
         awaitedByAllList = case branches of
           [] -> []
-          ((_, b) : _) -> filter (`IdxSet.member` awaitedByAll) $ fst $ directlyAwaits b
+          ((_, b) : _) -> filter (`IdxSet.member` awaitedByAll) $ fst $ directlyAwaits1 b
 
         -- Remove the signals which occur in every branch
         branches' :: [(IdxSet env', UniformSchedule kernel env')]
@@ -595,7 +601,7 @@ serializeDependentForks k env branches = go branches []
         directlyFollows :: UniformSchedule kernel env' -> Bool
         directlyFollows other = signals `isSubsequenceOf` sort (mapMaybe k otherSignals)
           where
-            otherSignals = fst $ directlyAwaits other
+            otherSignals = fst $ directlyAwaits1 other
 
 -- Utilities
 
@@ -615,10 +621,10 @@ forkUnless s1     s2     awaits
   | otherwise
     = await intersection $ Fork (await signals1'' s1') (await signals2'' s2')
   where
-    (signals1, s1') = directlyAwaits $ reorder s1
+    (signals1, s1') = directlyAwaits1 $ reorder s1
     signals1' = nub signals1
     signals1'' = signals1' \\ intersection
-    (signals2, s2') = directlyAwaits $ reorder s2
+    (signals2, s2') = directlyAwaits1 $ reorder s2
     signals2' = nub signals2
     signals2'' = signals2' \\ intersection
     intersection = signals1' `List.intersect` signals2'
@@ -668,3 +674,251 @@ bindExp lhs bnd next =
                     $ bindExp l2 (weakenArrayInstr (weakenWithLHS l1) e2) next
         _          -> Alet lhs (Compute bnd) next
 
+-- TODO: Move fork combining and/or InfoEnv into this utility?
+data BuildSchedule kernel env =
+  BuildSchedule{
+    -- Sorted, without duplicates
+    directlyAwaits :: [Idx env Signal],
+    trivial :: Bool,
+    -- Constructs a schedule, but doesn't wait on the directlyAwaits signals.
+    -- construct' adds that.
+    construct
+      :: forall env'.
+         env :> env'
+      -> Continuation kernel env'
+      -> UniformSchedule kernel env'
+  }
+
+instance Sink' (BuildSchedule kernel) where
+  weaken' k schedule =
+    BuildSchedule{
+      directlyAwaits = sort $ map (weaken k) $ directlyAwaits schedule,
+      trivial = trivial schedule,
+      construct = \k' -> construct schedule (k' .> k)
+    }
+
+newtype BuildScheduleFun kernel env t =
+  BuildScheduleFun{
+    funConstruct
+      :: forall env'.
+         env :> env'
+      -> UniformScheduleFun kernel env' t
+  }
+
+-- Constructs a schedule, and waits on the directlyAwaits signals.
+construct'
+  :: BuildSchedule kernel env
+  -> env :> env'
+  -> Continuation kernel env'
+  -> UniformSchedule kernel env'
+construct' schedule k cont
+  | null $ directlyAwaits schedule = term
+  | otherwise =
+    Effect (SignalAwait $ map (weaken k) $ directlyAwaits schedule) term
+  where
+    term = construct schedule k cont
+
+data Continuation kernel env where
+  ContinuationEnd
+    :: Continuation kernel env
+
+  ContinuationDo
+    :: env1 :> env
+    -> BuildSchedule kernel env1
+    -> env2 :> env
+    -> Continuation kernel env2
+    -> Continuation kernel env
+
+instance Sink' (Continuation kernel) where
+  weaken' _ ContinuationEnd = ContinuationEnd
+  weaken' k1 (ContinuationDo k2 b k3 c) = ContinuationDo (k1 .> k2) b (k1 .> k3) c
+
+buildReturn :: BuildSchedule kernel env
+buildReturn = BuildSchedule{
+    directlyAwaits = [],
+    trivial = True,
+    construct = \_ -> \case
+      ContinuationEnd -> Return
+      ContinuationDo k2 build k3 cont -> construct' build k2 $ weaken' k3 cont
+  }
+
+buildLet
+  :: forall kernel t env1 env2.
+     BLeftHandSide t env1 env2
+  -> Binding env1 t
+  -> BuildSchedule kernel env2
+  -> BuildSchedule kernel env1
+buildLet lhs binding body
+  | trivialBinding binding || null (directlyAwaits body) =
+    BuildSchedule{
+      directlyAwaits = map (fromMaybe (internalError "Illegal schedule: deadlock") . strengthenWithLHS lhs) $ directlyAwaits body,
+      trivial = trivialBinding binding && trivial body,
+      construct = constructLet False
+    }
+  | otherwise =
+    BuildSchedule{
+      directlyAwaits = [],
+      trivial = False,
+      construct = constructLet True
+    }
+  where
+    constructLet
+      :: Bool
+      -> env1 :> env1'
+      -> Continuation kernel env1'
+      -> UniformSchedule kernel env1'
+    constructLet shouldAwait k cont
+      | Exists lhs' <- rebuildLHS lhs
+      , k' <- sinkWithLHS lhs lhs' k =
+        Alet lhs' (weaken k binding)
+          $ (if shouldAwait then Effect $ SignalAwait $ map (weaken k') $ directlyAwaits body else id)
+          $ construct body k'
+          $ weaken' (weakenWithLHS lhs') cont
+
+buildEffect
+  :: Effect kernel env
+  -> BuildSchedule kernel env
+  -> BuildSchedule kernel env
+buildEffect (SignalResolve []) next = next
+buildEffect (SignalAwait signals) next =
+  BuildSchedule{
+    directlyAwaits = sort signals `mergeDedup` directlyAwaits next,
+    trivial = trivial next,
+    construct = construct next
+  }
+buildEffect effect next
+  | canPostpone || null (directlyAwaits next) =
+    BuildSchedule{
+      directlyAwaits = directlyAwaits next,
+      trivial = trivialEffect effect && trivial next,
+      construct = \k cont ->
+        Effect (weaken' k effect)
+          $ construct next k cont
+    }
+  | otherwise =
+    BuildSchedule{
+      directlyAwaits = [],
+      trivial = False,
+      construct = \k cont ->
+        Effect (weaken' k effect)
+          $ Effect (SignalAwait $ map (weaken k) $ directlyAwaits next)
+          $ construct next k cont
+    }
+  where
+    -- Write may be postponed: a write doesn't do synchronisation,
+    -- that is done by a signal(resolver).
+    canPostpone
+      | RefWrite{} <- effect = True
+      | otherwise = False
+
+buildSeq :: BuildSchedule kernel env -> BuildSchedule kernel env -> BuildSchedule kernel env
+buildSeq a b =
+  BuildSchedule {
+    directlyAwaits = directlyAwaits a,
+    trivial = trivial a && trivial b && directlyAwaits b `isSubsequenceOf` directlyAwaits a,
+    construct = \k cont ->
+      construct a k $ ContinuationDo k b weakenId cont
+  }
+
+buildFork :: BuildSchedule kernel env -> BuildSchedule kernel env -> BuildSchedule kernel env
+buildFork a b
+  | trivial a && directlyAwaits a `isSubsequenceOf` directlyAwaits b =
+    buildSeq a b
+  | trivial b && directlyAwaits b `isSubsequenceOf` directlyAwaits a =
+    buildSeq b a
+  | otherwise =
+    BuildSchedule{
+      directlyAwaits = directlyAwaits a `sortedIntersection` directlyAwaits b,
+      trivial = False,
+      construct = \k cont ->
+        Fork
+          (construct' a{directlyAwaits = directlyAwaits a `sortedMinus` directlyAwaits b} k cont)
+          (construct' b{directlyAwaits = directlyAwaits b `sortedMinus` directlyAwaits a} k ContinuationEnd)
+    }
+
+buildSpawn :: BuildSchedule kernel env -> BuildSchedule kernel env -> BuildSchedule kernel env
+buildSpawn = flip buildFork
+
+buildAcond
+  :: ExpVar env PrimBool
+  -> BuildSchedule kernel env -- True branch
+  -> BuildSchedule kernel env -- False branch
+  -> BuildSchedule kernel env -- Operations after the if-then-else
+  -> BuildSchedule kernel env
+buildAcond var true false next =
+  BuildSchedule{
+    directlyAwaits = directlyAwaits true `sortedIntersection` directlyAwaits false,
+    trivial = False,
+    construct = \k cont -> Acond
+      (weaken k var)
+      (construct'  true{directlyAwaits = directlyAwaits true `sortedMinus` directlyAwaits false} k ContinuationEnd)
+      (construct' false{directlyAwaits = directlyAwaits false `sortedMinus` directlyAwaits true} k ContinuationEnd)
+      (construct' next k cont)
+  }
+
+buildAwhile
+  :: InputOutputR input output
+  -> BuildScheduleFun kernel env (input -> Output PrimBool -> output -> ())
+  -> BaseVars env input
+  -> BuildSchedule kernel env -- Operations after the while loop
+  -> BuildSchedule kernel env
+buildAwhile io step initial next =
+  BuildSchedule{
+    directlyAwaits = [], -- TODO: Compute this based on the use of the initial state and free variables of step.
+    trivial = False,
+    construct = \k cont -> Awhile
+      io
+      (funConstruct step k)
+      (mapTupR (weaken k) initial)
+      (construct' next k cont)
+  }
+
+buildFunLam
+  :: BLeftHandSide t env1 env2
+  -> BuildScheduleFun kernel env2 f
+  -> BuildScheduleFun kernel env1 (t -> f)
+buildFunLam lhs body =
+  BuildScheduleFun{
+    funConstruct = \k -> case rebuildLHS lhs of
+      Exists lhs' -> Slam lhs' $ funConstruct body (sinkWithLHS lhs lhs' k)
+  }
+
+buildFunBody :: BuildSchedule kernel env -> BuildScheduleFun kernel env ()
+buildFunBody body =
+  BuildScheduleFun{
+    funConstruct = \k -> Sbody $ construct' body k ContinuationEnd
+  }
+
+-- Assumes that the input arrays are sorted,
+-- with no duplicates.
+-- Creates a sorted list containing all elements of the two input list.
+-- If an element is present in both input lists, it will be added only
+-- once to the output.
+mergeDedup :: Ord a => [a] -> [a] -> [a]
+mergeDedup as@(a:as') bs@(b:bs')
+  | a == b    = a : mergeDedup as' bs'
+  | a <  b    = a : mergeDedup as' bs
+  | otherwise = b : mergeDedup as  bs'
+mergeDedup as [] = as
+mergeDedup [] bs = bs
+
+-- Constructs the intersection of two lists,
+-- assuming they are sorted and have no duplicates.
+sortedIntersection :: Ord a => [a] -> [a] -> [a]
+sortedIntersection as@(a:as') bs@(b:bs')
+  | a == b    = a : sortedIntersection as' bs'
+  | a <  b    = sortedIntersection as' bs
+  | otherwise = sortedIntersection as  bs'
+sortedIntersection _ _ = []
+
+-- Constructs the difference of two lists,
+-- assuming they are sorted and have no duplicates.
+-- It returns all elements present in the first list,
+-- but not in the second
+sortedMinus :: Ord a => [a] -> [a] -> [a]
+sortedMinus as@(a:as') bs@(b:bs')
+  | a == b    = sortedIntersection as' bs'
+  | a <  b    = a : sortedIntersection as' bs
+  | otherwise = sortedIntersection as  bs'
+sortedMinus as [] = as
+sortedMinus [] _  = []

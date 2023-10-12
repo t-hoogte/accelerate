@@ -18,8 +18,9 @@
 
 module Data.Array.Accelerate.AST.IdxSet (
   IdxSet(..),
-  member, varMember, overlaps, intersect, union, unions, (\\), (>>=), insert, insertVar, skip, skip',
-  push, empty, isEmpty, drop, drop', remove, partialEnvRemoveSet,
+  member, varMember, overlaps, isSubsetOf, intersect, union, unions, (\\), (>>=),
+  insert, insertVar, skip, skip',
+  push, push', empty, isEmpty, drop, drop', remove, partialEnvRemoveSet,
   fromList, fromList', fromVarList, fromVars, map,
   singleton, singletonVar, first, null,
   toList
@@ -29,7 +30,7 @@ import Prelude hiding (drop, (>>=), map, null)
 
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Var
-import Data.Array.Accelerate.AST.Environment hiding ( push )
+import Data.Array.Accelerate.AST.Environment hiding ( push, push' )
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Maybe
 
@@ -49,6 +50,14 @@ overlaps (IdxSet (PPush a _)) (IdxSet (PNone b  )) = overlaps (IdxSet a) (IdxSet
 overlaps (IdxSet (PNone a  )) (IdxSet (PPush b _)) = overlaps (IdxSet a) (IdxSet b)
 overlaps (IdxSet (PNone a  )) (IdxSet (PNone b  )) = overlaps (IdxSet a) (IdxSet b)
 overlaps _ _ = False
+
+isSubsetOf :: IdxSet env -> IdxSet env -> Bool
+isSubsetOf (IdxSet (PPush a _)) (IdxSet (PPush b _)) = isSubsetOf (IdxSet a) (IdxSet b)
+isSubsetOf (IdxSet (PNone a  )) (IdxSet (PPush b _)) = isSubsetOf (IdxSet a) (IdxSet b)
+isSubsetOf (IdxSet (PPush _ _)) (IdxSet (PNone _  )) = False
+isSubsetOf (IdxSet (PNone a  )) (IdxSet (PNone b  )) = isSubsetOf (IdxSet a) (IdxSet b)
+isSubsetOf (IdxSet PEnd) _ = True
+isSubsetOf a (IdxSet PEnd) = null a
 
 intersect :: IdxSet env -> IdxSet env -> IdxSet env
 intersect (IdxSet a) (IdxSet b) = IdxSet $ intersectPartialEnv (\_ _ -> Present) a b
@@ -89,6 +98,11 @@ skip' (LeftHandSidePair l1 l2) = skip' l2 . skip' l1
 
 push :: IdxSet env -> IdxSet (env, t)
 push = IdxSet . flip PPush Present . unIdxSet
+
+push' :: LeftHandSide s t env env' -> IdxSet env -> IdxSet env'
+push' (LeftHandSideSingle _)   = push
+push' (LeftHandSideWildcard _) = id
+push' (LeftHandSidePair l1 l2) = push' l2 . push' l1
 
 empty :: IdxSet env
 empty = IdxSet PEnd
