@@ -917,8 +917,8 @@ sortedIntersection _ _ = []
 -- but not in the second
 sortedMinus :: Ord a => [a] -> [a] -> [a]
 sortedMinus as@(a:as') bs@(b:bs')
-  | a == b    = sortedIntersection as' bs'
-  | a <  b    = a : sortedIntersection as' bs
-  | otherwise = sortedIntersection as  bs'
+  | a == b    = sortedMinus as' bs'
+  | a <  b    = a : sortedMinus as' bs
+  | otherwise = sortedMinus as  bs'
 sortedMinus as [] = as
 sortedMinus [] _  = []

@@ -32,55 +32,28 @@ module Data.Array.Accelerate.Trafo.Schedule.Uniform.Future (
   withRef, buildRead, weakenEither,
   fprj, fenvDrop, fenvDrop1, fenvFSkipMany, fenvPushLHS,
   chainFuture, ChainFuture(..), chainFutureEnvironmentSeqIf, chainFutureEnvironment, ChainFutureEnv(..),
+  loopFutureEnv, LoopFutureEnv(..), LoopFutureEnvInner(..),
+  IsNewSignal(..), localBaseR, declareSignals,
   subFutureEnvironment, restrictEnvForLHS,
   MaybeSignal, MaybeSignalResolver, buildAwait,
   lhsSignal, lhsRef,
 ) where
 
-
-import Data.Array.Accelerate.Analysis.Match
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Idx
-import Data.Array.Accelerate.AST.IdxSet (IdxSet(..))
-import qualified Data.Array.Accelerate.AST.IdxSet           as IdxSet
 import Data.Array.Accelerate.AST.LeftHandSide
-import Data.Array.Accelerate.AST.Kernel
-import Data.Array.Accelerate.AST.Schedule
-import Data.Array.Accelerate.AST.Schedule.Uniform hiding ( directlyAwaits )
-import Data.Array.Accelerate.AST.Var
+import Data.Array.Accelerate.AST.Schedule.Uniform
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Array
-import Data.Array.Accelerate.Representation.Ground
-import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
-import Data.Array.Accelerate.Trafo.Exp.Substitution
-import Data.Array.Accelerate.Trafo.Operation.Substitution   (strengthenArrayInstr)
 import Data.Array.Accelerate.Trafo.Substitution
-import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Trafo.Schedule.Partial
-import Data.Array.Accelerate.Trafo.Schedule.Uniform.LiveVars
 import Data.Array.Accelerate.Trafo.Schedule.Uniform.Simplify
-import Data.Array.Accelerate.Trafo.Schedule.Uniform.Substitution
 import Data.Array.Accelerate.Trafo.SkipEnvironment (Skip'(..), lhsSkip')
 import Data.Array.Accelerate.Type
-import Data.Array.Accelerate.AST.Partitioned (PartitionedAcc, PartitionedAfun)
-import qualified Data.Array.Accelerate.AST.Partitioned as C
-import Data.Kind
 import Data.Maybe
-import Data.String
-import Formatting hiding (left, right)
-import Data.List
-    ( groupBy, nubBy, sort, group, (\\), isSubsequenceOf )
 import Prelude hiding (id, (.), read)
 import Control.Category
-import Control.DeepSeq
-import qualified Data.Array.Accelerate.AST.Environment as Env
-import Control.Concurrent
-import Data.IORef
-import System.IO.Unsafe (unsafePerformIO)
-
-import Data.Array.Accelerate.Pretty.Operation
-import Data.Functor.Identity
 
 data Future fenv t where
   FutureScalar :: ScalarType t
@@ -596,6 +569,213 @@ seqChainFuture (FutureBuffer tp ref (Lock signal resolver) (Just (Lock wsignal w
   )
 seqChainFuture _ _ _ = internalError "FutureBuffer & Sync mismatch"
 
+data IsNewSignal t where
+  IsNewSignal :: IsNewSignal (Signal, SignalResolver)
+
+localBaseR :: TupR IsNewSignal t -> BasesR t
+localBaseR (TupRsingle IsNewSignal) = TPair BaseRsignal BaseRsignalResolver
+localBaseR (TupRpair t1 t2) = localBaseR t1 `TupRpair` localBaseR t2
+localBaseR TupRunit = TupRunit
+
+declareSignals :: TupR IsNewSignal t -> BLeftHandSide t env env' -> BuildSchedule kernel env' -> BuildSchedule kernel env
+declareSignals _ (LeftHandSideWildcard _) = id
+declareSignals (TupRsingle IsNewSignal) lhs = buildLet lhs NewSignal
+declareSignals (TupRpair t1 t2) (LeftHandSidePair lhs1 lhs2) = declareSignals t1 lhs1 . declareSignals t2 lhs2
+declareSignals _ _ = internalError "Tuple mismatch"
+
+pattern TPair :: forall s t. () => forall a b. (t ~ (a, b)) => s a -> s b -> TupR s t
+pattern TPair a b = TupRsingle a `TupRpair` TupRsingle b
+
+data LoopFutureEnv kernel fenv1 genv where
+  -- Captures existentials input, output and local
+  LoopFutureEnv :: {
+    loopEnvIO :: InputOutputR input output,
+    loopEnvInitial :: BaseVars fenv1 input,
+    loopEnvLocal :: TupR IsNewSignal local,
+    loopEnvBody :: forall fenv2. Skip fenv2 fenv1 -> TupR (Idx fenv2) input -> TupR (Idx fenv2) output -> TupR (Idx fenv2) local -> LoopFutureEnvInner kernel fenv2 genv
+  } -> LoopFutureEnv kernel fenv1 genv
+
+data LoopFutureEnvInner kernel fenv2 genv where
+  LoopFutureEnvInner
+    -- Executed at the start of an iteration
+    :: BuildSchedule kernel fenv2
+    -- Releases the locks at the end of the loop
+    -> BuildSchedule kernel fenv2
+    -> FutureEnv fenv2 genv
+    -> LoopFutureEnvInner kernel fenv2 genv
+
+loopFutureEnv
+  -- An already resolved signal
+  :: forall kernel fenv1 genv.
+     Idx fenv1 Signal
+  -> FutureEnv fenv1 genv
+  -> LoopFutureEnv kernel fenv1 genv
+loopFutureEnv resolved = go SkipNone
+  where
+    go :: Skip fenv1 fenv' -> FutureEnv fenv' genv' -> LoopFutureEnv kernel fenv1 genv'
+    go _ FEnvEnd = LoopFutureEnv InputOutputRunit TupRunit TupRunit $ \_ _ _ _ ->
+      LoopFutureEnvInner buildReturn buildReturn FEnvEnd
+    go envSkip (FEnvFSkip env) = go (SkipSucc envSkip) env
+    go envSkip (FEnvGSkip env)
+      | LoopFutureEnv io initial localR body <- go envSkip env =
+        LoopFutureEnv io initial localR $ \skip input output local -> if
+          | LoopFutureEnvInner instr release env' <- body skip input output local ->
+            LoopFutureEnvInner instr release (FEnvGSkip env')
+    go envSkip (FEnvPush env future)
+      | LoopFutureEnv io1 initial1 localR1 body1 <- go envSkip env
+      , LoopFuture io2 initial2 localR2 body2 <- loopFuture @kernel resolved (weaken (skipWeakenIdx envSkip) future) = if
+        -- Optimize for common case where the future doesn't require further synchronisation
+        | InputOutputRunit <- io2
+        , TupRunit <- localR2 ->
+          LoopFutureEnv io1 initial1 localR1 $ \skip input output local -> if
+            | LoopFutureEnvInner instr1 release1 env' <- body1 skip input output local
+            , LoopFutureInner instr2 release2 future' <- body2 skip TupRunit TupRunit TupRunit ->
+              LoopFutureEnvInner
+                (buildFork instr1 instr2)
+                (buildFork release1 release2)
+                (FEnvPush env' future')
+        | otherwise ->
+          LoopFutureEnv{
+            loopEnvIO = InputOutputRpair io1 io2,
+            loopEnvInitial = TupRpair initial1 initial2,
+            loopEnvLocal = TupRpair localR1 localR2,
+            loopEnvBody = \skip input output local -> if
+              | TupRpair input1 input2 <- input
+              , TupRpair output1 output2 <- output
+              , TupRpair local1 local2 <- local
+              , LoopFutureEnvInner instr1 release1 env' <- body1 skip input1 output1 local1
+              , LoopFutureInner instr2 release2 future' <- body2 skip input2 output2 local2 ->
+                LoopFutureEnvInner
+                  (buildFork instr1 instr2)
+                  (buildFork release1 release2)
+                  (FEnvPush env' future')
+              | otherwise -> internalError "Input, output or local tuple impossible"
+          }
+          
+
+data LoopFuture kernel fenv1 t where
+  -- Captures existentials input, output and local
+  LoopFuture :: {
+    loopIO :: InputOutputR input output,
+    loopInitial :: BaseVars fenv1 input,
+    loopLocal :: TupR IsNewSignal local,
+    loopBody :: forall fenv2. Skip fenv2 fenv1 -> TupR (Idx fenv2) input -> TupR (Idx fenv2) output -> TupR (Idx fenv2) local -> LoopFutureInner kernel fenv2 t
+  } -> LoopFuture kernel fenv1 t
+
+data LoopFutureInner kernel fenv2 t where
+  LoopFutureInner
+    -- Executed at the start of an iteration
+    :: BuildSchedule kernel fenv2
+    -> BuildSchedule kernel fenv2
+    -> Future fenv2 t
+    -> LoopFutureInner kernel fenv2 t
+
+loopFuture
+  -- An already resolved signal
+  :: forall kernel fenv1 t.
+     Idx fenv1 Signal
+  -> Future fenv1 t
+  -> LoopFuture kernel fenv1 t
+loopFuture resolved (FutureBuffer tp ref (Move readLockSignal) (Just (Move writeLockSignal))) =
+  -- A moved writable buffer
+  -- We must add two signals (and accompanying signal resolvers) to the state
+  -- to synchronize read and write access.
+  -- Note that the next iteration gets read access when the current one
+  -- finished writing, and the next iteration gets write access when this
+  -- iteratioon has finished reading. This is similar to the write-before-write
+  -- case in chainFuture.
+  --
+  LoopFuture {
+    loopIO = InputOutputRsignal `InputOutputRpair` InputOutputRsignal,
+    loopInitial = TupRsingle (Var BaseRsignal $ fromMaybe resolved $ readLockSignal)
+      `TupRpair` TupRsingle (Var BaseRsignal $ fromMaybe resolved $ writeLockSignal),
+    loopLocal = TupRunit,
+    loopBody = \skip input output _ -> if
+      | signalR `TPair` signalW <- input
+      , resolverR `TPair` resolverW <- output
+      , ref' <- weakenEither (skipWeakenIdx skip) ref ->
+        LoopFutureInner
+          buildReturn
+          buildReturn
+          $ FutureBuffer tp ref'
+            -- Note that the resolvers for read and write are swapped, similar
+            -- to the write-before-write case in chainFuture (explaination is
+            -- there)
+            (Borrow (Just signalR) resolverW)
+            $ Just $ Borrow (Just signalW) resolverR
+      | otherwise -> internalError "input or output impossible"
+  }
+loopFuture resolved (FutureBuffer tp ref (Lock readLockSignal readLockResolver) (Just (Lock writeLockSignal writeLockResolver))) = undefined
+  -- A borrowed writable buffer
+  -- We must add two signals (and accompanying signal resolvers) to the state
+  -- to synchronize read and write access. Furthermore we need to declare two
+  -- local signals in the body of the loop, to mimic the signals of the loop
+  -- state, to properly release a buffer at the end of the loop.
+  -- Note that the next iteration gets read access when the current one
+  -- finished writing, and the next iteration gets write access when this
+  -- iteratioon has finished reading. This is similar to the write-before-write
+  -- case in chainFuture.
+  --
+  LoopFuture {
+    loopIO = InputOutputRsignal `InputOutputRpair` InputOutputRsignal,
+    loopInitial = TupRsingle (Var BaseRsignal $ fromMaybe resolved $ readLockSignal)
+      `TupRpair` TupRsingle (Var BaseRsignal $ fromMaybe resolved $ writeLockSignal),
+    loopLocal = TPair IsNewSignal IsNewSignal,
+    loopBody = \skip input output local -> if
+      | signalR `TPair` signalW <- input
+      , resolverR `TPair` resolverW <- output
+      , TPair signalL1 resolverL1 `TupRpair` TPair signalL2 resolverL2 <- local
+      , ref' <- weakenEither (skipWeakenIdx skip) ref ->
+        LoopFutureInner
+          -- Note that the resolvers for read and write are swapped, similar
+          -- to the write-before-write case in chainFuture (explaination is
+          -- there)
+          (buildEffect (SignalAwait [signalL2]) $ buildEffect (SignalResolve [resolverR])
+            $ buildEffect (SignalAwait [signalL1]) $ buildEffect (SignalResolve [resolverW]) buildReturn)
+          (buildEffect (SignalAwait [signalL2])
+            $ buildEffect (SignalResolve $ catMaybes [weaken (skipWeakenIdx skip) <$> readLockResolver])
+            $ buildEffect (SignalAwait [signalL1])
+            $ buildEffect (SignalResolve $ catMaybes [weaken (skipWeakenIdx skip) <$> writeLockResolver]) buildReturn)
+          $ FutureBuffer tp ref'
+            (Borrow (Just signalR) resolverL1)
+            $ Just $ Borrow (Just signalW) resolverL2
+      | otherwise -> internalError "Input, output or local tuple impossible"
+  }
+loopFuture resolved (FutureBuffer tp ref (Borrow readLockSignal readLockResolver) Nothing) =
+  -- A borrowed read-only buffer.
+  -- We need one signal in the state of the loop, to denote that the previous
+  -- iterations have finished working with the array. The accompanying signal
+  -- resolver is resolved when this signal is finished and the current
+  -- iteration is done working with the array. When the loop has finished and
+  -- those signals are resolved, we will also release the entire buffer by
+  -- resolving 'releaseRead'.
+  LoopFuture {
+    loopIO = InputOutputRsignal,
+    loopInitial = TupRsingle (Var BaseRsignal $ fromMaybe resolved $ readLockSignal),
+    loopLocal = TupRsingle IsNewSignal,
+    loopBody = \skip input output local -> if
+      | TupRsingle signalR <- input
+      , TupRsingle resolverR <- output
+      , TPair signalL1 resolverL1 <- local
+      , ref' <- weakenEither (skipWeakenIdx skip) ref
+      , future <- FutureBuffer tp ref'
+            (Lock (weaken (skipWeakenIdx skip) <$> readLockSignal) (Just resolverL1))
+            Nothing ->
+        LoopFutureInner
+          (buildEffect (SignalAwait [signalR, signalL1]) $ buildEffect (SignalResolve [resolverR]) buildReturn)
+          (buildEffect (SignalAwait $ [signalR, signalL1]) -- Wait on signalL1 if left
+            $ buildEffect (SignalResolve [weaken (skipWeakenIdx skip) $ readLockResolver]) buildReturn)
+          future
+      | otherwise -> internalError "input, output or local impossible"
+  }
+-- A buffer with Move read lock or a scalar, no further synchronisation needed
+loopFuture _ future =
+  LoopFuture {
+    loopIO = InputOutputRunit,
+    loopInitial = TupRunit,
+    loopLocal = TupRunit,
+    loopBody = \skip _ _ _ -> LoopFutureInner buildReturn buildReturn $ weaken (skipWeakenIdx skip) future
+  }
 
 subFutureEnvironment :: forall fenv genv kernel. FutureEnv fenv genv -> SyncEnv genv -> (FutureEnv fenv genv, BuildSchedule kernel fenv)
 subFutureEnvironment = subFutureEnvironment' SkipNone

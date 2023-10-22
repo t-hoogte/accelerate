@@ -535,4 +535,6 @@ subTupSubstitution (SubTupRpair s1 s2) (LeftHandSidePair l1 l2) (TupRpair v1 v2)
   , Exists l2'' <- rebuildLHS l2
   , SubTupSubstitution l2' k2 <- subTupSubstitution s2 l2'' (mapTupR (weaken $ weakenWithLHS l1') v2)
   = SubTupSubstitution (LeftHandSidePair l1' l2') (k2 .> sinkWithLHS l2 l2'' k1)
+subTupSubstitution s (LeftHandSideWildcard t) _
+  = SubTupSubstitution (LeftHandSideWildcard $ subTupR s t) weakenId
 subTupSubstitution _ _ _ = internalError "Tuple mismatch"
