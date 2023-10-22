@@ -33,8 +33,10 @@ module Data.Array.Accelerate.Trafo.Schedule.Partial (
   Parallelism(..),
   Sync(..), SyncEnv,
   SyncSchedule(..), SyncScheduleFun,
+  Loop,
+  variablesToSyncEnv,
 
-  UnitTuple, UpdateTuple(..),
+  UnitTuple, UpdateTuple(..), toPartialReturn,
 
   compileKernel', CompiledKernel(..), 
 ) where
@@ -50,6 +52,8 @@ import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Representation.Type
+import Data.Array.Accelerate.Trafo.Var
+import Data.Array.Accelerate.Trafo.Substitution
 import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Data.Array.Accelerate.Type
 import qualified Data.Array.Accelerate.AST.IdxSet           as IdxSet
@@ -164,12 +168,25 @@ data PrePartialSchedule schedule kernel env t where
 
   PAwhile 
     :: Uniquenesses t
-    -> PrePartialScheduleFun schedule kernel env (t -> PrimBool)
-    -> PrePartialScheduleFun schedule kernel env (t -> t)
+    -> PrePartialScheduleFun schedule kernel env (t -> Loop t)
     -> GroundVars env t
     -> PrePartialSchedule schedule kernel env t
 
+  -- Signals that this while loop should do another iteration.
+  -- The state for the next iteration is computed by the subterm.
+  PContinue
+    :: schedule kernel env t
+    -> PrePartialSchedule schedule kernel env (Loop t)
+
+  -- Stops this while loop. The result value of the loop is
+  -- given by the GroundVars.
+  PBreak
+    :: Uniquenesses t
+    -> GroundVars env t
+    -> PrePartialSchedule schedule kernel env (Loop t)
+
 data Void' a where
+data Loop a where
 
 data UpdateTuple env t1 t2 where
   UpdateKeep :: UpdateTuple env t t
@@ -396,11 +413,18 @@ toPartial' us = \case
     , (falseFree, false') <- toPartial' us false ->
       ( trueFree `IdxSet.union` falseFree
       , PartialSchedule $ PAcond var true' false' )
-  C.Awhile us' cond step initial
-    | (condFree, cond') <- toPartialUnary (TupRsingle Shared) cond
-    , (stepFree, step') <- toPartialUnary us' step ->
-      ( condFree `IdxSet.union` stepFree `IdxSet.union` IdxSet.fromList (groundBufferVars initial)
-      , PartialSchedule $ PAwhile us' cond' step' initial )
+  C.Awhile us' (C.Alam lhsC (C.Abody cond)) (C.Alam lhsS (C.Abody step)) initial
+    | DeclareVars lhs _ vars <- declareVars $ lhsToTupR lhsC
+    , (condFree, cond') <- toPartial' (TupRsingle Shared) $ weaken (weakenToFullLHS lhs lhsC) cond
+    , (stepFree, step') <- toPartial' (TupRsingle Shared) $ weaken (weakenSucc' $ weakenToFullLHS lhs lhsS) step
+    , fn <- PartialSchedule $ PLet Sequential (LeftHandSideSingle (GroundRscalar scalarType)) (TupRsingle Shared) cond'
+        $ PartialSchedule $ PAcond (Var scalarType ZeroIdx)
+          (PartialSchedule $ PContinue step')
+          (PartialSchedule $ PBreak us' $ vars (weakenSucc weakenId))
+    ->
+      ( IdxSet.drop' lhs condFree `IdxSet.union` IdxSet.drop' lhs (IdxSet.drop stepFree) `IdxSet.union` IdxSet.fromList (groundBufferVars initial)
+      , PartialSchedule $ PAwhile us' (Plam lhs $ Pbody fn) initial )
+  C.Awhile{} -> internalError "Unary function impossible"
   where
     -- For all simple cases, with no free buffer variables.
     simple :: PrePartialSchedule PartialSchedule kernel env t -> (IdxSet env, PartialSchedule kernel env t)
@@ -413,6 +437,21 @@ toPartial' us = \case
     instrToSync :: ArrayInstr env a -> Maybe (Exists (Idx env))
     instrToSync (Index v) = Just $ Exists $ varIdx v
     instrToSync (Parameter _) = Nothing -- Parameter is a scalar variable
+
+weakenToFullLHS
+  -- Full LHS
+  :: GLeftHandSide t env envFull
+  -- Sub LHS
+  -> GLeftHandSide t env envSub
+  -> envSub :> envFull
+weakenToFullLHS = \lhs1 lhs2 -> go lhs1 lhs2 weakenId
+  where
+    go :: GLeftHandSide t env1 env1' -> GLeftHandSide t env2 env2' -> env2 :> env1 -> env2' :> env1'
+    go lhs (LeftHandSideWildcard _) k = weakenWithLHS lhs .> k
+    go (LeftHandSidePair lhs1 lhs1') (LeftHandSidePair lhs2 lhs2') k = go lhs1' lhs2' $ go lhs1 lhs2 k
+    go (LeftHandSideSingle _) (LeftHandSideSingle _) k = weakenKeep k
+    go (LeftHandSideWildcard _) _ _ = internalError "Expected second LHS to be contained in first LHS"
+    go _ _ _ = internalError "LHS mismatch"
 
 returnValues
   :: UpdateTuple env t1 t2
@@ -430,20 +469,6 @@ toPartialReturn (TupRsingle u) (TupRsingle var)
   | Refl <- groundNotPair $ varType var
   = UpdateSet u var
 toPartialReturn _ _ = internalError "Tuple mismatch"
-
-toPartialUnary
-  :: IsKernel kernel
-  => Uniquenesses t
-  -> C.PartitionedAfun (KernelOperation kernel) env (s -> t)
-  -> (IdxSet env, PartialScheduleFun kernel env (s -> t))
-toPartialUnary us (C.Alam lhs (C.Abody body)) =
-  ( IdxSet.drop' lhs free
-  , Plam lhs $ Pbody body'
-  )
-  where
-    (free, body') = toPartial' us body
-
-toPartialUnary _ _ = internalError "Expected unary function"
 
 groundBufferVars :: GroundVars env t -> [Exists (Idx env)]
 groundBufferVars = (`go` [])
@@ -474,7 +499,9 @@ rebuild' (PartialSchedule schedule) = case schedule of
   PReturnEnd tup -> buildReturnEnd tup
   PReturnValues updateTup next -> buildReturnValues updateTup (rebuild' next)
   PAcond var true false -> buildAcond var (rebuild' true) (rebuild' false)
-  PAwhile us cond step initial -> buildAwhile us (rebuildUnary cond) (rebuildUnary step) initial
+  PAwhile us fn initial -> buildAwhile us (rebuildUnary fn) initial
+  PContinue next -> buildContinue $ rebuild' next
+  PBreak us vars -> buildBreak us vars
 
 rebuildUnary :: PartialScheduleFun kernel env f -> BuildUnary kernel env f
 rebuildUnary (Plam lhs (Pbody body)) = BuildUnary lhs $ rebuild' body
@@ -682,26 +709,52 @@ data BuildUnary kernel env f where
 
 buildAwhile
   :: Uniquenesses t
-  -> BuildUnary kernel env (t -> PrimBool)
-  -> BuildUnary kernel env (t -> t)
+  -> BuildUnary kernel env (t -> Loop t)
   -> GroundVars env t
   -> Build PartialSchedule kernel env t
-buildAwhile us (BuildUnary condLhs cond') (BuildUnary stepLhs step') initial available =
+buildAwhile us (BuildUnary lhs fn') initial available =
   Built{
-    didChange = didChange cond || didChange step,
-    directlyAwaits = IdxSet.fromVarList (lhsTake condLhs (directlyAwaits cond) initial) `IdxSet.union` IdxSet.drop' condLhs (directlyAwaits cond),
-    writes = IdxSet.drop' condLhs (writes cond) `IdxSet.union` IdxSet.drop' stepLhs (writes step),
+    didChange = didChange fn,
+    directlyAwaits = IdxSet.fromVarList (lhsTake lhs (directlyAwaits fn) initial) `IdxSet.union` IdxSet.drop' lhs (directlyAwaits fn),
+    writes = IdxSet.drop' lhs (writes fn),
     finallyReleases = IdxSet.empty,
     trivial = False,
     term = PartialSchedule $ PAwhile
       us
-      (Plam condLhs $ Pbody $ term cond)
-      (Plam stepLhs $ Pbody $ term step)
+      (Plam lhs $ Pbody $ term fn)
       initial
   }
   where
-    cond = cond' (IdxSet.skip' condLhs available)
-    step = step' (IdxSet.skip' stepLhs available)
+    fn = fn' (IdxSet.skip' lhs available)
+
+buildContinue
+  :: Build PartialSchedule kernel env t
+  -> Build PartialSchedule kernel env (Loop t)
+buildContinue next' available =
+  Built{
+    didChange = didChange next,
+    directlyAwaits = IdxSet.empty,
+    writes = writes next,
+    finallyReleases = finallyReleases next,
+    trivial = False,
+    term = PartialSchedule $ PContinue $ term next
+  }
+  where
+    next = next' available
+
+buildBreak
+  :: Uniquenesses t
+  -> GroundVars env t
+  -> Build PartialSchedule kernel env (Loop t)
+buildBreak us vars _ =
+  Built{
+    didChange = False,
+    directlyAwaits = IdxSet.fromVars vars,
+    writes = IdxSet.empty,
+    finallyReleases = IdxSet.empty,
+    trivial = False,
+    term = PartialSchedule $ PBreak us vars
+  }
 
 updateCount :: UpdateTuple env t1 t2 -> Count
 updateCount UpdateKeep = Zero
@@ -787,27 +840,27 @@ analyseSyncEnv' (PartialSchedule sched) = case sched of
           (unionPartialEnv max (syncEnv true') (syncEnv false'))
           False
           (PAcond var true' false')
-  PAwhile us cond step initial ->
+  PAwhile us (Plam lhs (Pbody body)) initial ->
     let
-      (condEnv, cond') = fun cond
-      (stepEnv, step') = fun step
+      body' = analyseSyncEnv body
     in
       ToSyncSchedule UpdateKeep $
         SyncSchedule
-          (unionPartialEnv max condEnv $ unionPartialEnv max stepEnv $ variablesToSyncEnv us initial)
+          (unionPartialEnv max (weakenSyncEnv lhs $ syncEnv body') $ variablesToSyncEnv us initial)
           False
-          (PAwhile us cond' step' initial)
+          (PAwhile us (Plam lhs $ Pbody body') initial)
+  PAwhile{} -> internalError "Function impossible"
+  PContinue next ->
+    let
+      next' = analyseSyncEnv next
+    in
+      ToSyncSchedule UpdateKeep $
+        SyncSchedule (syncEnv next') False $ PContinue next'
+  PBreak us vars ->
+    ToSyncSchedule UpdateKeep $ SyncSchedule (variablesToSyncEnv us vars) False $ PBreak us vars
   where
     noBuffers :: PrePartialSchedule SyncSchedule kernel env t -> ToSyncSchedule kernel env t
     noBuffers = ToSyncSchedule UpdateKeep . SyncSchedule PEnd True
-
-    fun :: PartialScheduleFun kernel env f -> (SyncEnv env, SyncScheduleFun kernel env f)
-    fun (Pbody body) = (syncEnv body', Pbody body')
-      where
-        body' = analyseSyncEnv body
-    fun (Plam lhs f) = (weakenSyncEnv lhs env, Plam lhs f')
-      where
-        (env, f') = fun f
 
 variablesToSyncEnv :: Uniquenesses t -> GroundVars genv t -> SyncEnv genv
 variablesToSyncEnv uniquenesses vars = partialEnvFromList noCombine $ go uniquenesses vars []

@@ -160,8 +160,8 @@ stronglyLiveVariables' liveness returns us = \case
           BindLivenessSub subTup' lhsFull lhsSub re' -> case (bnd' re subTup', body' re' s) of
             (Left bnd'',  Left body'')  -> Left  $ mkAlet lhsFull us' bnd'' body''
             (Left bnd'',  Right body'') -> Right $ mkAlet lhsFull us' bnd'' body''
-            (Right bnd'', Left body'')  -> Left  $ mkAlet lhsSub (subTupR subTup' us') bnd'' body''
-            (Right bnd'', Right body'') -> Right $ mkAlet lhsSub (subTupR subTup' us') bnd'' body''
+            (Right bnd'', Left body'')  -> Left  $ mkAlet lhsSub (subTupUniqueness subTup' us') bnd'' body''
+            (Right bnd'', Right body'') -> Right $ mkAlet lhsSub (subTupUniqueness subTup' us') bnd'' body''
   Alloc shr tp sh
     | free <- IdxSet.fromVars sh
     , liveness1 <- returnIndices returns free liveness ->
@@ -353,3 +353,9 @@ reEnvSubBuffers _ _ _ = internalError "Tuple mismatch"
 
 data ReEnvSubBuffers subenv t where
   ReEnvSubBuffers :: SubTupR t t' -> GroundVars subenv (Buffers t') -> ReEnvSubBuffers subenv t
+
+subTupUniqueness :: SubTupR t t' -> Uniquenesses t -> Uniquenesses t'
+subTupUniqueness SubTupRskip         _                = TupRunit
+subTupUniqueness SubTupRkeep         t                = t
+subTupUniqueness (SubTupRpair s1 s2) (TupRpair t1 t2) = subTupUniqueness s1 t1 `TupRpair` subTupUniqueness s2 t2
+subTupUniqueness (SubTupRpair s1 s2) (TupRsingle Shared) = TupRsingle $ Shared

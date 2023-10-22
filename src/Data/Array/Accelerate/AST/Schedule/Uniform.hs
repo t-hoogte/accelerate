@@ -20,7 +20,8 @@
 module Data.Array.Accelerate.AST.Schedule.Uniform (
   UniformSchedule(..), UniformScheduleFun(..),
   SArg(..), SArgs, sargVars, sargOutputVars, sargBufferVars,
-  Input, Output, inputSingle, outputSingle, inputR, outputR, InputOutputR(..),
+  Input, Output, inputSingle, outputSingle, inputR, outputR,
+  InputOutputR(..), inputOutputInputR, inputOutputOutputR,
   Binding(..), Effect(..),
   BaseR(..), BasesR, BaseVar, BaseVars, BLeftHandSide,
   Signal(..), SignalResolver(..), Ref(..), OutputRef(..),
@@ -184,11 +185,23 @@ outputSingle (GroundRscalar (SingleScalarType tp)) = case tp of
 -- Relation between input and output
 data InputOutputR input output where
   InputOutputRsignal  :: InputOutputR Signal SignalResolver
-  InputOutputRref     :: InputOutputR (Ref t) (OutputRef t)
+  InputOutputRref     :: GroundR t -> InputOutputR (Ref t) (OutputRef t)
   InputOutputRpair    :: InputOutputR i1 o1
                       -> InputOutputR i2 o2
                       -> InputOutputR (i1, i2) (o1, o2)
   InputOutputRunit    :: InputOutputR () ()
+
+inputOutputInputR :: InputOutputR input output -> BasesR input
+inputOutputInputR InputOutputRsignal = TupRsingle BaseRsignal
+inputOutputInputR (InputOutputRref tp) = TupRsingle $ BaseRref tp
+inputOutputInputR (InputOutputRpair io1 io2) = inputOutputInputR io1 `TupRpair` inputOutputInputR io2
+inputOutputInputR InputOutputRunit = TupRunit
+
+inputOutputOutputR :: InputOutputR input output -> BasesR output
+inputOutputOutputR InputOutputRsignal = TupRsingle BaseRsignalResolver
+inputOutputOutputR (InputOutputRref tp) = TupRsingle $ BaseRrefWrite tp
+inputOutputOutputR (InputOutputRpair io1 io2) = inputOutputOutputR io1 `TupRpair` inputOutputOutputR io2
+inputOutputOutputR InputOutputRunit = TupRunit
 
 -- Bindings of instructions which have some return value.
 -- They cannot perform side effects.

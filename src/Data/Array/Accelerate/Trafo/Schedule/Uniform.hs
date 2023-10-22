@@ -137,7 +137,7 @@ transformAfun afun = go FEnvEnd afun
       , DeclareOutput skip lhs dest <- declareOutput $ groundsR body
       = funConstruct
           (buildFunLam lhs $ buildFunBody $
-            transform (fenvFSkipMany skip env) Parallel (dest SkipNone) schedule)
+            transform (fenvFSkipMany skip env) Parallel (CtxNormal $ dest SkipNone) schedule)
           weakenId
 
 -- Transforms a SyncSchedule to a UniformSchedule.
@@ -146,18 +146,20 @@ transform
   :: IsKernel kernel
   => FutureEnv fenv genv -- Mapping from ground environment to future environment
   -> Parallelism -- Whether the returns should happen in parallel or sequential.
-  -> Destinations fenv t -- The destinations for the output
+  -> Context kernel fenv t -- The destinations for the output
   -> SyncSchedule kernel genv t -- The SyncSchedule that should be transformed to a UniformSchedule
   -> BuildSchedule kernel fenv
-transform env parallelism dest schedule = case transform' schedule of
-  TransformSchedule f -> f env parallelism dest
+transform env parallelism ctx schedule = case transform' schedule of
+  TransformSchedule f -> f env parallelism ctx
   TransformBinding f
     | TransformToBinding tp skip instr resolvers binding <- f env
-    , DeclareVars lhs k vars <- declareVars tp ->
-      instr
-        $ buildLet (mapLeftHandSide BaseRground lhs) binding
-        $ buildEffect (SignalResolve $ weaken (weakenWithLHS lhs) <$> resolvers)
-        $ writeOutput (mapTupR (weaken k . weaken (skipWeakenIdx skip)) dest) (vars weakenId)
+    , DeclareVars lhs k vars <- declareVars tp -> case ctx of
+      CtxLoop{} -> internalError "Loop impossible"
+      CtxNormal dest ->
+        instr
+          $ buildLet (mapLeftHandSide BaseRground lhs) binding
+          $ buildEffect (SignalResolve $ weaken (weakenWithLHS lhs) <$> resolvers)
+          $ writeOutput (mapTupR (weaken k . weaken (skipWeakenIdx skip)) dest) (vars weakenId)
 
 -- Variant of 'transform' that also performs the subenvironment rule:
 -- transform assumes that the FutureEnv corresponds with the syncEnv of the schedule,
@@ -166,7 +168,7 @@ transformSub
   :: IsKernel kernel
   => FutureEnv fenv genv -- Mapping from ground environment to future environment
   -> Parallelism
-  -> Destinations fenv t
+  -> Context kernel fenv t
   -> SyncSchedule kernel genv t -- The SyncSchedule that should be transformed to a UniformSchedule
   -> BuildSchedule kernel fenv
 transformSub env parallelism dest schedule = buildSpawn actions
@@ -176,7 +178,7 @@ transformSub env parallelism dest schedule = buildSpawn actions
 
 data Transform kernel genv t where
   TransformSchedule
-    :: (forall fenv. FutureEnv fenv genv -> Parallelism -> Destinations fenv t -> BuildSchedule kernel fenv)
+    :: (forall fenv. FutureEnv fenv genv -> Parallelism -> Context kernel fenv t -> BuildSchedule kernel fenv)
     -> Transform kernel genv t
 
   TransformBinding
@@ -203,11 +205,11 @@ transform'
 transform' (SyncSchedule _ simple schedule) = case schedule of
   -- Return & return values
   PReturnEnd _ -> TransformSchedule $ \_ _ _ -> buildReturn
-  PReturnValues updateTup next -> TransformSchedule $ \fenv parallelism dest ->
-    let
-      (dest', instr) = returnValues fenv parallelism updateTup dest
-    in
-      buildSeqOrSpawn parallelism instr $ transform fenv parallelism dest' next
+  PReturnValues updateTup next -> TransformSchedule $ \fenv parallelism ctx -> case ctx of
+    CtxLoop{} -> internalError "Loop impossible"
+    CtxNormal dest
+      | (dest', instr) <- returnValues fenv parallelism updateTup dest ->
+        buildSeqOrSpawn parallelism instr $ transform fenv parallelism (CtxNormal dest') next
 
   -- Effects
   PExec kernel args -> TransformSchedule $ \fenv _ _ ->
@@ -252,23 +254,23 @@ transform' (SyncSchedule _ simple schedule) = case schedule of
                 fromMaybe (internalError "Variable missing after acquireSome") $ prjPartial idx mapping))
               expr)
 
-  PLet bndParallelism (LeftHandSideWildcard tp) _ bnd body -> TransformSchedule $ \fenv parallelism destinations ->
+  PLet bndParallelism (LeftHandSideWildcard tp) _ bnd body -> TransformSchedule $ \fenv parallelism ctx ->
     case chainFutureEnvironmentSeqIf (bndParallelism == Sequential && simple) fenv (syncEnv bnd) (syncEnv body) of
       ChainFutureEnv instr skip bndEnv bodyEnv ->
         instr $ buildSeqOrSpawn bndParallelism
-          (transform bndEnv bndParallelism (mapTupR (const DestinationIgnore) tp) bnd)
-          (transform bodyEnv parallelism (mapTupR (weaken $ skipWeakenIdx skip) destinations) body)
+          (transform bndEnv bndParallelism (CtxNormal $ mapTupR (const DestinationIgnore) tp) bnd)
+          (transform bodyEnv parallelism (weaken (skipWeakenIdx skip) ctx) body)
 
-  PLet Parallel lhs us bnd body -> TransformSchedule $ \fenv parallelism destinations ->
+  PLet Parallel lhs us bnd body -> TransformSchedule $ \fenv parallelism ctx ->
     case chainFutureEnvironment SkipNone fenv (syncEnv bnd) (environmentDropLHS (syncEnv body) lhs) of
       ChainFutureEnv instr1 skip1 bndEnv bodyEnv
         | DeclareDestinations skip2 instr2 bndDestinations bodyEnv' <- declareDestinations Parallel bodyEnv lhs us
         , bodyEnv'' <- restrictEnvForLHS lhs bodyEnv' $ syncEnv body ->
           instr1 $ instr2 $ buildSpawn
-            (transform (fenvFSkipMany skip2 bndEnv) Parallel (bndDestinations SkipNone) bnd)
-            (transform bodyEnv'' parallelism (mapTupR (weaken $ skipWeakenIdx skip2 .> skipWeakenIdx skip1) destinations) body)
+            (transform (fenvFSkipMany skip2 bndEnv) Parallel (CtxNormal $ bndDestinations SkipNone) bnd)
+            (transform bodyEnv'' parallelism (weaken (skipWeakenIdx skip2 .> skipWeakenIdx skip1) ctx) body)
 
-  PLet Sequential lhs us bnd body -> TransformSchedule $ \fenv parallelism destinations ->
+  PLet Sequential lhs us bnd body -> TransformSchedule $ \fenv parallelism ctx ->
     case chainFutureEnvironmentSeqIf simple fenv (syncEnv bnd) (environmentDropLHS (syncEnv body) lhs) of
       ChainFutureEnv instr1 skip1 bndEnv bodyEnv ->
         case transform' bnd of
@@ -280,15 +282,15 @@ transform' (SyncSchedule _ simple schedule) = case schedule of
               instr1 $ instr2
                 $ buildLet (mapLeftHandSide BaseRground lhs') binding
                 $ buildEffect (SignalResolve $ weaken (weakenWithLHS lhs') <$> resolvers)
-                $ transform bodyEnv'' parallelism (mapTupR (weaken $ weakenWithLHS lhs' .> skipWeakenIdx skip2 .> skipWeakenIdx skip1) destinations) body
+                $ transform bodyEnv'' parallelism (weaken (weakenWithLHS lhs' .> skipWeakenIdx skip2 .> skipWeakenIdx skip1) ctx) body
           TransformSchedule f
             | DeclareDestinations skip2 instr2 bndDestinations bodyEnv' <- declareDestinations Parallel bodyEnv lhs us
             , bodyEnv'' <- restrictEnvForLHS lhs bodyEnv' $ syncEnv body
             , MakeAvailable skip3 bodyEnv''' instr3 <- makeAvailable lhs bodyEnv'' ->
               instr1 $ instr2 $ buildSpawn
-                (f (fenvFSkipMany skip2 bndEnv) Sequential $ bndDestinations SkipNone)
+                (f (fenvFSkipMany skip2 bndEnv) Sequential $ CtxNormal $ bndDestinations SkipNone)
                 $ instr3
-                $ transform bodyEnv''' parallelism (mapTupR (weaken $ skipWeakenIdx' skip3 .> skipWeakenIdx skip2 .> skipWeakenIdx skip1) destinations) body
+                $ transform bodyEnv''' parallelism (weaken (skipWeakenIdx' skip3 .> skipWeakenIdx skip2 .> skipWeakenIdx skip1) ctx) body
 
   -- Control flow
   PAcond cond true false -> TransformSchedule $ \fenv parallelism dest ->
@@ -302,7 +304,95 @@ transform' (SyncSchedule _ simple schedule) = case schedule of
               buildReturn
       _ -> variableMissing
   
-  PAwhile us cond step initial -> undefined
+  PAwhile us fn initial -> TransformSchedule $ \fenv _ ctx ->
+    transformWhile fenv us fn initial ctx
+
+  PContinue next -> TransformSchedule $ \fenv parallelism ctx -> case ctx of
+    CtxNormal _ -> internalError "Loop impossible"
+    CtxLoop _ destBool dest _ ->
+      buildSeq
+        (writeLoopCondition destBool True)
+        (transform fenv parallelism (CtxNormal dest) next)
+
+  PBreak us vars -> TransformSchedule $ \fenv _ ctx -> case ctx of
+    CtxNormal _ -> internalError "Loop impossible"
+    CtxLoop release destBool _ dest ->
+      buildSeq
+        (writeLoopCondition destBool False)
+        $ buildFork
+          release
+          $ snd $ returnValues fenv Parallel (toPartialReturn us vars) dest
+
+transformWhile
+  :: IsKernel kernel =>
+     FutureEnv fenv genv
+  -> Uniquenesses t
+  -> SyncScheduleFun kernel genv (t -> Loop t)
+  -> GroundVars genv t
+  -> Context kernel fenv t
+  -> BuildSchedule kernel fenv
+transformWhile _ _ _ _ CtxLoop{} = internalError "Impossible nesting of loops"
+transformWhile fenv us (Plam lhs (Pbody step)) groundInitial (CtxNormal finalDest)
+  | fenv' <- FEnvFSkip $ FEnvFSkip fenv -- Add two bindings to the environment for a new signal and resolver.
+  -- Split the environment into an environment for the initial state and an environment for the step function.
+  , ChainFutureEnv instr1 skip1 initialEnv stepEnv
+    <- chainFutureEnvironment SkipNone fenv' (variablesToSyncEnv us groundInitial) (environmentDropLHS (syncEnv step) lhs)
+  -- The index of an already resolved signal. Used to construct the initial state.
+  , resolved <- weaken (skipWeakenIdx skip1) $ SuccIdx ZeroIdx
+  -- Creates the environment for the free variables of the step function.
+  , LoopFutureEnv io1 initial1 localR body <- loopFutureEnv resolved stepEnv
+  -- Extend the environment with the arguments of the function,
+  -- And prepare the destination for the result of the function (state for next iteration).
+  , AwhileInputOutput io2 skip2 instr2 initial2 extendStepEnv' makeContinueDest
+    <- awhileInputOutput initialEnv resolved lhs us groundInitial
+  , io <- InputOutputRpair io1 io2
+  -- Given the computed types, construct the left hand sides for the function.
+  , DeclareVars lhsInput _ varsInput <- declareVars $ inputOutputInputR io
+  , DeclareVars lhsOutput k2 varsOutput <- declareVars $ inputOutputOutputR io
+  , DeclareVars lhsLocal k3 varsLocal <- declareVars $ localBaseR localR
+  -- Compose the Skips for all left hand sides of the function.
+  , funSkip <- lhsSkip lhsLocal
+    `chainSkip` SkipSucc (SkipSucc $ lhsSkip lhsOutput)
+    `chainSkip` lhsSkip lhsInput
+  -- Compose that with the Skips of instr1 and instr2.
+  , fullSkip <- funSkip `chainSkip` skip2 `chainSkip` (SkipSucc $ SkipSucc skip1)
+  -- Separate the input into an input for loopFutureEnv (input1) and awhileInputOutput (input2)
+  , (input1, input2) <- expectPair $ varsInput (k3 .> (weakenSucc $ weakenSucc k2))
+  -- Also separate the output
+  , (output1, output2) <- expectPair $ varsOutput k3
+  -- Using this input and output, construct the things regarding loopFutureEnv for within the step function
+  , LoopFutureEnvInner instr3 release stepEnv' <- body (funSkip `chainSkip` skip2) (mapTupR varIdx input1) (mapTupR varIdx output1)
+    $ mapTupR varIdx $ varsLocal $ weakenId
+  -- Construct the destination and context for the step function
+  , ctx <- CtxLoop
+      release
+      (weaken (skipWeakenIdx (lhsSkip lhsLocal `chainSkip` lhsSkip lhsOutput))
+        $ DestinationShared ZeroIdx $ SuccIdx ZeroIdx)
+      (makeContinueDest output2)
+      (mapTupR
+        (weaken $ skipWeakenIdx fullSkip)
+        finalDest)
+  = buildLet lhsSignal NewSignal
+    $ buildEffect (SignalResolve [ZeroIdx])
+    $ instr1
+    $ instr2
+    $ buildAwhile
+      io
+      (buildFunLam lhsInput
+        $ buildFunLam (LeftHandSidePair (LeftHandSideSingle BaseRsignalResolver) (LeftHandSideSingle $ BaseRrefWrite $ GroundRscalar scalarType))
+        $ buildFunLam lhsOutput
+        $ buildFunBody
+        $ declareSignals localR lhsLocal
+        $ buildSpawn instr3
+        $ transform (extendStepEnv' input2 stepEnv') Parallel ctx step
+      )
+      (TupRpair (mapTupR (weaken $ skipWeakenIdx skip2) initial1) (initial2 SkipNone))
+      buildReturn
+  where
+    expectPair :: TupR s (t1, t2) -> (TupR s t1, TupR s t2)
+    expectPair (TupRpair t1 t2) = (t1, t2)
+    expectPair _ = internalError "Pair impossible"
+transformWhile _ _ _ _ _ = internalError "Function impossible"
 
 writeOutput
   :: Destinations fenv t
@@ -317,6 +407,17 @@ writeOutput (TupRpair dest1 dest2) (TupRpair vars1 vars2) =
   buildSeq (writeOutput dest1 vars1) (writeOutput dest2 vars2)
 writeOutput TupRunit TupRunit = buildReturn
 writeOutput _ _ = internalError "Tuple mismatch"
+
+writeLoopCondition
+  :: Destination fenv PrimBool
+  -> Bool
+  -> BuildSchedule kernel fenv
+writeLoopCondition dest value =
+  buildLet (LeftHandSideSingle $ BaseRground tp)
+    (Compute $ Const scalarType $ if value then 1 else 0)
+    $ writeOutput (TupRsingle $ weaken (weakenSucc weakenId) dest) (TupRsingle $ Var tp ZeroIdx)
+  where
+    tp = GroundRscalar scalarType
 
 returnValues
   :: FutureEnv fenv genv
@@ -411,6 +512,25 @@ instance Sink Destination where
   weaken k (DestinationUnique ref s1 s2) = DestinationUnique (weaken k ref) (weaken k s1) (weaken k s2)
 
 type Destinations fenv = TupR (Destination fenv)
+
+data Context kernel fenv t where
+  CtxNormal
+    :: Destinations fenv t
+    -> Context kernel fenv t
+  CtxLoop
+    :: BuildSchedule kernel fenv
+    -> Destination fenv PrimBool -- Condition (true = another iteration)
+    -> Destinations fenv t -- State for next iteration
+    -> Destinations fenv t -- Result of loop
+    -> Context kernel fenv (Loop t)
+
+instance Sink (Context kernel) where
+  weaken k (CtxNormal dest) = CtxNormal $ mapTupR (weaken k) dest
+  weaken k (CtxLoop release destCond destContinue destBreak) = CtxLoop
+    (weaken' k release)
+    (weaken k destCond)
+    (mapTupR (weaken k) destContinue)
+    (mapTupR (weaken k) destBreak)
 
 data DeclareDestinations kernel fenv genv t where
   DeclareDestinations
@@ -708,6 +828,183 @@ declareInput (LeftHandSideSingle tp) fenv
       $ case tp of
         GroundRscalar t -> FutureScalar t (Just $ SuccIdx ZeroIdx) (Right ZeroIdx)
         GroundRbuffer t -> FutureBuffer t (Right ZeroIdx) (Move $ Just $ SuccIdx ZeroIdx) Nothing
+
+data AwhileInputOutput kernel fenv genv genv' t where
+  AwhileInputOutput
+    :: InputOutputR input output
+    -- Initial state (& instructions to acquire initial state)
+    -> Skip fenv1 fenv
+    -> (BuildSchedule kernel fenv1 -> BuildSchedule kernel fenv)
+    -> (forall fenv'. Skip fenv' fenv1 -> BaseVars fenv' input)
+    -- Info for iteration function (ie the body of the loop)
+    -> (forall fenv'. BaseVars fenv' input -> FutureEnv fenv' genv -> FutureEnv fenv' genv')
+    -> (forall fenv'. BaseVars fenv' output -> Destinations fenv' t)
+    -> AwhileInputOutput kernel fenv genv genv' t
+
+awhileInputOutput
+  :: FutureEnv fenv genv0
+  -- A signal that is already resolved.
+  -> Idx fenv Signal
+  -- Left hand side of the iteration function of the while loop.
+  -> GLeftHandSide t genv genv'
+  -- The uniquenesses of the state of the loop.
+  -> Uniquenesses t
+  -- The initial values of the loop, in the ground environment.
+  -> GroundVars genv0 t
+  -> AwhileInputOutput kernel fenv genv genv' t
+awhileInputOutput _ _ (LeftHandSideWildcard TupRunit) _ _ =
+  AwhileInputOutput InputOutputRunit SkipNone id (const TupRunit) (flip const) (const TupRunit)
+awhileInputOutput env resolved (LeftHandSidePair lhs1 lhs2) us (TupRpair vars1 vars2)
+  | AwhileInputOutput io1 skip1 instr1 initial1 env1 dest1
+    <- awhileInputOutput env resolved lhs1 us1 vars1
+  , AwhileInputOutput io2 skip2 instr2 initial2 env2 dest2
+    <- awhileInputOutput (fenvFSkipMany skip1 env) (weaken (skipWeakenIdx skip1) resolved) lhs2 us2 vars2 =
+  AwhileInputOutput
+    (InputOutputRpair io1 io2)
+    (chainSkip skip2 skip1)
+    (instr1 . instr2)
+    (\skip -> initial1 (chainSkip skip skip2) `TupRpair` initial2 skip)
+    (\case
+      TupRpair v1 v2 -> env2 v2 . env1 v1
+      _ -> internalError "Pair impossible")
+    (\case
+      TupRpair v1 v2 -> dest1 v1 `TupRpair` dest2 v2
+      _ -> internalError "Pair impossible")
+  where
+    (us1, us2) = pairUniqueness us
+awhileInputOutput env resolved (LeftHandSideWildcard (TupRpair t1 t2)) us vars =
+  awhileInputOutput env resolved (LeftHandSidePair (LeftHandSideWildcard t1) (LeftHandSideWildcard t2)) us vars
+-- Unique buffer
+awhileInputOutput env resolved (LeftHandSideSingle _) (TupRsingle Unique) (TupRsingle var) = case fprj (varIdx var) env of
+  Just (FutureBuffer tp ref (Move readSignal) (Just (Move writeSignal))) ->
+    let
+      -- Signal for read access and signal for write access
+      ioSignals = InputOutputRpair InputOutputRsignal InputOutputRsignal
+      io = InputOutputRpair ioSignals (InputOutputRref $ GroundRbuffer tp)
+
+      -- Based on 'ref', fill in the first fields of AwhileInputOutput
+      firstFields = case ref of
+        Right idx ->
+          AwhileInputOutput io SkipNone id
+            (\skip -> TupRpair
+              (TupRpair
+                (TupRsingle $ Var BaseRsignal $ weaken (skipWeakenIdx skip) $ fromMaybe resolved readSignal)
+                (TupRsingle $ Var BaseRsignal $ weaken (skipWeakenIdx skip) $ fromMaybe resolved writeSignal)
+              )
+              (TupRsingle $ Var (BaseRref $ GroundRbuffer tp) $ weaken (skipWeakenIdx skip) idx))
+        Left idx ->
+          AwhileInputOutput io (SkipSucc $ SkipSucc SkipNone)
+            -- Store value in a reference, to ensure uniform representation in the body of the loop.
+            (buildLet (lhsRef $ GroundRbuffer tp) (NewRef $ GroundRbuffer tp)
+              . buildEffect (RefWrite (Var (BaseRrefWrite $ GroundRbuffer tp) ZeroIdx) $ Var (BaseRground $ GroundRbuffer tp)
+                $ weaken (weakenSucc $ weakenSucc weakenId) idx))
+            (\skip -> TupRpair
+              (TupRpair
+                -- Weaken the existing signals by 2
+                (TupRsingle $ Var BaseRsignal $ weaken (skipWeakenIdx $ SkipSucc $ SkipSucc skip) $ fromMaybe resolved readSignal)
+                (TupRsingle $ Var BaseRsignal $ weaken (skipWeakenIdx $ SkipSucc $ SkipSucc skip) $ fromMaybe resolved writeSignal)
+              )
+              -- Pass the newly constructed reference
+              (TupRsingle $ Var (BaseRref $ GroundRbuffer tp) $ weaken (skipWeakenIdx skip) $ SuccIdx ZeroIdx))
+    in
+      firstFields
+        (\case
+          TupRpair (TupRpair (TupRsingle signal1) (TupRsingle signal2)) (TupRsingle ref') ->
+            let future = FutureBuffer tp (Right $ varIdx ref') (Move $ Just $ varIdx signal1) $ Just $ Move $ Just $ varIdx signal2
+            in (`FEnvPush` future)
+          _ -> internalError "Input tuple impossible")
+        (\case
+          TupRpair (TupRpair (TupRsingle resolver1) (TupRsingle resolver2)) (TupRsingle ref') ->
+            TupRsingle $ DestinationUnique (varIdx ref') (varIdx resolver1) (varIdx resolver2)
+          _ -> internalError "Output tuple impossible")
+  Just (FutureBuffer _ _ _ Nothing) -> internalError "FutureBuffer with write lock expected"
+  Just (FutureBuffer _ _ _ _) -> internalError "FutureBuffer with Move locks expected"
+  Just (FutureScalar tp _ _) -> bufferImpossible tp
+  Nothing -> variableMissing
+-- Shared buffer
+awhileInputOutput env resolved (LeftHandSideSingle (GroundRbuffer _)) _ (TupRsingle var) = case fprj (varIdx var) env of
+  Just (FutureBuffer tp ref (Move readSignal) Nothing) ->
+    let
+      -- Only a signal for read access
+      ioSignals = InputOutputRsignal
+      io = InputOutputRpair ioSignals (InputOutputRref $ GroundRbuffer tp)
+
+      -- Based on 'ref', fill in the first fields of AwhileInputOutput
+      firstFields = case ref of
+        Right idx ->
+          AwhileInputOutput io SkipNone id
+            (\skip -> TupRpair
+              (TupRsingle $ Var BaseRsignal $ weaken (skipWeakenIdx skip) $ fromMaybe resolved readSignal)
+              (TupRsingle $ Var (BaseRref $ GroundRbuffer tp) $ weaken (skipWeakenIdx skip) idx))
+        Left idx ->
+          AwhileInputOutput io (SkipSucc $ SkipSucc SkipNone)
+            -- Store value in a reference, to ensure uniform representation in the body of the loop.
+            (buildLet (lhsRef $ GroundRbuffer tp) (NewRef $ GroundRbuffer tp)
+              . buildEffect (RefWrite (Var (BaseRrefWrite $ GroundRbuffer tp) ZeroIdx) $ Var (BaseRground $ GroundRbuffer tp)
+                $ weaken (weakenSucc $ weakenSucc weakenId) idx))
+            (\skip -> TupRpair
+              -- Weaken the existing signals by 2
+              (TupRsingle $ Var BaseRsignal $ weaken (skipWeakenIdx $ SkipSucc $ SkipSucc skip) $ fromMaybe resolved readSignal)  
+              -- Pass the newly constructed reference
+              (TupRsingle $ Var (BaseRref $ GroundRbuffer tp) $ weaken (skipWeakenIdx skip) $ SuccIdx ZeroIdx))
+    in
+      firstFields
+        (\case
+          TupRpair (TupRsingle signal1) (TupRsingle ref') ->
+            let future = FutureBuffer tp (Right $ varIdx ref') (Move $ Just $ varIdx signal1) $ Nothing
+            in (`FEnvPush` future)
+          _ -> internalError "Input tuple impossible")
+        (\case
+          TupRpair (TupRsingle resolver1) (TupRsingle ref') ->
+            TupRsingle $ DestinationShared (varIdx ref') (varIdx resolver1)
+          _ -> internalError "Output tuple impossible")
+  Just (FutureBuffer _ _ _ Just{}) -> internalError "FutureBuffer without write lock expected"
+  Just (FutureBuffer _ _ _ _) -> internalError "FutureBuffer with Move locks expected"
+  Just (FutureScalar tp _ _) -> bufferImpossible tp
+  Nothing -> variableMissing
+-- Scalar
+awhileInputOutput env resolved (LeftHandSideSingle (GroundRscalar tp')) _ (TupRsingle var) = case fprj (varIdx var) env of
+  Just (FutureScalar tp signal ref) ->
+    let
+      -- Only a signal to announce that the reference is filled.
+      ioSignals = InputOutputRsignal
+      io = InputOutputRpair ioSignals (InputOutputRref $ GroundRscalar tp)
+
+      -- Based on 'ref', fill in the first fields of AwhileInputOutput
+      firstFields = case ref of
+        Right idx ->
+          AwhileInputOutput io SkipNone id
+            (\skip -> TupRpair
+              (TupRsingle $ Var BaseRsignal $ weaken (skipWeakenIdx skip) $ fromMaybe resolved signal)
+              (TupRsingle $ Var (BaseRref $ GroundRscalar tp) $ weaken (skipWeakenIdx skip) idx))
+        Left idx ->
+          AwhileInputOutput io (SkipSucc $ SkipSucc SkipNone)
+            -- Store value in a reference, to ensure uniform representation in the body of the loop.
+            (buildLet (lhsRef $ GroundRscalar tp) (NewRef $ GroundRscalar tp)
+              . buildEffect (RefWrite (Var (BaseRrefWrite $ GroundRscalar tp) ZeroIdx) $ Var (BaseRground $ GroundRscalar tp)
+                $ weaken (weakenSucc $ weakenSucc weakenId) idx))
+            (\skip -> TupRpair
+              -- Weaken the existing signals by 2
+              (TupRsingle $ Var BaseRsignal $ weaken (skipWeakenIdx $ SkipSucc $ SkipSucc skip) $ fromMaybe resolved signal)  
+              -- Pass the newly constructed reference
+              (TupRsingle $ Var (BaseRref $ GroundRscalar tp) $ weaken (skipWeakenIdx skip) $ SuccIdx ZeroIdx))
+    in
+      firstFields
+        (\case
+          TupRpair (TupRsingle signal1) (TupRsingle ref') ->
+            let future = FutureScalar tp (Just $ varIdx signal1) (Right $ varIdx ref')
+            in (`FEnvPush` future)
+          _ -> internalError "Input tuple impossible")
+        (\case
+          TupRpair (TupRsingle resolver1) (TupRsingle ref') ->
+            TupRsingle $ DestinationShared (varIdx ref') (varIdx resolver1)
+          _ -> internalError "Output tuple impossible")
+  Just (FutureBuffer _ _ _ _) -> bufferImpossible tp'
+  Nothing -> variableMissing
+awhileInputOutput env resolved (LeftHandSideWildcard (TupRsingle tp)) us var
+  | AwhileInputOutput io skip instr initial _ dest <- awhileInputOutput env resolved (LeftHandSideSingle tp) us var
+  = AwhileInputOutput io skip instr initial (flip const) dest
+awhileInputOutput _ _ _ _ _ = internalError "Tuple mismatch"
 
 data MakeAvailable kernel fenv genv' where
   -- Captures existential fenv'
