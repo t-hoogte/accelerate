@@ -84,13 +84,15 @@ slvIn _ _ _ = error "not soa'ed"
 slvOut :: Args env args' -> SubArgs args args' -> Env f (OutArgs args) -> Env f (OutArgs args')
 slvOut _ SubArgsNil Empty = Empty
 slvOut (_:>:args) (SubArgsDead    sas) (Push env _) = slvOut args sas env
-slvOut (a :>: args)  (SubArgsLive SubArgKeep sas) (Push env x) = case a of
-  ArgArray Out _ _ _ -> Push (slvOut args sas env) x
-  ArgArray In  _ _ _ -> slvOut args sas (Push env x)
-  ArgArray Mut _ _ _ -> slvOut args sas (Push env x)
-  ArgVar _ -> slvOut args sas (Push env x)
-  ArgFun _ -> slvOut args sas (Push env x)
-  ArgExp _ -> slvOut args sas (Push env x)
+slvOut (a :>: args)  (SubArgsLive SubArgKeep sas) env = case a of
+  ArgArray Out _ _ _
+    | Push env' x <- env -> Push (slvOut args sas env') x
+    | otherwise -> error "Expected Push"
+  ArgArray In  _ _ _ -> slvOut args sas env
+  ArgArray Mut _ _ _ -> slvOut args sas env
+  ArgVar _ -> slvOut args sas env
+  ArgFun _ -> slvOut args sas env
+  ArgExp _ -> slvOut args sas env
 slvOut _ _ _ = error "not soa'ed"
 
 -- a wrapper around operations which sorts the (term and type level) arguments on global labels, to line the arguments up for Fusion
