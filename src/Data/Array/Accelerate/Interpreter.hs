@@ -669,8 +669,8 @@ evalClusterInterpreter (Clustered c b) args env =
 
 
 iterationsize :: Cluster InterpretOp args -> BackendArgs InterpretOp env args -> Int
-iterationsize (Op _) ArgsNil = 0
-iterationsize (Op _) ((BCA _ n) :>: args) = if n==0 then iterationsize (Op undefined) args else n
+iterationsize (Op _ _) ArgsNil = 0
+iterationsize (Op _ _) ((BCA _ n) :>: args) = if n==0 then iterationsize (Op undefined undefined) args else n
 iterationsize (P.Fused f l r) b = 
   let lsz = iterationsize l (left' (\(BCA f x) -> BCA f x) f b) 
   in if lsz == 0 

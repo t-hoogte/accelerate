@@ -50,7 +50,7 @@ import Data.Array.Accelerate.Type (ScalarType (..), SingleType (..), NumType (..
 import Data.Array.Accelerate.AST.Environment (Env (..), prj')
 import Data.Functor.Identity
 
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (LabelledArgs, LabelledArg (..), ALabel (..), ELabel (..))
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (LabelledArgs, LabelledArg (..), ALabel (..), ELabel (..), Label)
 import Data.List (nub, sortOn)
 import Lens.Micro (_1)
 import qualified Data.Functor.Const as C
@@ -200,7 +200,7 @@ justOut (ArgArray In  _ _ _ :>: args) (_   :>: fs) = justOut args fs
 justOut (ArgArray Mut _ _ _ :>: args) (_   :>: fs) = justOut args fs
 
 data Cluster op args where
-  Op :: SLVedOp op args -> Cluster op args
+  Op :: SLVedOp op args -> Label -> Cluster op args
   Fused :: Fusion largs rargs args
         -> Cluster op largs
         -> Cluster op rargs
@@ -454,10 +454,10 @@ addboth (ArgArray Out _ _ _) (ArgArray Out _ _ _) _ _ = error "two producers of 
 addboth (ArgArray In  _ _ _) (ArgArray Out _ _ _) _ _ = error "reverse vertical/diagonal"
 addboth _ _ _ _ = error "fusing non-arrays"
 
-singleton :: MakesILP op => LabelledArgsOp op env args -> op args -> (forall args'. Clustered op args' -> r) -> r
-singleton largs op k = mkSOAs (unOpLabels largs) $ \soas ->
+singleton :: MakesILP op => Label -> LabelledArgsOp op env args -> op args -> (forall args'. Clustered op args' -> r) -> r
+singleton l largs op k = mkSOAs (unOpLabels largs) $ \soas ->
   sortArgs (soaExpand splitLabelledArgs soas (unOpLabels largs)) $ \sa@(SA sort _) ->
-    k $ Clustered (Op $ SLVOp (SOp (SOAOp op soas) sa) (subargsId $ sort $ soaExpand splitLabelledArgsOp soas largs)) (mapArgs getClusterArg $ sort $ soaExpand splitLabelledArgsOp soas largs)
+    k $ Clustered (Op (SLVOp (SOp (SOAOp op soas) sa) (subargsId $ sort $ soaExpand splitLabelledArgsOp soas largs)) l) (mapArgs getClusterArg $ sort $ soaExpand splitLabelledArgsOp soas largs)
 
 sortArgs :: LabelledArgs env args -> (forall sorted. SortedArgs args sorted -> r) -> r
 sortArgs args k = 
