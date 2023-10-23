@@ -6,15 +6,15 @@
 {-# LANGUAGE GADTs             #-}
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuantifiedConstraints #-}
 {-# LANGUAGE RankNTypes        #-}
-{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE StandaloneDeriving#-}
 {-# LANGUAGE TemplateHaskell   #-}
-{-# LANGUAGE TypeOperators     #-}
 {-# LANGUAGE TypeFamilies      #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
-{-# LANGUAGE QuantifiedConstraints #-}
-{-# OPTIONS_HADDOCK hide #-}
+{-# LANGUAGE TypeOperators     #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# OPTIONS_HADDOCK hide #-}
 -- |
 -- Module      : Data.Array.Accelerate.Representation.Type
 -- Copyright   : [2008..2020] The Accelerate Team

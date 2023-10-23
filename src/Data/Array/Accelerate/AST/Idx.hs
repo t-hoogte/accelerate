@@ -30,13 +30,13 @@ module Data.Array.Accelerate.AST.Idx (
   PairIdx(..)
 ) where
 
-import Language.Haskell.TH.Extra
 import Control.DeepSeq
-import Data.Type.Equality ((:~:)(Refl))
+import Data.Kind
+import Language.Haskell.TH.Extra                                    hiding ( Type )
 
 #ifndef ACCELERATE_INTERNAL_CHECKS
-import Data.Kind as Kind (Type)
-import Unsafe.Coerce (unsafeCoerce)
+import Data.Type.Equality                                           ( (:~:)(Refl) )
+import Unsafe.Coerce                                                ( unsafeCoerce )
 #endif
 
 
@@ -80,10 +80,9 @@ matchIdx _           _           = Nothing
 --
 -- For performance, it uses an Int under the hood.
 --
-newtype Idx :: Kind.Type -> Kind.Type -> Kind.Type where
+newtype Idx :: Type -> Type -> Type where
   UnsafeIdxConstructor :: { unsafeRunIdx :: Int } -> Idx env t
   deriving (Eq, Ord)
-
 {-# COMPLETE ZeroIdx, SuccIdx #-}
 
 pattern ZeroIdx :: forall envt t. () => forall env. (envt ~ (env, t)) => Idx envt t

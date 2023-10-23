@@ -106,6 +106,7 @@ import qualified Data.Array.Accelerate.AST.Partitioned as P
 import Data.Functor.Identity
 import Data.Array.Accelerate.Trafo.LiveVars
 import qualified Debug.Trace
+import Data.Maybe (fromJust)
 
 data Interpreter
 instance Backend Interpreter where
@@ -119,32 +120,34 @@ map !?! key = case map M.!? key of
 
 
 -- Pushes backpermute information through the cluster and stores it in the arguments, for use at the start of the loop (indexing) and in generates.
-makeBackpermuteArg :: Args env args -> Val env -> Cluster InterpretOp args -> BackendArgs InterpretOp env args
-makeBackpermuteArg = makeBackendArg
+-- makeBackpermuteArg :: Args env args -> Val env -> Clustered InterpretOp args -> BackendArgs InterpretOp env args
+-- makeBackpermuteArg = makeBackendArg
 
 instance Eq (BackendClusterArg2 InterpretOp env arg) where
   -- this is just a sanity check
-  BCA f == BCA g = map f [1..100] == map g [1..100]
+  BCA f x == BCA g y = map f [1..100] == map g [1..100] && x == y
 
 
 
 instance StaticClusterAnalysis InterpretOp where
-  data BackendClusterArg2 InterpretOp env arg = BCA (Int -> Int)
+  data BackendClusterArg2 InterpretOp env arg = BCA (Int -> Int) Int -- backpermute function and iteration size
 
-  onOp IBackpermute (BCA outF :>: ArgsNil) (ArgFun f :>: i :>: o :>: ArgsNil) env =
+  onOp IBackpermute (BCA outF sz :>: ArgsNil) (ArgFun f :>: i :>: o :>: ArgsNil) env =
     let ArgArray In  (ArrayR shr  _) (flip varsGetVal env -> sh ) _ = i
         ArgArray Out (ArrayR shr' _) (flip varsGetVal env -> sh') _ = o in
-                      BCA id :>: BCA (toIndex shr sh . evalFun f (evalArrayInstrDefault env) . fromIndex shr' sh' . outF) :>: BCA outF :>: ArgsNil
-  onOp IGenerate    (BCA outF :>: ArgsNil) _ _ =
-                      BCA outF :>: BCA outF :>: ArgsNil -- important: we store the Int -> Int besides the function argument!
-  onOp IMap         (BCA outF :>: ArgsNil) _ _ =
-                      BCA id :>: BCA outF :>: BCA outF :>: ArgsNil
-  onOp IPermute _ _ _ = BCA id :>: BCA id :>: BCA id :>: BCA id :>: ArgsNil
-  onOp (IFold1 _) (BCA outF :>: ArgsNil) (_ :>: i :>: _ :>: ArgsNil) env =
+                      BCA id 0 :>: BCA (toIndex shr sh . evalFun f (evalArrayInstrDefault env) . fromIndex shr' sh' . outF) sz :>: BCA outF sz :>: ArgsNil
+  onOp IGenerate    (BCA outF sz :>: ArgsNil) _ _ =
+                      BCA outF sz :>: BCA outF sz :>: ArgsNil -- important: we store the Int -> Int besides the function argument!
+  onOp IMap         (BCA outF sz :>: ArgsNil) _ _ =
+                      BCA id 0 :>: BCA outF sz :>: BCA outF sz :>: ArgsNil
+  onOp IPermute ArgsNil (_ :>: _ :>: _ :>: ArgArray In (ArrayR shr _) sh _ :>: ArgsNil) env =
+    let sz = size shr (varsGetVal sh env) in
+    BCA id 0 :>: BCA id 0 :>: BCA id 0 :>: BCA id sz :>: ArgsNil
+  onOp (IFold1 _) (BCA outF szO :>: ArgsNil) (_ :>: i :>: _ :>: ArgsNil) env =
     let ArgArray In _ (flip varsGetVal env -> (_, sz)) _ = i
         inF x = (+ x `mod` sz) $ outF (x `div` sz) -- this is where the magic happens to fuse backpermute . fold. Would be cleaner on shapes instead of Ints
-    in BCA id :>: BCA inF :>: BCA outF :>: ArgsNil
-  onOp (IScan1 _ _) _ _ _ = BCA id :>: BCA id :>: BCA id :>: ArgsNil -- here we trust that our ILP prevented any backpermutes after the scan
+    in BCA id 0 :>: BCA inF (szO*sz) :>: BCA outF szO :>: ArgsNil
+  onOp (IScan1 _ _) _ _ _ = undefined -- BCA id :>: BCA id :>: BCA id :>: ArgsNil -- here we trust that our ILP prevented any backpermutes after the scan
   -- onOp (IAppend Left n) (BCA outF :>: ArgsNil) (_ :>: i :>: _ :>: ArgsNil) env =
   --   let ArgArray In _ (flip varsGetVal env -> (_, sz)) _ = i
   --       inF x = outF $ (+ (x `mod` sz) * (sz + n)) $ n + (x `div` sz) -- or something like this :)
@@ -152,21 +155,28 @@ instance StaticClusterAnalysis InterpretOp where
   -- onOp (IAppend Right _) (BCA outF :>: ArgsNil) _ _ =
   --   BCA outF :>: BCA outF :>: BCA outF :>: ArgsNil
 
-  valueToIn    (BCA f) = BCA f
-  valueToOut   (BCA f) = BCA f
-  inToValue    (BCA f) = BCA f
-  outToValue   (BCA f) = BCA f
-  outToSh      (BCA f) = BCA f
-  shToOut      (BCA f) = BCA f
-  shToValue    (BCA f) = BCA f
-  varToValue   (BCA f) = BCA f
-  varToSh      (BCA f) = BCA f
-  shToVar      (BCA f) = BCA f
-  shrinkOrGrow (BCA f) = BCA f
-  addTup       (BCA f) = BCA f
-  unitToVar    (BCA f) = BCA f
-  varToUnit    (BCA f) = BCA f
-  def _ _ _ = BCA id
+  valueToIn    (BCA f sz) = BCA f sz
+  valueToOut   (BCA f sz) = BCA f sz
+  inToValue    (BCA f sz) = BCA f sz
+  outToValue   (BCA f sz) = BCA f sz
+  outToSh      (BCA f sz) = BCA f sz
+  shToOut      (BCA f sz) = BCA f sz
+  shToValue    (BCA f sz) = BCA f sz
+  varToValue   (BCA f sz) = BCA f sz
+  varToSh      (BCA f sz) = BCA f sz
+  shToVar      (BCA f sz) = BCA f sz
+  shrinkOrGrow (BCA f sz) = BCA f sz
+  addTup       (BCA f sz) = BCA f sz
+  unitToVar    (BCA f sz) = BCA f sz
+  varToUnit    (BCA f sz) = BCA f sz
+  inToVar (BCA f sz) = BCA f sz
+  def (ArgVar _) _ BCAI = BCA id 0
+  def (ArgExp _) _ BCAI = BCA id 0
+  def (ArgFun _) _ BCAI = BCA id 0
+  def (ArgArray Mut _ _ _) _ BCAI = BCA id 0
+  def (ArgArray In  (ArrayR shr _) sh _) env BCAI = BCA id (size shr $ varsGetVal sh env)
+  def (ArgArray Out (ArrayR shr _) sh _) env BCAI = BCA id (size shr $ varsGetVal sh env)
+
 
 -- we can implement stencils using clamp, mirror or wrap with backpermute and zipwith(map), but for stencils using function we need a little extra.
 data InterpretOp args where
@@ -208,6 +218,7 @@ instance DesugarAcc InterpretOp where
                 (ArgArray In arr' (weakenVars wTemp sh') (kTemp weakenId))
                 (weaken wTemp c)
   mkScan dir a Nothing b c = Exec (IScan1 dir $ unsafePerformIO $ newIORef mempty) (a :>: b :>: c :>: ArgsNil)
+  mkScan _ _ _ _ _ = error "exclusive scan not implemented"
   -- we desugar a Scan with seed into a scan1 followed by a map followed by an append
   -- mkScan dir comb (Just (ArgExp seed)) i@(ArgArray In arr@(ArrayR shr tp) sh _) o
   --   | DeclareVars lhsTemp1 wTemp  kTemp1 <- declareVars $ buffersR tp
@@ -274,16 +285,16 @@ instance SimplifyOperation InterpretOp where
   detectCopy _ _                     = const []
 
 instance SLVOperation InterpretOp where
-  slvOperation IGenerate    = defaultSlvGenerate    IGenerate
-  slvOperation IMap         = defaultSlvMap         IMap
-  slvOperation IBackpermute = defaultSlvBackpermute IBackpermute
+  -- slvOperation IGenerate    = defaultSlvGenerate    IGenerate
+  -- slvOperation IMap         = defaultSlvMap         IMap
+  -- slvOperation IBackpermute = defaultSlvBackpermute IBackpermute
   slvOperation _            = Nothing
 
 data InterpretKernel env where
-  InterpretKernel :: Cluster InterpretOp args -> Args env args -> InterpretKernel env
+  InterpretKernel :: Clustered InterpretOp args -> Args env args -> InterpretKernel env
 
 instance NFData' InterpretKernel where
-  rnf' (InterpretKernel cluster args) = rnf' cluster `seq` rnfArgs args
+  rnf' (InterpretKernel cluster args) = undefined cluster `seq` rnfArgs args
 
 instance IsKernel InterpretKernel where
   type KernelOperation InterpretKernel = InterpretOp
@@ -599,6 +610,10 @@ prjVars TupRunit         _   = ()
 prjVars (TupRpair v1 v2) env = (prjVars v1 env, prjVars v2 env)
 prjVars (TupRsingle var) env = prj (varIdx var) env
 
+instance TupRmonoid Identity where
+  pair' (Identity a) (Identity b) = Identity (a,b)
+  unpair' (Identity (a,b)) = (Identity a, Identity b)
+
 instance EvalOp InterpretOp where
   -- We have to sprinkle 'Identity' around a bit here, to allow other backends to use different types
   type EvalMonad InterpretOp = IO
@@ -606,13 +621,15 @@ instance EvalOp InterpretOp where
   type Embed' InterpretOp = Identity
   type EnvF InterpretOp = Identity
 
+  unit = Identity ()
+
   evalOp _ _ IMap env (Push (Push _ (BAE (Value' (Identity x) (Shape' shr sh)) _)) (BAE f _)) =
     pure $ Push Empty (FromArg $ Value' (Identity $ evalFun f (evalArrayInstrDefault env) x) (Shape' shr sh))
   evalOp _ _ IBackpermute _ (Push (Push (Push _ (BAE sh _)) (BAE (Value' x _) _)) _) =
     pure $ Push Empty (FromArg $ Value' x sh) -- We evaluated the backpermute at the start already, now simply relabel the shape info
-  evalOp i _ IGenerate env (Push (Push _ (BAE (Shape' shr sh) (BCA bp))) (BAE f _)) =
+  evalOp i _ IGenerate env (Push (Push _ (BAE (Shape' shr sh) (BCA bp sz))) (BAE f _)) =
     pure $ Push Empty (FromArg $ Value' (Identity $ evalFun f (evalArrayInstrDefault env) (linearIndexToSh shr (runIdentity sh) (bp i))) (Shape' shr sh))
-  evalOp i _ IPermute env (Push (Push (Push (Push _ (BAE (Value' (Identity x) (Shape' shr (Identity sh))) (BCA bp))) (BAE shf _)) (BAE (ArrayDescriptor shr' sh' buf, typ) _)) (BAE ef _)) = 
+  evalOp i _ IPermute env (Push (Push (Push (Push _ (BAE (Value' (Identity x) (Shape' shr (Identity sh))) (BCA bp sz))) (BAE shf _)) (BAE (ArrayDescriptor shr' sh' buf, typ) _)) (BAE ef _)) = 
     do
       case evalFun shf (evalArrayInstrDefault env) $ linearIndexToSh shr sh (bp i) of
         (0,_) -> pure ()
@@ -622,7 +639,7 @@ instance EvalOp InterpretOp where
           writeOutputInterpreter typ buf env j (evalFun ef (evalArrayInstrDefault env) x old) 
         _ -> error "primMaybe with weird tag"
       pure Empty
-  evalOp i _ (IFold1 acc) env (Push (Push _ (BAE (Value' (Identity x) (Shape' shr@(ShapeRsnoc shr') (Identity sh@(sh',_)))) (BCA bp))) (BAE f _)) = 
+  evalOp i _ (IFold1 acc) env (Push (Push _ (BAE (Value' (Identity x) (Shape' shr@(ShapeRsnoc shr') (Identity sh@(sh',_)))) (BCA bp sz))) (BAE f _)) = 
     do
       let ix = firstOfRow (bp i) (Shape shr sh) 0
       x' <- if bp i == ix 
@@ -635,28 +652,52 @@ instance EvalOp InterpretOp where
   evalOp _ _ (IScan1 _ acc) env _ = error "todo"
 
   writeOutput r _ buf env n (Identity x) = writeOutputInterpreter (TupRsingle r) buf env n x
-  readInput r _ buf env (BCA f) n = Identity <$> indexBuffers' (TupRsingle r) (varsGetVal buf env) (f n)
+  readInput r _ buf env (BCA f sz) n = Identity <$> indexBuffers' (TupRsingle r) (varsGetVal buf env) (f n)
 
   indexsh  gvs env = pure . Identity $ varsGetVal gvs env
   indexsh' evs env = pure . Identity $ varsGetVal evs env
   subtup s = Identity . subTup s . runIdentity
   
+writeOutputInterpreter :: TypeR e -> Vars s env (Buffers e) -> Val env -> Int -> e -> IO ()
 writeOutputInterpreter r buf env n x = writeBuffers r (veryUnsafeUnfreezeBuffers r $ varsGetVal buf env) n x
 
-evalClusterInterpreter :: Cluster InterpretOp args -> Args env args -> Val env -> IO ()
-evalClusterInterpreter c@(Cluster _ (Cluster' io _)) args env = doNTimes (iterationsize io args env) $ evalCluster c args env
+evalClusterInterpreter :: Clustered InterpretOp args -> Args env args -> Val env -> IO ()
+evalClusterInterpreter (Clustered c b) args env = 
+  let b' = makeBackendArg args env c b in
+  doNTimes (iterationsize c b') $ evalCluster c b args env
+-- evalClusterInterpreter c@(Cluster _ (Cluster' io _)) args env = doNTimes (iterationsize io args env) $ evalCluster c args env
+
+
+iterationsize :: Cluster InterpretOp args -> BackendArgs InterpretOp env args -> Int
+iterationsize (Op _) ArgsNil = 0
+iterationsize (Op _) ((BCA _ n) :>: args) = if n==0 then iterationsize (Op undefined) args else n
+iterationsize (P.Fused f l r) b = 
+  let lsz = iterationsize l (left' (\(BCA f x) -> BCA f x) f b) 
+  in if lsz == 0 
+     then iterationsize r (right' (\(BCA f x)->BCA f x) (\(BCA f x)->BCA f x) f b) 
+     else lsz
+
+-- iterationsize (Op _) ArgsNil env = Nothing
+-- iterationsize (Op _) ((ArgVar _) :>: args) env = iterationsize (Op undefined) args env
+-- iterationsize (Op _) ((ArgExp _) :>: args) env = iterationsize (Op undefined) args env
+-- iterationsize (Op _) ((ArgFun _) :>: args) env = iterationsize (Op undefined) args env
+-- iterationsize (Op _) ((ArgArray Mut ar tr tr') :>: args) env = iterationsize (Op undefined) args env
+-- iterationsize (Op _) ((ArgArray In ar tr tr') :>: args) env = _wo
+-- iterationsize (Op _) ((ArgArray Out ar tr tr') :>: args) env = _wp
+-- iterationsize (P.Fused fu clus clus') args env = _wd
+
 
 -- TODO update when we add folds, reconsider when we add scans that add 1 to the size...
-iterationsize :: ClusterIO args i o -> Args env args -> Val env -> Int
-iterationsize io args env = case io of
-  P.Empty -> error "no size"
-  P.Output {}   -> case args of ArgArray Out (ArrayR shr _) sh _ :>: _ -> arrsize shr (varsGetVal sh env)
-  P.Vertical _ _ io' -> case args of -- skip past this one
-    ArgVar _ :>: args' -> iterationsize io' args' env
-  P.Input  io'       -> case args of ArgArray In  _ _ _ :>: args' -> iterationsize io' args' env   -- -> arrsize shr (varsGetVal sh env)
-  P.MutPut io'       -> case args of ArgArray Mut _ _ _ :>: args' -> iterationsize io' args' env -- arrsize shr (varsGetVal sh env)
-  P.ExpPut' io' -> case args of _ :>: args' -> iterationsize io' args' env -- skip past this one
-  P.Trivial io' -> case args of _ :>: args' -> iterationsize io' args' env
+-- iterationsize :: ClusterIO args i o -> Args env args -> Val env -> Int
+-- iterationsize io args env = case io of
+--   P.Empty -> error "no size"
+--   P.Output {}   -> case args of ArgArray Out (ArrayR shr _) sh _ :>: _ -> arrsize shr (varsGetVal sh env)
+--   P.Vertical _ _ io' -> case args of -- skip past this one
+--     ArgVar _ :>: args' -> iterationsize io' args' env
+--   P.Input  io'       -> case args of ArgArray In  _ _ _ :>: args' -> iterationsize io' args' env   -- -> arrsize shr (varsGetVal sh env)
+--   P.MutPut io'       -> case args of ArgArray Mut _ _ _ :>: args' -> iterationsize io' args' env -- arrsize shr (varsGetVal sh env)
+--   P.ExpPut' io' -> case args of _ :>: args' -> iterationsize io' args' env -- skip past this one
+--   P.Trivial io' -> case args of _ :>: args' -> iterationsize io' args' env
 
 
 arrsize :: ShapeR sh -> sh -> Int

@@ -24,21 +24,14 @@
 module Data.Array.Accelerate.Eval where
 
 import Prelude                                                      hiding (take, (!!), sum)
-import Data.Array.Accelerate.AST.Partitioned hiding (Empty)
-import Data.Array.Accelerate.AST.Var
-import Data.Array.Accelerate.AST.LeftHandSide
-import qualified Data.Array.Accelerate.AST.Partitioned as P
+import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.AST.Operation
-import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Trafo.Desugar
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Type
-import Data.Array.Accelerate.Representation.Ground
 import Data.Array.Accelerate.AST.Environment
-import Data.Array.Accelerate.Trafo.Substitution
 import Data.Array.Accelerate.Trafo.Operation.LiveVars
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (BackendCluster, MakesILP (BackendClusterArg))
-import Data.Array.Accelerate.Array.Buffer
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP (BackendClusterArg), BackendCluster)
 import Data.Array.Accelerate.Pretty.Partitioned ()
 
 
@@ -49,17 +42,12 @@ import Data.Bifunctor (bimap)
 import Data.Biapplicative (biliftA2)
 import Data.Functor.Compose
 import Data.Type.Equality
-import Data.Maybe (fromJust)
-import Data.Function ((&))
 import Data.Array.Accelerate.Type (ScalarType)
 import Unsafe.Coerce (unsafeCoerce)
-import Data.Array.Accelerate.Representation.Shape (ShapeR)
+import Data.Array.Accelerate.Representation.Shape (ShapeR (..))
 import Data.Composition ((.*))
-import Data.Array.Accelerate.Pretty.Exp (IdxF(..))
-import Data.Array.Accelerate.AST.Idx (Idx (..))
-import Data.Array.Accelerate.Pretty.Operation
-import qualified Debug.Trace
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (Label)
+import Data.Array.Accelerate.AST.Var (varsType)
 
 
 type BackendArgs op env = PreArgs (BackendClusterArg2 op env)
@@ -67,17 +55,18 @@ type BackendEnv op env = Env (BackendEnvElem op env)
 data BackendEnvElem op env arg = BEE (ToArg env arg) (BackendClusterArg2 op env arg)
 type BackendArgEnv op env = Env (BackendArgEnvElem op env)
 data BackendArgEnvElem op env arg = BAE (FromArg env (Embed op arg)) (BackendClusterArg2 op env arg)
+type EmbedEnv op env = Env (FromArg' op env)
 newtype FromArg' op env a = FromArg (FromArg env (Embed op a))
-pattern PushFA :: () => (e' ~ (e, x)) => FromArg env (Embed op x) -> Env (FromArg' op env) e -> Env (FromArg' op env) e'
-pattern PushFA x env = Push env (FromArg x)
+pattern PushFA :: () => (e' ~ (e, x)) => EmbedEnv op env e -> FromArg env (Embed op x) -> EmbedEnv op env e'
+pattern PushFA env x = Push env (FromArg x)
 {-# COMPLETE Empty, PushFA #-}
 
 -- TODO make actually static, i.e. by using `Fun env (Int -> Int)` instead in the interpreter
 class (MakesILP op, forall env arg. Eq (BackendClusterArg2 op env arg)) => StaticClusterAnalysis (op :: Type -> Type) where
   -- give better name
   data BackendClusterArg2 op env arg
-  onOp :: op args -> BackendArgs op env (OutArgsOf args) -> Args env args -> Env (EnvF op) env -> BackendArgs op env args
-  def :: Arg env arg -> Env (EnvF op) env -> BackendClusterArg op arg -> BackendClusterArg2 op env arg
+  onOp :: op args -> BackendArgs op env (OutArgsOf args) -> Args env args -> FEnv op env -> BackendArgs op env args
+  def :: Arg env arg -> FEnv op env -> BackendClusterArg op arg -> BackendClusterArg2 op env arg
   valueToIn    :: BackendClusterArg2 op env (Value sh e)     -> BackendClusterArg2 op env (In    sh e)
   valueToOut   :: BackendClusterArg2 op env (Value sh e)     -> BackendClusterArg2 op env (Out   sh e)
   inToValue    :: BackendClusterArg2 op env (In    sh e)     -> BackendClusterArg2 op env (Value sh e)
@@ -91,106 +80,97 @@ class (MakesILP op, forall env arg. Eq (BackendClusterArg2 op env arg)) => Stati
   shrinkOrGrow :: BackendClusterArg2 op env (m     sh e')    -> BackendClusterArg2 op env (m     sh e)
   addTup       :: BackendClusterArg2 op env (v     sh e)     -> BackendClusterArg2 op env (v     sh ((), e))
   unitToVar    :: BackendClusterArg2 op env (m     sh ())    -> BackendClusterArg2 op env (Var'  sh  )  
-  varToUnit    :: BackendClusterArg2 op env (Var' sh)        -> BackendClusterArg2 op env (m     sh ())  
+  varToUnit    :: BackendClusterArg2 op env (Var' sh)        -> BackendClusterArg2 op env (m     sh ()) 
+  inToVar      :: BackendClusterArg2 op env (In sh e)        -> BackendClusterArg2 op env (Var' sh   )
   pairinfo     :: BackendClusterArg2 op env (m sh a)         -> BackendClusterArg2 op env (m sh b) -> BackendClusterArg2 op env (m sh (a,b))
   pairinfo a b = if shrinkOrGrow a == b then shrinkOrGrow a else error "pairing unequal"
   unpairinfo   :: BackendClusterArg2 op env (m sh (a,b))     -> (BackendClusterArg2 op env (m sh a),  BackendClusterArg2 op env (m sh b))
   unpairinfo x = (shrinkOrGrow x, shrinkOrGrow x)
 
--- use ScopedTypeVariables for op and env, but not for the args (so we call them arguments instead)
-makeBackendArg :: forall op env arguments. StaticClusterAnalysis op => Args env arguments -> Env (EnvF op) env -> Cluster op arguments -> BackendArgs op env arguments
-makeBackendArg args env (Cluster info (Cluster' io ast)) = let o = getOutputEnv io args info
-                                                               i = fromAST ast o
-                                                          in fromInputEnv io i
+
+
+makeBackendArg :: forall op env args. StaticClusterAnalysis op => Args env args -> FEnv op env -> Cluster op args -> BackendCluster op args -> BackendArgs op env args
+makeBackendArg args env c b = go args c (defaultOuts args b)
   where
-    fromAST :: ClusterAST op i o -> BackendEnv op env o -> BackendEnv op env i
-    fromAST None o = o
-    fromAST (Bind lhs op l ast) o = let o' = fromAST ast o
-                                    in lhsArgsEnv lhs o' (uncurry (onOp op) (first' onlyOut $ lhsEnvArgs lhs o') env)
+    go :: forall args. Args env args -> Cluster op args -> BackendArgs op env (OutArgsOf args) -> BackendArgs op env args
+    go args (Fused f l r) outputs = let
+      backR = go (right f args) r (rightB args f outputs)
+      backL = go (left  f args) l (backleft f backR outputs)
+      in fuseBack f backL backR
+    go args (Op (SLVOp (SOp (SOAOp op soa) (SA sort unsort)) sa)) outputs = 
+      slv (shToVar . outToSh) sa . sort . soaExpand uncombineB soa $ onOp @op op (forgetIn (soaShrink combine soa $ unsort $ slv' varToOut sa args) $ soaShrink combineB soa $ unsort $ slv' (shToOut . varToSh) sa $ inventIn args outputs) (soaShrink combine soa $ unsort $ slv' varToOut sa args) env
 
-    onlyOut :: BackendArgs op env args -> Args env args -> BackendArgs op env (OutArgsOf args)
-    onlyOut ArgsNil ArgsNil = ArgsNil
-    onlyOut (b :>: bs) (ArgArray Out _ _ _ :>: as) = b :>: onlyOut bs as
-    onlyOut (_ :>: bs) (a                  :>: as) = case a of
-      ArgArray In  _ _ _ -> onlyOut bs as
-      ArgArray Mut _ _ _ -> onlyOut bs as
-      ArgExp{} -> onlyOut bs as
-      ArgVar{} -> onlyOut bs as
-      ArgFun{} -> onlyOut bs as
+    combineB   :: BackendClusterArg2 op env (f l) -> BackendClusterArg2 op env (f r) -> BackendClusterArg2 op env (f (l,r))
+    combineB   = unsafeCoerce $ pairinfo   @op
+    uncombineB :: BackendClusterArg2 op env (f (l,r)) -> (BackendClusterArg2 op env (f l), BackendClusterArg2 op env (f r))
+    uncombineB = unsafeCoerce $ unpairinfo @op
 
-    lhsEnvArgs :: LeftHandSideArgs body env' scope -> BackendEnv op env scope -> (BackendArgs op env body, Args env body)
-    lhsEnvArgs Base Empty = (ArgsNil, ArgsNil)
-    lhsEnvArgs (Reqr _ t   lhs) env = case tupRindex env t of
-      Info (Compose (BEE (ArrArg r sh buf) f)) -> bimap (valueToIn  f :>:) (ArgArray In  r sh buf :>:) $ lhsEnvArgs lhs env
-      _ -> error "urk"
-    lhsEnvArgs (Make t1 t2 lhs) env = case takeBuffers t1 env of
-      (Info (Compose (BEE (ArrArg r sh buf) f)), env') -> bimap (valueToOut f :>:) (ArgArray Out r sh buf :>:) $ lhsEnvArgs lhs env'
-      _ -> error "urk"
-    lhsEnvArgs (ExpArg lhs) (Push env (BEE (Others _ arg) f)) = bimap (f :>:) (arg :>:) $ lhsEnvArgs lhs env
-    lhsEnvArgs (Adju   lhs) (Push env (BEE (Others _ arg) f)) = bimap (f :>:) (arg :>:) $ lhsEnvArgs lhs env
-    lhsEnvArgs (Ignr lhs) (Push env _) = lhsEnvArgs lhs env
+    defaultOuts :: Args env args -> BackendCluster op args -> BackendArgs op env (OutArgsOf args)
+    defaultOuts args backendcluster = forgetIn args $ fuseArgsWith args backendcluster (\arg b -> def arg env b)
 
-    lhsArgsEnv :: LeftHandSideArgs body env' scope -> BackendEnv op env scope -> BackendArgs op env body -> BackendEnv op env env'
-    lhsArgsEnv Base                   _                ArgsNil            = Empty
-    lhsArgsEnv (Reqr t1 t2 lhs)       env              (f :>: args) = case tupRindex env t2 of
-      Info (Compose (BEE arg _)) ->
-        overwriteInBackendEnv t1 (Compose (BEE arg $ inToValue f)) $ lhsArgsEnv lhs env args
-      NoInfo _ -> lhsArgsEnv lhs env args
-    lhsArgsEnv (Make t1 t2 lhs)       env              (f :>: args) = case takeBuffers t1 env of
-      (Info (Compose (BEE (ArrArg r sh buf) _)), env') -> consBuffers t2 (BEE (OutArg r sh buf) (outToSh f)) (lhsArgsEnv lhs env' args)
-      _ -> error "urk"
-    lhsArgsEnv (ExpArg     lhs) (Push env (BEE arg _)) (f :>: args) = Push (lhsArgsEnv lhs env  args) (BEE arg f)
-    lhsArgsEnv (Adju       lhs) (Push env (BEE arg _)) (f :>: args) = Push (lhsArgsEnv lhs env  args) (BEE arg f)
-    lhsArgsEnv (Ignr       lhs) (Push env arg)                      args  = Push (lhsArgsEnv lhs env  args) arg
+    fuseBack :: forall largs rargs args
+              . Fusion largs rargs args 
+             -> BackendArgs op env largs 
+             -> BackendArgs op env rargs 
+             -> BackendArgs op env args
+    fuseBack EmptyF ArgsNil ArgsNil = ArgsNil
+    fuseBack (Vertical ar f) (l :>: ls) (r :>: rs) = inToVar r :>: fuseBack f ls rs
+    fuseBack (Horizontal  f) (l :>: ls) (r :>: rs) = l :>: fuseBack f ls rs
+    fuseBack (Diagonal    f) (l :>: ls) (r :>: rs) = l :>: fuseBack f ls rs
+    fuseBack (IntroI1     f) (l :>: ls)        rs  = l :>: fuseBack f ls rs
+    fuseBack (IntroI2     f)        ls  (r :>: rs) = r :>: fuseBack f ls rs
+    fuseBack (IntroO1     f) (l :>: ls)        rs  = l :>: fuseBack f ls rs
+    fuseBack (IntroO2     f)        ls  (r :>: rs) = r :>: fuseBack f ls rs
+    fuseBack (IntroL      f) (l :>: ls)        rs  = l :>: fuseBack f ls rs
+    fuseBack (IntroR      f)        ls  (r :>: rs) = r :>: fuseBack f ls rs
 
-    getOutputEnv :: ClusterIO args i o -> Args env args -> BackendCluster op args -> BackendEnv op env o
-    getOutputEnv P.Empty       ArgsNil           _ = Empty
-    getOutputEnv (Vertical t r io) (arg@(ArgVar vars) :>: args) (info :>: infos) = put' t (BEE (ArrArg r (toGrounds vars) (error "accessing a fused away buffer")) (varToValue $ def arg env info)) (getOutputEnv io args infos) -- there is no buffer!
-    getOutputEnv (Input io) (arg@(ArgArray In r sh buf) :>: args) (info :>: infos) = Push (getOutputEnv io args infos) (BEE (ArrArg r sh buf) (inToValue $ def arg env info))
-    getOutputEnv (Output t s e io) (arg@(ArgArray Out r sh buf) :>: args) (info :>: infos) = put' t (BEE (ArrArg (ArrayR (arrayRshape r) e) sh (biggenBuffers s buf)) (outToValue $ shrinkOrGrow $ def arg env info)) (getOutputEnv io args infos)
-    getOutputEnv (MutPut     io) (arg :>: args) (info :>: infos) = Push (getOutputEnv io args infos) (BEE (Others "mut" arg) (def arg env info))
-    getOutputEnv (ExpPut     io) (arg :>: args) (info :>: infos) = Push (getOutputEnv io args infos) (BEE (Others "exp" arg) (def arg env info))
-    getOutputEnv (VarPut     io) (arg :>: args) (info :>: infos) = Push (getOutputEnv io args infos) (BEE (Others "var" arg) (def arg env info))
-    getOutputEnv (FunPut     io) (arg :>: args) (info :>: infos) = Push (getOutputEnv io args infos) (BEE (Others "fun" arg) (def arg env info))
-    getOutputEnv (Trivial    io) (arg@(ArgArray _ _ sh _) :>: args) (info :>: infos) = Push (getOutputEnv io args infos) (BEE (Others "trv" $ ArgVar $ fromGrounds sh ) (unitToVar $ def arg env info))
+    rightB :: forall largs rargs args
+            . StaticClusterAnalysis op 
+           => Args env args 
+           -> Fusion largs rargs args
+           -> BackendArgs op env (OutArgsOf  args)
+           -> BackendArgs op env (OutArgsOf rargs)
+    rightB args f = forgetIn (right f args) . right' (valueToIn . varToValue) (valueToIn . outToValue) f . inventIn args
 
-    biggenBuffers :: SubTupR e e' -> GroundVars env (Buffers e') -> GroundVars env (Buffers e)
-    biggenBuffers SubTupRskip _ = error "accessing a simplified away buffer"
-    biggenBuffers SubTupRkeep vars = vars
-    biggenBuffers (SubTupRpair _ _) (TupRsingle _) = error "impossible???"
-    biggenBuffers (SubTupRpair sl sr) (TupRpair bufl bufr) = TupRpair (biggenBuffers sl bufl) (biggenBuffers sr bufr)
+    backleft :: forall largs rargs args
+              . StaticClusterAnalysis op
+             => Fusion largs rargs args
+             -> BackendArgs op env rargs
+             -> BackendArgs op env (OutArgsOf args)
+             -> BackendArgs op env (OutArgsOf largs)
+    backleft EmptyF ArgsNil ArgsNil = ArgsNil
+    backleft (Vertical ar f) (r:>:rs)      as  = (valueToOut . inToValue) r :>: backleft f rs as
+    backleft (Horizontal  f) (_:>:rs)      as  =                                backleft f rs as
+    backleft (Diagonal    f) (r:>:rs) (a:>:as) = (valueToOut . inToValue) r :>: backleft f rs as -- just using 'a' is also type correct, and maybe also fine? Not sure anymore
+    backleft (IntroI1     f)      rs       as  =                                backleft f rs as
+    backleft (IntroI2     f) (_:>:rs)      as  =                                backleft f rs as
+    backleft (IntroO1     f)      rs  (a:>:as) = a                          :>: backleft f rs as
+    backleft (IntroO2     f) (_:>:rs) (_:>:as) =                                backleft f rs as
+    backleft (IntroL      f)      rs       as = unsafeCoerce $ backleft f rs (unsafeCoerce as)
+    backleft (IntroR      f) (_:>:rs)      as =                                backleft f rs (unsafeCoerce as)
 
-    fromInputEnv :: ClusterIO args input output -> BackendEnv op env input -> BackendArgs op env args
-    fromInputEnv P.Empty       Empty = ArgsNil
-    fromInputEnv (Vertical _ _ io) (Push env (BEE _ f)) = shToVar f                :>: fromInputEnv io env
-    fromInputEnv (Input        io) (Push env (BEE _ f)) = valueToIn f              :>: fromInputEnv io env
-    fromInputEnv (Output _ _ _ io) (Push env (BEE _ f)) = shrinkOrGrow (shToOut f) :>: fromInputEnv io env
-    fromInputEnv (MutPut       io) (Push env (BEE _ f)) = f                        :>: fromInputEnv io env
-    fromInputEnv (ExpPut'      io) (Push env (BEE _ f)) = f                        :>: fromInputEnv io env
-    fromInputEnv (Trivial      io) (Push env (BEE _ f)) = varToUnit f              :>: fromInputEnv io env
+inventIn :: Args env args -> PreArgs f (OutArgsOf args) -> PreArgs f args
+inventIn ArgsNil ArgsNil = ArgsNil
+inventIn (ArgArray Out _ _ _ :>: args) (arg :>: out) = arg :>: inventIn args out
+inventIn (ArgArray In  _ _ _ :>: args) out = error "fake argument" :>: inventIn args out
+inventIn (ArgArray Mut _ _ _ :>: args) out = error "fake argument" :>: inventIn args out
+inventIn (ArgVar _           :>: args) out = error "fake argument" :>: inventIn args out
+inventIn (ArgExp _           :>: args) out = error "fake argument" :>: inventIn args out
+inventIn (ArgFun _           :>: args) out = error "fake argument" :>: inventIn args out
 
-    overwriteInBackendEnv :: TupR (IdxF (Value sh) env') e -> Compose (BackendEnvElem op env) (Value sh) e -> BackendEnv op env env' -> BackendEnv op env env'
-    overwriteInBackendEnv TupRunit _ env = env
-    overwriteInBackendEnv (TupRpair l r) (unpair' -> (beeL, beeR)) env = overwriteInBackendEnv l beeL $ overwriteInBackendEnv r beeR env
-    overwriteInBackendEnv (TupRsingle (IdxF idx)) (Compose bee) env = overwrite idx bee env
-      where
-        overwrite :: Idx env' (Value sh e) -> BackendEnvElem op env (Value sh e) -> BackendEnv op env env' -> BackendEnv op env env'
-        overwrite ZeroIdx bee (Push env _) = Push env bee
-        overwrite (SuccIdx idx) bee (Push env e) = Push (overwrite idx bee env) e
+forgetIn :: Args env args -> PreArgs f args -> PreArgs f (OutArgsOf args)
+forgetIn ArgsNil ArgsNil = ArgsNil
+forgetIn (ArgArray Out _ _ _ :>: args) (arg :>: out) = arg :>: forgetIn args out
+forgetIn (ArgArray In  _ _ _ :>: args) (_   :>: out) = forgetIn args out
+forgetIn (ArgArray Mut _ _ _ :>: args) (_   :>: out) = forgetIn args out
+forgetIn (ArgVar _           :>: args) (_   :>: out) = forgetIn args out
+forgetIn (ArgExp _           :>: args) (_   :>: out) = forgetIn args out
+forgetIn (ArgFun _           :>: args) (_   :>: out) = forgetIn args out
 
 
 
-fromArgs :: Int -> Val env -> Args env args -> FromIn env args
-fromArgs _ _ ArgsNil = ()
-fromArgs i env (ArgVar v :>: args) = (fromArgs i env args, v)
-fromArgs i env (ArgExp e :>: args) = (fromArgs i env args, e)
-fromArgs i env (ArgFun f :>: args) = (fromArgs i env args, f)
-fromArgs i env (ArgArray Mut (ArrayR shr t) sh buf :>: args) = (fromArgs i env args, (ArrayDescriptor shr sh buf, t))
-fromArgs i env (ArgArray In (ArrayR shr typer) shv buf :>: args) =
-  let buf' = varsGetVal buf env
-      sh   = varsGetVal shv env
-  in (fromArgs i env args, Value (indexBuffers typer buf' i) (Shape shr sh))
-fromArgs i env (ArgArray Out (ArrayR shr _) sh _ :>: args) = (fromArgs i env args, Shape shr (varsGetVal sh env))
+sortingOnOut :: (forall f. PreArgs f args -> PreArgs f sorted) -> Args env args -> PreArgs g (OutArgsOf args) -> PreArgs g (OutArgsOf sorted)
+sortingOnOut sort args out = justOut (sort args) $ sort $ inventIn args out
 
 
 class (StaticClusterAnalysis op, Monad (EvalMonad op), TupRmonoid (Embed' op))
@@ -200,17 +180,20 @@ class (StaticClusterAnalysis op, Monad (EvalMonad op), TupRmonoid (Embed' op))
   type family Embed' op :: Type -> Type
   type family EnvF op :: Type -> Type
 
+  unit :: Embed' op ()
+  embed :: EnvF op a -> Embed' op a
+
   -- TODO most of these functions should probably be unnecesary, but adding them is the easiest way to get things working right now
-  indexsh :: GroundVars env sh -> Env (EnvF op) env -> EvalMonad op (Embed' op sh)
-  indexsh' :: ExpVars env sh -> Env (EnvF op) env -> EvalMonad op (Embed' op sh)
+  indexsh :: GroundVars env sh -> FEnv op env -> EvalMonad op (Embed' op sh)
+  indexsh'   :: ExpVars env sh -> FEnv op env -> EvalMonad op (Embed' op sh)
   subtup :: SubTupR e e' -> Embed' op e -> Embed' op e'
 
 
-  evalOp :: Index op -> Label -> op args -> Env (EnvF op) env -> BackendArgEnv op env (InArgs args) -> (EvalMonad op) (Env (FromArg' op env) (OutArgs args))
-  writeOutput :: ScalarType e -> GroundVars env sh -> GroundVars env (Buffers e) -> Env (EnvF op) env -> Index op -> Embed' op e -> EvalMonad op ()
-  readInput :: ScalarType e -> GroundVars env sh -> GroundVars env (Buffers e) -> Env (EnvF op) env -> BackendClusterArg2 op env (In sh e) -> Index op -> EvalMonad op (Embed' op e)
-
-type family Embed op a where
+  evalOp :: Index op -> Label -> op args -> FEnv op env -> BackendArgEnv op env (InArgs args) -> EvalMonad op (EmbedEnv op env (OutArgs args))
+  writeOutput :: ScalarType e -> GroundVars env sh -> GroundVars env (Buffers e) -> FEnv op env -> Index op -> Embed' op e -> EvalMonad op ()
+  readInput :: ScalarType e -> GroundVars env sh -> GroundVars env (Buffers e) -> FEnv op env -> BackendClusterArg2 op env (In sh e) -> Index op -> EvalMonad op (Embed' op e)
+type FEnv op = Env (EnvF op)
+type family Embed (op :: Type -> Type) a where
   Embed op (Value sh e) = Value' op sh e
   Embed op (Sh sh e) = Sh' op sh e
   Embed op e = e -- Mut, Exp', Var', Fun'
@@ -218,174 +201,155 @@ type family Embed op a where
 data Value' op sh e = Value' (Embed' op e) (Sh' op sh e)
 data Sh' op sh e = Shape' (ShapeR sh) (Embed' op sh)
 
-type family Distribute' f a = b | b -> a where
-  Distribute' f () = ()
-  Distribute' f (a,b) = (Distribute' f a, f b)
-  -- Distribute' f (a, b) = (Distribute' f a, Distribute' f b)
-  -- Distribute' f (Value sh e) = Value sh (f e)
-  -- Distribute' f (Sh sh e) = Sh sh (f e)
-distUnit :: forall f a. Distribute' f a ~ () => a :~: ()
-distUnit = unsafeCoerce Refl
-distPair :: forall f a b c. Distribute' f a ~ (Distribute' f b, f c) => a :~: (b, c)
-distPair = unsafeCoerce Refl
+splitFromArg' :: (EvalOp op) => FromArg' op env (Value sh (l,r)) -> (FromArg' op env (Value sh l), FromArg' op env (Value sh r))
+splitFromArg' (FromArg v) = bimap FromArg FromArg $ unpair' v
 
-evalCluster :: forall op env args. (EvalOp op) => Cluster op args -> Args env args -> Env (EnvF op) env -> Index op -> EvalMonad op ()
-evalCluster c@(Cluster _ (Cluster' io ast)) args env ix = do
-  let ba = makeBackendArg args env c
-  i <- evalI ix io args ba env
-  o <- evalAST ix ast env i
-  evalO @op ix io args env o
+pairInArg :: (EvalOp op) => Arg env (arg (l,r)) -> BackendArgEnvElem op env (InArg (arg l)) ->  BackendArgEnvElem op env (InArg (arg r)) ->  BackendArgEnvElem op env (InArg (arg (l,r)))
+pairInArg (ArgArray In  _ _ _) l r = getCompose $ pair' (Compose l) (Compose r)
+pairInArg (ArgArray Out _ _ _) l r = getCompose $ pair' (Compose l) (Compose r)
+pairInArg _ _ _ = error "SOA'd non-array args"
 
-evalI :: forall op args i o env. EvalOp op => Index op -> ClusterIO args i o -> Args env args -> BackendArgs op env args -> Env (EnvF op) env -> (EvalMonad op) (BackendArgEnv op env i)
-evalI _ P.Empty                                     ArgsNil    ArgsNil    _ = pure Empty
-evalI n (Input io) (ArgArray In (ArrayR shr (TupRsingle tp)) sh buf :>: args) (info :>: infos) env
-  | ScalarArrayDict _ _ <- scalarArrayDict tp =
-    (\env' e sh -> Push env' (BAE (Value' e (Shape' shr sh)) $ inToValue info))
-    <$> evalI n io args infos env
-    <*> readInput @op tp sh buf env info n
-    <*> indexsh @op sh env
-evalI _ (Input io) (ArgArray _ (ArrayR _ TupRunit) _ _ :>: _) _ _ = error "unit"
-evalI _ (Input io) (ArgArray _ (ArrayR _ (TupRpair _ _)) _ _ :>: _) _ _ = error "pair"
-evalI n (Vertical _ r io) (ArgVar vars         :>: args) (info :>: infos) env = Push <$> evalI n io args infos env <*> (flip BAE (varToSh info) . Shape' (arrayRshape r) <$> indexsh' @op vars env)
-evalI n (Output _ _ _ io) (ArgArray Out r sh _ :>: args) (info :>: infos) env = Push <$> evalI n io args infos env <*> (flip BAE (outToSh $ shrinkOrGrow info) . Shape' (arrayRshape r) <$> indexsh @op sh env)
-evalI n (Trivial      io) (ArgArray _ _ sh _ :>: args)(info :>: infos) env    = Push <$> evalI n io args infos env <*> pure (BAE (fromGrounds sh) $ unitToVar info)
-evalI n (ExpPut'      io) (ArgExp e              :>: args) (info :>: infos) env = Push <$> evalI n io args infos env <*> pure (BAE e info)
-evalI n (ExpPut'      io) (ArgVar e              :>: args) (info :>: infos) env = Push <$> evalI n io args infos env <*> pure (BAE e info)
-evalI n (ExpPut'      io) (ArgFun e              :>: args) (info :>: infos) env = Push <$> evalI n io args infos env <*> pure (BAE e info)
-evalI n (MutPut       io) (ArgArray Mut (ArrayR shr t) sh buf :>: args) (info :>: infos) env = Push <$> evalI n io args infos env <*> pure (BAE (ArrayDescriptor shr sh buf, t) info)
+evalCluster :: (EvalOp op) => Cluster op args -> BackendCluster op args -> Args env args -> FEnv op env -> Index op -> EvalMonad op ()
+evalCluster c b args env ix = do
+  let ba = makeBackendArg args env c b
+  input <- readInputs ix args ba env
+  output <- evalOps ix c input args env
+  writeOutputs ix args output env
 
-evalO :: forall op args i o env. EvalOp op => Index op -> ClusterIO args i o -> Args env args -> Env (EnvF op) env -> Env (FromArg' op env) o -> (EvalMonad op) ()
-evalO _ P.Empty ArgsNil _ Empty = pure ()
-evalO n (Vertical t _ io) (_ :>: args) env (take' t -> (_, o)) = evalO @op n io args env o
-evalO n (Input        io) (_ :>: args) env (PushFA _       o)  = evalO @op n io args env o
-evalO n (MutPut       io) (_ :>: args) env (PushFA _       o)  = evalO @op n io args env o
-evalO n (ExpPut'      io) (_ :>: args) env (PushFA _       o)  = evalO @op n io args env o
-evalO n (Trivial      io) (_ :>: args) env (PushFA _       o)  = evalO @op n io args env o
-evalO n (Output t s _ io) (ArgArray Out (arrayRtype -> ~(TupRsingle r)) sh buf :>: args) env o
-  = let (FromArg (Value' x _), o') = take' t o in writeOutput @op r sh buf env n (subtup @op s x) >> evalO @op n io args env o'
+evalOps :: forall op args env. (EvalOp op) => Index op -> Cluster op args -> BackendArgEnv op env (InArgs args) -> Args env args -> FEnv op env -> EvalMonad op (EmbedEnv op env (OutArgs args))
+evalOps ix c ba args env = case c of
+  Op (SLVOp (SOp (SOAOp op soas) (SA f g)) sa) -> slvOut args sa . outargs f (g $ slv' varToOut sa args) . soaOut splitFromArg' (soaShrink combine soas $ g $ slv' varToOut sa args) soas <$> evalOp ix undefined op env (soaIn pairInArg (g $ slv' varToOut sa args) soas $ inargs g $ slvIn (`bvartosh` env) sa ba) 
+  Fused f l r -> do
+    lin <- leftIn f ba env
+    lout <- evalOps ix l lin (left f args) env
+    let rin = rightIn f lout ba
+    rout <- evalOps ix r rin (right f args) env
+    return $ totalOut f lout rout
 
-evalAST :: forall op i o env. EvalOp op => Index op -> ClusterAST op i o -> Env (EnvF op) env -> BackendArgEnv op env i -> (EvalMonad op) (Env (FromArg' op env) o)
-evalAST _ None _ Empty = pure Empty
-evalAST n None env (Push i (BAE x _)) = flip Push (FromArg x) <$> evalAST n None env i
-evalAST n (Bind lhs op l ast) env i = do
-  let i' = evalLHS1 lhs i env
-  o' <- evalOp n l op env i'
-  let scope = evalLHS2 lhs i env o'
-  evalAST n ast env scope
+bvartosh :: forall op sh e env. EvalOp op => BackendArgEnvElem op env (Var' sh) -> FEnv op env -> BackendArgEnvElem op env (Sh sh e)
+bvartosh (BAE e b) env = BAE (Shape' (varsToShapeR e) (fromTupR (unit @op) $ mapTupR (embed @op) $ varsGet' e env)) (varToSh b)
 
-evalLHS1 :: forall op body i scope env. EvalOp op => LeftHandSideArgs body i scope -> BackendArgEnv op env i -> Env (EnvF op) env -> BackendArgEnv op env (InArgs body)
-evalLHS1 Base Empty _ = Empty
-evalLHS1 (Reqr t _ lhs) i env = let Info (Compose (BAE x info)) = tupRindex i t in Push (evalLHS1 lhs i env) $ BAE x info
-evalLHS1 (Make _ t lhs) i env = let (Info (Compose (BAE x info)), i') = unconsBuffers t i in Push (evalLHS1 lhs i' env) (BAE x info)
-evalLHS1 (EArg     lhs) (Push i' (BAE x info)) env = Push (evalLHS1 lhs i' env) (BAE x info)
-evalLHS1 (FArg     lhs) (Push i' (BAE x info)) env = Push (evalLHS1 lhs i' env) (BAE x info)
-evalLHS1 (VArg     lhs) (Push i' (BAE x info)) env = Push (evalLHS1 lhs i' env) (BAE x info)
-evalLHS1 (Adju     lhs) (Push i' (BAE x info)) env = Push (evalLHS1 lhs i' env) (BAE x info)
-evalLHS1 (Ignr     lhs) (Push i' (BAE _ _   )) env =       evalLHS1 lhs i' env
+readInputs :: forall args env op. (EvalOp op) => Index op -> Args env args -> BackendArgs op env args -> FEnv op env -> EvalMonad op (BackendArgEnv op env (InArgs args))
+readInputs _ ArgsNil ArgsNil env = pure Empty
+readInputs ix (arg :>: args) (bca :>: bcas) env = case arg of
+  ArgVar x -> flip Push (BAE x bca) <$> readInputs ix args bcas env
+  ArgExp x -> flip Push (BAE x bca) <$> readInputs ix args bcas env
+  ArgFun x -> flip Push (BAE x bca) <$> readInputs ix args bcas env
+  ArgArray Mut (ArrayR shr r) sh buf -> flip Push (BAE (ArrayDescriptor shr sh buf, r) bca) <$> readInputs ix args bcas env
+  ArgArray Out (ArrayR shr _) sh _   -> (\sh' -> flip Push (BAE (Shape' shr sh') (outToSh bca))) <$> indexsh @op sh env <*> readInputs ix args bcas env
+  ArgArray In  (ArrayR shr r) sh buf -> case r of
+    TupRsingle t -> (\env v sh' -> Push env (BAE (Value' v (Shape' shr sh')) (inToValue bca))) <$> readInputs ix args bcas env <*> readInput t sh buf env bca ix <*> indexsh @op sh env
+    TupRunit -> (\sh' -> flip Push (BAE (Value' (unit @op) (Shape' shr sh')) (inToValue bca))) <$> indexsh @op sh env <*> readInputs ix args bcas env
+    TupRpair{} -> error "not SOA'd"
 
-evalLHS2 :: EvalOp op => LeftHandSideArgs body i scope -> BackendArgEnv op env i -> Env (EnvF op) env -> Env (FromArg' op env) (OutArgs body) -> BackendArgEnv op env scope
-evalLHS2 Base Empty _ Empty = Empty
-evalLHS2 (Reqr _ _ lhs) i env o = evalLHS2 lhs i env o
-evalLHS2 (Make t1 t2 lhs) i env (Push o (FromArg y)) =
-  let (info, i') = unconsBuffers t2 i
-  in putBuffers t1
-    (tupInfoTransform (Compose . (\(BAE _ i) -> BAE undefined (shToValue i)) . getCompose) info & (\case
-        Info (Compose (BAE _ i)) -> Info (Compose (BAE y i))
-        NoInfo p -> NoInfo p))
-    (evalLHS2 lhs i'  env o)
-evalLHS2 (EArg   lhs) (Push i (BAE x info)) env o = Push (evalLHS2 lhs i env o) (BAE x info)
-evalLHS2 (FArg   lhs) (Push i (BAE x info)) env o = Push (evalLHS2 lhs i env o) (BAE x info)
-evalLHS2 (VArg   lhs) (Push i (BAE x info)) env o = Push (evalLHS2 lhs i env o) (BAE x info)
-evalLHS2 (Adju   lhs) (Push i (BAE m info)) env o = Push (evalLHS2 lhs i env o) (BAE m info)
-evalLHS2 (Ignr   lhs) (Push i (BAE x info)) env o = Push (evalLHS2 lhs i env o) (BAE x info)
+writeOutputs :: forall args env op. (EvalOp op) => Index op -> Args env args -> EmbedEnv op env (OutArgs args) -> FEnv op env -> EvalMonad op ()
+writeOutputs ix ArgsNil Empty _ = pure ()
+writeOutputs ix (ArgArray Out (ArrayR _ r) sh buf :>: args) (PushFA env (Value' x _)) env'
+  | TupRsingle t <- r = writeOutput @op t sh buf env' ix x >> writeOutputs ix args env env'
+  | TupRunit <- r = writeOutputs ix args env env'
+  | otherwise = error "not soa'd"
+writeOutputs ix (ArgVar _           :>: args) env env' = writeOutputs ix args env env'
+writeOutputs ix (ArgExp _           :>: args) env env' = writeOutputs ix args env env'
+writeOutputs ix (ArgFun _           :>: args) env env' = writeOutputs ix args env env'
+writeOutputs ix (ArgArray In  _ _ _ :>: args) env env' = writeOutputs ix args env env'
+writeOutputs ix (ArgArray Mut _ _ _ :>: args) env env' = writeOutputs ix args env env'
 
-first' :: (a -> b -> c) -> (a,b) -> (c,b)
-first' f (a,b) = (f a b, b)
+leftIn :: forall largs rargs args op env. (EvalOp op) => Fusion largs rargs args -> BackendArgEnv op env (InArgs args) -> FEnv op env -> EvalMonad op (BackendArgEnv op env (InArgs largs))
+leftIn EmptyF Empty _ = pure Empty
+leftIn (Vertical ar f) (Push env (BAE x b)) env'= Push <$> leftIn f env env' <*> ((`BAE` varToSh b) . Shape' (varsToShapeR x) <$> indexsh' @op x env')
+leftIn (Horizontal  f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
+leftIn (Diagonal    f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
+leftIn (IntroI1     f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
+leftIn (IntroI2     f) (Push env _  ) env' =                  leftIn f env env'
+leftIn (IntroO1     f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
+leftIn (IntroO2     f) (Push env _  ) env' =                  leftIn f env env'
+leftIn (IntroL      f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
+leftIn (IntroR      f) (Push env _  ) env' =                  leftIn f env env'
+
+rightIn :: (EvalOp op) 
+        => Fusion largs rargs args
+        -> EmbedEnv op env (OutArgs largs)
+        -> BackendArgEnv op env  ( InArgs  args)
+        -> BackendArgEnv op env  ( InArgs rargs)
+rightIn EmptyF Empty Empty = Empty
+rightIn (Vertical ar f) (PushFA lenv fa) (Push env (BAE _ b)) = Push (rightIn f lenv env) (BAE fa $ varToValue b)
+rightIn (Horizontal  f)         lenv     (Push env bae      ) = Push (rightIn f lenv env) bae
+rightIn (Diagonal    f) (PushFA lenv fa) (Push env (BAE _ b)) = Push (rightIn f lenv env) (BAE fa $ shToValue b)
+rightIn (IntroI1     f)         lenv     (Push env _        ) =       rightIn f lenv env
+rightIn (IntroI2     f)         lenv     (Push env bae      ) = Push (rightIn f lenv env) bae
+rightIn (IntroO1     f) (PushFA lenv _ ) (Push env _        ) =       rightIn f lenv env
+rightIn (IntroO2     f)         lenv     (Push env bae      ) = Push (rightIn f lenv env) bae
+rightIn (IntroL      f)         lenv     (Push env _        ) =       rightIn f (unsafeCoerce lenv) env
+rightIn (IntroR      f)         lenv     (Push env bae      ) = Push (rightIn f lenv env) bae
+
+inargs :: forall op env args args'
+        . (EvalOp op) 
+        => (forall f. PreArgs f args -> PreArgs f args')
+        -> BackendArgEnv op env (InArgs args)
+        -> BackendArgEnv op env (InArgs args')
+inargs f 
+  | Refl <- inargslemma @args
+  = toEnv . f . fromEnv
+  where
+    fromEnv :: forall args. BackendArgEnv op env args -> PreArgs (BAEEInArg op env) (InArgs' args)
+    fromEnv Empty = ArgsNil
+    fromEnv (Push env (x :: BackendArgEnvElem op env t)) 
+      | Refl <- inarglemma @t = BAEEInArg x :>: fromEnv env
+    toEnv :: forall args. PreArgs (BAEEInArg op env) args -> BackendArgEnv op env (InArgs args)
+    toEnv ArgsNil = Empty
+    toEnv (BAEEInArg x :>: args) = Push (toEnv args) x
+
+
+totalOut :: (EvalOp op) 
+         => Fusion largs rargs args
+         -> EmbedEnv op env (OutArgs largs)
+         -> EmbedEnv op env (OutArgs rargs)
+         -> EmbedEnv op env (OutArgs args)
+totalOut EmptyF Empty Empty = Empty
+totalOut (Vertical ar f) (Push l _)      r    =       totalOut f l r
+totalOut (Horizontal f)       l         r    =       totalOut f l r
+totalOut (Diagonal   f) (Push l o)      r    = Push (totalOut f l r) o
+totalOut (IntroI1    f)       l         r    =       totalOut f l r
+totalOut (IntroI2    f)       l         r    =       totalOut f l r
+totalOut (IntroO1    f) (Push l o)      r    = Push (totalOut f l r) o
+totalOut (IntroO2    f)       l   (Push r o) = Push (totalOut f l r) o
+totalOut (IntroL     f)       l         r    = unsafeCoerce $ totalOut f (unsafeCoerce l) r
+totalOut (IntroR     f)       l         r    = unsafeCoerce $ totalOut f l (unsafeCoerce r)
+
+outargs :: forall args args' env op
+         . (EvalOp op) 
+        => (forall f. PreArgs f args -> PreArgs f args')
+        -> Args env args
+        -> EmbedEnv op env (OutArgs args)
+        -> EmbedEnv op env (OutArgs args')
+outargs f args 
+  | Refl <- inargslemma @args = toEnv . f . fromEnv args
+  where
+    -- coerces are safe, just me being lazy
+    fromEnv :: forall args. Args env args -> EmbedEnv op env (OutArgs args) -> PreArgs (FAOutArg op env) args
+    fromEnv ArgsNil Empty = ArgsNil
+    fromEnv (a :>: args) out = case a of
+      ArgArray Out _ _ _ -> case out of
+        Push out' x -> FAOutJust x :>: fromEnv args out'
+      _ -> FAOutNothing :>: fromEnv args (unsafeCoerce out)
+    toEnv :: forall args. PreArgs (FAOutArg op env) args -> EmbedEnv op env (OutArgs args)
+    toEnv ArgsNil = Empty
+    toEnv (FAOutJust x :>: args) = Push (toEnv args) x
+    toEnv (FAOutNothing :>: args) = unsafeCoerce $ toEnv args
+
+newtype BAEEInArg op env arg = BAEEInArg (BackendArgEnvElem op env (InArg arg))
+data FAOutArg (op :: Type -> Type) env arg where
+  FAOutNothing :: FAOutArg op env arg
+  FAOutJust :: FromArg' op env (Value sh e) -> FAOutArg op env (Out sh e)
 
 
 instance EvalOp op => TupRmonoid (Value' op sh) where
   pair' (Value' x sh1) (Value' y sh2) = Value' (pair' x y) (pair' sh1 sh2)
   unpair' (Value' x sh) = biliftA2 Value' Value' (unpair' x) (unpair' sh)
-  injL (Value' x sh) p = Value' (injL x p) (injL sh p)
-  injR (Value' x sh) p = Value' (injR x p) (injR sh p)
 
 instance TupRmonoid (Sh' op sh) where
   pair' (Shape' shr sh) _ = Shape' shr sh
   unpair' (Shape' shr sh) = (Shape' shr sh, Shape' shr sh)
-  injL (Shape' shr sh) _ = Shape' shr sh
-  injR (Shape' shr sh) _ = Shape' shr sh
-
-instance StaticClusterAnalysis op => TupRmonoid (Compose (BackendEnvElem op env) (Value sh)) where
-  pair' (Compose (BEE (ArrArg (ArrayR shr ar) shvars abufs) b))
-        (Compose (BEE (ArrArg (ArrayR _ cr) _ cbufs) d))
-    = Compose $ BEE
-                  (ArrArg (ArrayR shr (TupRpair ar cr)) shvars (TupRpair abufs cbufs))
-                  (pairinfo b d)
-  pair' (Compose (BEE (Others s arg) _)) _ = Debug.Trace.trace ("fst"<>s) $ 
-    -- case arg of
-    -- ArgVar{} -> error "v"
-    -- ArgExp{} -> error "e"
-    -- ArgFun{} -> error "f"
-    -- ArgArray m _ _ _ -> error $ show m
-    -- _ -> 
-      error s
-  pair' _ (Compose (BEE (Others s arg) _)) = Debug.Trace.trace ("snd"<>s) $ 
-    -- case arg of
-    -- ArgVar{} -> error "v"
-    -- ArgExp{} -> error "e"
-    -- ArgFun{} -> error "f"
-    -- ArgArray m _ _ _ -> error $ show m
-    -- _ -> 
-      error s
-  pair' _ _ = error "value not in arrarg"
-
-  unpair' (Compose (BEE (ArrArg (ArrayR shr (TupRpair ar cr)) shvars (TupRpair abufs cbufs)) infos))
-    = bimap
-        (Compose . BEE (ArrArg (ArrayR shr ar) shvars abufs))
-        (Compose . BEE (ArrArg (ArrayR shr cr) shvars cbufs))
-        $ unpairinfo infos
-  unpair' _ = error "value not in arrarg"
-
-  injL (Compose (BEE (ArrArg (ArrayR shr r) shvars bufs) info)) proof
-   = Compose $ BEE (ArrArg (ArrayR shr (TupRpair r (proofToR proof))) shvars (TupRpair bufs (proofToR' @Buffer proof))) (shrinkOrGrow info)
-  injL _ _ = error "value not in arrarg"
-
-  injR :: StaticClusterAnalysis op 
-    => Compose (BackendEnvElem op env) (Value sh) b
-    -> TupUnitsProof a
-    -> Compose (BackendEnvElem op env) (Value sh) (a, b)
-  injR (Compose (BEE (ArrArg (ArrayR shr r) shvars bufs) info)) proof
-   = Compose $ BEE (ArrArg (ArrayR shr (TupRpair (proofToR proof) r)) shvars (TupRpair (proofToR' @Buffer proof) bufs)) (shrinkOrGrow info)
-  injR (Compose (BEE (Others s arg) _)) _ = Debug.Trace.trace s $ case arg of
-    ArgVar{} -> error "v"
-    ArgExp{} -> error "e"
-    ArgFun{} -> error "f"
-    ArgArray m _ _ _ -> error $ show m
-    _ -> error s
-  injR _ _ = error "value not in arrarg"
-
-instance StaticClusterAnalysis op => TupRmonoid (Compose (BackendEnvElem op env) (Sh sh)) where
-  pair' (Compose (BEE (OutArg (ArrayR shr ar) shvars abufs) b))
-        (Compose (BEE (OutArg (ArrayR _ cr) _ cbufs) d))
-    = Compose $ BEE
-                  (OutArg (ArrayR shr (TupRpair ar cr)) shvars (TupRpair abufs cbufs))
-                  (pairinfo b d)
-  pair' _ _ = error "value not in arrarg"
-
-  unpair' (Compose (BEE (OutArg (ArrayR shr (TupRpair ar cr)) shvars (TupRpair abufs cbufs)) infos))
-    = bimap
-        (Compose . BEE (OutArg (ArrayR shr ar) shvars abufs))
-        (Compose . BEE (OutArg (ArrayR shr cr) shvars cbufs))
-        $ unpairinfo infos
-  unpair' _ = error "value not in arrarg"
-
-  injL (Compose (BEE (OutArg (ArrayR shr r) shvars bufs) info)) proof
-   = Compose $ BEE (OutArg (ArrayR shr (TupRpair r (proofToR proof))) shvars (TupRpair bufs (proofToR' @Buffer proof))) (shrinkOrGrow info)
-  injL _ _ = error "value not in arrarg"
-
-  injR (Compose (BEE (OutArg (ArrayR shr r) shvars bufs) info)) proof
-   = Compose $ BEE (OutArg (ArrayR shr (TupRpair (proofToR proof) r)) shvars (TupRpair (proofToR' @Buffer proof) bufs)) (shrinkOrGrow info)
-  injR _ _ = error "value not in arrarg"
 
 
 instance EvalOp op => TupRmonoid (Compose (BackendArgEnvElem op env) (Value sh)) where
@@ -397,8 +361,6 @@ instance EvalOp op => TupRmonoid (Compose (BackendArgEnvElem op env) (Value sh))
       (Compose .* BAE)
       (unpair' x)
       (unpairinfo b)
-  injL (Compose (BAE x b)) p = Compose $ BAE (injL x p) (shrinkOrGrow b)
-  injR (Compose (BAE x b)) p = Compose $ BAE (injR x p) (shrinkOrGrow b)
 
 instance EvalOp op => TupRmonoid (Compose (BackendArgEnvElem op env) (Sh sh)) where
   pair' (Compose (BAE x b)) (Compose (BAE y d)) =
@@ -409,237 +371,3 @@ instance EvalOp op => TupRmonoid (Compose (BackendArgEnvElem op env) (Sh sh)) wh
       (Compose .* BAE)
       (unpair' x)
       (unpairinfo b)
-  injL (Compose (BAE x b)) p = Compose $ BAE (injL x p) (shrinkOrGrow b)
-  injR (Compose (BAE x b)) p = Compose $ BAE (injR x p) (shrinkOrGrow b)
-
-instance TupRmonoid (Compose (Arg' env) (Value sh)) where
-  pair' (Compose (ArgArray' (ArgArray m (ArrayR r r1) sh buf1))) (Compose (ArgArray' (ArgArray _ (ArrayR _ r2) _ buf2)))
-    = Compose $ ArgArray' $ ArgArray m (ArrayR r $ TupRpair r1 r2) sh (TupRpair buf1 buf2)
-  pair' _ _ = error "not argarray'"
-  unpair' (Compose (ArgArray' (ArgArray m (ArrayR r (TupRpair r1 r2)) sh (TupRpair buf1 buf2))))
-    = (Compose (ArgArray' (ArgArray m (ArrayR r r1) sh buf1)), Compose (ArgArray' (ArgArray m (ArrayR r r2) sh buf2)))
-  unpair' _ = error "not argarray'"
-  injL (Compose (ArgArray' (ArgArray m (ArrayR r re) sh buf))) p
-    = Compose $ ArgArray' $ ArgArray m (ArrayR r (TupRpair re (proofToR p))) sh (TupRpair buf (proofToR' @Buffer p))
-  injL _ _ = error "not argarray'"
-  injR (Compose (ArgArray' (ArgArray m (ArrayR r re) sh buf))) p
-    = Compose $ ArgArray' $ ArgArray m (ArrayR r (TupRpair (proofToR p) re)) sh (TupRpair (proofToR' @Buffer p) buf)
-  injR _ _ = error "not argarray'"
-
-instance TupRmonoid (Compose (Arg' env) (Sh sh)) where
-  pair' (Compose (ArgArray' (ArgArray m (ArrayR r r1) sh buf1))) (Compose (ArgArray' (ArgArray _ (ArrayR _ r2) _ buf2)))
-    = Compose $ ArgArray' $ ArgArray m (ArrayR r $ TupRpair r1 r2) sh (TupRpair buf1 buf2)
-  pair' _ _ = error "not argarray'"
-  unpair' (Compose (ArgArray' (ArgArray m (ArrayR r (TupRpair r1 r2)) sh (TupRpair buf1 buf2))))
-    = (Compose (ArgArray' (ArgArray m (ArrayR r r1) sh buf1)), Compose (ArgArray' (ArgArray m (ArrayR r r2) sh buf2)))
-  unpair' _ = error "not argarray'"
-  injL (Compose (ArgArray' (ArgArray m (ArrayR r re) sh buf))) p
-    = Compose $ ArgArray' $ ArgArray m (ArrayR r (TupRpair re (proofToR p))) sh (TupRpair buf (proofToR' @Buffer p))
-  injL _ _ = error "not argarray'"
-  injR (Compose (ArgArray' (ArgArray m (ArrayR r re) sh buf))) p
-    = Compose $ ArgArray' $ ArgArray m (ArrayR r (TupRpair (proofToR p) re)) sh (TupRpair (proofToR' @Buffer p) buf)
-  injR _ _ = error "not argarray'"
-
-justEnv     :: Env a env -> Env (Compose Maybe a) env
-justEnv     = mapEnv (Compose . Just)
-fromJustEnv :: Env (Compose Maybe a) env -> Env a env
-fromJustEnv = mapEnv (fromJust . getCompose)
-
-data Arg' env t where
-  ArgArray' :: Arg env (m sh t)   -> Arg' env (m' sh t) -- Used for Value and Sh
-  ArgOther' :: Arg env t          -> Arg' env t
-
-instance Sink Arg' where
-  weaken k (ArgArray' arg) = ArgArray' $ weaken k arg
-  weaken k (ArgOther' arg) = ArgOther' $ weaken k arg
-
-
--- Ivo's method:
--- data ClusterOperations op env where
---   ClusterOperations
---     :: TypeR e
---     -> GLeftHandSide (Buffers e) env env'
---     -> [ApplyOperation op env']
---     -> ClusterOperations op env
-
--- data ApplyOperation op env where
---   ApplyOperation :: op f -> Args env f -> ApplyOperation op env
-
--- data BoundIO env input output where
---   BoundIO
---     :: TypeR e
---     -> GLeftHandSide (Buffers e) env env'
---     -> Env (Arg' env') input
---     -> Env (Arg' env') output
---     -> BoundIO env input output
-
--- clusterOperations :: Cluster op f -> Args env f -> ClusterOperations op env
--- clusterOperations (Cluster _ (Cluster' io ast)) args
---   | BoundIO tp lhs input  _ <- bindIO io args
---   = ClusterOperations tp lhs (traverseClusterAST input ast)
---   where
---     bindIO :: ClusterIO f' input output -> Args env f' -> BoundIO env input output
---     bindIO P.Empty ArgsNil = BoundIO TupRunit (LeftHandSideWildcard TupRunit) Empty Empty
---     bindIO (P.Vertical t repr@(ArrayR _ tp) io) (ArgVar sh :>: args)
---       | BoundIO bndTp lhs input output <- bindIO io args
---       , k <- weakenWithLHS lhs
---       -- Create variables for the buffers which were fused away
---       , DeclareVars lhs' k' vars <- declareVars (buffersR tp)
---       , arg <- ArgArray Mut repr (mapVars GroundRscalar $ mapTupR (weaken $ k' .> k) sh) (vars weakenId)
---       , input'  <- mapEnv (weaken k') input
---       , output' <- mapEnv (weaken k') output
---       = BoundIO
---         (bndTp `TupRpair` tp)
---         (lhs `LeftHandSidePair` lhs')
---         (Push input' $ ArgArray' arg)
---         (put' t (ArgArray' arg) output')
---     bindIO (P.Input io) (arg@(ArgArray In _ _ _) :>: args)
---       | BoundIO bndTp lhs input output <- bindIO io args
---       , k <- weakenWithLHS lhs
---       = BoundIO bndTp lhs
---         (Push input  $ ArgArray' $ weaken k arg)
---         (Push output $ ArgArray' $ weaken k arg)
---     bindIO (P.Output t s tp io) (arg :>: args)
---       -- Output which was fully preserved
---       | Just Refl <- subTupPreserves tp s
---       , BoundIO bndTp lhs input output <- bindIO io args
---       , k <- weakenWithLHS lhs
---       , arg' <- weaken k arg
---       = BoundIO bndTp lhs
---         (Push input $ ArgArray' arg')
---         (put' t (ArgArray' arg') output)
---     bindIO (P.Output t s tp io) (ArgArray Out (ArrayR shr _) sh buffers :>: args)
---       -- Part of the output is used. The operation has more output, but doesn't use that.
---       -- We need to declare variables for those buffers here.
---       | BoundIO bndTp lhs input output <- bindIO io args
---       , k <- weakenWithLHS lhs
---       , DeclareMissingDistributedVars tp' lhs' k' buffers' <-
---           declareMissingDistributedVars @Buffer tp (buffersR tp) s $ mapTupR (weaken k) buffers
---       , arg' <- ArgArray Out (ArrayR shr tp) (mapTupR (weaken $ k' .> k) sh) (buffers' weakenId)
---       , input'  <- mapEnv (weaken k') input
---       , output' <- mapEnv (weaken k') output
---       = BoundIO (bndTp `TupRpair` tp') (LeftHandSidePair lhs lhs')
---         (Push input' $ ArgArray' arg')
---         (put' t (ArgArray' arg') output')
---     -- For Mut, Exp, Var and Fun we must simply put them on top of the environments.
---     bindIO (P.MutPut io) (arg :>: args)
---       | BoundIO bndTp lhs input output <- bindIO io args
---       , k <- weakenWithLHS lhs
---       , arg' <- weaken k arg
---       = BoundIO bndTp lhs
---         (Push input  $ ArgOther' arg')
---         (Push output $ ArgOther' arg')
---     bindIO (P.ExpPut io) (arg :>: args)
---       | BoundIO bndTp lhs input output <- bindIO io args
---       , k <- weakenWithLHS lhs
---       , arg' <- weaken k arg
---       = BoundIO bndTp lhs
---         (Push input  $ ArgOther' arg')
---         (Push output $ ArgOther' arg')
---     bindIO (P.VarPut io) (arg :>: args)
---       | BoundIO bndTp lhs input output <- bindIO io args
---       , k <- weakenWithLHS lhs
---       , arg' <- weaken k arg
---       = BoundIO bndTp lhs
---         (Push input  $ ArgOther' arg')
---         (Push output $ ArgOther' arg')
---     bindIO (P.FunPut io) (arg :>: args)
---       | BoundIO bndTp lhs input output <- bindIO io args
---       , k <- weakenWithLHS lhs
---       , arg' <- weaken k arg
---       = BoundIO bndTp lhs
---         (Push input  $ ArgOther' arg')
---         (Push output $ ArgOther' arg')
---     bindIO (P.Trivial io) (arg :>: args)
---       | BoundIO bndTp lhs input output <- bindIO io args
---       , k <- weakenWithLHS lhs
---       , arg' <- weaken k arg
---       = BoundIO (_ bndTp) lhs 
---           (Push input _  ) 
---           (_ output )
-
---     traverseClusterAST
---       :: Env (Arg' env') input
---       -> ClusterAST op input output
---       -> [ApplyOperation op env']
---     traverseClusterAST _     None = []
---     traverseClusterAST input (Bind lhs op ast) =
---       ApplyOperation op (prjArgs input lhs)
---       : traverseClusterAST (lhsArgsOutput retypeSh lhs input) ast
-
---     prjArgs
---       :: Env (Arg' env') input
---       -> LeftHandSideArgs f input output
---       -> Args env' f
---     prjArgs input = \case
---       Base -> ArgsNil
---       Reqr idxEnv _ lhs
---         -> case tupRindex input idxEnv of
---             Info (Compose (ArgArray' arg@(ArgArray In _ _ _))) -> arg :>: prjArgs input lhs
---             _ -> error "nope"
---       -- Make _ lhs
---       --   | input' `Push` arg <- input
---       --   -> case arg of
---       --       ArgArray' (ArgArray _ repr sh buffers) -> ArgArray Out repr sh buffers :>: prjArgs input' lhs
---       --       ArgOther' (ArgArray m _ _ _) -> case m of {}
---       Make _ cb lhs
---         | (Info (Compose arg), input') <- unconsBuffers cb input
---         -> case arg of
---           ArgArray' arg@(ArgArray Out _ _ _) -> arg :>: prjArgs input' lhs
---           _ -> error "nope"
---         | otherwise -> error "nope"
---       Adju lhs
---         | input' `Push` arg <- input
---         -> case arg of
---             ArgArray' (ArgArray _ repr sh buffers) -> ArgArray Mut repr sh buffers :>: prjArgs input' lhs
---             ArgOther' (ArgArray _ repr sh buffers) -> ArgArray Mut repr sh buffers :>: prjArgs input' lhs
---       Ignr lhs
---         | input' `Push` _ <- input
---         -> prjArgs input' lhs
---       EArg lhs
---         | input' `Push` ArgOther' arg <- input
---         -> arg :>: prjArgs input' lhs
---       VArg lhs
---         | input' `Push` ArgOther' arg <- input
---         -> arg :>: prjArgs input' lhs
---       FArg lhs
---         | input' `Push` ArgOther' arg <- input
---         -> arg :>: prjArgs input' lhs
-
---     retypeSh :: Arg' env (Sh sh t) -> Arg' env (m' sh t)
---     retypeSh (ArgArray' arg) = ArgArray' arg
---     retypeSh (ArgOther' (ArgArray m _ _ _)) = case m of {}
-
-lhsArgsOutput
-  :: forall f t input output
-  .  (forall sh'. TupRmonoid (Compose f (Sh sh')), forall sh'. TupRmonoid (Compose f (Value sh')))
-  => (forall sh e. f (Sh sh e) -> f (Value sh e))
-  -> LeftHandSideArgs t input output
-  -> Env f input
-  -> Env f output
-lhsArgsOutput make lhsArgs input = case lhsArgs of
-  Base -> Empty
-  Reqr _ _ args
-    -> go args input
-  Make tb cb args
-    -> case unconsBuffers cb input of
-      (Info (Compose arg), input') -> putBuffers tb (Info . Compose $ make arg) $ go args input'
-      (NoInfo p,           input') -> putBuffers tb (NoInfo p) $ go args input'
-  Adju args
-    | input' `Push` arg <- input
-    -> go args input' `Push` arg
-  Ignr args
-    | input' `Push` arg <- input
-    -> go args input' `Push` arg
-  EArg args
-    | input' `Push` arg <- input
-    -> go args input' `Push` arg
-  VArg args
-    | input' `Push` arg <- input
-    -> go args input' `Push` arg
-  FArg args
-    | input' `Push` arg <- input
-    -> go args input' `Push` arg
-  where
-    go :: LeftHandSideArgs t' input' output' -> Env f input' -> Env f output'
-    go = lhsArgsOutput make

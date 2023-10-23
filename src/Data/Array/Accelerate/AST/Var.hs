@@ -17,6 +17,7 @@ module Data.Array.Accelerate.AST.Var
   where
 
 import Data.Array.Accelerate.Representation.Type
+    ( TupR(..), mapTupR, liftTupR, rnfTupR )
 import Data.Array.Accelerate.AST.Idx
 
 import Language.Haskell.TH.Extra

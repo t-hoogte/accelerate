@@ -346,7 +346,7 @@ data CompiledKernel kenv fenv kernel where
 compileKernel'
   :: forall fenv kernel args.
      IsKernel kernel
-  => Cluster (KernelOperation kernel) args
+  => C.Clustered (KernelOperation kernel) args
   -> Args fenv args
   -> CompiledKernel () fenv kernel
 compileKernel' cluster args =

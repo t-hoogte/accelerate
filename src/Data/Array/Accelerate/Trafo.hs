@@ -75,6 +75,7 @@ import System.IO.Unsafe
 import Data.Array.Accelerate.Debug.Internal.Flags                   hiding ( when )
 import Data.Array.Accelerate.Debug.Internal.Timed
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (Objective(..))
+import Data.Array.Accelerate.Trafo.NewNewFusion (Benchmarking)
 
 defaultObjective = IntermediateArrays
 
@@ -105,10 +106,11 @@ testWithObjective obj f
   ++ Pretty.renderForTerminal (Pretty.prettySchedule schedule)
   where
     operation
-      -- = Operation.simplifyFun
-      = Operation.stronglyLiveVariablesFun
-      -- $ Operation.simplifyFun
-      $ desugared
+      = 
+      -- Operation.simplifyFun $
+      Operation.stronglyLiveVariablesFun $
+      -- Operation.simplifyFun $
+       desugared
     desugared =
         desugarAfun @(KernelOperation kernel)
       $ original
@@ -117,7 +119,7 @@ testWithObjective obj f
       $ Sharing.convertAfunWith defaultOptions f
 
     partitioned = 
-      Operation.simplifyFun $ 
+      -- Operation.simplifyFun $ 
       NewNewFusion.convertAfun obj operation
 
     slvpartitioned = 
