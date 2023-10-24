@@ -175,7 +175,7 @@ prettyBinding env = \case
 
 prettyEffect :: PrettyKernel kernel => Val' env -> Effect kernel env -> Adoc
 prettyEffect env = \case
-  Exec _ kernel args    -> hang 2 $ group $ vsep [annotate Execute "execute", prettyKernelFun env kernel args]
+  Exec _ kernel args    -> prettyKernelFun env kernel args
   SignalAwait signals   -> hang 2 $ group $ vsep [annotate Statement "await",   list $ map (prettyIdx env) signals]
   SignalResolve signals -> hang 2 $ group $ vsep [annotate Statement "resolve", list $ map (prettyIdx env) signals]
   RefWrite ref value    -> hang 2 $ group $ vsep ["*" <> prettyVar env ref <+> "=", prettyVar env value]
@@ -198,8 +198,7 @@ prettyKernelFun env fun args = case prettyKernel of
     in
       go Empty fun args
   PrettyKernelFun prettyKernelAsFun ->
-    prettyKernelAsFun fun
-      <> hardline <> indent 2 (prettySArgs env args)
+    hang 2 $ group $ vsep [annotate Execute "execute", prettyKernelAsFun fun, prettySArgs env args]
 
 prettySArgs :: Val' benv -> SArgs benv f -> Adoc
 prettySArgs env args = tupled $ map (\(Exists a) -> prettySArg env a) $ argsToList args
