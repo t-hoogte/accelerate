@@ -1,5 +1,6 @@
 {-# LANGUAGE FlexibleInstances   #-}
 {-# LANGUAGE GADTs               #-}
+{-# LANGUAGE InstanceSigs        #-}
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE PatternGuards       #-}
@@ -36,34 +37,30 @@ import Data.Array.Accelerate.Representation.Type (TupR (..))
 import Data.Array.Accelerate.AST.Idx (Idx (..))
 import Data.Bifunctor (second)
 
-
--- instance PrettyOp op => PrettyOp (Cluster' op) where
---   prettyOp (Cluster' _ ast) = "{" <+> align (fillSep $ opNames ast)
---     where
---       opNames :: ClusterAST op env result -> [Adoc]
---       opNames None             = ["}"]
---       opNames (Bind _ op _ next) = prettyOp op : opNames next
-
---   prettyOpWithArgs env (Cluster' io ast) args = case ops of
---     [op']      -> group $ hang 2 $ vsep [ annotate Execute "execute", op' ]
---     op' : ops' -> group $ hang 2 $ vsep $ [ annotate Execute "cluster", "{" <+> op'] ++ map (separator <>) ops' ++ ["}"]
---     []         -> annotate Execute "cluster" <+> "{ }"
---     where
---       (inputEnv, outputEnv) = clusterEnv env io args
---       (_, opsF) = prettyClusterAST outputEnv ast
---       ops = opsF 0 inputEnv
---       separator = "; "
-
 instance PrettyOp op => PrettyOp (Clustered op) where
   prettyOp (Clustered c _) = prettyOp c
   prettyOpWithArgs env (Clustered c _) = prettyOpWithArgs env c
 
 instance PrettyOp op => PrettyOp (Cluster op) where
-  prettyOp (Fused _ l r) = "Fused (" <> prettyOp l <> ", " <> prettyOp r
+  prettyOp (Fused _ _ _) = "Fused cluster" -- not used in pretty printer of PartitionedAcc
   prettyOp (Op (SLVOp (SOp (SOAOp op _) _) _) _) = prettyOp op
-  prettyOpWithArgs env (Fused f l r) args = "Fused (" <> prettyOpWithArgs env l (left f args) <> ", " <> prettyOpWithArgs env r (right f args)
-  prettyOpWithArgs env (Op (SLVOp (SOp (SOAOp op soa) (SA _ unsort)) sa) _) args = prettyOpWithArgs env op (soaShrink combine soa . unsort . slv' varToOut sa $ args)
 
+  prettyOpWithArgs :: forall env t. Val env -> Cluster op t -> Args env t -> Adoc
+  prettyOpWithArgs env (Op (SLVOp (SOp (SOAOp op soa) (SA _ unsort)) sa) _) args = prettyOpWithArgs env op (soaShrink combine soa . unsort . slv' varToOut sa $ args)
+  prettyOpWithArgs env cluster1 args1 =
+    annotate Execute "execute" <+> "cluster {"
+    <> hardline
+    <> indent 2 (vsep operations)
+    <> hardline <> "}"
+    where
+      operations = gather cluster1 args1
+
+      gather :: Cluster op s -> Args env s -> [Adoc]
+      gather (Fused f l r) args = gather l (left f args) ++ gather r (right f args)
+      gather (Op (SLVOp (SOp (SOAOp op soa) (SA _ unsort)) sa) _) args =
+        pure $ hang 2 $ group $ vsep [prettyOp op, prettyArgs env args']
+        where
+          args' = soaShrink combine soa . unsort . slv' varToOut sa $ args
 
 -- clusterEnv :: forall env f input output. Pretty.Val env -> ClusterIO f input output -> Args env f -> (Pretty.Val input, PartialVal output)
 -- clusterEnv env = \cio args -> (input cio args, output cio args)

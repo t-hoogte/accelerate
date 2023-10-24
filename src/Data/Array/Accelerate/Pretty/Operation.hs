@@ -20,11 +20,11 @@
 --
 
 module Data.Array.Accelerate.Pretty.Operation (
-  PrettyOp(..),
+  PrettyOp(..), prettyArgs,
   prettyAcc, prettyOpenAcc,
   prettyAfun, prettyOpenAfun,
   prettyGroundR, prettyGroundRWithUniqueness,
-  Val'(..), val, empty',
+  Val, Val'(..), val, empty',
   prettyVar, prettyVars,
   prettyArg, prettyShapeVars, prettyModifier, prettyBuffer,
   prettyFun, prettyExp, prettyExp', prettyArrayInstr,
@@ -47,7 +47,7 @@ import Prelude hiding (exp)
 
 class PrettyOp op where
   prettyOp :: op t -> Adoc
-  
+
   -- Only used in OperationAcc, when printing a PartitionedAcc a cluster is printed using prettyOp.
   -- The reason is that PrettyOp (Cluster' op) instance defines prettyOpWithArgs in terms of prettyOp.
   --
