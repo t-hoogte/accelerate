@@ -285,9 +285,9 @@ instance SimplifyOperation InterpretOp where
   detectCopy _ _                     = const []
 
 instance SLVOperation InterpretOp where
-  -- slvOperation IGenerate    = defaultSlvGenerate    IGenerate
-  -- slvOperation IMap         = defaultSlvMap         IMap
-  -- slvOperation IBackpermute = defaultSlvBackpermute IBackpermute
+  slvOperation IGenerate    = defaultSlvGenerate    IGenerate
+  slvOperation IMap         = defaultSlvMap         IMap
+  slvOperation IBackpermute = defaultSlvBackpermute IBackpermute
   slvOperation _            = Nothing
 
 data InterpretKernel env where

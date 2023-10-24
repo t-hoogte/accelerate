@@ -32,7 +32,7 @@ module Data.Array.Accelerate.Trafo.Operation.LiveVars (
   reEnvArrayInstr,
   ShrinkArg(..), shrinkArgs, composeSubArgs,
 
-  -- defaultSlvGenerate, defaultSlvMap, defaultSlvBackpermute
+  defaultSlvGenerate, defaultSlvMap, defaultSlvBackpermute
 ) where
 
 import Data.Array.Accelerate.AST.Idx
@@ -228,10 +228,10 @@ stronglyLiveVariables' liveness returns us = \case
 class SLVOperation op where
   slvOperation :: op f -> Maybe (ShrinkOperation op f)
 
-newtype ShrinkOperation op f = ShrinkOperation (forall f' env' env. SubArgs f f' -> Args env' f' -> Args env f -> ShrunkOperation op env' f')
+newtype ShrinkOperation op f = ShrinkOperation (forall f' env' env. SubArgs f f' -> Args env' f' -> Args env f -> ShrunkOperation op env')
 
-data ShrunkOperation op env f where
-  ShrunkOperation :: op f -> Args env f -> ShrunkOperation op env f
+data ShrunkOperation op env where
+  ShrunkOperation :: op f -> Args env f -> ShrunkOperation op env
 
 data SubArgs f f' where
   SubArgsNil  :: SubArgs () ()
@@ -263,35 +263,35 @@ shrinkArgs SubArgsNil ArgsNil = ArgsNil
 shrinkArgs (SubArgsDead sargs) (a:>:args) = deadArg a :>: shrinkArgs sargs args
 shrinkArgs (SubArgsLive sarg sargs) (a:>:args) = shrinkArg sarg a :>: shrinkArgs sargs args
 
--- defaultSlvGenerate
---   :: (forall sh' t'. op (Fun' (sh' -> t') -> Out sh' t' -> ()))
---   -> Maybe (ShrinkOperation op (Fun' (sh -> t) -> Out sh t -> ()))
--- defaultSlvGenerate mkGenerate = Just $ ShrinkOperation $ \subArgs args@(ArgFun f :>: array :>: ArgsNil) _ -> case subArgs of
---   SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgsNil
---     -> ShrunkOperation mkGenerate args
---   SubArgKeep `SubArgsLive` SubArgOut subTp `SubArgsLive` SubArgsNil
---     -> ShrunkOperation mkGenerate (ArgFun (subTupFun subTp f) :>: array :>: ArgsNil)
---   _ `SubArgsLive` SubArgsDead _ -> internalError "At least one output should be preserved"
+defaultSlvGenerate
+  :: (forall sh' t'. op (Fun' (sh' -> t') -> Out sh' t' -> ()))
+  -> Maybe (ShrinkOperation op (Fun' (sh -> t) -> Out sh t -> ()))
+defaultSlvGenerate mkGenerate = Just $ ShrinkOperation $ \subArgs args@(ArgFun f :>: array :>: ArgsNil) _ -> case subArgs of
+  SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgsNil
+    -> ShrunkOperation mkGenerate args
+  SubArgKeep `SubArgsLive` SubArgOut subTp `SubArgsLive` SubArgsNil
+    -> ShrunkOperation mkGenerate (ArgFun (subTupFun subTp f) :>: array :>: ArgsNil)
+  _ `SubArgsLive` SubArgsDead _ -> internalError "At least one output should be preserved"
 
--- defaultSlvMap
---   :: (forall sh' s' t'. op (Fun' (s' -> t') -> In sh' s' -> Out sh' t' -> ()))
---   -> Maybe (ShrinkOperation op (Fun' (s -> t)    -> In sh s -> Out sh  t -> ()))
--- defaultSlvMap mkMap = Just $ ShrinkOperation $ \subArgs args@(ArgFun f :>: input :>: output :>: ArgsNil) _ -> case subArgs of
---   SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgsNil
---     -> ShrunkOperation mkMap args
---   SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgOut subTp `SubArgsLive` SubArgsNil
---     -> ShrunkOperation mkMap (ArgFun (subTupFun subTp f) :>: input :>: output :>: ArgsNil)
---   _ `SubArgsLive` _ `SubArgsLive` SubArgsDead _ -> internalError "At least one output should be preserved"
+defaultSlvMap
+  :: (forall sh' s' t'. op (Fun' (s' -> t') -> In sh' s' -> Out sh' t' -> ()))
+  -> Maybe (ShrinkOperation op (Fun' (s -> t)    -> In sh s -> Out sh  t -> ()))
+defaultSlvMap mkMap = Just $ ShrinkOperation $ \subArgs args@(ArgFun f :>: input :>: output :>: ArgsNil) _ -> case subArgs of
+  SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgsNil
+    -> ShrunkOperation mkMap args
+  SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgOut subTp `SubArgsLive` SubArgsNil
+    -> ShrunkOperation mkMap (ArgFun (subTupFun subTp f) :>: input :>: output :>: ArgsNil)
+  _ `SubArgsLive` _ `SubArgsLive` SubArgsDead _ -> internalError "At least one output should be preserved"
 
--- defaultSlvBackpermute
---   :: (forall sh1' sh2' t'. op (Fun' (sh2' -> sh1') -> In sh1' t' -> Out sh2' t' -> ()))
---   -> Maybe (ShrinkOperation op (Fun' (sh2 -> sh1) -> In sh1 t -> Out sh2 t -> ()))
--- defaultSlvBackpermute mkBackpermute = Just $ ShrinkOperation $ \subArgs args@(f :>: ArgArray In (ArrayR shr r) sh buf :>: output :>: ArgsNil) _ -> case subArgs of
---     SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgsNil
---       -> ShrunkOperation mkBackpermute args
---     SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgOut s `SubArgsLive` SubArgsNil
---       -> ShrunkOperation mkBackpermute (f :>: ArgArray In (ArrayR shr (subTupR s r)) sh (subTupDBuf s buf) :>: output :>: ArgsNil)
---     _ `SubArgsLive` _ `SubArgsLive` SubArgsDead _ -> internalError "At least one output should be preserved"
+defaultSlvBackpermute
+  :: (forall sh1' sh2' t'. op (Fun' (sh2' -> sh1') -> In sh1' t' -> Out sh2' t' -> ()))
+  -> Maybe (ShrinkOperation op (Fun' (sh2 -> sh1) -> In sh1 t -> Out sh2 t -> ()))
+defaultSlvBackpermute mkBackpermute = Just $ ShrinkOperation $ \subArgs args@(f :>: ArgArray In (ArrayR shr r) sh buf :>: output :>: ArgsNil) _ -> case subArgs of
+    SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgsNil
+      -> ShrunkOperation mkBackpermute args
+    SubArgKeep `SubArgsLive` SubArgKeep `SubArgsLive` SubArgOut s `SubArgsLive` SubArgsNil
+      -> ShrunkOperation mkBackpermute (f :>: ArgArray In (ArrayR shr (subTupR s r)) sh (subTupDBuf s buf) :>: output :>: ArgsNil)
+    _ `SubArgsLive` _ `SubArgsLive` SubArgsDead _ -> internalError "At least one output should be preserved"
 
 reEnvArrayInstr :: ReEnv env subenv -> ArrayInstr env t -> ArrayInstr subenv t
 reEnvArrayInstr re (Parameter var) = Parameter $ expectJust $ reEnvVar re var
