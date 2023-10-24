@@ -12,7 +12,7 @@
 --
 
 module Data.Array.Accelerate.Pretty.Schedule (
-  PrettySchedule(..), PrettyKernel(..), PrettyKernelStyle(..)
+  PrettySchedule(..), PrettyKernel(..), PrettyKernelStyle(..), Adoc
 ) where
 
 import Data.Array.Accelerate.AST.Kernel
