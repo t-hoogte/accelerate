@@ -308,8 +308,8 @@ data FoldType op env
 
 
 unfused :: forall op args env r. MakesILP op => op args -> Label -> LabelledArgsOp op env args -> (forall args'. Clustered op args' -> LabelledArgsOp op env args' -> r) -> r
-unfused op l largs k = singleton largs op $ 
-  \c@(Clustered (Op (SLVOp (SOp (SOAOp (_op :: op argsToo) soas) (SA sort _unsort)) sa)) b) ->
+unfused op l largs k = singleton l largs op $ 
+  \c@(Clustered (Op (SLVOp (SOp (SOAOp (_op :: op argsToo) soas) (SA sort _unsort)) sa) _) b) ->
     case unsafeCoerce Refl of -- we know that `_op` is the same as `op`
       (Refl :: args :~: argsToo) -> k c (slv louttovar sa $ sort $ soaExpand splitLabelledArgsOp soas largs)
 

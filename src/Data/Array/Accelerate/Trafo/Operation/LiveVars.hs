@@ -356,12 +356,6 @@ reEnvSubBuffers _ _ _ = internalError "Tuple mismatch"
 data ReEnvSubBuffers subenv t where
   ReEnvSubBuffers :: SubTupR t t' -> GroundVars subenv (Buffers t') -> ReEnvSubBuffers subenv t
 
-subTupUniqueness :: SubTupR t t' -> Uniquenesses t -> Uniquenesses t'
-subTupUniqueness SubTupRskip         _                = TupRunit
-subTupUniqueness SubTupRkeep         t                = t
-subTupUniqueness (SubTupRpair s1 s2) (TupRpair t1 t2) = subTupUniqueness s1 t1 `TupRpair` subTupUniqueness s2 t2
-subTupUniqueness (SubTupRpair s1 s2) (TupRsingle Shared) = TupRsingle $ Shared
-
 composeSubArgs :: SubArgs a b -> SubArgs b c -> SubArgs a c
 composeSubArgs SubArgsNil SubArgsNil = SubArgsNil
 composeSubArgs (SubArgsDead                s1) (SubArgsLive SubArgKeep     s2) = SubArgsDead                                    $ composeSubArgs s1 s2
@@ -371,3 +365,8 @@ composeSubArgs (SubArgsLive SubArgKeep     s1) (SubArgsLive s              s2) =
 composeSubArgs (SubArgsLive (SubArgOut t)  s1) (SubArgsLive SubArgKeep     s2) = SubArgsLive (SubArgOut t)                      $ composeSubArgs s1 s2
 composeSubArgs (SubArgsLive (SubArgOut t1) s1) (SubArgsLive (SubArgOut t2) s2) = SubArgsLive (SubArgOut $ composeSubTupR t2 t1) $ composeSubArgs s1 s2
 
+subTupUniqueness :: SubTupR t t' -> Uniquenesses t -> Uniquenesses t'
+subTupUniqueness SubTupRskip         _                = TupRunit
+subTupUniqueness SubTupRkeep         t                = t
+subTupUniqueness (SubTupRpair s1 s2) (TupRpair t1 t2) = subTupUniqueness s1 t1 `TupRpair` subTupUniqueness s2 t2
+subTupUniqueness (SubTupRpair s1 s2) (TupRsingle Shared) = TupRsingle $ Shared
