@@ -141,7 +141,7 @@ transformAfun afun = go FEnvEnd afun
       , DeclareOutput skip lhs dest <- declareOutput $ groundsR body
       = funConstruct
           (buildFunLam lhs $ buildFunBody $
-            transform (fenvFSkipMany skip env) Parallel (CtxNormal $ dest SkipNone) schedule)
+            transformSub (fenvFSkipMany skip env) Parallel (CtxNormal $ dest SkipNone) schedule)
           weakenId
 
 -- Transforms a SyncSchedule to a UniformSchedule.
@@ -213,7 +213,7 @@ transform' (SyncSchedule _ simple schedule) = case schedule of
     CtxLoop{} -> internalError "Loop impossible"
     CtxNormal dest
       | (dest', instr) <- returnValues fenv parallelism updateTup dest ->
-        buildSeqOrSpawn parallelism instr $ transform fenv parallelism (CtxNormal dest') next
+        buildSeqOrSpawn parallelism instr $ transformSub fenv parallelism (CtxNormal dest') next
 
   -- Effects
   PExec kernel args -> TransformSchedule $ \fenv _ _ ->
