@@ -290,7 +290,7 @@ chainFuture (FutureBuffer tp ref (Borrow s r) mwrite) SyncRead SyncRead
   | Nothing <- mwrite
   = ChainFuture
       -- Create a pair of signal and resolver for both subterms.
-      -- Fork a thread which will resolve the final read signal when the two
+      -- Spawn a thread which will resolve the final read signal when the two
       -- new signals have been resolved.
       ( buildLet lhsSignal NewSignal
         . buildLet lhsSignal NewSignal
@@ -633,8 +633,8 @@ loopFutureEnv resolved = go SkipNone
             | LoopFutureEnvInner instr1 release1 env' <- body1 skip input output local
             , LoopFutureInner instr2 release2 future' <- body2 skip TupRunit TupRunit TupRunit ->
               LoopFutureEnvInner
-                (buildFork instr1 instr2)
-                (buildFork release1 release2)
+                (buildSpawn instr1 instr2)
+                (buildSpawn release1 release2)
                 (FEnvPush env' future')
         | otherwise ->
           LoopFutureEnv{
@@ -648,8 +648,8 @@ loopFutureEnv resolved = go SkipNone
               , LoopFutureEnvInner instr1 release1 env' <- body1 skip input1 output1 local1
               , LoopFutureInner instr2 release2 future' <- body2 skip input2 output2 local2 ->
                 LoopFutureEnvInner
-                  (buildFork instr1 instr2)
-                  (buildFork release1 release2)
+                  (buildSpawn instr1 instr2)
+                  (buildSpawn release1 release2)
                   (FEnvPush env' future')
               | otherwise -> internalError "Input, output or local tuple impossible"
           }
@@ -898,13 +898,13 @@ lhsRef tp = LeftHandSidePair (LeftHandSideSingle $ BaseRref tp) (LeftHandSideSin
 assertFutureEnv :: SyncEnv genv -> FutureEnv fenv genv -> ()
 assertFutureEnv senv (FEnvFSkip env) = assertFutureEnv senv env
 assertFutureEnv (PPush senv SyncWrite) (FEnvPush env (FutureBuffer _ _ _ Just{})) = assertFutureEnv senv env
-assertFutureEnv (PPush _ SyncWrite) (FEnvPush env FutureBuffer{}) = internalError "SyncWrite, read-only buffer mismatch"
+assertFutureEnv (PPush _ SyncWrite) (FEnvPush _ FutureBuffer{}) = internalError "SyncWrite, read-only buffer mismatch"
 assertFutureEnv (PPush senv SyncRead) (FEnvPush env (FutureBuffer _ _ _ Nothing)) = assertFutureEnv senv env
-assertFutureEnv (PPush _ SyncWrite) (FEnvPush env FutureBuffer{}) = internalError "SyncRead, writeable buffer mismatch"
+assertFutureEnv (PPush _ SyncRead) (FEnvPush _ FutureBuffer{}) = internalError "SyncRead, writeable buffer mismatch"
 assertFutureEnv (PPush _ _) (FEnvPush _ FutureScalar{}) = internalError "Buffer impossible"
 assertFutureEnv (PPush _ _) (FEnvGSkip _) = internalError "Buffer missing in FutureEnv"
 assertFutureEnv (PPush _ _) FEnvEnd = internalError "Buffer missing in FutureEnv"
-assertFutureEnv (PNone senv) (FEnvPush _ FutureBuffer{}) = internalError "Redundant buffer in FutureEnv"
+assertFutureEnv (PNone _) (FEnvPush _ FutureBuffer{}) = internalError "Redundant buffer in FutureEnv"
 assertFutureEnv PEnd (FEnvPush _ FutureBuffer{}) = internalError "Redundant buffer in FutureEnv"
 assertFutureEnv (PNone senv) (FEnvPush env FutureScalar{}) = assertFutureEnv senv env
 assertFutureEnv (PNone senv) (FEnvGSkip env) = assertFutureEnv senv env

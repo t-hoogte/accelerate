@@ -323,7 +323,7 @@ transform' (SyncSchedule _ simple schedule) = case schedule of
     CtxLoop release destBool _ dest ->
       buildSeq
         (writeLoopCondition destBool False)
-        $ buildFork
+        $ buildSpawn
           release
           $ snd $ returnValues fenv Parallel (toPartialReturn us vars) dest
 
@@ -1075,7 +1075,7 @@ rnfSchedule' (Alet lhs bnd body)           = rnfLeftHandSide rnfBaseR lhs `seq` 
 rnfSchedule' (Effect eff next)             = rnfEffect eff `seq` rnfSchedule' next
 rnfSchedule' (Acond c true false next)     = rnfExpVar c `seq` rnfSchedule' true `seq` rnfSchedule' false `seq` rnfSchedule' next
 rnfSchedule' (Awhile io body initial next) = rnfInputOutputR io `seq` rnfSchedule body `seq` rnfTupR rnfBaseVar initial `seq` rnfSchedule' next
-rnfSchedule' (Fork a b)                    = rnfSchedule' a `seq` rnfSchedule' b
+rnfSchedule' (Spawn a b)                   = rnfSchedule' a `seq` rnfSchedule' b
 
 rnfBinding :: Binding env t -> ()
 rnfBinding (Compute e)       = rnfOpenExp e

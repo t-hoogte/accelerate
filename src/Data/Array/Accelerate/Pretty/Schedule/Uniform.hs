@@ -35,7 +35,7 @@ import Data.Array.Accelerate.AST.Schedule.Uniform
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Type
 
-import Data.Text.Prettyprint.Doc
+import Prettyprinter
 
 import Prelude hiding (exp)
 
@@ -151,8 +151,8 @@ prettyUniformSchedule env = \case
         <> hardline <> hang 4 ("  (" <+> prettyUniformScheduleFun env body)
         <> hardline <> "  )"
         <> prettyNext next
-  Fork next body
-    -> annotate Statement "fork" <+> "{"
+  Spawn body next
+    -> annotate Statement "spawn" <+> "{"
         <> hardline <> indent 2 (prettyUniformSchedule env body)
         <> hardline <> "}"
         <> prettyNext next

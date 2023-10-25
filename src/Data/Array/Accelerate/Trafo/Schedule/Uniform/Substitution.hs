@@ -52,7 +52,7 @@ instance Sink' (UniformSchedule kernel) where
   weaken' k (Effect effect s)         = Effect (weaken' k effect) (weaken' k s)
   weaken' k (Acond cond true false s) = Acond (weaken k cond) (weaken' k true) (weaken' k false) (weaken' k s)
   weaken' k (Awhile io f input s)     = Awhile io (weaken k f) (mapTupR (weaken k) input) (weaken' k s)
-  weaken' k (Fork s1 s2)              = Fork (weaken' k s1) (weaken' k s2)
+  weaken' k (Spawn s1 s2)             = Spawn (weaken' k s1) (weaken' k s2)
 
 instance Sink (UniformScheduleFun kernel) where
   weaken k (Slam lhs f)
@@ -116,7 +116,7 @@ reindexSchedule' k = \case
   Effect effect s -> Effect <$> reindexEffect' k effect <*> reindexSchedule' k s
   Acond cond t f continue -> Acond <$> reindexVarUnsafe k cond <*> reindexSchedule' k t <*> reindexSchedule' k f <*> reindexSchedule' k continue
   Awhile io f initial continue -> Awhile io <$> reindexScheduleFun' k f <*> traverseTupR (reindexVarUnsafe k) initial <*> reindexSchedule' k continue
-  Fork s1 s2 -> Fork <$> reindexSchedule' k s1 <*> reindexSchedule' k s2
+  Spawn s1 s2 -> Spawn <$> reindexSchedule' k s1 <*> reindexSchedule' k s2
 
 reindexVarUnsafe :: Applicative f => SunkReindexPartialN f env env' -> Var s env t -> f (Var s env' t)
 reindexVarUnsafe k (Var tp idx) = Var tp . fromNewIdxUnsafe <$> reindex' k idx
