@@ -42,6 +42,7 @@ import Data.Array.Accelerate.Analysis.Match
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Shape                   ( ShapeR(..), shapeToList )
 import Data.Array.Accelerate.Representation.Type
+import Data.Array.Accelerate.Representation.Slice                   ( SliceIndex(..) )
 import Data.Array.Accelerate.Trafo.Exp.Algebra
 import Data.Array.Accelerate.Trafo.Environment
 import Data.Array.Accelerate.Trafo.Shrink
@@ -228,8 +229,8 @@ simplifyOpenExp env = first getAny . cvtE
       Pair e1 e2                -> Pair <$> cvtE e1 <*> cvtE e2
       VecPack   vec e           -> VecPack   vec <$> cvtE e
       VecUnpack vec e           -> VecUnpack vec <$> cvtE e
-      IndexSlice x ix sh        -> IndexSlice x <$> cvtE ix <*> cvtE sh
-      IndexFull x ix sl         -> IndexFull x <$> cvtE ix <*> cvtE sl
+      IndexSlice x ix sh        -> indexSlice x <$> cvtE ix <*> cvtE sh
+      IndexFull x ix sl         -> indexFull x <$> cvtE ix <*> cvtE sl
       ToIndex shr sh ix         -> toIndex shr (cvtE sh) (cvtE ix)
       FromIndex shr sh ix       -> fromIndex shr (cvtE sh) (cvtE ix)
       Case e rhs def            -> caseof (cvtE e) (sequenceA [ (t,) <$> cvtE c | (t,c) <- rhs ]) (cvtMaybeE def)
@@ -359,6 +360,37 @@ simplifyOpenExp env = first getAny . cvtE
     fromIndex (ShapeRsnoc ShapeRz) _ (_, ix)
                                          = Stats.ruleFired "fromIndex DIM1" $ yes $ Pair Nil ix
     fromIndex shr sh ix                  = FromIndex shr <$> sh <*> ix
+
+    indexFull
+      :: SliceIndex slix sl co t
+      -> PreOpenExp arr env slix
+      -> PreOpenExp arr env sl
+      -> PreOpenExp arr env t
+    indexFull SliceNil _ _ = Nil
+    indexFull (SliceAll sliceIdx)   (Pair slx _) (Pair sh sz)
+      = Pair (indexFull sliceIdx slx sh) sz
+    indexFull (SliceFixed sliceIdx) (Pair slx sz) sh
+      = Pair (indexFull sliceIdx slx sh) sz
+      -- Expression slx or sh isn't a pair.
+      -- TODO: We could bind them in a Let, which may allow further reasoning
+      -- by the simplifier.
+    indexFull sliceIdx slx sh = IndexFull sliceIdx slx sh
+
+    indexSlice
+      :: SliceIndex slix t co sh
+      -> PreOpenExp arr env slix
+      -> PreOpenExp arr env sh
+      -> PreOpenExp arr env t
+    indexSlice SliceNil _ _ = Nil
+    indexSlice (SliceAll sliceIdx)   (Pair slx _) (Pair sl sz)
+      = Pair (indexSlice sliceIdx slx sl) sz
+    indexSlice (SliceFixed sliceIdx) (Pair slx _) (Pair sl _)
+      = indexSlice sliceIdx slx sl
+    indexSlice sliceIdx slx sh
+      -- Expression slx or sh isn't a pair.
+      -- TODO: We could bind them in a Let, which may allow further reasoning
+      -- by the simplifier.
+      = IndexSlice sliceIdx slx sh
 
     first :: (a -> a') -> (a,b) -> (a',b)
     first f (x,y) = (f x, y)
