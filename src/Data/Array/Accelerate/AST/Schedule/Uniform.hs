@@ -329,8 +329,8 @@ sargVars (a :>: as) = sargVar a : sargVars as
 sargVars ArgsNil    = []
 
 sargOutputVar :: SArg env t -> Maybe (Exists (Idx env))
-sargOutputVar (SArgScalar    v) = Nothing
-sargOutputVar (SArgBuffer In v) = Nothing
+sargOutputVar (SArgScalar    _) = Nothing
+sargOutputVar (SArgBuffer In _) = Nothing
 sargOutputVar (SArgBuffer _  v) = Just $ Exists $ varIdx v
 
 sargOutputVars :: SArgs env t -> [Exists (Idx env)]
@@ -338,12 +338,11 @@ sargOutputVars (a :>: as) = maybe id (:) (sargOutputVar a) $ sargOutputVars as
 sargOutputVars ArgsNil    = []
 
 sargBufferVar :: SArg env t -> Maybe (Exists (Idx env))
-sargBufferVar (SArgScalar    v) = Nothing
-sargBufferVar (SArgBuffer In v) = Nothing
-sargBufferVar (SArgBuffer _  v) = Just $ Exists $ varIdx v
+sargBufferVar (SArgScalar   _) = Nothing
+sargBufferVar (SArgBuffer _ v) = Just $ Exists $ varIdx v
 
 sargBufferVars :: SArgs env t -> [Exists (Idx env)]
-sargBufferVars (a :>: as) = maybe id (:) (sargOutputVar a) $ sargBufferVars as
+sargBufferVars (a :>: as) = maybe id (:) (sargBufferVar a) $ sargBufferVars as
 sargBufferVars ArgsNil    = []
 
 signalResolverImpossible :: GroundsR SignalResolver -> a
