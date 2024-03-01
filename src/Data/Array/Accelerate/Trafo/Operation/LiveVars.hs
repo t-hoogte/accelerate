@@ -228,10 +228,11 @@ stronglyLiveVariables' liveness returns us = \case
 class SLVOperation op where
   slvOperation :: op f -> Maybe (ShrinkOperation op f)
 
-newtype ShrinkOperation op f = ShrinkOperation (forall f' env' env. SubArgs f f' -> Args env' f' -> Args env f -> ShrunkOperation op env' f')
+newtype ShrinkOperation op f = ShrinkOperation 
+  (forall f' env' env. SubArgs f f' -> Args env' f' -> Args env f -> ShrunkOperation op env')
 
-data ShrunkOperation op env f where
-  ShrunkOperation :: op f -> Args env f -> ShrunkOperation op env f
+data ShrunkOperation op env where
+  ShrunkOperation :: op f -> Args env f -> ShrunkOperation op env
 
 data SubArgs f f' where
   SubArgsNil  :: SubArgs () ()
@@ -257,6 +258,10 @@ data SubArg t t' where
 class ShrinkArg arg where
   shrinkArg :: SubArg t t' -> arg t -> arg t'
   deadArg :: arg (Out sh e) -> arg (Var' sh)
+
+-- instance ShrinkArg (Arg env) where
+--   shrinkArg = _
+--   deadArg = _
 
 shrinkArgs :: ShrinkArg arg => SubArgs f f' -> PreArgs arg f -> PreArgs arg f'
 shrinkArgs SubArgsNil ArgsNil = ArgsNil

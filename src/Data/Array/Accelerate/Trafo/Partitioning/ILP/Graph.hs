@@ -290,7 +290,7 @@ data Construction (op :: Type -> Type) where
   CWhl  :: LabelEnv env -> Label -> Label -> GroundVars env a          -> Uniquenesses a -> Construction op
   CLHS  ::                 MyGLHS a -> Label                           -> Uniquenesses a -> Construction op
   CFun  ::                 MyGLHS a -> Label                                             -> Construction op
-  CBod  ::                                                                                  Construction op
+  CBod  ::   Label   ->                                                                     Construction op
   CRet  :: LabelEnv env -> GroundVars env a                                              -> Construction op
   CCmp  :: LabelEnv env -> Exp env a                                                     -> Construction op
   CAlc  :: LabelEnv env -> ShapeR sh -> ScalarType e -> ExpVars env sh                   -> Construction op
@@ -488,14 +488,14 @@ mkFullGraphF (Abody acc) = do
   let output = res ^. l_res
   currL.parent .= l ^. parent
   return $ res 
-         & info . constr <>~ maybe mempty (\l' -> manifest l' .==. int 0) output
+         & info . constr <>~ maybe (error "what to do here?") (\l' -> manifest l' .==. int 0) output
          & l_res    ?~ l
          & info.graphI.graphNodes %~ S.insert l
-         & construc %~ M.insert l CBod
+         & construc %~ M.insert l (CBod $ fromJust output)
 
 mkFullGraphF (Alam lhs f) = do
   l <- freshL
-  (res, mylhs) <- zoomState lhs l (mkFullGraphF f)
+  (res, mylhs) <- zoomState lhs l (mkFullGraphF f) -- "zooming" into a _larger_ env
   return $ res
          & l_res    ?~ l
          & info.graphI.graphNodes %~ S.insert l

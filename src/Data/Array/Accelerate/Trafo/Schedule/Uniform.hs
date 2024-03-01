@@ -65,13 +65,10 @@ import Control.Concurrent
 import Data.IORef
 import System.IO.Unsafe (unsafePerformIO)
 
-<<<<<<< HEAD
 import Data.Array.Accelerate.Pretty.Operation
 import Data.Functor.Identity
 import Data.Array.Accelerate.AST.Partitioned (Clustered)
 
-=======
->>>>>>> Reimplement schedule construction (except awhile)
 instance IsSchedule UniformScheduleFun where
   type ScheduleInput  UniformScheduleFun a = Input a
   type ScheduleOutput UniformScheduleFun a = Output a

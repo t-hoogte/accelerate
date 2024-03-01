@@ -39,7 +39,7 @@ import Data.Array.Accelerate.AST.Operation
 import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.Trafo.Config
 import Data.Array.Accelerate.Error
-import Data.Array.Accelerate.Trafo.Partitioning.ILP (gurobiFusion, gurobiFusionF, greedy, greedyF, no, noF)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP)
 import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (Objective (..))
@@ -71,7 +71,7 @@ convertAccWith
     -> Objective
     -> OperationAcc op () a
     -> PartitionedAcc op () a
-convertAccWith _ = withSimplStats gurobiFusion
+convertAccWith _ = withSimplStats cbcFusion
 
 convertAcc :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => Objective -> OperationAcc op () a -> PartitionedAcc op () a
 convertAcc = convertAccWith defaultOptions
@@ -82,7 +82,7 @@ convertAfun :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => Obje
 convertAfun = convertAfunWith defaultOptions
 
 convertAfunWith :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => Config -> Objective -> OperationAfun op () f -> PartitionedAfun op () f
-convertAfunWith _ = withSimplStats gurobiFusionF
+convertAfunWith _ = withSimplStats cbcFusionF
 
 
 withSimplStats :: a -> a

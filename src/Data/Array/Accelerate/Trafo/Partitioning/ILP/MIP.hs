@@ -44,12 +44,15 @@ instance (MakesILP op, MIP.IsSolver s IO) => ILPSolver s op where
   solve s (ILP dir obj constr bnds n) = makeSolution names <$> MIP.solve s options problem
     where
       options = MIP.SolveOptions{ MIP.solveTimeLimit   = Just 60
-                                , MIP.solveLogger      = putStrLn . ("AccILPSolver: "      ++)
+                                , MIP.solveLogger      = const (pure ()) --putStrLn . ("AccILPSolver: "      ++)
                                 , MIP.solveErrorLogger = putStrLn . ("AccILPSolverError: " ++)
-      }
-                                -- , MIP.solveCondensedSolution = False }
+                                , MIP.solveCondensedSolution = False }
+      -- }
 
-      stateProblem = Problem (Just "AccelerateILP") <$> (mkFun dir <$> expr n obj) <*> cons n constr <*> pure [] <*> pure [] <*> vartypes <*> (bounds bnds >>= finishBounds)
+      stateProblem = flip -- we need this flip to make `bounds` happen before `vartypes` in the monad, so that we also give the variables that only occur in bounds a type.
+        <$> (Problem (Just "AccelerateILP") <$> (mkFun dir <$> expr n obj) <*> cons n constr <*> pure [] <*> pure []) 
+        <*> (bounds bnds >>= finishBounds) 
+        <*> vartypes -- If any variables are not given a type, they won't get fixed by `solveCondensedSoluton` (and I'm also not sure whether Integer is the default).
       (problem, (names,_)) = runState stateProblem ((mempty, mempty),"")
 
       mkFun Maximise = ObjectiveFunction (Just "AccelerateObjective") OptMax

@@ -70,9 +70,9 @@ Data.Graph (containers) has a nice topological sort.
 -}
 
 
--- map M.! key = case map M.!? key of
---   Just x -> x
---   Nothing -> Debug.Trace.trace ("error: map "<> show map <> "does not contain key " <> show key) undefined
+map !?? key = case map M.!? key of
+  Just x -> x
+  Nothing -> error $ ("error: map with keys " <> show (M.keys map) <> " does not contain key " <> show key)
 
 -- instance Show (Exists a) where
 --   show (Exists x) = "exis"
@@ -105,7 +105,6 @@ foldC f x (NonExecL l) = f l x
 
 topSort :: Bool -> Graph -> Labels -> [ClusterL]
 topSort _ _ (S.toList -> [l]) = [ExecL [l]]
--- topSort True _ ls = map (ExecL . pure) $ S.toList ls -- TODO no, need to sort them first
 topSort singletons (Graph _ fedges fpedges) cluster = if singletons then concatMap (map (ExecL . pure)) topsorteds else map ExecL topsorteds
   where
     buildGraph =
@@ -184,21 +183,21 @@ openReconstruct' singletons labelenv graph clusterslist mlab subclustersmap cons
                             \c args' ->
                                 Exists $ Exec c (unLabelOp args')
       NotFold con -> case con of
-         CExe {}    -> error "should be Fold/InitFold!"
-         CExe'{}    -> error "should be Fold/InitFold!"
-         CUse se  n be             -> Exists $ Use se n be
-         CITE env' c t f   -> case (makeAST env (subcluster t) prev, makeAST env (subcluster f) prev) of
-            (Exists tacc, Exists facc) -> Exists $ Acond
-              (fromJust $ reindexVar (mkReindexPartial env' env) c)
-              -- [See NOTE unsafeCoerce result type]
-              (unsafeCoerce @(PreOpenAcc (Clustered op) env _)
-                            @(PreOpenAcc (Clustered op) env _)
-                            tacc)
-              (unsafeCoerce @(PreOpenAcc (Clustered op) env _)
-                            @(PreOpenAcc (Clustered op) env _)
-                            facc)
-         CWhl env' c b i u -> case (subcluster c, subcluster b) of
-           (findTopOfF -> c', findTopOfF -> b') -> case (makeASTF env c' prev, makeASTF env b' prev) of
+        CExe {}    -> error "should be Fold/InitFold!"
+        CExe'{}    -> error "should be Fold/InitFold!"
+        CUse se  n be             -> Exists $ Use se n be
+        CITE env' c t f   -> case (makeAST env (subcluster t) prev, makeAST env (subcluster f) prev) of
+          (Exists tacc, Exists facc) -> Exists $ Acond
+            (fromJust $ reindexVar (mkReindexPartial env' env) c)
+            -- [See NOTE unsafeCoerce result type]
+            (unsafeCoerce @(PreOpenAcc (Clustered op) env _)
+                          @(PreOpenAcc (Clustered op) env _)
+                          tacc)
+            (unsafeCoerce @(PreOpenAcc (Clustered op) env _)
+                          @(PreOpenAcc (Clustered op) env _)
+                          facc)
+        CWhl env' c b i u -> case (subcluster c, subcluster b) of
+          (findTopOfF -> c', findTopOfF -> b') -> case (makeASTF env c' prev, makeASTF env b' prev) of
             (Exists cfun, Exists bfun) -> Exists $ Awhile
               u
               -- [See NOTE unsafeCoerce result type]
@@ -209,21 +208,21 @@ openReconstruct' singletons labelenv graph clusterslist mlab subclustersmap cons
                             @(PreOpenAfun (Clustered op) env (_ -> _))
                             bfun)
               (fromJust $ reindexVars (mkReindexPartial env' env) i)
-         CLHS {} -> error "let without scope"
-         CFun {} -> error "wrong type: function"
-         CBod {} -> error "wrong type: function"
-         CRet env' vars     -> Exists $ Return      (fromJust $ reindexVars (mkReindexPartial env' env) vars)
-         CCmp env' expr     -> Exists $ Compute     (fromJust $ reindexExp  (mkReindexPartial env' env) expr)
-         CAlc env' shr e sh -> Exists $ Alloc shr e (fromJust $ reindexVars (mkReindexPartial env' env) sh)
-         CUnt env' evar     -> Exists $ Unit        (fromJust $ reindexVar  (mkReindexPartial env' env) evar)
-    makeAST env (cluster:ctail) prev =
-
+        CLHS {} -> error "let without scope"
+        CFun {} -> error "wrong type: function"
+        CBod {} -> error "wrong type: function"
+        CRet env' vars     -> Exists $ Return      (fromJust $ reindexVars (mkReindexPartial env' env) vars)
+        CCmp env' expr     -> Exists $ Compute     (fromJust $ reindexExp  (mkReindexPartial env' env) expr)
+        CAlc env' shr e sh -> Exists $ Alloc shr e (fromJust $ reindexVars (mkReindexPartial env' env) sh)
+        CUnt env' evar     -> Exists $ Unit        (fromJust $ reindexVar  (mkReindexPartial env' env) evar)
+    makeAST env (cluster:ctail) prev = 
       -- TODO: use guards to fuse these two identical cases
       case makeCluster env cluster of
       NotFold con -> case con of
-        CLHS (mylhs :: MyGLHS a) b u -> case prev M.! b of
+        CLHS (mylhs :: MyGLHS a) b u -> case makeAST env [NonExecL b] prev of
+          -- case prev !?? b of
           Exists bnd -> createLHS mylhs env $ \env' lhs ->
-            case makeAST env' ctail (M.map (\(Exists acc) -> Exists $ weakenAcc lhs acc) prev) of
+            case makeAST env' ctail (M.map (\(Exists acc) -> Exists $ weakenAcc lhs acc) $ M.insert b (Exists bnd) prev) of
               Exists scp
                 | bnd' <- unsafeCoerce @(PreOpenAcc (Clustered op) env _) -- [See NOTE unsafeCoerce result type]
                                        @(PreOpenAcc (Clustered op) env a)
@@ -245,19 +244,20 @@ openReconstruct' singletons labelenv graph clusterslist mlab subclustersmap cons
 
     makeASTF :: forall env. LabelEnv env -> Label -> M.Map Label (Exists (PreOpenAcc (Clustered op) env)) -> Exists (PreOpenAfun (Clustered op) env)
     makeASTF env l prev = case makeCluster env (NonExecL l) of
-      NotFold CBod -> case makeAST env (subcluster l) prev of
+      NotFold (CBod l') -> case makeAST env (subcluster l) prev of
         --  fromJust $ l' ^. parent) prev of 
-        Exists acc -> Exists $ Abody acc
-      NotFold (CFun lhs l') -> createLHS lhs env $ \env' lhs' -> case makeASTF env' l' (M.map (\(Exists acc) -> Exists $ weakenAcc lhs' acc) prev) of
-        Exists fun -> Exists $ Alam lhs' fun
+          Exists acc -> Exists $ Abody acc
+      NotFold (CFun lhs l') -> createLHS lhs env $ \env' lhs' -> 
+        case makeASTF env' l' (M.map (\(Exists acc) -> Exists $ weakenAcc lhs' acc) $ M.insertWith (flip const) l' (Exists undefined) prev) of
+          Exists fun -> Exists $ Alam lhs' fun
       NotFold {} -> error "wrong type: acc"
       _ -> error "not a notfold"
 
     findTopOfF :: [ClusterL] -> Label
     findTopOfF [] = error "empty list"
     findTopOfF [NonExecL x] = x
-    findTopOfF (x@(NonExecL l):xs) = case construct M.! l of
-      CBod -> findTopOfF xs
+    findTopOfF (x@(NonExecL l):xs) = case construct !?? l of
+      CBod l' -> findTopOfF xs
       CFun _ l' -> findTopOfF $ filter (\(NonExecL l'') -> l'' /= l') xs ++ [x]
       _ -> error "should be a function"
       -- findTopOfF $ filter (\(NonExecL l) -> Just l /= p) xs ++ [x]
@@ -271,12 +271,12 @@ openReconstruct' singletons labelenv graph clusterslist mlab subclustersmap cons
     subclusters = M.map (concatMap ( \case
                       Execs ls -> topSort singletons graph ls
                       NonExec l -> [NonExecL l])) subclustersmap
-    subcluster l = subclusters M.! l
+    subcluster l = subclusters !?? l
 
     makeCluster :: LabelEnv env -> ClusterL -> FoldType op env
     makeCluster env (ExecL ls) =
        foldr1 (flip fuseCluster)
-                    $ map ( \l -> case construct M.! l of
+                    $ map ( \l -> case construct !?? l of
                               -- At first thought, this `fromJust` might error if we fuse an array away.
                               -- It does not: The array will still be in the environment, but after we finish
                               -- the `foldr1`, the input argument will dissapear. The output argument does not:
@@ -285,7 +285,7 @@ openReconstruct' singletons labelenv graph clusterslist mlab subclustersmap cons
                               CExe env' args op -> InitFold op l (fromJust $ reindexLabelledArgsOp (mkReindexPartial env' env) args)
                               _                 -> error "avoid this next refactor" -- c -> NotFold c
                           ) ls
-    makeCluster _ (NonExecL l) = NotFold $ construct M.! l
+    makeCluster _ (NonExecL l) = NotFold $ construct !?? l
 
     fuseCluster :: FoldType op env -> FoldType op env -> FoldType op env
     fuseCluster (Fold cluster cargs) (InitFold op l largs) =
@@ -309,9 +309,9 @@ data FoldType op env
 
 unfused :: forall op args env r. MakesILP op => op args -> Label -> LabelledArgsOp op env args -> (forall args'. Clustered op args' -> LabelledArgsOp op env args' -> r) -> r
 unfused op l largs k = singleton l largs op $ 
-  \c@(Clustered (Op (SLVOp (SOp (SOAOp (_op :: op argsToo) soas) (SA sort _unsort)) sa) _) b) ->
+  \c@(Clustered (Op (SOp (SOAOp (_op :: op argsToo) soas) (SA sort _unsort)) _) b) ->
     case unsafeCoerce Refl of -- we know that `_op` is the same as `op`
-      (Refl :: args :~: argsToo) -> k c (slv louttovar sa $ sort $ soaExpand splitLabelledArgsOp soas largs)
+      (Refl :: args :~: argsToo) -> k c (sort $ soaExpand splitLabelledArgsOp soas largs)
 
 louttovar :: LabelledArgOp op env (Out sh e) -> LabelledArgOp op env (Var' sh)
 louttovar (LOp a (_,ls) b) = LOp (outvar a) (NotArr, ls) b -- unsafe marker: maybe this NotArr ends up a problem?

@@ -97,8 +97,8 @@ makeBackendArg args env c b = go args c (defaultOuts args b)
       backR = go (right f args) r (rightB args f outputs)
       backL = go (left  f args) l (backleft f backR outputs)
       in fuseBack f backL backR
-    go args (Op (SLVOp (SOp (SOAOp op soa) (SA sort unsort)) sa) l) outputs = 
-      slv (shToVar . outToSh) sa . sort . soaExpand uncombineB soa $ onOp @op op (forgetIn (soaShrink combine soa $ unsort $ slv' varToOut sa args) $ soaShrink combineB soa $ unsort $ slv' (shToOut . varToSh) sa $ inventIn args outputs) (soaShrink combine soa $ unsort $ slv' varToOut sa args) env
+    go args (Op (SOp (SOAOp op soa) (SA sort unsort)) sa) outputs = 
+      sort . soaExpand uncombineB soa $ onOp @op op (forgetIn (soaShrink combine soa $ unsort args) $ soaShrink combineB soa $ unsort $ inventIn args outputs) (soaShrink combine soa $ unsort args) env
 
     combineB   :: BackendClusterArg2 op env (f l) -> BackendClusterArg2 op env (f r) -> BackendClusterArg2 op env (f (l,r))
     combineB   = unsafeCoerce $ pairinfo   @op
@@ -218,11 +218,10 @@ evalCluster c b args env ix = do
 
 evalOps :: forall op args env. (EvalOp op) => Index op -> Cluster op args -> BackendArgEnv op env (InArgs args) -> Args env args -> FEnv op env -> EvalMonad op (EmbedEnv op env (OutArgs args))
 evalOps ix c ba args env = case c of
-  Op (SLVOp (SOp (SOAOp op soas) (SA f g)) sa)l  -> slvOut args sa 
-                                                  . outargs f (g $ slv' varToOut sa args) 
-                                                  . soaOut splitFromArg' (soaShrink combine soas $ g $ slv' varToOut sa args) soas 
-                                                    <$> evalOp ix l op env (soaIn pairInArg (g $ slv' varToOut sa args) soas 
-                                                                           $ inargs g $ slvIn (`bvartosh` env) sa ba)
+  Op (SOp (SOAOp op soas) (SA f g)) l  -> outargs f (g args) 
+                                        . soaOut splitFromArg' (soaShrink combine soas $ g args) soas 
+                                          <$> evalOp ix l op env (soaIn pairInArg (g args) soas 
+                                                                  $ inargs g ba)
   Fused f l r -> do
     lin <- leftIn f ba env
     lout <- evalOps ix l lin (left f args) env

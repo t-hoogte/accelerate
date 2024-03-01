@@ -64,11 +64,11 @@ data Label = Label
   } -- deriving Show
 makeLenses ''Label
 instance Show Label where
-  show = ("Label"<>) . show . _labelId
-  -- show (Label i p) = "Label" <> show i <> "-{" <> show p <> "} "
+  -- show = ("Label"<>) . show . _labelId
+  show (Label i p) = "L" <> show i <> "{" <> show p <> "} "
 instance Eq Label where
   (Label x a) == (Label y b)
-    | x == y = if a == b then True else error $ "same labelId but different parents: " <> show a <> " - " <> show b
+    | x == y = if a == b then True else error $ "same labelId but different parents: " <> show x <> show a <> " - " <> show b
     | otherwise = False
 deriving instance Ord Label
 

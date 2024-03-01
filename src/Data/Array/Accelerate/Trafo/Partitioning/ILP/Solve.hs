@@ -29,6 +29,7 @@ import Data.Maybe (fromJust,  mapMaybe )
 import Control.Monad.State
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.NameGeneration (freshName)
 import Data.Foldable
+import qualified Debug.Trace
 
 -- Any edge of this form will either be trivial (if fusible) or impossible (if infusible). 
 -- They originate from the smart constructor -?>, which is not quite smart enough: It should really perform this check,
@@ -148,7 +149,7 @@ makeILP obj (Info
                                              _ -> mempty
 
     -- attempt at execpi:
-    -- this failed because it was adding one for _all_ labels, not just exec. Need to find out which ones they are first somehow!
+    -- this failed because it was adding one for _all_ labels, not just exec. Need to find out which ones they are first!
     -- execpi l = Other <$> freshName ("Exec" <> show l <> "Pi")
     -- -- removing this from myConstraints makes the ILP slightly smaller, but disables the use of this cost function
     -- (numberOfClustersConstraint, nClustersBounds) = --foldMap (\l -> pi l .<=. numberOfClusters) nodes
