@@ -374,3 +374,45 @@ instance EvalOp op => TupRmonoid (Compose (BackendArgEnvElem op env) (Sh sh)) wh
       (Compose .* BAE)
       (unpair' x)
       (unpairinfo b)
+
+
+
+-- use this to check whether a singleton cluster is a generate, map, etc
+peekSingletonCluster :: (forall args'. op args' -> r) -> Cluster op args -> Maybe r
+peekSingletonCluster k = \case
+  Op (SOp (SOAOp op _) _) _ -> Just $ k op
+  _ -> Nothing -- not a singleton cluster
+
+
+-- only use this function if you know it is a singleton cluster of the right operation
+-- unsafeCoerce here matches the provided function against the type of the actual operation, e.g. Generate
+applySingletonCluster :: forall op env args args' r
+                       . (op args' -> Args env args' -> r)
+                       -> Cluster op args
+                       -> Args env args
+                       -> r
+applySingletonCluster k c args = case c of
+  Op (SOp (SOAOp op soas) (SA _ unsort)) _ ->
+    unsafeCoerce @(op args' -> Args env args' -> r) @(op _ -> Args env _ -> r) 
+      k 
+      op 
+      $ soaShrink combine soas $ unsort args
+  _ -> error "not singleton"
+
+
+-- only use this function if you know it is a singleton cluster of the right operation
+applySingletonCluster' :: forall op env args args' f
+                       . (op args' -> Args env args' -> PreArgs f args')
+                       -> (forall l r g. f (g (l,r)) -> (f (g l), f (g r)))
+                       -> Cluster op args
+                       -> Args env args
+                       -> PreArgs f args
+applySingletonCluster' k f c args = case c of
+  Op (SOp (SOAOp op soas) (SA sort unsort)) _ ->
+    sort $ soaExpand f soas $
+      unsafeCoerce @(op args' -> Args env args' -> PreArgs f args') @(op _ -> Args env _ -> PreArgs f _) 
+        k 
+        op 
+        $ soaShrink combine soas $ unsort args
+  _ -> error "not singleton"
+
