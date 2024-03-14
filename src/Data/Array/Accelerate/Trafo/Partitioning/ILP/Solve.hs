@@ -245,8 +245,6 @@ splitExecs (xs, xM) constrM = (f xs, M.map f xM)
       _ -> False
     isNonExec l = not $ isExec l
 
-
-
 -- Only needs Applicative
 newtype MonadMonoid f m = MonadMonoid { getMonadMonoid :: f m }
 instance (Monad f, Semigroup m) => Semigroup (MonadMonoid f m) where

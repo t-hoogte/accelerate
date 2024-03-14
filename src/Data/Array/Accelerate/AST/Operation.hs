@@ -14,6 +14,7 @@
 {-# OPTIONS_HADDOCK hide #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE QuantifiedConstraints #-}
 -- |
 -- Module      : Data.Array.Accelerate.AST.Operation
 -- Copyright   : [2008..2020] The Accelerate Team
@@ -234,6 +235,8 @@ data PreArgs a t where
   (:>:)   :: a s -> PreArgs a t -> PreArgs a (s -> t)
 infixr 7 :>:
 
+deriving instance (forall s. Show (a s)) => Show (PreArgs a t)
+
 fuseArgsWith :: PreArgs a t -> PreArgs b t -> (forall x. a x -> b x -> c x) -> PreArgs c t
 fuseArgsWith ArgsNil ArgsNil _ = ArgsNil
 fuseArgsWith (a :>: as) (b :>: bs) f = f a b :>: fuseArgsWith as bs f
@@ -264,6 +267,17 @@ data Arg env t where
               -> GroundVars env sh
               -> GroundVars env (Buffers e)
               -> Arg env (m sh e)
+
+instance Show (Arg env a) where
+  show = \case
+    ArgVar{} -> "ArgVar"
+    ArgExp{} -> "ArgExp"
+    ArgFun{} -> "ArgFun"
+    ArgArray m _ _ _ -> case m of
+      In -> "in"
+      Out -> "out"
+      Mut -> "mut"
+
 
 rnfPreArgs :: (forall s. a s -> ()) -> PreArgs a t -> ()
 rnfPreArgs f (a :>: as) = f a `seq` rnfPreArgs f as

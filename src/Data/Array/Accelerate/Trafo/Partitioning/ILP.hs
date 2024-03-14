@@ -7,7 +7,7 @@
 module Data.Array.Accelerate.Trafo.Partitioning.ILP where
 
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
-    ( MakesILP, Information(Info), makeFullGraph, Construction, makeFullGraphF, Graph, backendConstruc, fusibleEdges, Edge (..), constr, fused, infusibleEdges ) 
+    ( MakesILP (), Information(Info), makeFullGraph, Construction, makeFullGraphF, Graph, backendConstruc, fusibleEdges, Edge (..), constr, fused, infusibleEdges ) 
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve
     ( interpretSolution, makeILP, splitExecs, ClusterLs, Objective (..) ) 
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering

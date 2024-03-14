@@ -160,12 +160,14 @@ unOpLabels = mapArgs $ \(LOp arg l _) -> L arg l
 
 type BackendCluster op = PreArgs (BackendClusterArg op)
 
-class (Eq (BackendVar op), Ord (BackendVar op), Eq (BackendArg op), Show (BackendVar op)) => MakesILP op where
+class (Eq (BackendVar op), Ord (BackendVar op), Eq (BackendArg op), Show (BackendArg op), Ord (BackendArg op), Show (BackendVar op)) => MakesILP op where
   -- Vars needed to express backend-specific fusion rules.
   type BackendVar op
   -- Information that the backend attaches to the argument for reconstruction,
   -- i.e. to identify when two instances of an array are to be fused.
   type BackendArg op
+  defaultBA :: BackendArg op -- anything that's equal to itself
+
   -- Information that the backend attaches to the cluster, for use in interpreting/code generation.
   data BackendClusterArg op arg
   combineBackendClusterArg :: BackendClusterArg op (Out sh e) -> BackendClusterArg op (In sh e) -> BackendClusterArg op (Var' sh)
@@ -179,11 +181,31 @@ class (Eq (BackendVar op), Ord (BackendVar op), Eq (BackendArg op), Show (Backen
   mkGraph :: op args -> LabelledArgs env args -> Label -> Information op
 
   -- using the ILP solution, attach the required information to each argument
-  labelLabelledArg :: M.Map (Var op) Int -> Label -> LabelledArg env a -> LabelledArgOp op env a
+  labelLabelledArg :: Solution op -> Label -> LabelledArg env a -> LabelledArgOp op env a
   getClusterArg :: LabelledArgOp op env a -> BackendClusterArg op a
 
   -- allow the backend to add constraints/bounds for every node
   finalize :: [Label] -> Constraint op
+
+  -- -- e.g. for backpermutes. This allows the backend to say that horizontal fusion should not be possible between
+  -- -- two edges from the same source that have different Ints in this map.
+  -- -- this default implementation just uses InDir, a backend may choose to change it if other variables are also relevant.
+  -- horizontalFusionPreventingIdentifiers :: Solution op -> M.Map Edge Int
+  -- horizontalFusionPreventingIdentifiers s 
+  --   = M.fromList 
+  --   . concatMap mkedgepairs 
+  --   . filter (\case
+  --     (InDir _,_) -> True
+  --     _ -> False) 
+  --   $ M.toList s
+  --   where
+  --     mkedgepairs (InDir l, i) 
+  --       = map (\p -> (p:->l,i)) 
+  --       $ map (\(Fused p _) -> p) 
+  --       $ filter (\case
+  --         Fused _ c -> c==l
+  --         _ -> False) 
+  --       $ M.keys s
 
 
 -- Control flow cannot be fused, so we make separate ILPs for e.g.

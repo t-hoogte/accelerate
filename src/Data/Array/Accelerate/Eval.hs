@@ -48,6 +48,7 @@ import Data.Array.Accelerate.Representation.Shape (ShapeR (..))
 import Data.Composition ((.*))
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (Label)
 import Data.Array.Accelerate.AST.Var (varsType)
+import qualified Debug.Trace
 
 
 type BackendArgs op env = PreArgs (BackendClusterArg2 op env)
@@ -61,9 +62,11 @@ pattern PushFA :: () => (e' ~ (e, x)) => EmbedEnv op env e -> FromArg env (Embed
 pattern PushFA env x = Push env (FromArg x)
 {-# COMPLETE Empty, PushFA #-}
 
--- TODO make actually static, i.e. by using `Fun env (Int -> Int)` instead in the interpreter
-class (MakesILP op, forall env arg. Eq (BackendClusterArg2 op env arg)) => StaticClusterAnalysis (op :: Type -> Type) where
-  -- give better name
+
+class ( MakesILP op
+      , forall env arg. Eq (BackendClusterArg2 op env arg)
+      , forall env arg. Show (BackendClusterArg2 op env arg))
+    => StaticClusterAnalysis (op :: Type -> Type) where
   data BackendClusterArg2 op env arg
   onOp :: op args -> BackendArgs op env (OutArgsOf args) -> Args env args -> FEnv op env -> BackendArgs op env args
   def :: Arg env arg -> FEnv op env -> BackendClusterArg op arg -> BackendClusterArg2 op env arg
@@ -79,8 +82,8 @@ class (MakesILP op, forall env arg. Eq (BackendClusterArg2 op env arg)) => Stati
   shToVar      :: BackendClusterArg2 op env (Sh    sh e)     -> BackendClusterArg2 op env (Var'  sh  )
   shrinkOrGrow :: BackendClusterArg2 op env (m     sh e')    -> BackendClusterArg2 op env (m     sh e)
   addTup       :: BackendClusterArg2 op env (v     sh e)     -> BackendClusterArg2 op env (v     sh ((), e))
-  unitToVar    :: BackendClusterArg2 op env (m     sh ())    -> BackendClusterArg2 op env (Var'  sh  )  
-  varToUnit    :: BackendClusterArg2 op env (Var' sh)        -> BackendClusterArg2 op env (m     sh ()) 
+  unitToVar    :: BackendClusterArg2 op env (m     sh ())    -> BackendClusterArg2 op env (Var'  sh  )
+  varToUnit    :: BackendClusterArg2 op env (Var' sh)        -> BackendClusterArg2 op env (m     sh ())
   inToVar      :: BackendClusterArg2 op env (In sh e)        -> BackendClusterArg2 op env (Var' sh   )
   pairinfo     :: BackendClusterArg2 op env (m sh a)         -> BackendClusterArg2 op env (m sh b) -> BackendClusterArg2 op env (m sh (a,b))
   pairinfo a b = if shrinkOrGrow a == b then shrinkOrGrow a else error "pairing unequal"
@@ -97,7 +100,7 @@ makeBackendArg args env c b = go args c (defaultOuts args b)
       backR = go (right f args) r (rightB args f outputs)
       backL = go (left  f args) l (backleft f backR outputs)
       in fuseBack f backL backR
-    go args (Op (SOp (SOAOp op soa) (SA sort unsort)) sa) outputs = 
+    go args (Op (SOp (SOAOp op soa) (SA sort unsort)) sa) outputs =
       sort . soaExpand uncombineB soa $ onOp @op op (forgetIn (soaShrink combine soa $ unsort args) $ soaShrink combineB soa $ unsort $ inventIn args outputs) (soaShrink combine soa $ unsort args) env
 
     combineB   :: BackendClusterArg2 op env (f l) -> BackendClusterArg2 op env (f r) -> BackendClusterArg2 op env (f (l,r))
@@ -109,9 +112,9 @@ makeBackendArg args env c b = go args c (defaultOuts args b)
     defaultOuts args backendcluster = forgetIn args $ fuseArgsWith args backendcluster (\arg b -> def arg env b)
 
     fuseBack :: forall largs rargs args
-              . Fusion largs rargs args 
-             -> BackendArgs op env largs 
-             -> BackendArgs op env rargs 
+              . Fusion largs rargs args
+             -> BackendArgs op env largs
+             -> BackendArgs op env rargs
              -> BackendArgs op env args
     fuseBack EmptyF ArgsNil ArgsNil = ArgsNil
     fuseBack (Vertical ar f) (l :>: ls) (r :>: rs) = inToVar r :>: fuseBack f ls rs
@@ -125,8 +128,8 @@ makeBackendArg args env c b = go args c (defaultOuts args b)
     fuseBack (IntroR      f)        ls  (r :>: rs) = r :>: fuseBack f ls rs
 
     rightB :: forall largs rargs args
-            . StaticClusterAnalysis op 
-           => Args env args 
+            . StaticClusterAnalysis op
+           => Args env args
            -> Fusion largs rargs args
            -> BackendArgs op env (OutArgsOf  args)
            -> BackendArgs op env (OutArgsOf rargs)
@@ -176,7 +179,7 @@ sortingOnOut sort args out = justOut (sort args) $ sort $ inventIn args out
 class (StaticClusterAnalysis op, Monad (EvalMonad op), TupRmonoid (Embed' op))
     => EvalOp op where
   type family EvalMonad op :: Type -> Type
-  type family Index op :: Type 
+  type family Index op :: Type
   type family Embed' op :: Type -> Type
   type family EnvF op :: Type -> Type
 
@@ -218,9 +221,9 @@ evalCluster c b args env ix = do
 
 evalOps :: forall op args env. (EvalOp op) => Index op -> Cluster op args -> BackendArgEnv op env (InArgs args) -> Args env args -> FEnv op env -> EvalMonad op (EmbedEnv op env (OutArgs args))
 evalOps ix c ba args env = case c of
-  Op (SOp (SOAOp op soas) (SA f g)) l  -> outargs f (g args) 
-                                        . soaOut splitFromArg' (soaShrink combine soas $ g args) soas 
-                                          <$> evalOp ix l op env (soaIn pairInArg (g args) soas 
+  Op (SOp (SOAOp op soas) (SA f g)) l  -> outargs f (g args)
+                                        . soaOut splitFromArg' (soaShrink combine soas $ g args) soas
+                                          <$> evalOp ix l op env (soaIn pairInArg (g args) soas
                                                                   $ inargs g ba)
   Fused f l r -> do
     lin <- leftIn f ba env
@@ -269,7 +272,7 @@ leftIn (IntroO2     f) (Push env _  ) env' =                  leftIn f env env'
 leftIn (IntroL      f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
 leftIn (IntroR      f) (Push env _  ) env' =                  leftIn f env env'
 
-rightIn :: (EvalOp op) 
+rightIn :: (EvalOp op)
         => Fusion largs rargs args
         -> EmbedEnv op env (OutArgs largs)
         -> BackendArgEnv op env  ( InArgs  args)
@@ -286,24 +289,24 @@ rightIn (IntroL      f)         lenv     (Push env _        ) =       rightIn f 
 rightIn (IntroR      f)         lenv     (Push env bae      ) = Push (rightIn f lenv env) bae
 
 inargs :: forall op env args args'
-        . (EvalOp op) 
+        . (EvalOp op)
         => (forall f. PreArgs f args -> PreArgs f args')
         -> BackendArgEnv op env (InArgs args)
         -> BackendArgEnv op env (InArgs args')
-inargs f 
+inargs f
   | Refl <- inargslemma @args
   = toEnv . f . fromEnv
   where
     fromEnv :: forall args. BackendArgEnv op env args -> PreArgs (BAEEInArg op env) (InArgs' args)
     fromEnv Empty = ArgsNil
-    fromEnv (Push env (x :: BackendArgEnvElem op env t)) 
+    fromEnv (Push env (x :: BackendArgEnvElem op env t))
       | Refl <- inarglemma @t = BAEEInArg x :>: fromEnv env
     toEnv :: forall args. PreArgs (BAEEInArg op env) args -> BackendArgEnv op env (InArgs args)
     toEnv ArgsNil = Empty
     toEnv (BAEEInArg x :>: args) = Push (toEnv args) x
 
 
-totalOut :: (EvalOp op) 
+totalOut :: (EvalOp op)
          => Fusion largs rargs args
          -> EmbedEnv op env (OutArgs largs)
          -> EmbedEnv op env (OutArgs rargs)
@@ -320,12 +323,12 @@ totalOut (IntroL     f)       l         r    = unsafeCoerce $ totalOut f (unsafe
 totalOut (IntroR     f)       l         r    = unsafeCoerce $ totalOut f l (unsafeCoerce r)
 
 outargs :: forall args args' env op
-         . (EvalOp op) 
+         . (EvalOp op)
         => (forall f. PreArgs f args -> PreArgs f args')
         -> Args env args
         -> EmbedEnv op env (OutArgs args)
         -> EmbedEnv op env (OutArgs args')
-outargs f args 
+outargs f args
   | Refl <- inargslemma @args = toEnv . f . fromEnv args
   where
     -- coerces are safe, just me being lazy

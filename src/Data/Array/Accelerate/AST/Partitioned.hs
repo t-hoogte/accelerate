@@ -17,6 +17,7 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
+{-# LANGUAGE QuantifiedConstraints #-}
 
 -- |
 -- Module      : Data.Array.Accelerate.AST.Partitioned
@@ -52,14 +53,16 @@ import Data.Array.Accelerate.Type (ScalarType (..), SingleType (..), NumType (..
 import Data.Array.Accelerate.AST.Environment (Env (..), prj')
 import Data.Functor.Identity
 
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (LabelledArgs, LabelledArg (..), ALabel (..), ELabel (..), Label)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (LabelledArgs, LabelledArg (..), ALabel (..), ALabels (..), ELabel (..), Label)
 import Data.List (nub, sortOn)
 import Lens.Micro (_1)
 import qualified Data.Functor.Const as C
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (LabelledArgOp (..), BackendClusterArg, MakesILP (getClusterArg, combineBackendClusterArg), LabelledArgsOp, unOpLabels, BackendCluster)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (LabelledArgOp (..), BackendClusterArg, MakesILP (..), LabelledArgsOp, unOpLabels, BackendCluster)
 import Data.Array.Accelerate.Trafo.Operation.LiveVars
 import Data.Maybe (fromJust)
 import Data.Array.Accelerate.AST.Var (varsType)
+import qualified Debug.Trace
+
 
 slv  :: (forall sh e. f (Out sh e) -> f (Var' sh)) -> SubArgs args args' -> PreArgs f args -> PreArgs f args'
 slv _ SubArgsNil ArgsNil = ArgsNil
@@ -113,15 +116,18 @@ data SOA arg appendto result where
   SOArgSingle :: SOA arg args (arg -> args)
   SOArgTup :: SOA (f right) args args' -> SOA (f left) args' args'' -> SOA (f (left,right)) args args''
 
-soaShrink :: forall args expanded f. (forall l r g. f (g l) -> f (g r) -> f (g (l,r))) -> SOAs args expanded -> PreArgs f expanded -> PreArgs f args
+soaShrink :: forall args expanded f
+           . (forall a. Show (f a))
+          => (forall l r g. f (g l) -> f (g r) -> f (g (l,r))) 
+          -> SOAs args expanded -> PreArgs f expanded -> PreArgs f args
 soaShrink _ SOArgsNil ArgsNil = ArgsNil
 soaShrink f (SOArgsCons soas soa) args = case go soa args of (arg :>: args') -> arg :>: soaShrink f soas args'
   where
     go :: SOA arg appendto result -> PreArgs f result -> PreArgs f (arg -> appendto)
     go SOArgSingle args' = args'
     go (SOArgTup soar soal) args' = case go soal args' of
-      argr :>: args'' -> case go soar args'' of
-        argl :>: args''' -> f argr argl :>: args'''
+      argl :>: args'' -> case go soar args'' of
+        argr :>: args''' -> f argl argr :>: args'''
 
 soaExpand :: forall args expanded f. (forall l r g. f (g (l,r)) -> (f (g l), f (g r))) -> SOAs args expanded -> PreArgs f args -> PreArgs f expanded
 soaExpand _ SOArgsNil ArgsNil = ArgsNil
@@ -144,13 +150,13 @@ split (ArgArray Out (ArrayR shr (TupRpair rl rr)) sh (TupRpair bufl bufr)) = (Ar
 split _ = error "non-array soa"
 
 splitLabelledArgs :: LabelledArg env (f (l,r)) -> (LabelledArg env (f l), LabelledArg env (f r))
-splitLabelledArgs (L _ (Arr (TupRsingle _), _)) = error "pair in single"
-splitLabelledArgs (L arg (Arr (TupRpair labl labr), labs)) = bimap (`L` (Arr labl, labs)) (`L` (Arr labr, labs)) $ split arg
-splitLabelledArgs (L _ (NotArr, _)) = error "SOA'd non-array arg"
+splitLabelledArgs (L _ ((Arr (TupRsingle _), _))) = error "pair in single"
+splitLabelledArgs (L arg ((Arr (TupRpair labl labr), labs))) = bimap (`L` ((Arr labl, labs))) (`L` ((Arr labr, labs))) $ split arg
+splitLabelledArgs (L _ ((NotArr, _))) = error "SOA'd non-array arg"
 splitLabelledArgsOp :: LabelledArgOp op env (f (l,r)) -> (LabelledArgOp op env (f l), LabelledArgOp op env (f r))
-splitLabelledArgsOp (LOp _ (Arr (TupRsingle _), _) b) = error "pair in single"
-splitLabelledArgsOp (LOp arg (Arr (TupRpair labl labr), labs) b) = bimap (flip (`LOp` (Arr labl, labs)) b) (flip (`LOp` (Arr labr, labs)) b) $ split arg
-splitLabelledArgsOp (LOp _ (NotArr, _) _) = error "SOA'd non-array arg"
+splitLabelledArgsOp (LOp _ ((Arr (TupRsingle _), _)) b) = error "pair in single"
+splitLabelledArgsOp (LOp arg ((Arr (TupRpair labl labr), labs)) b) = bimap (flip (`LOp` ((Arr labl, labs))) b) (flip (`LOp` ((Arr labr, labs))) b) $ split arg
+splitLabelledArgsOp (LOp _ ((NotArr, _)) _) = error "SOA'd non-array arg"
 
 soaOut :: forall env args expanded f. (forall sh l r. f (Value sh (l,r)) -> (f (Value sh l),f (Value sh r))) -> Args env args -> SOAs args expanded -> Env f (OutArgs args) -> Env f (OutArgs expanded)
 soaOut _ ArgsNil SOArgsNil Empty = Empty
@@ -224,6 +230,8 @@ data Fusion largs rars args where
   -- not in the paper; not meant for array args:
   IntroL :: Fusion l r a -> Fusion (x -> l) r (x -> a)
   IntroR :: Fusion l r a -> Fusion l (x -> r) (x -> a)
+
+deriving instance Show (Fusion l r total)
 
 left :: Fusion largs rargs args -> Args env args -> Args env largs
 left = left' (\(ArgVar sh) -> ArgArray Out (ArrayR (varsToShapeR sh) er) (mapTupR (\(Var t ix)->Var (GroundRscalar t) ix) sh) er)
@@ -384,6 +392,8 @@ instance TupRmonoid (TupR f) where
 
 
 
+unOpLabels' :: LabelledArgsOp op env args -> LabelledArgs env args
+unOpLabels' = mapArgs $ \(LOp arg l _) -> L arg l
 
 data Both f g a = Both (f a) (g a)
 fst' (Both x _) = x
@@ -398,33 +408,35 @@ onZipped f g (Both fa ga) (Both fb gb) = Both (f fa fb) (g ga gb)
 
 -- assumes that the arguments are already sorted!
 fuse :: MakesILP op 
-     => LabelledArgs env l -> LabelledArgs env r -> PreArgs f l -> PreArgs f r -> Clustered op l -> Clustered op r
+     => LabelledArgsOp op env l -> LabelledArgsOp op env r -> PreArgs f l -> PreArgs f r -> Clustered op l -> Clustered op r
      -> (forall sh e. f (Out sh e) -> f (In sh e) -> f (Var' sh))
      -> (forall args. PreArgs f args -> Clustered op args -> result)
      -> result
-fuse labl labr largs rargs (Clustered cl bl) (Clustered cr br) c k = fuse' labl labr (zipArgs largs bl) (zipArgs rargs br) cl cr (onZipped c combineBackendClusterArg) $ \args c' -> k (mapArgs fst' args) (Clustered c' $ mapArgs snd' args)
+fuse labl labr largs rargs (Clustered cl bl) (Clustered cr br) c k = fuse' labl labr (zipArgs largs bl) (zipArgs rargs br) cl cr (onZipped c combineBackendClusterArg) 
+  $ \args c' -> k (mapArgs fst' args) (Clustered c' $ mapArgs snd' args)
+
 -- assumes that the arguments are already sorted!
-fuse' :: LabelledArgs env l -> LabelledArgs env r -> PreArgs f l -> PreArgs f r -> Cluster op l -> Cluster op r
+fuse' :: MakesILP op => LabelledArgsOp op env l -> LabelledArgsOp op env r -> PreArgs f l -> PreArgs f r -> Cluster op l -> Cluster op r
       -> (forall sh e. f (Out sh e) -> f (In sh e) -> f (Var' sh))
       -> (forall args. PreArgs f args -> Cluster op args -> result)
       -> result
 fuse' labl labr largs rargs l r c k = mkFused labl labr $ \f -> k (both c f largs rargs) (Fused f l r)
 
-mkFused :: LabelledArgs env l -> LabelledArgs env r -> (forall args. Fusion l r args -> result) -> result
+mkFused :: MakesILP op => LabelledArgsOp op env l -> LabelledArgsOp op env r -> (forall args. Fusion l r args -> result) -> result
 mkFused ArgsNil ArgsNil k = k EmptyF
-mkFused ArgsNil ((L r _) :>: rs) k = mkFused ArgsNil rs $ \f -> k (addright r f)
-mkFused (L l _ :>: ls) ArgsNil k = mkFused ls ArgsNil $ \f -> k (addleft l f)
-mkFused ((L l (NotArr, _)) :>: ls) rs k = mkFused ls rs $ \f -> k (addleft l f)
-mkFused ls ((L r (NotArr, _)) :>: rs) k = mkFused ls rs $ \f -> k (addright r f)
-mkFused ((L l (Arr TupRunit, _)) :>: ls) rs k = mkFused ls rs $ \f -> k (addleft l f)
-mkFused ls ((L r (Arr TupRunit, _)) :>: rs) k = mkFused ls rs $ \f -> k (addright r f)
-mkFused (l'@(L l (Arr (TupRsingle (C.Const (ELabel llab))), _)) :>: ls) (r'@(L r (Arr (TupRsingle (C.Const (ELabel rlab))), _)) :>: rs) k
-  | llab == rlab = mkFused ls rs $ \f -> addboth l r f k
-  | llab <  rlab = mkFused ls (r':>:rs) $ \f -> k (addleft l f)
-  | llab >  rlab = mkFused (l':>:ls) rs $ \f -> k (addright r f)
+mkFused ArgsNil ((LOp r _ _) :>: rs) k = mkFused ArgsNil rs $ \f -> k (addright r f)
+mkFused (LOp l _ _ :>: ls) ArgsNil k = mkFused ls ArgsNil $ \f -> k (addleft l f)
+mkFused ((LOp l ((NotArr,_)) _) :>: ls) rs k = mkFused ls rs $ \f -> k (addleft l f)
+mkFused ls ((LOp r ((NotArr,_))_ ) :>: rs) k = mkFused ls rs $ \f -> k (addright r f)
+mkFused ((LOp l ((Arr TupRunit,_))_ ) :>: ls) rs k = mkFused ls rs $ \f -> k (addleft l f)
+mkFused ls ((LOp r ((Arr TupRunit,_))_) :>: rs) k = mkFused ls rs $ \f -> k (addright r f)
+mkFused (l'@(LOp l ((Arr (TupRsingle (C.Const (ELabel llab))), lls))lop) :>: ls) (r'@(LOp r ((Arr (TupRsingle (C.Const (ELabel rlab))), rls))rop) :>: rs) k
+  | (llab,lop) == (rlab,rop) = mkFused ls rs $ \f -> addboth l r f k
+  | (llab,lop) <  (rlab,rop) = mkFused ls (r':>:rs) $ \f -> k (addleft l f)
+  | (llab,lop) >  (rlab,rop) = mkFused (l':>:ls) rs $ \f -> k (addright r f)
   | otherwise = error "simple math, the truth cannot be questioned"
-mkFused ((L _ (Arr TupRpair{}, _)) :>: _) _ _ = error "not soa'd array"
-mkFused _ ((L _ (Arr TupRpair{}, _)) :>: _) _ = error "not soa'd array"
+mkFused ((LOp _ ((Arr TupRpair{}, _))_) :>: _) _ _ = error "not soa'd array"
+mkFused _ ((LOp _ ((Arr TupRpair{}, _))_) :>: _) _ = error "not soa'd array"
 
 addleft :: Arg env arg -> Fusion left right args -> Fusion (arg->left) right (arg->args)
 addleft (ArgVar _          ) f = IntroL  f
@@ -451,8 +463,8 @@ addboth (ArgArray In  _ _ _) (ArgArray Out _ _ _) _ _ = error "reverse vertical/
 addboth _ _ _ _ = error "fusing non-arrays"
 
 singleton :: MakesILP op => Label -> LabelledArgsOp op env args -> op args -> (forall args'. Clustered op args' -> r) -> r
-singleton l largs op k = mkSOAs (unOpLabels largs) $ \soas ->
-  sortArgs (soaExpand splitLabelledArgs soas (unOpLabels largs)) $ \sa@(SA sort _) ->
+singleton l largs op k = mkSOAs (mapArgs (\(LOp a _ _) -> a) largs) $ \soas ->
+  sortArgs (soaExpand splitLabelledArgs soas (unOpLabels' largs)) $ \sa@(SA sort _) ->
     k $ Clustered (Op (SOp (SOAOp op soas) sa) l) (mapArgs getClusterArg $ sort $ soaExpand splitLabelledArgsOp soas largs)
 -- (subargsId $ sort $ soaExpand splitLabelledArgsOp soas largs)
 
@@ -472,28 +484,27 @@ subargsId :: PreArgs f args -> SubArgs args args
 subargsId ArgsNil = SubArgsNil
 subargsId (_ :>: args) = SubArgsLive SubArgKeep $ subargsId args
 
--- doesn't actually need the labels, but the only usesite has them already
-mkSOAs :: LabelledArgs env args -> (forall expanded. SOAs args expanded -> r) -> r
+mkSOAs :: Args env args -> (forall expanded. SOAs args expanded -> r) -> r
 mkSOAs ArgsNil k = k SOArgsNil
 mkSOAs (a:>:args) k = mkSOAs args $ \soas -> mkSOA a $ \soa -> k (SOArgsCons soas soa)
 
-mkSOA :: LabelledArg env arg -> (forall result. SOA arg toappend result -> r) -> r
-mkSOA     (L (ArgArray In  (ArrayR shr (TupRpair tl tr)) sh (TupRpair bufl bufr)) (Arr (TupRpair al ar), ls)) k = 
-  mkSOA   (L (ArgArray In  (ArrayR shr tr              ) sh bufr                ) (Arr ar              , ls)) $ \soar ->
-    mkSOA (L (ArgArray In  (ArrayR shr tl              ) sh bufl                ) (Arr al              , ls)) $ \soal ->
+mkSOA :: Arg env arg -> (forall result. SOA arg toappend result -> r) -> r
+mkSOA     (ArgArray In  (ArrayR shr (TupRpair tl tr)) sh (TupRpair bufl bufr)) k = 
+  mkSOA   (ArgArray In  (ArrayR shr tr              ) sh bufr                ) $ \soar ->
+    mkSOA (ArgArray In  (ArrayR shr tl              ) sh bufl                ) $ \soal ->
       k (SOArgTup soar soal)
-mkSOA     (L (ArgArray Out (ArrayR shr (TupRpair tl tr)) sh (TupRpair bufl bufr)) (Arr (TupRpair al ar), ls)) k = 
-  mkSOA   (L (ArgArray Out (ArrayR shr tr              ) sh bufr                ) (Arr ar              , ls)) $ \soar ->
-    mkSOA (L (ArgArray Out (ArrayR shr tl              ) sh bufl                ) (Arr al              , ls)) $ \soal ->
+mkSOA     (ArgArray Out (ArrayR shr (TupRpair tl tr)) sh (TupRpair bufl bufr)) k = 
+  mkSOA   (ArgArray Out (ArrayR shr tr              ) sh bufr                ) $ \soar ->
+    mkSOA (ArgArray Out (ArrayR shr tl              ) sh bufl                ) $ \soal ->
       k (SOArgTup soar soal)
-mkSOA (L (ArgArray In  _ _ TupRunit    ) _) k = k SOArgSingle
-mkSOA (L (ArgArray Out _ _ TupRunit    ) _) k = k SOArgSingle
-mkSOA (L (ArgArray In  _ _ TupRsingle{}) _) k = k SOArgSingle
-mkSOA (L (ArgArray Out _ _ TupRsingle{}) _) k = k SOArgSingle
-mkSOA (L (ArgVar _) _) k = k SOArgSingle
-mkSOA (L (ArgExp _) _) k = k SOArgSingle
-mkSOA (L (ArgFun _) _) k = k SOArgSingle
-mkSOA (L (ArgArray Mut _ _ _) _) k = k SOArgSingle
+mkSOA (ArgArray In  _ _ TupRunit    ) k = k SOArgSingle
+mkSOA (ArgArray Out _ _ TupRunit    ) k = k SOArgSingle
+mkSOA (ArgArray In  _ _ TupRsingle{}) k = k SOArgSingle
+mkSOA (ArgArray Out _ _ TupRsingle{}) k = k SOArgSingle
+mkSOA (ArgVar _) k = k SOArgSingle
+mkSOA (ArgExp _) k = k SOArgSingle
+mkSOA (ArgFun _) k = k SOArgSingle
+mkSOA (ArgArray Mut _ _ _) k = k SOArgSingle
 mkSOA _ _ = error "pair or unit in a tuprsingle somewhere"
 
 instance SLVOperation (Clustered op) where
@@ -531,8 +542,8 @@ instance SLVOperation op => SLVOperation (Cluster op) where
   --       splitslvstuff f sub args' args $
   --         \f' lsub largs' largs rsub rargs' rargs ->
   --           case (l lsub largs' largs, r rsub rargs' rargs) of
-  --             (ShrunkOperation lop largs'', ShrunkOperation rop rargs'') -> 
-  --               ShrunkOperation (Fused f' lop rop) (both (\x _ -> outvar x) f' largs'' rargs''))
+  --             (ShrunkOperation LOp largs'', ShrunkOperation rop rargs'') -> 
+  --               ShrunkOperation (Fused f' LOp rop) (both (\x _ -> outvar x) f' largs'' rargs''))
 
   --     splitslvstuff :: Fusion l r a
   --      -> SubArgs a a'

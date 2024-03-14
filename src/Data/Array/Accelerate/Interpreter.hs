@@ -116,7 +116,7 @@ instance Backend Interpreter where
 
 map !?! key = case map M.!? key of
   Just x -> x
-  Nothing -> Debug.Trace.trace ("error: map "<> show map <> "does not contain key " <> show key) undefined
+  Nothing -> error ("error: map "<> show map <> "does not contain key " <> show key)
 
 
 -- Pushes backpermute information through the cluster and stores it in the arguments, for use at the start of the loop (indexing) and in generates.
@@ -127,7 +127,8 @@ instance Eq (BackendClusterArg2 InterpretOp env arg) where
   -- this is just a sanity check
   BCA f x == BCA g y = map f [1..100] == map g [1..100] && x == y
 
-
+instance Show (BackendClusterArg2 InterpretOp env arg) where
+  show (BCA f a) = "bca"
 
 instance StaticClusterAnalysis InterpretOp where
   data BackendClusterArg2 InterpretOp env arg = BCA (Int -> Int) Int -- backpermute function and iteration size

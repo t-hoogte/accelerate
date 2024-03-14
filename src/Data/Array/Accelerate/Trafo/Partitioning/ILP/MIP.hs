@@ -117,18 +117,12 @@ var v = do
 unvar :: MakesILP op => MIP.Var -> Reader (Names op) (Maybe (Graph.Var op))
 unvar (fromVar -> name) = asks $ (M.!? name) . fst
 
--- var   :: MakesILP op => Graph.Var op -> MIP.Var
--- var   = toVar . Debug.Trace.traceShowId . filter (not . isSpace) . show
--- unvar :: MakesILP op => MIP.Var -> Maybe (Graph.Var op)
--- unvar = readMaybe . Debug.Trace.traceShowId . fromVar
-
-
 
 makeSolution :: MakesILP op => Names op -> MIP.Solution Scientific -> Maybe (Solution op)
 --                                   ------- Matching on solutions with a value: If this is Nothing, the model was infeasable or unbounded.
 --                                   |    -- Instead matching on `MIP.Solution StatusOptimal _ m` often works too, but that doesn't work for
 --                                   v    -- e.g. the identity program (which has an empty ILP).
-makeSolution names (MIP.Solution _ (Just _) m) = {-Debug.Trace.traceShowId .-} Just . M.fromList . mapMaybe (sequence' . bimap (\v -> runReader (unvar v) names) round) $ M.toList m
+makeSolution names (MIP.Solution _ (Just _) m) = Just . M.fromList . mapMaybe (sequence' . bimap (\v -> runReader (unvar v) names) round) $ M.toList m
 makeSolution _ _ = Nothing
 
 -- tuples traversable instance works on the second argument
