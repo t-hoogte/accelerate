@@ -49,6 +49,7 @@ import Data.Composition ((.*))
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (Label)
 import Data.Array.Accelerate.AST.Var (varsType)
 import qualified Debug.Trace
+import Data.Array.Accelerate.Pretty.Exp (PrettyEnv)
 
 
 type BackendArgs op env = PreArgs (BackendClusterArg2 op env)
@@ -64,7 +65,7 @@ pattern PushFA env x = Push env (FromArg x)
 
 
 class ( MakesILP op
-      , forall env arg. Eq (BackendClusterArg2 op env arg)
+      -- , forall env arg. Eq (BackendClusterArg2 op env arg)
       , forall env arg. Show (BackendClusterArg2 op env arg))
     => StaticClusterAnalysis (op :: Type -> Type) where
   data BackendClusterArg2 op env arg
@@ -86,7 +87,7 @@ class ( MakesILP op
   varToUnit    :: BackendClusterArg2 op env (Var' sh)        -> BackendClusterArg2 op env (m     sh ())
   inToVar      :: BackendClusterArg2 op env (In sh e)        -> BackendClusterArg2 op env (Var' sh   )
   pairinfo     :: BackendClusterArg2 op env (m sh a)         -> BackendClusterArg2 op env (m sh b) -> BackendClusterArg2 op env (m sh (a,b))
-  pairinfo a b = if shrinkOrGrow a == b then shrinkOrGrow a else error "pairing unequal"
+  -- pairinfo a b = if shrinkOrGrow a == b then shrinkOrGrow a else error $ "pairing unequal: " <> show a <> ", " <> show b
   unpairinfo   :: BackendClusterArg2 op env (m sh (a,b))     -> (BackendClusterArg2 op env (m sh a),  BackendClusterArg2 op env (m sh b))
   unpairinfo x = (shrinkOrGrow x, shrinkOrGrow x)
 

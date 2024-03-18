@@ -15,6 +15,7 @@
 {-# OPTIONS_GHC -Wno-orphans #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE QuantifiedConstraints #-}
+{-# LANGUAGE InstanceSigs #-}
 -- |
 -- Module      : Data.Array.Accelerate.AST.Operation
 -- Copyright   : [2008..2020] The Accelerate Team
@@ -359,6 +360,7 @@ instance HasGroundsR (GroundVars env) where
   groundsR = varsType
 
 instance HasGroundsR (OpenExp env benv) where
+  groundsR :: OpenExp env benv a -> GroundsR a
   groundsR = typeRtoGroundsR . expType
 
 type OpenExp env benv = PreOpenExp (ArrayInstr benv) env
