@@ -107,9 +107,9 @@ testWithObjective obj f
   where
     operation
       = 
-      -- Operation.simplifyFun $
+      Operation.simplifyFun $
       Operation.stronglyLiveVariablesFun $
-      -- Operation.simplifyFun $
+      Operation.simplifyFun $
        desugared
     desugared =
         desugarAfun @(KernelOperation kernel)
@@ -155,8 +155,8 @@ convertAccWith config
   = phase' "codegen"     rnfSchedule convertSchedule
   . phase  "partition-live-vars"    ({-Operation.simplify . -} Operation.stronglyLiveVariables)
   . phase  "array-fusion"           ({-Operation.simplify . -} NewNewFusion.convertAccWith config defaultObjective)
-  . phase  "operation-live-vars"    ({-Operation.simplify . -} Operation.stronglyLiveVariables)
-  . phase  "desugar"                ({-Operation.simplify . -} desugar)
+  . phase  "operation-live-vars"    (Operation.simplify . Operation.stronglyLiveVariables)
+  . phase  "desugar"                (Operation.simplify . desugar)
   . phase  "array-split-lets"       LetSplit.convertAcc
   -- phase "vectorise-sequences"    Vectorise.vectoriseSeqAcc `when` vectoriseSequences
   . phase  "sharing-recovery"       (Sharing.convertAccWith config)
@@ -171,8 +171,8 @@ convertAccBench b
   = phase' "codegen"     rnfSchedule convertSchedule
   . phase  "partition-live-vars"    ({-Operation.simplify . -} Operation.stronglyLiveVariables)
   . phase  "array-fusion"           ({-Operation.simplify . -} NewNewFusion.convertAccBench b)
-  . phase  "operation-live-vars"    ({-Operation.simplify . -} Operation.stronglyLiveVariables)
-  . phase  "desugar"                ({-Operation.simplify . -} desugar)
+  . phase  "operation-live-vars"    (Operation.simplify . Operation.stronglyLiveVariables)
+  . phase  "desugar"                (Operation.simplify . desugar)
   . phase  "array-split-lets"       LetSplit.convertAcc
   -- phase "vectorise-sequences"    Vectorise.vectoriseSeqAcc `when` vectoriseSequences
   . phase  "sharing-recovery"       (Sharing.convertAccWith defaultOptions)
@@ -187,8 +187,8 @@ convertAfunBench b
   = phase' "codegen"     rnfSchedule convertScheduleFun
   . phase  "partition-live-vars"    ({- Operation.simplifyFun . -} Operation.stronglyLiveVariablesFun)
   . phase  "array-fusion"           ({- Operation.simplifyFun . -} NewNewFusion.convertAccBenchF b)
-  . phase  "operation-live-vars"    ({- Operation.simplifyFun . -} Operation.stronglyLiveVariablesFun)
-  . phase  "desugar"                ({- Operation.simplifyFun . -} desugarAfun)
+  . phase  "operation-live-vars"    (Operation.simplifyFun . Operation.stronglyLiveVariablesFun)
+  . phase  "desugar"                (Operation.simplifyFun . desugarAfun)
   . phase  "array-split-lets"       LetSplit.convertAfun
   -- phase "vectorise-sequences"    Vectorise.vectoriseSeqAfun  `when` vectoriseSequences
   . phase  "sharing-recovery"       (Sharing.convertAfunWith defaultOptions)
@@ -204,8 +204,8 @@ convertAccWithObj obj
   = phase' "codegen"     rnfSchedule convertSchedule
   . phase  "partition-live-vars"    ({-Operation.simplify . -} Operation.stronglyLiveVariables)
   . phase  "array-fusion"           ({-Operation.simplify . -} NewNewFusion.convertAccWith defaultOptions obj)
-  . phase  "operation-live-vars"    ({-Operation.simplify . -} Operation.stronglyLiveVariables)
-  . phase  "desugar"                ({-Operation.simplify . -} desugar)
+  . phase  "operation-live-vars"    (Operation.simplify . Operation.stronglyLiveVariables)
+  . phase  "desugar"                (Operation.simplify . desugar)
   . phase  "array-split-lets"       LetSplit.convertAcc
   -- phase "vectorise-sequences"    Vectorise.vectoriseSeqAcc `when` vectoriseSequences
   . phase  "sharing-recovery"       (Sharing.convertAccWith defaultOptions)

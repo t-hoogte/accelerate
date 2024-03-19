@@ -274,8 +274,8 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
         c = Alam (LeftHandSidePair (LeftHandSideSingle $ GroundRscalar scalarTypeInt) $ LeftHandSideWildcard $ buffersR tp)
               $ Abody
               $ Compute
-              $ mkBinary (PrimLtEq singleType) (paramIn' $ Var scalarTypeInt ZeroIdx)
-              $ mkBinary (PrimBShiftR integralType) n (mkConstant (TupRsingle scalarTypeInt) 2) -- n/4
+              $ mkBinary (PrimLt singleType) (paramIn' $ Var scalarTypeInt ZeroIdx)
+              $ mkBinary (PrimBShiftR integralType) n (mkConstant (TupRsingle scalarTypeInt) 1) -- n/2
 
         argAlloc = ArgArray Out (ArrayR shr tp) (weakenVars (weakenSucc $ weakenSucc $ kAlloc .> kTmp) sh) (valueAlloc weakenId)
         -- Awhile step function
@@ -284,7 +284,7 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
               $ aletUnique lhsAlloc (desugarAlloc (ArrayR shr tp) $ groundToExpVar (shapeType shr) $ weakenVars (weakenSucc $ weakenSucc kTmp) sh)
               $ alet (LeftHandSideWildcard TupRunit) (mkGenerate (weaken kAlloc reduce) argAlloc)
               $ alet (LeftHandSideSingle $ GroundRscalar scalarTypeInt)
-                (Compute $ mkBinary (PrimAdd numType) (paramIn' $ weaken (kAlloc .> kTmp) $ Var scalarTypeInt ZeroIdx) (mkConstant (TupRsingle scalarTypeInt) 1))
+                (Compute $ mkBinary (PrimBShiftL integralType) (paramIn' $ weaken (kAlloc .> kTmp) $ Var scalarTypeInt ZeroIdx) (mkConstant (TupRsingle scalarTypeInt) 1)) -- n * 2
               $ Return $ TupRsingle (Var (GroundRscalar scalarTypeInt) ZeroIdx) `TupRpair` valueAlloc (weakenSucc weakenId)
       in
         alet (LeftHandSideSingle $ GroundRscalar scalarTypeInt) (Compute $ mkConstant (TupRsingle scalarTypeInt) 1)
@@ -1311,7 +1311,7 @@ mkDefaultScanPrepend dir (ArgExp def) (ArgArray _ repr@(ArrayR (ShapeRsnoc shr) 
           TupRpair _ n -> paramsIn (TupRsingle scalarTypeInt) n
           _ -> error "Impossible pair"
       x = case dir of
-        LeftToRight -> mkBinary (PrimAdd numType) (Evar $ Var scalarTypeInt ZeroIdx) (mkConstant (TupRsingle scalarType) 1)
+        LeftToRight -> mkBinary (PrimSub numType) (Evar $ Var scalarTypeInt ZeroIdx) (mkConstant (TupRsingle scalarType) 1)
         RightToLeft -> Evar $ Var scalarTypeInt ZeroIdx
     in
       Lam (lhs `LeftHandSidePair` LeftHandSideSingle scalarTypeInt)
@@ -1341,8 +1341,8 @@ mkDefaultScanFunction dir inc (ArgFun f) (ArgArray _ repr@(ArrayR (ShapeRsnoc sh
       Lam (lhs `LeftHandSidePair` LeftHandSideSingle scalarTypeInt)
         $ Body
         $ Cond condition
-          (index' x)
           (apply2 tp f (index' x) (index' y))
+          (index' x)
 
 mkDefaultFoldSegFunction
   :: IntegralType i

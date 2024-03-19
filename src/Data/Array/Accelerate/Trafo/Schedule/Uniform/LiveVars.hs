@@ -128,14 +128,14 @@ stronglyLiveVariables' liveness = \case
           (step' re)
           (expectJust $ reEnvVars re initial)
           (next' re)
-  Fork a b ->
+  Spawn a b ->
     let
       LVAnalysis' liveness1 a' = stronglyLiveVariables' liveness  a
       LVAnalysis' liveness2 b' = stronglyLiveVariables' liveness1 b
     in
       LVAnalysis'
         liveness2
-        $ \re -> Fork
+        $ \re -> Spawn
           (a' re)
           (b' re)
 

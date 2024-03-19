@@ -141,7 +141,7 @@ transformAfun afun = go FEnvEnd afun
       , DeclareOutput skip lhs dest <- declareOutput $ groundsR body
       = funConstruct
           (buildFunLam lhs $ buildFunBody $
-            transform (fenvFSkipMany skip env) Parallel (CtxNormal $ dest SkipNone) schedule)
+            transformSub (fenvFSkipMany skip env) Parallel (CtxNormal $ dest SkipNone) schedule)
           weakenId
 
 -- Transforms a SyncSchedule to a UniformSchedule.
@@ -213,7 +213,7 @@ transform' (SyncSchedule _ simple schedule) = case schedule of
     CtxLoop{} -> internalError "Loop impossible"
     CtxNormal dest
       | (dest', instr) <- returnValues fenv parallelism updateTup dest ->
-        buildSeqOrSpawn parallelism instr $ transform fenv parallelism (CtxNormal dest') next
+        buildSeqOrSpawn parallelism instr $ transformSub fenv parallelism (CtxNormal dest') next
 
   -- Effects
   PExec kernel args -> TransformSchedule $ \fenv _ _ ->
@@ -323,7 +323,7 @@ transform' (SyncSchedule _ simple schedule) = case schedule of
     CtxLoop release destBool _ dest ->
       buildSeq
         (writeLoopCondition destBool False)
-        $ buildFork
+        $ buildSpawn
           release
           $ snd $ returnValues fenv Parallel (toPartialReturn us vars) dest
 
@@ -1075,7 +1075,7 @@ rnfSchedule' (Alet lhs bnd body)           = rnfLeftHandSide rnfBaseR lhs `seq` 
 rnfSchedule' (Effect eff next)             = rnfEffect eff `seq` rnfSchedule' next
 rnfSchedule' (Acond c true false next)     = rnfExpVar c `seq` rnfSchedule' true `seq` rnfSchedule' false `seq` rnfSchedule' next
 rnfSchedule' (Awhile io body initial next) = rnfInputOutputR io `seq` rnfSchedule body `seq` rnfTupR rnfBaseVar initial `seq` rnfSchedule' next
-rnfSchedule' (Fork a b)                    = rnfSchedule' a `seq` rnfSchedule' b
+rnfSchedule' (Spawn a b)                   = rnfSchedule' a `seq` rnfSchedule' b
 
 rnfBinding :: Binding env t -> ()
 rnfBinding (Compute e)       = rnfOpenExp e

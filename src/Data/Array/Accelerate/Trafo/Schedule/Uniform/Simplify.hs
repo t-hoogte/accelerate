@@ -30,11 +30,11 @@ module Data.Array.Accelerate.Trafo.Schedule.Uniform.Simplify (
   simplifyFun, simplify, emptySimplifyEnv,
 
   -- Utilities
-  forkUnless, fork, forks, serial,
+  spawnUnless, spawn, spawns, serial,
 
   -- Construction DSL
   BuildSchedule, BuildScheduleFun, funConstruct,
-  buildAcond, buildAwhile, buildEffect, buildFork, buildSpawn,
+  buildAcond, buildAwhile, buildEffect, buildSpawn,
   buildLet, buildReturn, buildSeq,
   buildFunBody, buildFunLam,
 ) where
@@ -149,8 +149,8 @@ simplify :: InfoEnv env -> UniformSchedule kernel env -> UniformSchedule kernel 
 simplify env schedule = snd $ simplify' env schedule
 
 simplify' :: InfoEnv env -> UniformSchedule kernel env -> ([SignalImplication env], UniformSchedule kernel env)
--- Forks
-simplify' env s@Fork{} = simplifyForks env s
+-- Spawn
+simplify' env s@Spawn{} = simplifySpawns env s
 -- Effects
 simplify' env (Effect effect next) = (implications1 ++ implications2, instr next')
   where
@@ -407,14 +407,14 @@ substitute env = Weaken $ \idx -> case infoFor idx env of
   InfoBuffer   (Just idx') -> idx'
   _                        -> idx
 
-simplifyForks :: InfoEnv env -> UniformSchedule kernel env -> ([SignalImplication env], UniformSchedule kernel env)
-simplifyForks env schedule
+simplifySpawns :: InfoEnv env -> UniformSchedule kernel env -> ([SignalImplication env], UniformSchedule kernel env)
+simplifySpawns env schedule
   | SplitTrivials _ k trivial branches'' <- splitTrivials weakenId branches'
-  = (signalImplications, trivial $ forksGroupCommonAwait k env $ map reorder branches'')
+  = (signalImplications, trivial $ spawnsGroupCommonAwait k env $ map reorder branches'')
   where
-    branches = collectForks schedule
+    branches = collectSpawns schedule
     -- Signal implications are only propagated in one direction (namely from
-    -- the left branch to the right branch of a Fork). Schedules must thus be
+    -- the left branch to the right branch of a Spawn). Schedules must thus be
     -- created in a form where we are most likely to learn information about
     -- signals, i.e. for a let-declaration in PartitionedAcc we must compile
     -- the binding to become the left branch and the body the right branch as
@@ -479,15 +479,15 @@ splitTrivial (Acond condition true false next)
 splitTrivial schedule
   = SplitTrivial weakenId Just id schedule
 
-collectForks :: UniformSchedule kernel env -> [UniformSchedule kernel env]
-collectForks = (`go` [])
+collectSpawns :: UniformSchedule kernel env -> [UniformSchedule kernel env]
+collectSpawns = (`go` [])
   where
     go :: UniformSchedule kernel env -> [UniformSchedule kernel env] -> [UniformSchedule kernel env]
-    go (Fork s1 s2) = go s2 . go s1
+    go (Spawn s1 s2) = go s2 . go s1
     go u = (u :)
 
-forksGroupCommonAwait :: forall kernel env env'. env' :?> env -> InfoEnv env -> [UniformSchedule kernel env'] -> UniformSchedule kernel env'
-forksGroupCommonAwait k env = serializeDependentForks k env . go . map (\b -> let (signals, b') = directlyAwaits1 b in (IdxSet.fromList' signals, b'))
+spawnsGroupCommonAwait :: forall kernel env env'. env' :?> env -> InfoEnv env -> [UniformSchedule kernel env'] -> UniformSchedule kernel env'
+spawnsGroupCommonAwait k env = serializeDependentSpawns k env . go . map (\b -> let (signals, b') = directlyAwaits1 b in (IdxSet.fromList' signals, b'))
   where
     go :: [(IdxSet env', UniformSchedule kernel env')] -> [UniformSchedule kernel env']
     go [] = []
@@ -496,7 +496,7 @@ forksGroupCommonAwait k env = serializeDependentForks k env . go . map (\b -> le
       -- No signals found which are awaited by some branches.
       -- Now check if there signals waited by all branches
       | [] <- awaitedByAllList = branches''
-      | otherwise = [await awaitedByAllList $ serializeDependentForks k env branches'']
+      | otherwise = [await awaitedByAllList $ serializeDependentSpawns k env branches'']
       where
         toBranch :: (IdxSet env', UniformSchedule kernel env') -> UniformSchedule kernel env'
         toBranch (set, branch) = await (map toSignal $ IdxSet.toList set) branch
@@ -539,7 +539,7 @@ forksGroupCommonAwait k env = serializeDependentForks k env . go . map (\b -> le
           -- uncommon is the list of branches which do not wait on the signal.
           , (common, uncommon) <- partition (\(s, _) -> signal `IdxSet.member` s) branches'
           , common' <- map (first (IdxSet.remove signal)) common
-          = go uncommon ++ [await [toSignal $ Exists signal] $ serializeDependentForks k env $ go common']
+          = go uncommon ++ [await [toSignal $ Exists signal] $ serializeDependentSpawns k env $ go common']
 
           | otherwise
           -- No signals found which are awaited by some branches.
@@ -565,19 +565,19 @@ resolvesAtEnd (Alet lhs _ next)   = IdxSet.drop' lhs $ resolvesAtEnd next
 resolvesAtEnd (Effect _ next)     = resolvesAtEnd next
 resolvesAtEnd (Acond _ _ _ next)  = resolvesAtEnd next
 resolvesAtEnd (Awhile _ _ _ next) = resolvesAtEnd next
--- In a Fork, we traverse only the left subterm. This matches with the
+-- In a Spawn, we traverse only the right subterm. This matches with the
 -- inlining done in 'serial'.
-resolvesAtEnd (Fork next _)       = resolvesAtEnd next
+resolvesAtEnd (Spawn _ next)      = resolvesAtEnd next
 
-serializeDependentForks :: forall kernel env env'. env' :?> env -> InfoEnv env -> [UniformSchedule kernel env'] -> UniformSchedule kernel env'
-serializeDependentForks k env branches = go branches []
+serializeDependentSpawns :: forall kernel env env'. env' :?> env -> InfoEnv env -> [UniformSchedule kernel env'] -> UniformSchedule kernel env'
+serializeDependentSpawns k env branches = go branches []
   where
     -- Takes a list of branches which are not processed yet and a list of
     -- already processed branches. We still need to have access to the
     -- processed branches as they still may be serialized with another
     -- branch.
     go :: [UniformSchedule kernel env'] -> [UniformSchedule kernel env'] -> UniformSchedule kernel env'
-    go []     accum = forks $ reverse accum -- Accumulator was in reverse order.
+    go []     accum = spawns $ reverse accum -- Accumulator was in reverse order.
     go (a:as) accum
       | [] <- signals     = go as  (a  : accum)
       | [] <- successors
@@ -607,10 +607,10 @@ serializeDependentForks k env branches = go branches []
 
 -- Forks the two schedules, unless the second schedule directly awaits on all the signals in the given list.
 -- In such case, we try to execute them serial.
-forkUnless :: UniformSchedule kernel fenv -> UniformSchedule kernel fenv -> Maybe [Idx fenv Signal] -> UniformSchedule kernel fenv
-forkUnless Return s      _      = s
-forkUnless s      Return _      = s
-forkUnless s1     s2     awaits
+spawnUnless :: UniformSchedule kernel fenv -> UniformSchedule kernel fenv -> Maybe [Idx fenv Signal] -> UniformSchedule kernel fenv
+spawnUnless Return s      _      = s
+spawnUnless s      Return _      = s
+spawnUnless s1     s2     awaits
   | Just awaits' <- awaits
   , sort awaits' `isSubsequenceOf` sort signals2''
     = await intersection $ serial [await signals1'' s1', await signals2'' s2']
@@ -619,7 +619,7 @@ forkUnless s1     s2     awaits
   | trivialSchedule s2'
     = await intersection $ serial [await signals1'' s2', await signals2'' s1']
   | otherwise
-    = await intersection $ Fork (await signals1'' s1') (await signals2'' s2')
+    = await intersection $ Spawn (await signals1'' s1') (await signals2'' s2')
   where
     (signals1, s1') = directlyAwaits1 $ reorder s1
     signals1' = nub signals1
@@ -629,19 +629,19 @@ forkUnless s1     s2     awaits
     signals2'' = signals2' \\ intersection
     intersection = signals1' `List.intersect` signals2'
 
-fork :: UniformSchedule kernel fenv -> UniformSchedule kernel fenv -> UniformSchedule kernel fenv
-fork s1 s2 = forkUnless s1 s2 Nothing
+spawn :: UniformSchedule kernel fenv -> UniformSchedule kernel fenv -> UniformSchedule kernel fenv
+spawn s1 s2 = spawnUnless s1 s2 Nothing
 
-forks :: [UniformSchedule kernel fenv] -> UniformSchedule kernel fenv
-forks = forks' . filter notReturn
+spawns :: [UniformSchedule kernel fenv] -> UniformSchedule kernel fenv
+spawns = spawns' . filter notReturn
   where
     notReturn Return = False
     notReturn _ = True
 
-forks' :: [UniformSchedule kernel fenv] -> UniformSchedule kernel fenv
-forks' [] = Return
-forks' [u] = u
-forks' (u:us) = Fork (forks' us) u
+spawns' :: [UniformSchedule kernel fenv] -> UniformSchedule kernel fenv
+spawns' [] = Return
+spawns' [u] = u
+spawns' (u:us) = Spawn u (spawns' us)
 
 serial :: forall kernel fenv. [UniformSchedule kernel fenv] -> UniformSchedule kernel fenv
 serial = go weakenId
@@ -657,7 +657,7 @@ serial = go weakenId
           Effect effect u' -> Effect effect $ trav k u'
           Acond cond true false u' -> Acond cond true false $ trav k u'
           Awhile io f input u' -> Awhile io f input $ trav k u'
-          Fork u' u'' -> Fork (trav k u') u''
+          Spawn u' u'' -> Spawn u' (trav k u'')
 
 bindExp
     :: BLeftHandSide bnd env env'
@@ -681,12 +681,18 @@ data BuildSchedule kernel env =
     directlyAwaits :: [Idx env Signal],
     trivial :: Bool,
     -- Constructs a schedule, but doesn't wait on the directlyAwaits signals.
-    -- construct' adds that.
+    -- constructFull adds that.
     construct
       :: forall env'.
          env :> env'
+      -> BuildEnv env'
       -> Continuation kernel env'
       -> UniformSchedule kernel env'
+  }
+
+data BuildEnv env =
+  BuildEnv{
+    buildEnvResolved :: IdxSet env -- Set of resolved signals
   }
 
 instance Sink' (BuildSchedule kernel) where
@@ -706,17 +712,22 @@ newtype BuildScheduleFun kernel env t =
   }
 
 -- Constructs a schedule, and waits on the directlyAwaits signals.
-construct'
+constructFull
   :: BuildSchedule kernel env
   -> env :> env'
+  -> BuildEnv env'
   -> Continuation kernel env'
   -> UniformSchedule kernel env'
-construct' schedule k cont
-  | null $ directlyAwaits schedule = term
-  | otherwise =
-    Effect (SignalAwait $ map (weaken k) $ directlyAwaits schedule) term
-  where
-    term = construct schedule k cont
+constructFull schedule k env cont
+  | null $ directlyAwaits schedule = construct schedule k env cont
+  | signals' <-
+    -- Don't wait on already resolved signals
+    filter (\idx -> not (idx `IdxSet.member` buildEnvResolved env))
+      $ map (weaken k)
+      $ directlyAwaits schedule
+  , env' <- BuildEnv $ IdxSet.union (IdxSet.fromList' signals') $ buildEnvResolved env
+    = (if null signals' then id else Effect $ SignalAwait signals')
+      $ construct schedule k env' cont
 
 data Continuation kernel env where
   ContinuationEnd
@@ -737,9 +748,9 @@ buildReturn :: BuildSchedule kernel env
 buildReturn = BuildSchedule{
     directlyAwaits = [],
     trivial = True,
-    construct = \_ -> \case
+    construct = \_ env -> \case
       ContinuationEnd -> Return
-      ContinuationDo k2 build k3 cont -> construct' build k2 $ weaken' k3 cont
+      ContinuationDo k2 build k3 cont -> constructFull build k2 env $ weaken' k3 cont
   }
 
 buildLet
@@ -765,15 +776,20 @@ buildLet lhs binding body
     constructLet
       :: Bool
       -> env1 :> env1'
+      -> BuildEnv env1'
       -> Continuation kernel env1'
       -> UniformSchedule kernel env1'
-    constructLet shouldAwait k cont
+    constructLet shouldAwait k env cont
       | Exists lhs' <- rebuildLHS lhs
-      , k' <- sinkWithLHS lhs lhs' k =
-        Alet lhs' (weaken k binding)
-          $ (if shouldAwait then Effect $ SignalAwait $ map (weaken k') $ directlyAwaits body else id)
-          $ construct body k'
+      , k' <- sinkWithLHS lhs lhs' k
+      , binding' <- weaken k binding =
+        Alet lhs' binding'
+          $ constructFull (if shouldAwait then body else body{ directlyAwaits = [] }) k'
+            (buildEnvExtend lhs' binding' env)
           $ weaken' (weakenWithLHS lhs') cont
+
+buildEnvExtend :: BLeftHandSide t env1 env2 -> Binding env1 t -> BuildEnv env1 -> BuildEnv env2
+buildEnvExtend lhs _ (BuildEnv resolved) = BuildEnv $ IdxSet.skip' lhs resolved
 
 buildEffect
   :: Effect kernel env
@@ -791,18 +807,17 @@ buildEffect effect next
     BuildSchedule{
       directlyAwaits = directlyAwaits next,
       trivial = trivialEffect effect && trivial next,
-      construct = \k cont ->
+      construct = \k env cont ->
         Effect (weaken' k effect)
-          $ construct next k cont
+          $ construct next k env cont
     }
   | otherwise =
     BuildSchedule{
       directlyAwaits = [],
       trivial = False,
-      construct = \k cont ->
+      construct = \k env cont ->
         Effect (weaken' k effect)
-          $ Effect (SignalAwait $ map (weaken k) $ directlyAwaits next)
-          $ construct next k cont
+          $ constructFull next k env cont
     }
   where
     -- Write may be postponed: a write doesn't do synchronisation,
@@ -816,12 +831,12 @@ buildSeq a b =
   BuildSchedule {
     directlyAwaits = directlyAwaits a,
     trivial = trivial a && trivial b && directlyAwaits b `isSubsequenceOf` directlyAwaits a,
-    construct = \k cont ->
-      construct a k $ ContinuationDo k b weakenId cont
+    construct = \k env cont ->
+      construct a k env $ ContinuationDo k b weakenId cont
   }
 
-buildFork :: BuildSchedule kernel env -> BuildSchedule kernel env -> BuildSchedule kernel env
-buildFork a b
+buildSpawn :: BuildSchedule kernel env -> BuildSchedule kernel env -> BuildSchedule kernel env
+buildSpawn a b
   | trivial a && directlyAwaits a `isSubsequenceOf` directlyAwaits b =
     buildSeq a b
   | trivial b && directlyAwaits b `isSubsequenceOf` directlyAwaits a =
@@ -830,14 +845,11 @@ buildFork a b
     BuildSchedule{
       directlyAwaits = directlyAwaits a `sortedIntersection` directlyAwaits b,
       trivial = False,
-      construct = \k cont ->
-        Fork
-          (construct' a{directlyAwaits = directlyAwaits a `sortedMinus` directlyAwaits b} k cont)
-          (construct' b{directlyAwaits = directlyAwaits b `sortedMinus` directlyAwaits a} k ContinuationEnd)
+      construct = \k env cont ->
+        Spawn
+          (constructFull a{directlyAwaits = directlyAwaits a `sortedMinus` directlyAwaits b} k env cont)
+          (constructFull b{directlyAwaits = directlyAwaits b `sortedMinus` directlyAwaits a} k env ContinuationEnd)
     }
-
-buildSpawn :: BuildSchedule kernel env -> BuildSchedule kernel env -> BuildSchedule kernel env
-buildSpawn = flip buildFork
 
 buildAcond
   :: ExpVar env PrimBool
@@ -849,11 +861,11 @@ buildAcond var true false next =
   BuildSchedule{
     directlyAwaits = directlyAwaits true `sortedIntersection` directlyAwaits false,
     trivial = False,
-    construct = \k cont -> Acond
+    construct = \k env cont -> Acond
       (weaken k var)
-      (construct'  true{directlyAwaits = directlyAwaits true `sortedMinus` directlyAwaits false} k ContinuationEnd)
-      (construct' false{directlyAwaits = directlyAwaits false `sortedMinus` directlyAwaits true} k ContinuationEnd)
-      (construct' next k cont)
+      (constructFull  true{directlyAwaits = directlyAwaits true `sortedMinus` directlyAwaits false} k env ContinuationEnd)
+      (constructFull false{directlyAwaits = directlyAwaits false `sortedMinus` directlyAwaits true} k env ContinuationEnd)
+      (constructFull next k env cont)
   }
 
 buildAwhile
@@ -866,11 +878,11 @@ buildAwhile io step initial next =
   BuildSchedule{
     directlyAwaits = [], -- TODO: Compute this based on the use of the initial state and free variables of step.
     trivial = False,
-    construct = \k cont -> Awhile
+    construct = \k env cont -> Awhile
       io
       (funConstruct step k)
       (mapTupR (weaken k) initial)
-      (construct' next k cont)
+      (constructFull next k env cont)
   }
 
 buildFunLam
@@ -886,7 +898,7 @@ buildFunLam lhs body =
 buildFunBody :: BuildSchedule kernel env -> BuildScheduleFun kernel env ()
 buildFunBody body =
   BuildScheduleFun{
-    funConstruct = \k -> Sbody $ construct' body k ContinuationEnd
+    funConstruct = \k -> Sbody $ constructFull body k (BuildEnv IdxSet.empty) ContinuationEnd
   }
 
 -- Assumes that the input arrays are sorted,

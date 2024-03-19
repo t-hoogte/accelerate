@@ -33,7 +33,7 @@ import Data.Array.Accelerate.AST.Schedule.Sequential
 import Data.Array.Accelerate.Pretty.Operation
 import Data.Array.Accelerate.Representation.Type
 
-import Data.Text.Prettyprint.Doc
+import Prettyprinter
 
 import Prelude hiding (exp)
 

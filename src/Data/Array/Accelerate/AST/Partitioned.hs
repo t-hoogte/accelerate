@@ -59,7 +59,7 @@ import Lens.Micro (_1)
 import qualified Data.Functor.Const as C
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (LabelledArgOp (..), BackendClusterArg, MakesILP (..), LabelledArgsOp, unOpLabels, BackendCluster)
 import Data.Array.Accelerate.Trafo.Operation.LiveVars
-import Data.Maybe (fromJust)
+import Data.Maybe (fromJust, Maybe (Nothing))
 import Data.Array.Accelerate.AST.Var (varsType)
 import qualified Debug.Trace
 
@@ -82,13 +82,14 @@ slvIn _ _ _ = error "not soa'ed"
 slvOut :: Args env args' -> SubArgs args args' -> Env f (OutArgs args) -> Env f (OutArgs args')
 slvOut _ SubArgsNil Empty = Empty
 slvOut (_:>:args) (SubArgsDead    sas) (Push env _) = slvOut args sas env
-slvOut (a :>: args)  (SubArgsLive SubArgKeep sas) (Push env x) = case a of
-  ArgArray Out _ _ _ -> Push (slvOut args sas env) x
-  ArgArray In  _ _ _ -> slvOut args sas (Push env x)
-  ArgArray Mut _ _ _ -> slvOut args sas (Push env x)
-  ArgVar _ -> slvOut args sas (Push env x)
-  ArgFun _ -> slvOut args sas (Push env x)
-  ArgExp _ -> slvOut args sas (Push env x)
+slvOut (a :>: args)  (SubArgsLive SubArgKeep sas) env = case a of
+  ArgArray Out _ _ _
+    | Push env' x <- env -> Push (slvOut args sas env') x
+  ArgArray In  _ _ _ -> slvOut args sas env
+  ArgArray Mut _ _ _ -> slvOut args sas env
+  ArgVar _ -> slvOut args sas env
+  ArgFun _ -> slvOut args sas env
+  ArgExp _ -> slvOut args sas env
 slvOut _ _ _ = error "not soa'ed"
 
 -- a wrapper around operations which sorts the (term and type level) arguments on global labels, to line the arguments up for Fusion
@@ -515,63 +516,57 @@ instance SLVOperation (Clustered op) where
 outvar :: Arg env (Out sh e) -> Arg env (Var' sh)
 outvar (ArgArray Out (ArrayR shr _) sh _) = ArgVar $ groundToExpVar (shapeType shr) sh
 
-instance SLVOperation op => SLVOperation (Cluster op) where
-  slvOperation = const Nothing
-  -- slvOperation (Op (SOp (SOAOp op soa) sa@(SA sort unsort)) l) = case slvOperation op of
-  --   Nothing -> Nothing
-  --   Just (ShrinkOperation f) -> Just $ ShrinkOperation $ \sub args' args -> 
-  --     sortSub sa sub $ \sortedsub -> soaSub soa sortedsub $ \sub' ->
-  --       case f 
-  --         sub' 
-  --         (shrinkArgs sub' $ soaShrink combine soa $ unsort $ growArgs sub args') 
-  --         (soaShrink combine soa $ unsort args) 
-  --         of
-  --         ShrunkOperation op' args'' -> ShrunkOperation (Op (SOp (SOAOp op' $ _ args'') (SA _sort _unsort)) l) args''
+instance SLVOperation (Cluster op) where
+  slvOperation cluster = Nothing
+--   Just $ ShrinkOperation $ \sub args' args ->
+--     case slvCluster cluster sub args' args of
+--       ShrunkOperation' cluster' args'' -> ShrunkOperation cluster' args''
 
-  --   where
-  --     sortSub :: SortedArgs big' big -> SubArgs big small ->(forall small'. SubArgs big' small' -> r) -> r
-  --     sortSub _ _ k = _
-  --     soaSub  :: SOAs       big' big -> SubArgs big small ->(forall small'. SubArgs big' small' -> r) -> r
-  --     soaSub _ _ k = _
-  --     -- opposite of shrinkArgs
-  --     growArgs :: ShrinkArg arg => SubArgs f' f -> PreArgs arg f -> PreArgs arg f'
-  --     growArgs = _
+-- slvCluster :: Cluster op f -> SubArgs f f' -> Args env' f' -> Args env f -> ShrunkOperation' (Cluster op) env' f'
+-- slvCluster (Op op label) sub args' _
+--   | ShrunkOperation' op' subargs <- slvSLVedOp op sub args'
+--   = ShrunkOperation' (Op op' label) subargs
+-- slvCluster (Fused fusion left right) sub args1' args1 = splitslvstuff fusion sub args1' args1 $
+--   \f' lsub largs' largs rsub rargs' rargs -> case (slvCluster left lsub largs' largs, slvCluster right rsub rargs' rargs) of
+--     (ShrunkOperation' lop largs'', ShrunkOperation' rop rargs'') -> 
+--       ShrunkOperation' (Fused f' lop rop) (both (\x _ -> outvar x) f' largs'' rargs'')
+--   where
+--     splitslvstuff :: Fusion l r a
+--       -> SubArgs a a'
+--       -> Args env' a'
+--       -> Args env a
+--       -> (forall l' r'. Fusion l' r' a' -> SubArgs l l' -> Args env' l' -> Args env l -> SubArgs r r' -> Args env' r' -> Args env r -> result)
+--       -> result
+--     splitslvstuff EmptyF SubArgsNil ArgsNil ArgsNil k = k EmptyF SubArgsNil ArgsNil ArgsNil SubArgsNil ArgsNil ArgsNil
+--     splitslvstuff f (SubArgsLive (SubArgOut SubTupRskip) subs) args' args k = error "completely removed out arg using subtupr" --splitslvstuff f (SubArgsDead subs) args' args k
+--     splitslvstuff f (SubArgsLive (SubArgOut SubTupRkeep) subs) args' args k = splitslvstuff f (SubArgsLive SubArgKeep subs) args' args k
+--     splitslvstuff f (SubArgsLive (SubArgOut SubTupRpair{}) subs) (arg':>:args') (arg:>:args) k = error "not SOA'd array"
+--     splitslvstuff (Diagonal   f) (SubArgsDead subs) args' (arg@(ArgArray _ r sh _):>:args) k = splitslvstuff (Vertical r f) (SubArgsLive SubArgKeep subs) args' (ArgVar (groundToExpVar (shapeType $ arrayRshape r) sh) :>:args) k
+--     splitslvstuff (IntroO1    f) (SubArgsDead subs) (arg':>:args') (arg:>:args) k = splitslvstuff f subs args' args $ \f lsubs largs' largs rsubs rargs' rargs -> k (IntroL   f) (SubArgsDead lsubs) (arg':>:largs') (arg:>:largs)              rsubs          rargs'         rargs
+--     splitslvstuff (IntroO2    f) (SubArgsDead subs) (arg':>:args') (arg:>:args) k = splitslvstuff f subs args' args $ \f lsubs largs' largs rsubs rargs' rargs -> k (IntroR   f)              lsubs          largs'         largs  (SubArgsDead rsubs) (arg':>:rargs') (arg:>:rargs)
+--     splitslvstuff (IntroL     f) (SubArgsDead subs) (arg':>:args') (arg:>:args) k = error "out in IntroL/R"
+--     splitslvstuff (IntroR     f) (SubArgsDead subs) (arg':>:args') (arg:>:args) k = error "out in IntroL/R"
+--     splitslvstuff (Vertical r  f) (SubArgsLive SubArgKeep subs) (ArgVar arg':>:args') (ArgVar arg:>:args) k = splitslvstuff f subs args' args $ \f lsubs largs' largs rsubs rargs' rargs -> k (Vertical r f) (SubArgsLive SubArgKeep lsubs) (ArgArray Out r sh' buf :>:largs') (ArgArray Out r sh buf :>:largs) (SubArgsLive SubArgKeep rsubs) (ArgArray In r sh' buf :>:rargs') (ArgArray In r sh buf :>:rargs)
+--       where
+--         buf = error "fused away buffer"
+--         sh = expToGroundVar arg
+--         sh' = expToGroundVar arg'
+--     splitslvstuff (Diagonal   f) (SubArgsLive SubArgKeep subs) (arg'@(ArgArray Out r' sh' buf'):>:args') (arg@(ArgArray Out r sh buf):>:args) k = splitslvstuff f subs args' args $ \f lsubs largs' largs rsubs rargs' rargs -> k (Diagonal   f) (SubArgsLive SubArgKeep lsubs) (arg':>:largs') (arg:>:largs) (SubArgsLive SubArgKeep rsubs) (ArgArray In r' sh' buf':>:rargs') (ArgArray In r sh buf:>:rargs)
+--     splitslvstuff (Horizontal f) (SubArgsLive SubArgKeep subs) (arg':>:args') (arg:>:args) k = splitslvstuff f subs args' args $ \f lsubs largs' largs rsubs rargs' rargs -> k (Horizontal f) (SubArgsLive SubArgKeep lsubs) (       arg':>:largs') (       arg:>:largs) (SubArgsLive SubArgKeep rsubs) (      arg':>:rargs') (      arg:>:rargs)
+--     splitslvstuff (IntroI1    f) (SubArgsLive SubArgKeep subs) (arg':>:args') (arg:>:args) k = splitslvstuff f subs args' args $ \f lsubs largs' largs rsubs rargs' rargs -> k (IntroI1    f) (SubArgsLive SubArgKeep lsubs) (       arg':>:largs') (       arg:>:largs)                         rsubs                rargs'               rargs
+--     splitslvstuff (IntroI2    f) (SubArgsLive SubArgKeep subs) (arg':>:args') (arg:>:args) k = splitslvstuff f subs args' args $ \f lsubs largs' largs rsubs rargs' rargs -> k (IntroI2    f)                         lsubs                 largs'                largs  (SubArgsLive SubArgKeep rsubs) (      arg':>:rargs') (      arg:>:rargs)
+--     splitslvstuff (IntroO1    f) (SubArgsLive SubArgKeep subs) (arg':>:args') (arg:>:args) k = splitslvstuff f subs args' args $ \f lsubs largs' largs rsubs rargs' rargs -> k (IntroO1    f) (SubArgsLive SubArgKeep lsubs) (       arg':>:largs') (       arg:>:largs)                         rsubs                rargs'               rargs
+--     splitslvstuff (IntroO2    f) (SubArgsLive SubArgKeep subs) (arg':>:args') (arg:>:args) k = splitslvstuff f subs args' args $ \f lsubs largs' largs rsubs rargs' rargs -> k (IntroO2    f)                         lsubs                 largs'                largs  (SubArgsLive SubArgKeep rsubs) (      arg':>:rargs') (      arg:>:rargs)
+--     splitslvstuff (IntroL     f) (SubArgsLive SubArgKeep subs) (arg':>:args') (arg:>:args) k = splitslvstuff f subs args' args $ \f lsubs largs' largs rsubs rargs' rargs -> k (IntroL     f) (SubArgsLive SubArgKeep lsubs) (       arg':>:largs') (       arg:>:largs)                         rsubs                rargs'               rargs
+--     splitslvstuff (IntroR     f) (SubArgsLive SubArgKeep subs) (arg':>:args') (arg:>:args) k = splitslvstuff f subs args' args $ \f lsubs largs' largs rsubs rargs' rargs -> k (IntroR     f)                         lsubs                 largs'                largs  (SubArgsLive SubArgKeep rsubs) (      arg':>:rargs') (      arg:>:rargs)
 
-  -- slvOperation (Fused f l r) = Just $ fuseSLV f (fromJust $ slvOperation l) (fromJust $ slvOperation r)
-  --   where
-  --     fuseSLV :: Fusion l r a -> ShrinkOperation (Cluster op) l -> ShrinkOperation (Cluster op) r -> ShrinkOperation (Cluster op) a
-  --     fuseSLV f (ShrinkOperation l) (ShrinkOperation r) = ShrinkOperation (\sub args' args -> 
-  --       splitslvstuff f sub args' args $
-  --         \f' lsub largs' largs rsub rargs' rargs ->
-  --           case (l lsub largs' largs, r rsub rargs' rargs) of
-  --             (ShrunkOperation LOp largs'', ShrunkOperation rop rargs'') -> 
-  --               ShrunkOperation (Fused f' LOp rop) (both (\x _ -> outvar x) f' largs'' rargs''))
 
-  --     splitslvstuff :: Fusion l r a
-  --      -> SubArgs a a'
-  --      -> Args env' a'
-  --      -> Args env a
-  --      -> (forall l' r'. Fusion l' r' a' -> SubArgs l l' -> Args env' l' -> Args env l -> SubArgs r r' -> Args env' r' -> Args env r -> result)
-  --      -> result
-  --     splitslvstuff EmptyF SubArgsNil ArgsNil ArgsNil k = k EmptyF SubArgsNil ArgsNil ArgsNil SubArgsNil ArgsNil ArgsNil
-  --     splitslvstuff f (SubArgsLive (SubArgOut SubTupRskip) subs) args' args k = error "completely removed out arg using subtupr" --splitslvstuff f (SubArgsDead subs) args' args k
-  --     splitslvstuff f (SubArgsLive (SubArgOut SubTupRkeep) subs) args' args k = splitslvstuff f (SubArgsLive SubArgKeep subs) args' args k
-  --     splitslvstuff f (SubArgsLive (SubArgOut SubTupRpair{}) subs) (arg':>:args') (arg:>:args) k = error "not SOA'd array"
-  --     splitslvstuff (Diagonal   f) (SubArgsDead subs) args' (arg@(ArgArray _ r sh _):>:args) k = splitslvstuff (Vertical r f) (SubArgsLive SubArgKeep subs) args' (ArgVar (groundToExpVar (shapeType $ arrayRshape r) sh) :>:args) k
-  --     splitslvstuff (IntroO1    f) (SubArgsDead subs) (arg':>:args') (arg:>:args) k = splitslvstuff f subs args' args $ \f lsubs largs' largs rsubs rargs' rargs -> k (IntroL   f) (SubArgsDead lsubs) (arg':>:largs') (arg:>:largs)              rsubs          rargs'         rargs
-  --     splitslvstuff (IntroO2    f) (SubArgsDead subs) (arg':>:args') (arg:>:args) k = splitslvstuff f subs args' args $ \f lsubs largs' largs rsubs rargs' rargs -> k (IntroR   f)              lsubs          largs'         largs  (SubArgsDead rsubs) (arg':>:rargs') (arg:>:rargs)
-  --     splitslvstuff (IntroL     f) (SubArgsDead subs) (arg':>:args') (arg:>:args) k = error "out in IntroL/R"
-  --     splitslvstuff (IntroR     f) (SubArgsDead subs) (arg':>:args') (arg:>:args) k = error "out in IntroL/R"
-  --     splitslvstuff (Vertical r  f) (SubArgsLive SubArgKeep subs) (ArgVar arg':>:args') (ArgVar arg:>:args) k = splitslvstuff f subs args' args $ \f lsubs largs' largs rsubs rargs' rargs -> k (Vertical r f) (SubArgsLive SubArgKeep lsubs) (ArgArray Out r sh' buf :>:largs') (ArgArray Out r sh buf :>:largs) (SubArgsLive SubArgKeep rsubs) (ArgArray In r sh' buf :>:rargs') (ArgArray In r sh buf :>:rargs)
-  --       where
-  --         buf = error "fused away buffer"
-  --         sh = expToGroundVar arg
-  --         sh' = expToGroundVar arg'
-  --     splitslvstuff (Diagonal   f) (SubArgsLive SubArgKeep subs) (arg'@(ArgArray Out r' sh' buf'):>:args') (arg@(ArgArray Out r sh buf):>:args) k = splitslvstuff f subs args' args $ \f lsubs largs' largs rsubs rargs' rargs -> k (Diagonal   f) (SubArgsLive SubArgKeep lsubs) (arg':>:largs') (arg:>:largs) (SubArgsLive SubArgKeep rsubs) (ArgArray In r' sh' buf':>:rargs') (ArgArray In r sh buf:>:rargs)
-  --     splitslvstuff (Horizontal f) (SubArgsLive SubArgKeep subs) (arg':>:args') (arg:>:args) k = splitslvstuff f subs args' args $ \f lsubs largs' largs rsubs rargs' rargs -> k (Horizontal f) (SubArgsLive SubArgKeep lsubs) (       arg':>:largs') (       arg:>:largs) (SubArgsLive SubArgKeep rsubs) (      arg':>:rargs') (      arg:>:rargs)
-  --     splitslvstuff (IntroI1    f) (SubArgsLive SubArgKeep subs) (arg':>:args') (arg:>:args) k = splitslvstuff f subs args' args $ \f lsubs largs' largs rsubs rargs' rargs -> k (IntroI1    f) (SubArgsLive SubArgKeep lsubs) (       arg':>:largs') (       arg:>:largs)                         rsubs                rargs'               rargs
-  --     splitslvstuff (IntroI2    f) (SubArgsLive SubArgKeep subs) (arg':>:args') (arg:>:args) k = splitslvstuff f subs args' args $ \f lsubs largs' largs rsubs rargs' rargs -> k (IntroI2    f)                         lsubs                 largs'                largs  (SubArgsLive SubArgKeep rsubs) (      arg':>:rargs') (      arg:>:rargs)
-  --     splitslvstuff (IntroO1    f) (SubArgsLive SubArgKeep subs) (arg':>:args') (arg:>:args) k = splitslvstuff f subs args' args $ \f lsubs largs' largs rsubs rargs' rargs -> k (IntroO1    f) (SubArgsLive SubArgKeep lsubs) (       arg':>:largs') (       arg:>:largs)                         rsubs                rargs'               rargs
-  --     splitslvstuff (IntroO2    f) (SubArgsLive SubArgKeep subs) (arg':>:args') (arg:>:args) k = splitslvstuff f subs args' args $ \f lsubs largs' largs rsubs rargs' rargs -> k (IntroO2    f)                         lsubs                 largs'                largs  (SubArgsLive SubArgKeep rsubs) (      arg':>:rargs') (      arg:>:rargs)
-  --     splitslvstuff (IntroL     f) (SubArgsLive SubArgKeep subs) (arg':>:args') (arg:>:args) k = splitslvstuff f subs args' args $ \f lsubs largs' largs rsubs rargs' rargs -> k (IntroL     f) (SubArgsLive SubArgKeep lsubs) (       arg':>:largs') (       arg:>:largs)                         rsubs                rargs'               rargs
-  --     splitslvstuff (IntroR     f) (SubArgsLive SubArgKeep subs) (arg':>:args') (arg:>:args) k = splitslvstuff f subs args' args $ \f lsubs largs' largs rsubs rargs' rargs -> k (IntroR     f)                         lsubs                 largs'                largs  (SubArgsLive SubArgKeep rsubs) (      arg':>:rargs') (      arg:>:rargs)
+-- -- Variant of ShrunkOperation where f is not an existential
+-- data ShrunkOperation' op env f where
+--   ShrunkOperation' :: op f -> Args env f -> ShrunkOperation' op env f
+
+-- slvSLVedOp :: SLVedOp op f -> SubArgs f f' -> Args env' f' -> ShrunkOperation' (SLVedOp op) env' f'
+-- slvSLVedOp (SLVOp op subargs) sub args' = ShrunkOperation' (SLVOp op $ composeSubArgs subargs sub) args'
+
+-- instance SLVOperation (SLVedOp op) where
+--   slvOperation (SLVOp op subargs) = Just $ ShrinkOperation (\sub args' _ -> ShrunkOperation (SLVOp op $ composeSubArgs subargs sub) args')

@@ -36,7 +36,7 @@ module Data.Array.Accelerate.Backend (
 
   Operation.SLVOperation(..),
   Operation.SubArgs(..), Operation.SubArg(..),
-  -- Operation.defaultSlvGenerate, Operation.defaultSlvMap, Operation.defaultSlvBackpermute,
+  Operation.defaultSlvGenerate, Operation.defaultSlvMap, Operation.defaultSlvBackpermute,
   Operation.EncodeOperation(..), Operation.hashOperation,
 
   Operation.SimplifyOperation(..),

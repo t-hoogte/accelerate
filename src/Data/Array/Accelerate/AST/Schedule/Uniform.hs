@@ -88,10 +88,10 @@ data UniformSchedule kernel env where
           -> UniformSchedule kernel env -- Operations after the while loop
           -> UniformSchedule kernel env
 
-  -- Whereas Fork is symmetric, we generate programs in a way in which it is usually better
-  -- to execute the first branch first. A fork should thus be evaluated by delegating the second branch
-  -- (eg by putting the second branch in a queue) and continueing with the first branch
-  Fork    :: UniformSchedule kernel env
+  -- Spawns a task/thread for the first subterm, and continues with the second subterm.
+  -- Note that we use the name 'spawn' instead of 'fork', to imply that the first
+  -- subterm is not executed directly, but handed over to a different core or queued.
+  Spawn   :: UniformSchedule kernel env
           -> UniformSchedule kernel env
           -> UniformSchedule kernel env
 
@@ -295,7 +295,7 @@ freeVars (Awhile _ step ini continuation)
   = IdxSet.union (funFreeVars step)
   $ IdxSet.union (IdxSet.fromVarList $ flattenTupR ini)
   $ freeVars continuation
-freeVars (Fork s1 s2) = freeVars s1 `IdxSet.union` freeVars s2
+freeVars (Spawn s1 s2) = freeVars s1 `IdxSet.union` freeVars s2
 
 funFreeVars :: UniformScheduleFun kernel env t -> IdxSet env
 funFreeVars (Sbody s)    = freeVars s
@@ -308,7 +308,7 @@ bindingFreeVars (Alloc _ _ sh) = IdxSet.fromVarList $ flattenTupR sh
 bindingFreeVars (Use _ _ _)    = IdxSet.empty
 bindingFreeVars (Unit var)     = IdxSet.singletonVar var
 bindingFreeVars (RefRead var)  = IdxSet.singletonVar var
-bindingFreeVars (Compute e)    = IdxSet.fromList $ map f $ arrayInstrs e
+bindingFreeVars (Compute e)    = IdxSet.fromList $ map f $ arrayInstrsInExp e
   where
     f :: Exists (ArrayInstr env) -> Exists (Idx env)
     f (Exists (Index (Var _ idx)))     = Exists idx
@@ -329,8 +329,8 @@ sargVars (a :>: as) = sargVar a : sargVars as
 sargVars ArgsNil    = []
 
 sargOutputVar :: SArg env t -> Maybe (Exists (Idx env))
-sargOutputVar (SArgScalar    v) = Nothing
-sargOutputVar (SArgBuffer In v) = Nothing
+sargOutputVar (SArgScalar    _) = Nothing
+sargOutputVar (SArgBuffer In _) = Nothing
 sargOutputVar (SArgBuffer _  v) = Just $ Exists $ varIdx v
 
 sargOutputVars :: SArgs env t -> [Exists (Idx env)]
@@ -338,12 +338,11 @@ sargOutputVars (a :>: as) = maybe id (:) (sargOutputVar a) $ sargOutputVars as
 sargOutputVars ArgsNil    = []
 
 sargBufferVar :: SArg env t -> Maybe (Exists (Idx env))
-sargBufferVar (SArgScalar    v) = Nothing
-sargBufferVar (SArgBuffer In v) = Nothing
-sargBufferVar (SArgBuffer _  v) = Just $ Exists $ varIdx v
+sargBufferVar (SArgScalar   _) = Nothing
+sargBufferVar (SArgBuffer _ v) = Just $ Exists $ varIdx v
 
 sargBufferVars :: SArgs env t -> [Exists (Idx env)]
-sargBufferVars (a :>: as) = maybe id (:) (sargOutputVar a) $ sargBufferVars as
+sargBufferVars (a :>: as) = maybe id (:) (sargBufferVar a) $ sargBufferVars as
 sargBufferVars ArgsNil    = []
 
 signalResolverImpossible :: GroundsR SignalResolver -> a
@@ -369,7 +368,7 @@ directlyAwaits1 schedule = ([], schedule)
 
 -- Reorders a schedule.
 -- Moves SignalAwait to the front of the schedule if possible.
--- Stops at a Fork, making it safe to call this function while
+-- Stops at a Spawn, making it safe to call this function while
 -- constructing a schedule in different parts of the tree,
 -- without causing quadratic traversal costs.
 reorder :: forall kernel env. UniformSchedule kernel env -> UniformSchedule kernel env
@@ -410,7 +409,7 @@ trivialBinding (Compute e)         = expIsTrivial (const True) e
 trivialBinding _                   = False
 
 -- If a schedule does not do blocking or slow operations, we say it's trivial
--- and don't need to fork it as we do not gain much task parallelism from it.
+-- and don't need to spawn it as we do not gain much task parallelism from it.
 trivialSchedule :: UniformSchedule kernel env -> Bool
 trivialSchedule (Effect effect next)      = trivialEffect effect && trivialSchedule next
 trivialSchedule (Alet _ bnd next)         = trivialBinding bnd && trivialSchedule next

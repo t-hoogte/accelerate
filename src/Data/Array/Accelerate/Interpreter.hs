@@ -218,8 +218,8 @@ instance DesugarAcc InterpretOp where
                     weakenE weakenEmpty seed) (expVars vars)) $ weakenThroughReindex wTemp reindexExp f)
                 (ArgArray In arr' (weakenVars wTemp sh') (kTemp weakenId))
                 (weaken wTemp c)
-  mkScan dir a Nothing b c = Exec (IScan1 dir $ unsafePerformIO $ newIORef mempty) (a :>: b :>: c :>: ArgsNil)
-  mkScan _ _ _ _ _ = error "exclusive scan not implemented"
+  -- mkScan dir a Nothing b c = Exec (IScan1 dir $ unsafePerformIO $ newIORef mempty) (a :>: b :>: c :>: ArgsNil)
+  -- mkScan _ _ _ _ _ = error "exclusive scan not implemented"
   -- we desugar a Scan with seed into a scan1 followed by a map followed by an append
   -- mkScan dir comb (Just (ArgExp seed)) i@(ArgArray In arr@(ArrayR shr tp) sh _) o
   --   | DeclareVars lhsTemp1 wTemp  kTemp1 <- declareVars $ buffersR tp
@@ -286,9 +286,9 @@ instance SimplifyOperation InterpretOp where
   detectCopy _ _                     = const []
 
 instance SLVOperation InterpretOp where
-  -- slvOperation IGenerate    = defaultSlvGenerate    IGenerate
-  -- slvOperation IMap         = defaultSlvMap         IMap
-  -- slvOperation IBackpermute = defaultSlvBackpermute IBackpermute
+  slvOperation IGenerate    = defaultSlvGenerate    IGenerate
+  slvOperation IMap         = defaultSlvMap         IMap
+  slvOperation IBackpermute = defaultSlvBackpermute IBackpermute
   slvOperation _            = Nothing
 
 data InterpretKernel env where
@@ -515,9 +515,9 @@ executeSchedule !env = \case
   S.Awhile io step input next -> do
     executeAwhile env io step (prjVars input env)
     executeSchedule env next
-  S.Fork a b -> do
-    _ <- forkIO (executeSchedule env b)
-    executeSchedule env a
+  S.Spawn a b -> do
+    _ <- forkIO (executeSchedule env a)
+    executeSchedule env b
 
 executeBinding :: Val env -> S.Binding env t -> IO t
 executeBinding env = \case

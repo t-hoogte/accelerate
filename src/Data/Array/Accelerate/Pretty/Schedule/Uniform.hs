@@ -35,7 +35,7 @@ import Data.Array.Accelerate.AST.Schedule.Uniform
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Type
 
-import Data.Text.Prettyprint.Doc
+import Prettyprinter
 
 import Prelude hiding (exp)
 
@@ -151,8 +151,8 @@ prettyUniformSchedule env = \case
         <> hardline <> hang 4 ("  (" <+> prettyUniformScheduleFun env body)
         <> hardline <> "  )"
         <> prettyNext next
-  Fork next body
-    -> annotate Statement "fork" <+> "{"
+  Spawn body next
+    -> annotate Statement "spawn" <+> "{"
         <> hardline <> indent 2 (prettyUniformSchedule env body)
         <> hardline <> "}"
         <> prettyNext next
@@ -198,8 +198,7 @@ prettyKernelFun env fun args = case prettyKernel of
     in
       go Empty fun args
   PrettyKernelFun prettyKernelAsFun ->
-    prettyKernelAsFun fun
-      <> hardline <> indent 2 (prettySArgs env args)
+    hang 2 $ group $ vsep [annotate Execute "execute", prettyKernelAsFun fun, prettySArgs env args]
 
 prettySArgs :: Val' benv -> SArgs benv f -> Adoc
 prettySArgs env args = tupled $ map (\(Exists a) -> prettySArg env a) $ argsToList args
