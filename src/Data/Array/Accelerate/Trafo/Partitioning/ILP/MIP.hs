@@ -41,7 +41,7 @@ import qualified Debug.Trace
 
 instance (MakesILP op, MIP.IsSolver s IO) => ILPSolver s op where
   solve :: s -> ILP op -> IO (Maybe (Solution op))
-  solve s (ILP dir obj constr bnds n) = makeSolution names . addZeroes <$> MIP.solve s options problem
+  solve s (ILP dir obj constr bnds n) = makeSolution names . addZeroes problem <$> MIP.solve s options problem
     where
       options = MIP.SolveOptions{ MIP.solveTimeLimit   = Just 60
                                 , MIP.solveLogger      = const (pure ()) --putStrLn . ("AccILPSolver: "      ++)
@@ -62,9 +62,9 @@ instance (MakesILP op, MIP.IsSolver s IO) => ILPSolver s op where
 
 
       addZeroes :: MIP.Problem Scientific -> MIP.Solution Scientific -> MIP.Solution Scientific
-      addZeroes problem (Solution stat obj solmap) = 
+      addZeroes problem (MIP.Solution stat obj solmap) = 
         -- Map.union is left-biased: only values not present in the solution are added.
-        Solution stat obj $ Map.union solmap (Map.fromSet (const 0) (vars problem))
+        MIP.Solution stat obj $ M.union solmap (M.fromSet (const 0) (vars problem))
 
 -- MIP has a Num instance for expressions, but it's scary (because 
 -- you can't guarantee linearity with arbitrary multiplications).
