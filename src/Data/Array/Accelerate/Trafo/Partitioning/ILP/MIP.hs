@@ -41,13 +41,13 @@ import qualified Debug.Trace
 
 instance (MakesILP op, MIP.IsSolver s IO) => ILPSolver s op where
   solve :: s -> ILP op -> IO (Maybe (Solution op))
-  solve s (ILP dir obj constr bnds n) = makeSolution names <$> MIP.solve s options problem
+  solve s (ILP dir obj constr bnds n) = makeSolution names . addZeroes <$> MIP.solve s options problem
     where
       options = MIP.SolveOptions{ MIP.solveTimeLimit   = Just 60
                                 , MIP.solveLogger      = const (pure ()) --putStrLn . ("AccILPSolver: "      ++)
                                 , MIP.solveErrorLogger = putStrLn . ("AccILPSolverError: " ++)
-                                , MIP.solveCondensedSolution = False }
-      -- }
+      } --, MIP.solveCondensedSolution = False }
+      
 
       stateProblem = flip -- we need this flip to make `bounds` happen before `vartypes` in the monad, so that we also give the variables that only occur in bounds a type.
         <$> (Problem (Just "AccelerateILP") <$> (mkFun dir <$> expr n obj) <*> cons n constr <*> pure [] <*> pure []) 
@@ -59,6 +59,12 @@ instance (MakesILP op, MIP.IsSolver s IO) => ILPSolver s op where
       mkFun Minimise = ObjectiveFunction (Just "AccelerateObjective") OptMin
 
       vartypes = allIntegers -- assuming that all variables have bounds
+
+
+      addZeroes :: MIP.Problem Scientific -> MIP.Solution Scientific -> MIP.Solution Scientific
+      addZeroes problem (Solution stat obj solmap) = 
+        -- Map.union is left-biased: only values not present in the solution are added.
+        Solution stat obj $ Map.union solmap (Map.fromSet (const 0) (vars problem))
 
 -- MIP has a Num instance for expressions, but it's scary (because 
 -- you can't guarantee linearity with arbitrary multiplications).
