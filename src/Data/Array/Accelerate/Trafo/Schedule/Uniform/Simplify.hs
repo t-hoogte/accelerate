@@ -242,7 +242,7 @@ bindEnv lhs (InfoEnv env' awaitedSignals) = InfoEnv (go lhs $ weaken k env') $ I
 
 bindingEnv :: BLeftHandSide t env env' -> Binding env t -> InfoEnv env -> InfoEnv env'
 bindingEnv lhs@(LeftHandSideSingle _) (RefRead ref) env = refRead (bindEnv lhs env) (weaken (weakenSucc weakenId) $ varIdx ref) ZeroIdx
-bindingEnv (LeftHandSideSingle _ `LeftHandSidePair` LeftHandSideSingle _) NewSignal (InfoEnv env awaitedSignals)
+bindingEnv (LeftHandSideSingle _ `LeftHandSidePair` LeftHandSideSingle _) (NewSignal _) (InfoEnv env awaitedSignals)
   = InfoEnv (wpush2 env (InfoSignalImplies []) (InfoSignalResolver $ Just $ SuccIdx ZeroIdx)) awaitedSignals'
   where
     awaitedSignals' = IdxSet.skip $ IdxSet.skip awaitedSignals

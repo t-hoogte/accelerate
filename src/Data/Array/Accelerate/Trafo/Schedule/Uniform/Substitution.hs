@@ -61,7 +61,7 @@ instance Sink (UniformScheduleFun kernel) where
 
 instance Sink Binding where
   weaken k (Compute e)       = Compute $ mapArrayInstr (weaken k) e
-  weaken _ NewSignal         = NewSignal
+  weaken _ (NewSignal name)  = NewSignal name
   weaken _ (NewRef r)        = NewRef r
   weaken k (Alloc shr tp sz) = Alloc shr tp $ mapTupR (weaken k) sz
   weaken _ (Use tp n buffer) = Use tp n buffer
@@ -170,7 +170,7 @@ fromNewIdxGround tp NewIdxNoResolver = signalResolverImpossible (TupRsingle tp)
 reindexBinding' :: Applicative f => SunkReindexPartialN f env env' -> Binding env t -> f (Binding env' t)
 reindexBinding' k = \case
   Compute e -> Compute <$> reindexExp (fromNewIdxUnsafe <.> reindex' k) e
-  NewSignal -> pure NewSignal
+  NewSignal name -> pure $ NewSignal name
   NewRef tp -> pure $ NewRef tp
   Alloc shr tp sh -> Alloc shr tp <$> reindexVars (fromNewIdxUnsafe <.> reindex' k) sh
   Use tp n buffer -> pure $ Use tp n buffer

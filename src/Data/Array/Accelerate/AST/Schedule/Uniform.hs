@@ -210,7 +210,8 @@ data Binding env t where
   Compute       :: Exp env t
                 -> Binding env t
 
-  NewSignal     :: Binding env (Signal, SignalResolver)
+  NewSignal     :: String -- Name for easier debugging
+                -> Binding env (Signal, SignalResolver)
 
   NewRef        :: GroundR t
                 -> Binding env (Ref t, OutputRef t)
@@ -302,7 +303,7 @@ funFreeVars (Sbody s)    = freeVars s
 funFreeVars (Slam lhs f) = IdxSet.drop' lhs $ funFreeVars f
 
 bindingFreeVars :: Binding env t -> IdxSet env
-bindingFreeVars NewSignal      = IdxSet.empty
+bindingFreeVars (NewSignal _)  = IdxSet.empty
 bindingFreeVars (NewRef _)     = IdxSet.empty
 bindingFreeVars (Alloc _ _ sh) = IdxSet.fromVarList $ flattenTupR sh
 bindingFreeVars (Use _ _ _)    = IdxSet.empty
@@ -399,7 +400,7 @@ reorder = uncurry await . go Just
 -- If a binding will only take little time to execute, we say it's trivial and
 -- move it (usually postpone) in the schedule.
 trivialBinding :: Binding env t -> Bool
-trivialBinding NewSignal           = True
+trivialBinding (NewSignal _)       = True
 trivialBinding (NewRef _)          = True
 trivialBinding (Alloc ShapeRz _ _) = True
 trivialBinding (Use _ _ _)         = True

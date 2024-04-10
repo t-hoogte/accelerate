@@ -292,8 +292,8 @@ chainFuture (FutureBuffer tp ref (Borrow s r) mwrite) SyncRead SyncRead
       -- Create a pair of signal and resolver for both subterms.
       -- Spawn a thread which will resolve the final read signal when the two
       -- new signals have been resolved.
-      ( buildLet lhsSignal NewSignal
-        . buildLet lhsSignal NewSignal
+      ( buildLet lhsSignal (NewSignal "chainFuture (read-before-write, left)")
+        . buildLet lhsSignal (NewSignal "chainFuture (read-before-write, right)")
         . buildSpawn (buildEffect (SignalAwait [signal1, signal2]) $ buildEffect (SignalResolve [weaken k r]) buildReturn)
       )
       -- Weaken all other identifiers with four, as we introduced two new signals
@@ -332,7 +332,7 @@ chainFuture (FutureBuffer tp ref (Move readSignal) (Just (Move writeSignal))) Sy
   = ChainFuture
       -- Create a signal to let the read operation in the second subterm only
       -- start after the write operation of the first subterm has finished.
-      ( buildLet lhsSignal NewSignal )
+      ( buildLet lhsSignal $ NewSignal "chainFuture (write-before-read)")
       ( SkipSucc $ SkipSucc SkipNone )
       -- The first subterm must resolve the new signal after finishing its write operation.
       ( FutureBuffer
@@ -370,9 +370,9 @@ chainFuture (FutureBuffer tp ref (Borrow readSignal readRelease) (Just (Borrow w
       -- of respectively the left and right subterm have finished.
       -- 'readRelease' will be resolved when signal2 and signal3 are both resolved.
       -- 'writeRelease' will be resolved when signal1 is resolved.
-      ( buildLet lhsSignal NewSignal
-        . buildLet lhsSignal NewSignal
-        . buildLet lhsSignal NewSignal
+      ( buildLet lhsSignal (NewSignal "chainFuture (write-before-read, 1)")
+        . buildLet lhsSignal (NewSignal "chainFuture (write-before-read, 2)")
+        . buildLet lhsSignal (NewSignal "chainFuture (write-before-read, 3)")
         . buildSpawn (buildEffect (SignalAwait [signal2, signal3]) $ buildEffect (SignalResolve [weaken k readRelease]) buildReturn)
         . buildSpawn (buildEffect (SignalAwait [signal1]) $ buildEffect (SignalResolve [weaken k writeRelease]) buildReturn)
       )
@@ -413,7 +413,7 @@ chainFuture (FutureBuffer tp ref (Move readSignal) (Just (Borrow writeSignal wri
       -- start after the write operation of the first subterm has finished.
       -- 'writeSignal' can be resolved when this newly introduced signal
       -- is resolved.
-      ( buildLet lhsSignal NewSignal
+      ( buildLet lhsSignal (NewSignal "chainFuture (write-before-read, with release)")
         . buildSpawn (buildEffect (SignalAwait [signal1]) $ buildEffect (SignalResolve [weaken k writeRelease]) buildReturn)
       )
       -- Weaken all other identifiers with two, as we introduced a new signal
@@ -457,8 +457,8 @@ chainFuture (FutureBuffer tp ref read mwrite) SyncRead SyncWrite
       -- start after the read operation of the first subterm has finished.
       -- Also create a signal which will be resolved when the newly introduced signal
       -- and the incoming write signal are both resolved.
-      ( buildLet lhsSignal NewSignal
-        . buildLet lhsSignal NewSignal
+      ( buildLet lhsSignal (NewSignal "chainFuture (read-before-write, 1)")
+        . buildLet lhsSignal (NewSignal "chainFuture (read-before-write, 2)")
         . buildSpawn (buildAwait [weaken k <$> lockSignal write, Just signal1] $ buildEffect (SignalResolve [resolver2]) buildReturn)
       )
       -- Weaken all other identifiers with four, as we introduced two new signals
@@ -499,8 +499,8 @@ chainFuture (FutureBuffer tp ref read mwrite) SyncWrite SyncWrite
   = ChainFuture
       -- Create two signals (signal1 and signal2) to let the first subterm
       -- inform that respectively its read or write operations have finished.
-      ( buildLet lhsSignal NewSignal
-        . buildLet lhsSignal NewSignal
+      ( buildLet lhsSignal (NewSignal "chainFuture (write-before-write, 1)")
+        . buildLet lhsSignal (NewSignal "chainFuture (write-before-write, 1)")
       )
       (SkipSucc $ SkipSucc $ SkipSucc $ SkipSucc SkipNone)
       ( FutureBuffer
@@ -572,16 +572,16 @@ seqChainFuture (FutureBuffer tp ref (Lock signal resolver) (Just (Lock wsignal w
 seqChainFuture _ _ _ = internalError "FutureBuffer & Sync mismatch"
 
 data IsNewSignal t where
-  IsNewSignal :: IsNewSignal (Signal, SignalResolver)
+  IsNewSignal :: String -> IsNewSignal (Signal, SignalResolver)
 
 localBaseR :: TupR IsNewSignal t -> BasesR t
-localBaseR (TupRsingle IsNewSignal) = TPair BaseRsignal BaseRsignalResolver
+localBaseR (TupRsingle (IsNewSignal _)) = TPair BaseRsignal BaseRsignalResolver
 localBaseR (TupRpair t1 t2) = localBaseR t1 `TupRpair` localBaseR t2
 localBaseR TupRunit = TupRunit
 
 declareSignals :: TupR IsNewSignal t -> BLeftHandSide t env env' -> BuildSchedule kernel env' -> BuildSchedule kernel env
 declareSignals _ (LeftHandSideWildcard _) = id
-declareSignals (TupRsingle IsNewSignal) lhs = buildLet lhs NewSignal
+declareSignals (TupRsingle (IsNewSignal name)) lhs = buildLet lhs (NewSignal name)
 declareSignals (TupRpair t1 t2) (LeftHandSidePair lhs1 lhs2) = declareSignals t1 lhs1 . declareSignals t2 lhs2
 declareSignals _ _ = internalError "Tuple mismatch"
 
@@ -722,7 +722,7 @@ loopFuture resolved (FutureBuffer tp ref (Lock readLockSignal readLockResolver) 
     loopIO = InputOutputRsignal `InputOutputRpair` InputOutputRsignal,
     loopInitial = TupRsingle (Var BaseRsignal $ fromMaybe resolved $ readLockSignal)
       `TupRpair` TupRsingle (Var BaseRsignal $ fromMaybe resolved $ writeLockSignal),
-    loopLocal = TPair IsNewSignal IsNewSignal,
+    loopLocal = TPair (IsNewSignal "loopFuture (borrowed writable buffer, 1)") (IsNewSignal "loopFuture (borrowed writable buffer, 2)"),
     loopBody = \skip input output local -> if
       | signalR `TPair` signalW <- input
       , resolverR `TPair` resolverW <- output
@@ -754,7 +754,7 @@ loopFuture resolved (FutureBuffer tp ref (Borrow readLockSignal readLockResolver
   LoopFuture {
     loopIO = InputOutputRsignal,
     loopInitial = TupRsingle (Var BaseRsignal $ fromMaybe resolved $ readLockSignal),
-    loopLocal = TupRsingle IsNewSignal,
+    loopLocal = TupRsingle (IsNewSignal "loopFuture (borrowed read-only buffer)"),
     loopBody = \skip input output local -> if
       | TupRsingle signalR <- input
       , TupRsingle resolverR <- output
