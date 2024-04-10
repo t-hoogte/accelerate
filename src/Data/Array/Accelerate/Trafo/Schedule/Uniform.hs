@@ -421,7 +421,7 @@ writeOutput
 writeOutput (TupRsingle dest) (TupRsingle (Var tp idx))
   | Just ref <- destRef dest =
     buildEffect (RefWrite (Var (BaseRrefWrite tp) ref) (Var (BaseRground tp) idx))
-      $ buildEffect (SignalResolve $ catMaybes [destResolver dest]) buildReturn
+      $ buildEffect (SignalResolve $ catMaybes [destResolver dest, destResolverWrite dest]) buildReturn
   | otherwise = buildReturn -- This return value is ignored (e.g., via LeftHandSideWildcard)
 writeOutput (TupRpair dest1 dest2) (TupRpair vars1 vars2) =
   buildSeq (writeOutput dest1 vars1) (writeOutput dest2 vars2)
