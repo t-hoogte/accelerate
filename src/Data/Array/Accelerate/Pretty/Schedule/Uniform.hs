@@ -34,6 +34,7 @@ import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.AST.Schedule.Uniform
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Type
+import Data.String
 
 import Prettyprinter
 
@@ -99,7 +100,7 @@ prettyBLhsWithTypes = prettyLhs' push (Just $ \(Exists t) -> prettyBaseR t) Fals
 
 prettyBLhsForBinding :: Val' env -> BLeftHandSide t env env' -> Binding env t -> (Val' env', Adoc)
 prettyBLhsForBinding env (LeftHandSideSingle _ `LeftHandSidePair` LeftHandSideSingle _) binding
-  | NewSignal <- binding
+  | NewSignal _ <- binding
   , (env', a, b) <- pushNewSignal env = (env', pair a b)
   | NewRef _  <- binding
   , (env', a, b) <- pushNewRef    env = (env', pair a b)
@@ -109,7 +110,7 @@ prettyBLhsForBinding env lhs binding
   | otherwise = prettyBLhsWithTypes env lhs
 
 bindingHasTrivialType :: Binding env t -> Bool
-bindingHasTrivialType NewSignal     = True
+bindingHasTrivialType (NewSignal _) = True
 bindingHasTrivialType (NewRef _)    = True
 bindingHasTrivialType (Alloc _ _ _) = True
 bindingHasTrivialType (Use _ _ _)   = True
@@ -166,7 +167,7 @@ prettyUniformSchedule env = \case
 prettyBinding :: Val' env -> Binding env t -> Adoc
 prettyBinding env = \case
   Compute expr    -> hang 2 $ group $ vsep [annotate Statement "compute", prettyExp (val env) expr]
-  NewSignal       -> annotate Statement "new signal"
+  NewSignal name  -> annotate Statement "new signal" <+> "--" <+> fromString name
   NewRef tp       -> annotate Statement "ref" <+> prettyGroundR tp
   Alloc _ tp sh   -> hang 2 $ group $ vsep [annotate Statement "alloc", prettyScalarType tp <> "[" <> prettyShapeVars env sh <> "]"]
   Use tp n buffer -> hang 2 $ group $ vsep [annotate Statement "use" <+> prettyScalarType tp <> "[" <> pretty n <> "]", prettyBuffer tp n buffer]

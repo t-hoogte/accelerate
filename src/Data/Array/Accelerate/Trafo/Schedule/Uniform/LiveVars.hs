@@ -148,7 +148,7 @@ analyseBinding k lhs binding liveness = case binding of
       free = map (\(Exists (Var _ idx)) -> Exists $ k >:> idx) $ expGroundVars expr
     in
       addLiveImplications lhs (IdxSet.fromList free) liveness
-  NewSignal
+  NewSignal _
     | IdxSet (_ `PPush` _ `PPush` _) <- lhs ->
       -- If the signal is live, then the resolver is live as well.
       addLiveImplies
@@ -176,7 +176,7 @@ analyseBinding k lhs binding liveness = case binding of
 reEnvBinding :: ReEnv env subenv -> Binding env t -> Binding subenv t
 reEnvBinding re = \case
   Compute expr     -> Compute $ mapArrayInstr (reEnvArrayInstr re) expr
-  NewSignal        -> NewSignal
+  NewSignal name   -> NewSignal name
   NewRef tp        -> NewRef tp
   Alloc shr tp sh  -> Alloc shr tp $ expectJust $ reEnvVars re sh
   Use tp sh buffer -> Use tp sh buffer

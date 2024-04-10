@@ -376,7 +376,7 @@ transformWhile fenv us (Plam lhs (Pbody step)) groundInitial (CtxNormal finalDes
       (mapTupR
         (weaken $ skipWeakenIdx fullSkip)
         finalDest)
-  = buildLet lhsSignal NewSignal
+  = buildLet lhsSignal (NewSignal "resolved signal for while")
     $ buildEffect (SignalResolve [ZeroIdx])
     $ instr1
     $ instr2
@@ -560,7 +560,7 @@ declareDestinations Sequential env (LeftHandSideSingle tp) (TupRsingle u) =
 declareDestinations Parallel env (LeftHandSideSingle tp) (TupRsingle Shared) =
   DeclareDestinations
     (SkipSucc $ SkipSucc $ SkipSucc $ SkipSucc $ SkipNone)
-    (buildLet lhsSignal NewSignal . buildLet (lhsRef tp) (NewRef tp))
+    (buildLet lhsSignal (NewSignal "declareDeclarations (Shared)") . buildLet (lhsRef tp) (NewRef tp))
     (\skip' -> TupRsingle $ DestinationShared
       (weaken (skipWeakenIdx skip') ZeroIdx)
       (weaken (skipWeakenIdx skip') $ SuccIdx $ SuccIdx ZeroIdx))
@@ -572,7 +572,7 @@ declareDestinations Parallel env (LeftHandSideSingle tp) (TupRsingle Shared) =
 declareDestinations Parallel env (LeftHandSideSingle tp@(GroundRbuffer t)) (TupRsingle Unique) =
   DeclareDestinations
     (SkipSucc $ SkipSucc $ SkipSucc $ SkipSucc $ SkipSucc $ SkipSucc $ SkipNone)
-    (buildLet lhsSignal NewSignal . buildLet lhsSignal NewSignal . buildLet (lhsRef tp) (NewRef tp))
+    (buildLet lhsSignal (NewSignal "declareDeclarations (Unique, 1)") . buildLet lhsSignal (NewSignal "declareDeclarations (Unique, 2)") . buildLet (lhsRef tp) (NewRef tp))
     (\skip' -> TupRsingle $ DestinationUnique
       (weaken (skipWeakenIdx skip') ZeroIdx)
       (weaken (skipWeakenIdx skip') $ SuccIdx $ SuccIdx ZeroIdx)
@@ -1079,7 +1079,7 @@ rnfSchedule' (Spawn a b)                   = rnfSchedule' a `seq` rnfSchedule' b
 
 rnfBinding :: Binding env t -> ()
 rnfBinding (Compute e)       = rnfOpenExp e
-rnfBinding NewSignal         = ()
+rnfBinding (NewSignal _)     = ()
 rnfBinding (NewRef r)        = rnfGroundR r
 rnfBinding (Alloc shr tp sz) = rnfShapeR shr `seq` rnfScalarType tp `seq` rnfTupR rnfExpVar sz
 rnfBinding (Use tp n buffer) = buffer `seq` n `seq` rnfScalarType tp

@@ -523,7 +523,7 @@ executeBinding :: Val env -> S.Binding env t -> IO t
 executeBinding env = \case
   S.Compute expr ->
     return $ evalExp expr (evalArrayInstrDefault env)
-  S.NewSignal -> do
+  S.NewSignal _ -> do
     mvar <- newEmptyMVar
     return (S.Signal mvar, S.SignalResolver mvar)
   S.NewRef _ -> do
@@ -579,7 +579,7 @@ executeAwhile
   -> IO ()
 executeAwhile env io step input = do
   -- Set up the output variables for this iteration (and the input for the next)
-  (S.Signal mvarCondition, signalResolverCondition) <- executeBinding env S.NewSignal
+  (S.Signal mvarCondition, signalResolverCondition) <- executeBinding env (S.NewSignal "interpreter signal")
   (S.Ref iorefCondition, outputRefCondition) <- executeBinding env $ S.NewRef $ GroundRscalar scalarType
   (output, nextInput) <- bindAwhileIO io
 
