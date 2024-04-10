@@ -69,6 +69,22 @@ import Data.Array.Accelerate.Pretty.Operation
 import Data.Functor.Identity
 import Data.Array.Accelerate.AST.Partitioned (Clustered)
 
+
+import System.IO
+
+poorReadMVar :: MVar a -> IO a
+poorReadMVar mvar = do
+  value <- tryReadMVar mvar
+  case value 
+    of
+    Just a -> return a
+    Nothing -> 
+      do
+      threadDelay 1000000
+      hPutStr stderr "*"
+      poorReadMVar mvar
+
+
 instance IsSchedule UniformScheduleFun where
   type ScheduleInput  UniformScheduleFun a = Input a
   type ScheduleOutput UniformScheduleFun a = Output a
@@ -96,7 +112,7 @@ instance IsSchedule UniformScheduleFun where
           mvar <- newEmptyMVar
           -- We return the result lazily, as the value is not yet available
           let value = unsafePerformIO $ do
-                readMVar mvar
+                poorReadMVar mvar
                 readIORef ref
           return ((SignalResolver mvar, OutputRef ref), value)
   callScheduledFun (GFunctionRlam arg ret) f = do

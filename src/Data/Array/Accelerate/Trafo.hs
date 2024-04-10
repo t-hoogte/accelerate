@@ -216,23 +216,24 @@ convertAccWithObj obj
 --
 convertAfun
   :: forall sched kernel f.
-     (Afunction f, DesugarAcc (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel, Operation.NFData' (Graph.BackendClusterArg (KernelOperation kernel)),  Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))
+     (Pretty.PrettyKernel kernel, Pretty.PrettySchedule sched, Afunction f, DesugarAcc (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel, Operation.NFData' (Graph.BackendClusterArg (KernelOperation kernel)),  Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))
   => f
   -> sched kernel () (Scheduled sched (DesugaredAfun (ArraysFunctionR f)))
 convertAfun = convertAfunWith defaultOptions
 
 convertAfunWith
   :: forall sched kernel f.
-     (Afunction f, DesugarAcc (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel, Operation.NFData' (Graph.BackendClusterArg (KernelOperation kernel)),  Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))
+     (Pretty.PrettyKernel kernel, Pretty.PrettySchedule sched, Afunction f, DesugarAcc (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel, Operation.NFData' (Graph.BackendClusterArg (KernelOperation kernel)),  Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))
   => Config
   -> f
   -> sched kernel () (Scheduled sched (DesugaredAfun (ArraysFunctionR f)))
 convertAfunWith config
-  = phase' "codegen"     rnfSchedule convertScheduleFun
+  = (\s -> Debug.Trace.trace (Pretty.renderForTerminal (Pretty.prettySchedule s)) s)
+  . phase' "codegen"     rnfSchedule convertScheduleFun
   . phase  "partition-live-vars"    ({- Operation.simplifyFun . -} Operation.stronglyLiveVariablesFun)
   . phase  "array-fusion"           ({- Operation.simplifyFun . -} NewNewFusion.convertAfunWith config defaultObjective)
-  . phase  "operation-live-vars"    ({- Operation.simplifyFun . -} Operation.stronglyLiveVariablesFun)
-  . phase  "desugar"                ({- Operation.simplifyFun . -} desugarAfun)
+  . phase  "operation-live-vars"    (Operation.simplifyFun . Operation.stronglyLiveVariablesFun)
+  . phase  "desugar"                (Operation.simplifyFun . desugarAfun)
   . phase  "array-split-lets"       LetSplit.convertAfun
   -- phase "vectorise-sequences"    Vectorise.vectoriseSeqAfun  `when` vectoriseSequences
   . phase  "sharing-recovery"       (Sharing.convertAfunWith config)
@@ -247,8 +248,8 @@ convertAfunWithObj obj
   = phase' "codegen"     rnfSchedule convertScheduleFun
   . phase  "partition-live-vars"    ({- Operation.simplifyFun . -} Operation.stronglyLiveVariablesFun)
   . phase  "array-fusion"           ({- Operation.simplifyFun . -} NewNewFusion.convertAfunWith defaultOptions obj)
-  . phase  "operation-live-vars"    ({- Operation.simplifyFun . -} Operation.stronglyLiveVariablesFun)
-  . phase  "desugar"                ({- Operation.simplifyFun . -} desugarAfun)
+  . phase  "operation-live-vars"    (Operation.simplifyFun . Operation.stronglyLiveVariablesFun)
+  . phase  "desugar"                (Operation.simplifyFun . desugarAfun)
   . phase  "array-split-lets"       LetSplit.convertAfun
   -- phase "vectorise-sequences"    Vectorise.vectoriseSeqAfun  `when` vectoriseSequences
   . phase  "sharing-recovery"       (Sharing.convertAfunWith defaultOptions)
