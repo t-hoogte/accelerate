@@ -35,16 +35,19 @@ module Data.Array.Accelerate.AST.Schedule (
   Scheduled,
   reprIsBody,
   IOFun, FullIOFun, FullIOFun',
-  flattenIOFun, unsafePerformIOFun
+  flattenIOFun, unsafePerformIOFun,
+  generateKernelNameAndDescription
 ) where
 
 import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.AST.Kernel
+import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Representation.Ground
 import Data.Array.Accelerate.Representation.Type
 import Data.Typeable                                                ( (:~:)(..) )
-import Data.Array.Accelerate.AST.Operation
+import Data.List (sortOn, group)
+import Data.Ord
 import Control.Monad
 import System.IO.Unsafe
 
@@ -111,3 +114,48 @@ unsafePerformIOFun :: GFunctionR f -> IOFun f -> f
 unsafePerformIOFun (GFunctionRlam _ funR) fun = unsafePerformIOFun funR . fun
 unsafePerformIOFun (GFunctionRbody tp)    body
   | Refl <- reprIsBody tp = unsafePerformIO body
+
+generateKernelNameAndDescription
+  -- Function that gives the priority, singular name and plural name of an
+  -- operation. The operations with highest priority are used in the name.
+  :: (forall s. op s -> (Int, String, String))
+  -> Clustered op t
+  -- Returns a function name, a detailed description and a brief description
+  -> (String, String, String)
+generateKernelNameAndDescription f cluster =
+  ( formatList False "-" "-" (take 2 sorted) ++ (if length sorted > 2 then "-etc" else "")
+  , if trivial then "" else "Cluster with " ++
+      formatList True ", then " (if length grouped == 2 then " and then " else " and finally ") (groupAndCount ops)
+  , if trivial then "" else "Cluster with " ++
+      formatList True ", " " and " sorted
+  )
+  where
+    trivial 
+      | [_] <- ops = True
+      | otherwise  = False
+
+    ops = map (\(Exists op) -> f op) $ flattenClustered cluster
+    grouped = groupAndCount ops
+    sorted = groupAndCount $ sortOn Down $ ops
+
+    groupAndCount :: Eq a => [a] -> [(a, Int)]
+    groupAndCount = map g . group
+      where
+        g [] = error "impossible"
+        g as@(a:_) = (a, length as)
+    
+    formatList :: Bool -> String -> String -> [((Int, String, String), Int)] -> String
+    formatList includeNumber separator finalSeparator list = case list of
+      [] -> ""
+      [a] -> formatItem includeNumber a
+      [a, b] -> formatItem includeNumber a ++ finalSeparator ++ formatItem includeNumber b
+      (a:as) -> formatItem includeNumber a ++ separator ++ formatList includeNumber separator finalSeparator as
+
+    formatItem :: Bool -> ((Int, String, String), Int) -> String
+    formatItem includeNumber ((_, singular, plural), count)
+      | includeNumber = show count ++ " " ++ name
+      | otherwise = name
+      where
+        name
+          | count == 1 = singular
+          | otherwise  = plural

@@ -34,7 +34,8 @@ module Data.Array.Accelerate.AST.Partitioned (
   GroundR(..), GroundsR, GroundVar, GroundVars, NFData'(..), Arg(..),
   AccessGroundR(..),
   PreArgs(..), Args, Modifier(..),
-  Exp', Var', Fun', In, Out, Mut
+  Exp', Var', Fun', In, Out, Mut,
+  flattenClustered, flattenCluster,
 ) where
 
 import Data.Array.Accelerate.AST.Idx
@@ -292,6 +293,18 @@ type PartitionedAfun op = PreOpenAfun (Clustered op)
 
 data Clustered op args = Clustered (Cluster op args) (BackendCluster op args)
 
+flattenClustered :: Clustered op args -> [Exists op]
+flattenClustered (Clustered c _) = flattenCluster c
+
+flattenCluster :: Cluster op args -> [Exists op]
+flattenCluster = (`go` [])
+  where
+    go :: Cluster op args -> [Exists op] -> [Exists op]
+    go (Op s _)      accum = extract s : accum
+    go (Fused _ a b) accum = go a $ go b accum
+
+    extract :: SortedOp op args -> Exists op
+    extract (SOp (SOAOp op _) _) = Exists op
 
 varsToShapeR :: Vars ScalarType g sh -> ShapeR sh
 varsToShapeR = typeRtoshapeR . varsType
