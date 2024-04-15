@@ -275,6 +275,13 @@ propagate implications infoEnv@(InfoEnv env awaitedSignals) = InfoEnv (foldl' ad
       InfoSignalResolved  -> idx
       _                   -> internalError "Expected this index to point to a Signal"
 
+-- On a schedule of this form:
+--   spawn { await [s1, s2]; resolve [s3']}
+--   next
+--
+-- We will replace 'await [s3]' with 'await [s1, s2]'.
+-- This function will, given the spawned schedule, update the InfoEnv
+-- to remember that s3 should be replaced with [s1, s2].
 findSignalReplacements :: forall kernel env. UniformSchedule kernel env -> InfoEnv env -> InfoEnv env
 findSignalReplacements = go []
   where

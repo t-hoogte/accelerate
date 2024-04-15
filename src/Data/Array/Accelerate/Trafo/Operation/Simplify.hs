@@ -46,7 +46,7 @@ import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Trafo.Substitution             hiding ( weakenArrayInstr )
 import Data.Array.Accelerate.Trafo.WeakenedEnvironment
 import Data.Array.Accelerate.Trafo.Operation.Substitution
-import Data.Array.Accelerate.Trafo.LiveVars                 ( SubTupR(..), subTupR, subTupRpair )
+import Data.Array.Accelerate.Trafo.LiveVars                 ( SubTupR(..), subTupR, subTupRpair, subTupPreserves )
 import Data.Maybe                                           ( mapMaybe )
 import Data.List                                            ( foldl' )
 import Data.Either                                          ( partitionEithers )
@@ -448,8 +448,8 @@ awhileSimplifyInvariant
   -> GroundVars     env a
   -> PreOpenAcc  op env a
 awhileSimplifyInvariant us cond step initial = case awhileDropInvariantFun step of
-  Exists SubTupRkeep -> Awhile us cond step initial
   Exists sub
+    | Just Refl <- subTupPreserves tp sub -> Awhile us cond step initial
     | DeclareVars lhs k value <- declareVars $ subTupR sub tp ->
       Alet lhs (subTupR sub us)
         (Awhile (subTupR sub us)
@@ -485,9 +485,12 @@ awhileDropInvariant argument = \case
     matchReturn (TupRpair a1 a2) (TupRpair v1 v2)
       | Exists s1 <- matchReturn a1 v1
       , Exists s2 <- matchReturn a2 v2
-      = Exists $ subTupRpair s1 s2
+      = case (s1, s2) of
+          (SubTupRskip, SubTupRskip) -> Exists SubTupRskip
+          _ -> Exists $ subTupRpair s1 s2
     matchReturn (TupRsingle (JustVar arg)) (TupRsingle var)
       | Just Refl <- matchVar arg var = Exists SubTupRskip
+    matchReturn TupRunit _ = Exists SubTupRskip
     matchReturn _ _ = Exists SubTupRkeep
 
 subTupFunctionResult :: SubTupR t t' -> OperationAfun op env (ta -> t) -> OperationAfun op env (ta -> t')

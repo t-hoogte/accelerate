@@ -34,7 +34,8 @@ module Data.Array.Accelerate.AST.Partitioned (
   GroundR(..), GroundsR, GroundVar, GroundVars, NFData'(..), Arg(..),
   AccessGroundR(..),
   PreArgs(..), Args, Modifier(..),
-  Exp', Var', Fun', In, Out, Mut
+  Exp', Var', Fun', In, Out, Mut,
+  flattenClustered, flattenCluster,
 ) where
 
 import Data.Array.Accelerate.AST.Idx
@@ -62,7 +63,6 @@ import Data.Array.Accelerate.Trafo.Operation.LiveVars
 import Data.Maybe (fromJust, Maybe (Nothing))
 import Data.Array.Accelerate.AST.Var (varsType)
 import qualified Debug.Trace
-
 
 
 
@@ -273,6 +273,19 @@ both k (IntroL        f) (l:>:ls)      rs  = l     :>: both k f ls rs
 both k (IntroR        f)      ls  (r:>:rs) = r     :>: both k f ls rs
 
 
+
+flattenClustered :: Clustered op args -> [Exists op]
+flattenClustered (Clustered c _) = flattenCluster c
+
+flattenCluster :: Cluster op args -> [Exists op]
+flattenCluster = (`go` [])
+  where
+    go :: Cluster op args -> [Exists op] -> [Exists op]
+    go (Op s _)      accum = extract s : accum
+    go (Fused _ a b) accum = go a $ go b accum
+
+    extract :: SLVOp op args -> Exists op
+    extract (SLV (SOp (SOAOp op _) _) _) = Exists op
 
 varsToShapeR :: Vars ScalarType g sh -> ShapeR sh
 varsToShapeR = typeRtoshapeR . varsType
