@@ -70,12 +70,14 @@ class ( MakesILP op
     => StaticClusterAnalysis (op :: Type -> Type) where
   data BackendClusterArg2 op env arg
   onOp :: op args -> BackendArgs op env (OutArgsOf args) -> Args env args -> FEnv op env -> BackendArgs op env args
+  bcaid :: BackendClusterArg op arg -> BackendClusterArg op arg'
   def :: Arg env arg -> FEnv op env -> BackendClusterArg op arg -> BackendClusterArg2 op env arg
   valueToIn    :: BackendClusterArg2 op env (Value sh e)     -> BackendClusterArg2 op env (In    sh e)
   valueToOut   :: BackendClusterArg2 op env (Value sh e)     -> BackendClusterArg2 op env (Out   sh e)
   inToValue    :: BackendClusterArg2 op env (In    sh e)     -> BackendClusterArg2 op env (Value sh e)
   outToValue   :: BackendClusterArg2 op env (Out   sh e)     -> BackendClusterArg2 op env (Value sh e)
   outToSh      :: BackendClusterArg2 op env (Out   sh e)     -> BackendClusterArg2 op env (Sh    sh e)
+  outToVar     :: BackendClusterArg2 op env (Out   sh e)     -> BackendClusterArg2 op env (Var'  sh  )
   shToOut      :: BackendClusterArg2 op env (Sh    sh e)     -> BackendClusterArg2 op env (Out   sh e)
   shToValue    :: BackendClusterArg2 op env (Sh    sh e)     -> BackendClusterArg2 op env (Value sh e)
   varToValue   :: BackendClusterArg2 op env (Var'  sh)       -> BackendClusterArg2 op env (Value sh e)
@@ -91,18 +93,37 @@ class ( MakesILP op
   unpairinfo   :: BackendClusterArg2 op env (m sh (a,b))     -> (BackendClusterArg2 op env (m sh a),  BackendClusterArg2 op env (m sh b))
   unpairinfo x = (shrinkOrGrow x, shrinkOrGrow x)
 
-
+foo :: StaticClusterAnalysis op => SubArgs big small -> Args env small -> BackendArgs op env (OutArgsOf small) -> FEnv op env -> BackendCluster op small -> BackendArgs op env (OutArgsOf big)
+foo SubArgsNil                          ArgsNil    ArgsNil  _   _  = ArgsNil
+foo (SubArgKeep `SubArgsLive` subargs)  (a:>:as)   bs       env (_ :>: cs) = case a of
+  ArgArray Out _ _ _ -> case bs of (b:>:bs') -> b :>: foo subargs as bs' env cs
+  ArgArray In  _ _ _ -> foo subargs as bs env cs
+  ArgArray Mut _ _ _ -> foo subargs as bs env cs
+  ArgVar _ -> foo subargs as bs env cs
+  ArgExp _ -> foo subargs as bs env cs
+  ArgFun _ -> foo subargs as bs env cs
+foo (SubArgOut _ `SubArgsLive` subargs) (_ :>: as) (b:>:bs) env (_ :>: cs) = shrinkOrGrow b :>: foo subargs as bs env cs
+foo (SubArgsDead subargs)               (a :>: as) bs       env (c :>: cs) = 
+  shToOut (varToSh (def a env c)) :>: foo subargs as bs env cs
 
 makeBackendArg :: forall op env args. StaticClusterAnalysis op => Args env args -> FEnv op env -> Cluster op args -> BackendCluster op args -> BackendArgs op env args
-makeBackendArg args env c b = go args c (defaultOuts args b)
+makeBackendArg args env c b = go args c (defaultOuts args b) b
   where
-    go :: forall args. Args env args -> Cluster op args -> BackendArgs op env (OutArgsOf args) -> BackendArgs op env args
-    go args (Fused f l r) outputs = let
-      backR = go (right f args) r (rightB args f outputs)
-      backL = go (left  f args) l (backleft f backR outputs)
+    go :: forall args. Args env args -> Cluster op args -> BackendArgs op env (OutArgsOf args) -> BackendCluster op args -> BackendArgs op env args
+    go args (Fused f l r) outputs bs = let
+      backR = go (right f args) r (rightB args f outputs) (right' bcaid bcaid f bs)
+      backL = go (left  f args) l (backleft f backR outputs) (left' bcaid f bs)
       in fuseBack f backL backR
-    go args (Op (SOp (SOAOp op soa) (SA sort unsort)) sa) outputs =
-      sort . soaExpand uncombineB soa $ onOp @op op (forgetIn (soaShrink combine soa $ unsort args) $ soaShrink combineB soa $ unsort $ inventIn args outputs) (soaShrink combine soa $ unsort args) env
+    go args (Op (SLV (SOp (SOAOp op soa) (SA sort unsort)) subargs) _l) outputs bs =
+        slv outToVar subargs 
+      . sort 
+      . soaExpand uncombineB soa 
+      $ onOp @op 
+              op 
+              (forgetIn (soaShrink combine soa . unsort $ slv' varout subargs args) 
+                        . soaShrink combineB soa . unsort $ inventIn (slv' varout subargs args) (foo subargs args outputs env bs)) 
+              (soaShrink combine soa . unsort $ slv' varout subargs args) 
+              env
 
     combineB   :: BackendClusterArg2 op env (f l) -> BackendClusterArg2 op env (f r) -> BackendClusterArg2 op env (f (l,r))
     combineB   = unsafeCoerce $ pairinfo   @op
@@ -222,10 +243,12 @@ evalCluster c b args env ix = do
 
 evalOps :: forall op args env. (EvalOp op) => Index op -> Cluster op args -> BackendArgEnv op env (InArgs args) -> Args env args -> FEnv op env -> EvalMonad op (EmbedEnv op env (OutArgs args))
 evalOps ix c ba args env = case c of
-  Op (SOp (SOAOp op soas) (SA f g)) l  -> outargs f (g args)
-                                        . soaOut splitFromArg' (soaShrink combine soas $ g args) soas
-                                          <$> evalOp ix l op env (soaIn pairInArg (g args) soas
-                                                                  $ inargs g ba)
+  Op (SLV (SOp (SOAOp op soas) (SA f g)) subargs) l 
+     -> slvOut args subargs 
+      . outargs f (g $ slv' varout subargs args)
+      . soaOut splitFromArg' (soaShrink combine soas $ g $ slv' varout subargs args) soas
+        <$> evalOp ix l op env (soaIn pairInArg (g $ slv' varout subargs args) soas
+         $ inargs g $ slvIn (flip bvartosh env) subargs ba)
   Fused f l r -> do
     lin <- leftIn f ba env
     lout <- evalOps ix l lin (left f args) env
@@ -384,7 +407,7 @@ instance EvalOp op => TupRmonoid (Compose (BackendArgEnvElem op env) (Sh sh)) wh
 -- use this to check whether a singleton cluster is a generate, map, etc
 peekSingletonCluster :: (forall args'. op args' -> r) -> Cluster op args -> Maybe r
 peekSingletonCluster k = \case
-  Op (SOp (SOAOp op _) _) _ -> Just $ k op
+  Op (SLV (SOp (SOAOp op _) _) _) _ -> Just $ k op
   _ -> Nothing -- not a singleton cluster
 
 
@@ -396,11 +419,11 @@ applySingletonCluster :: forall op env args args' r
                        -> Args env args
                        -> r
 applySingletonCluster k c args = case c of
-  Op (SOp (SOAOp op soas) (SA _ unsort)) _ ->
+  Op (SLV (SOp (SOAOp op soas) (SA _ unsort)) subargs) _ ->
     unsafeCoerce @(op args' -> Args env args' -> r) @(op _ -> Args env _ -> r) 
       k 
       op 
-      $ soaShrink combine soas $ unsort args
+      $ soaShrink combine soas $ unsort $ slv' varout subargs args
   _ -> error "not singleton"
 
 
@@ -408,15 +431,16 @@ applySingletonCluster k c args = case c of
 applySingletonCluster' :: forall op env args args' f
                        . (op args' -> Args env args' -> PreArgs f args')
                        -> (forall l r g. f (g (l,r)) -> (f (g l), f (g r)))
+                       -> (forall sh e. f (Out sh e) -> f (Var' sh))
                        -> Cluster op args
                        -> Args env args
                        -> PreArgs f args
-applySingletonCluster' k f c args = case c of
-  Op (SOp (SOAOp op soas) (SA sort unsort)) _ ->
-    sort $ soaExpand f soas $
+applySingletonCluster' k f outvar' c args = case c of
+  Op (SLV (SOp (SOAOp op soas) (SA sort unsort)) subargs) _ ->
+    slv outvar' subargs $ sort $ soaExpand f soas $
       unsafeCoerce @(op args' -> Args env args' -> PreArgs f args') @(op _ -> Args env _ -> PreArgs f _) 
         k 
         op 
-        $ soaShrink combine soas $ unsort args
+        $ soaShrink combine soas $ unsort $ slv' varout subargs args
   _ -> error "not singleton"
 

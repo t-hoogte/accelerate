@@ -144,15 +144,15 @@ extra-source-files:
     cbits/xkcp/*.inc
     -- TRACY
     -- These are referenced directly using the FFI
-    cbits/tracy/public/*.cpp
-    cbits/tracy/public/tracy/*.h
-    cbits/tracy/public/tracy/*.hpp
-    cbits/tracy/public/common/*.h
-    cbits/tracy/public/common/*.hpp
-    cbits/tracy/public/common/*.cpp
-    cbits/tracy/public/client/*.h
-    cbits/tracy/public/client/*.hpp
-    cbits/tracy/public/client/*.cpp
+    -- cbits/tracy/public/*.cpp
+    -- cbits/tracy/public/tracy/*.h
+    -- cbits/tracy/public/tracy/*.hpp
+    -- cbits/tracy/public/common/*.h
+    -- cbits/tracy/public/common/*.hpp
+    -- cbits/tracy/public/common/*.cpp
+    -- cbits/tracy/public/client/*.h
+    -- cbits/tracy/public/client/*.hpp
+    -- cbits/tracy/public/client/*.cpp
     -- These are used to build Tracy's client tools in Setup.hs
     cbits/tracy/capture/build/unix/Makefile
     cbits/tracy/capture/build/unix/*.mk
@@ -176,12 +176,12 @@ extra-source-files:
     cbits/tracy/profiler/src/*.cpp
     cbits/tracy/profiler/src/*.h
     cbits/tracy/profiler/src/*.hpp
-    cbits/tracy/profiler/src/font/*.hpp
-    cbits/tracy/profiler/src/imgui/*.cpp
-    cbits/tracy/profiler/src/imgui/*.h
-    cbits/tracy/public/libbacktrace/*.cpp
-    cbits/tracy/public/libbacktrace/*.h
-    cbits/tracy/public/libbacktrace/*.hpp
+    -- cbits/tracy/profiler/src/font/*.hpp
+    -- cbits/tracy/profiler/src/imgui/*.cpp
+    -- cbits/tracy/profiler/src/imgui/*.h
+    -- cbits/tracy/public/libbacktrace/*.cpp
+    -- cbits/tracy/public/libbacktrace/*.h
+    -- cbits/tracy/public/libbacktrace/*.hpp
     cbits/tracy/server/*.cpp
     cbits/tracy/server/*.h
     cbits/tracy/server/*.hpp
@@ -190,7 +190,7 @@ extra-source-files:
     cbits/tracy/zstd/common/*.h
     cbits/tracy/zstd/compress/*.c
     cbits/tracy/zstd/compress/*.h
-    cbits/tracy/zstd/decompress/*.S
+    -- cbits/tracy/zstd/decompress/*.S
     cbits/tracy/zstd/decompress/*.c
     cbits/tracy/zstd/decompress/*.h
     cbits/tracy/zstd/dictBuilder/*.c
@@ -451,6 +451,7 @@ library
         Data.Array.Accelerate.Trafo.LiveVars
         Data.Array.Accelerate.Trafo.NewNewFusion
         Data.Array.Accelerate.Trafo.Operation.Substitution
+        Data.Array.Accelerate.Trafo.Operation.LiveVars
         Data.Array.Accelerate.Trafo.Partitioning.ILP
         Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering
         Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
@@ -528,7 +529,6 @@ library
         Data.Array.Accelerate.Trafo.Exp.Algebra
         Data.Array.Accelerate.Trafo.Environment
         Data.Array.Accelerate.Trafo.Operation.Simplify
-        Data.Array.Accelerate.Trafo.Operation.LiveVars
         Data.Array.Accelerate.Trafo.Shrink
         Data.Atomic
 

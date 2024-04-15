@@ -230,6 +230,7 @@ class SLVOperation op where
 
 newtype ShrinkOperation op f = ShrinkOperation (forall f' env' env. SubArgs f f' -> Args env' f' -> Args env f -> ShrunkOperation op env')
 
+-- existential over f: otherwise, you couldn't change the non-array arguments. You need this e.g. for a Generate: smaller array means smaller function.
 data ShrunkOperation op env where
   ShrunkOperation :: op f -> Args env f -> ShrunkOperation op env
 

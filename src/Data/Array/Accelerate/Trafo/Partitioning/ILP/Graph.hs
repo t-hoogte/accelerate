@@ -32,6 +32,8 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Analysis.Hash.Exp
 
+import Data.Array.Accelerate.Trafo.Operation.LiveVars
+
 -- Data structures
 -- In this file, order often subly matters.
 -- To keep this clear, we use Set whenever it does not,
@@ -160,7 +162,7 @@ unOpLabels = mapArgs $ \(LOp arg l _) -> L arg l
 
 type BackendCluster op = PreArgs (BackendClusterArg op)
 
-class (Eq (BackendVar op), Ord (BackendVar op), Eq (BackendArg op), Show (BackendArg op), Ord (BackendArg op), Show (BackendVar op)) => MakesILP op where
+class (ShrinkArg (BackendClusterArg op), Eq (BackendVar op), Ord (BackendVar op), Eq (BackendArg op), Show (BackendArg op), Ord (BackendArg op), Show (BackendVar op)) => MakesILP op where
   -- Vars needed to express backend-specific fusion rules.
   type BackendVar op
   -- Information that the backend attaches to the argument for reconstruction,
