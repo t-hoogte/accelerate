@@ -63,6 +63,8 @@ import Data.Array.Accelerate.Trafo.Operation.LiveVars
 import Data.Maybe (fromJust, Maybe (Nothing))
 import Data.Array.Accelerate.AST.Var (varsType)
 import qualified Debug.Trace
+import Data.Array.Accelerate.Error (HasCallStack)
+import Data.Array.Accelerate.Analysis.Match (matchShapeR)
 
 
 
@@ -73,18 +75,33 @@ type PartitionedAfun op = PreOpenAfun (Clustered op)
 data Clustered op args = Clustered (Cluster op args) (BackendCluster op args)
 
 data Cluster op args where
-  Op :: SLVOp op args -> Label -> Cluster op args
+  SingleOp :: SingleOp op args -> Label -> Cluster op args
   Fused :: Fusion largs rargs args
         -> Cluster op largs
         -> Cluster op rargs
         -> Cluster op args
+
+data SingleOp op args where
+  Single :: op args
+         -> SOAs args expanded
+         -> SortedArgs expanded sorted
+         -> SubArgs sorted live
+         -> SingleOp op live
+
+-- this pattern synonym translates between the 'new' ast (above) and the 'old' ast (below):
+-- the first constructor of `Cluster` used to be called `Op` and contain an `SLVOp`.
+-- todo: slowly change all use sites from the old to the new, and eventually retire the old and this pattern synonym.
+{-# COMPLETE Op, Fused #-}
+pattern Op :: SLVOp op args -> Label -> Cluster op args
+pattern Op slv l <- SingleOp (toOld -> slv) l where
+  Op (SLV (SOp (SOAOp op soas) sortedargs) subargs) l = SingleOp (Single op soas sortedargs subargs) l
+toOld (Single op soas sortedargs subargs) = SLV (SOp (SOAOp op soas) sortedargs) subargs
 
 data SLVOp op args where
   SLV :: SortedOp op big
       -> SubArgs big small
       -> SLVOp op small
 
--- a wrapper around operations which sorts the (term and type level) arguments on global labels, to line the arguments up for Fusion
 data SortedOp op args where
   SOp :: SOAOp op args
       -> SortedArgs args sorted
@@ -95,7 +112,6 @@ data SortedArgs args sorted where
      -> (forall f. PreArgs f sorted -> PreArgs f args)
      -> SortedArgs args sorted
 
--- a wrapper around operations for SOA: each individual buffer from an argument array may fuse differently
 data SOAOp op args where
   SOAOp :: op args
         -> SOAs args expanded
@@ -108,6 +124,7 @@ data SOAs args expanded where
 data SOA arg appendto result where
   SOArgSingle :: SOA arg args (arg -> args)
   SOArgTup :: SOA (f right) args args' -> SOA (f left) args' args'' -> SOA (f (left,right)) args args''
+
 
 
 -- These correspond to the inference rules in the paper
@@ -239,9 +256,9 @@ left' k (IntroR       f) (_  :>:args)   =         left' k f args
 
 right :: Fusion largs rargs args -> Args env args -> Args env rargs
 right = right' varToIn outToIn
-right' :: (forall sh e. f (Var' sh) -> f (In sh e)) -> (forall sh e. f (Out sh e) -> f (In sh e)) -> Fusion largs rargs args -> PreArgs f args -> PreArgs f rargs
+right' :: (forall sh e. ArrayR (Array sh e) -> f (Var' sh) -> f (In sh e)) -> (forall sh e. f (Out sh e) -> f (In sh e)) -> Fusion largs rargs args -> PreArgs f args -> PreArgs f rargs
 right' vi oi EmptyF ArgsNil = ArgsNil
-right' vi oi (Vertical arr f) (arg :>: args) = vi arg :>: right' vi oi f args
+right' vi oi (Vertical arr f) (arg :>: args) = vi arr arg :>: right' vi oi f args
 right' vi oi (Diagonal     f) (arg :>: args) = oi arg :>: right' vi oi f args
 right' vi oi (Horizontal   f) (arg :>: args) = arg :>: right' vi oi f args
 right' vi oi (IntroI1      f) (_   :>: args) =         right' vi oi f args
@@ -251,14 +268,16 @@ right' vi oi (IntroO2      f) (arg :>: args) = arg :>: right' vi oi f args
 right' vi oi (IntroL       f) (_   :>: args) =         right' vi oi f args
 right' vi oi (IntroR       f) (arg :>: args) = arg :>: right' vi oi f args
 
-varToIn :: Arg env (Var' sh) -> Arg env (In sh e)
-varToIn (ArgVar sh) = ArgArray In (ArrayR (varsToShapeR sh) er) (mapTupR (\(Var t ix)->Var (GroundRscalar t) ix) sh) er
+varToIn :: ArrayR (Array sh e) -> Arg env (Var' sh) -> Arg env (In sh e)
+varToIn (ArrayR shr ty) (ArgVar sh)
+  | Just Refl <- matchShapeR shr (varsToShapeR sh) = ArgArray In (ArrayR shr ty) (mapTupR (\(Var t ix)->Var (GroundRscalar t) ix) sh) er
+  | otherwise = error "wrong shape?"
   where er = error "accessing fused away array"
 outToIn :: Arg env (Out sh e) -> Arg env (In sh e)
 outToIn (ArgArray Out x y z) = ArgArray In x y z
 inToOut :: Arg env (In sh e) -> Arg env (Out sh e)
 inToOut (ArgArray In x y z) = ArgArray Out x y z
-varToOut = inToOut . varToIn
+varToOut arr = inToOut . varToIn arr
 
 both :: (forall sh e. f (Out sh e) -> f (In sh e) -> f (Var' sh)) -> Fusion largs rargs args -> PreArgs f largs -> PreArgs f rargs -> PreArgs f args
 both _ EmptyF ArgsNil ArgsNil = ArgsNil
@@ -390,9 +409,11 @@ instance TupRmonoid (TupR f) where
 unOpLabels' :: LabelledArgsOp op env args -> LabelledArgs env args
 unOpLabels' = mapArgs $ \(LOp arg l _) -> L arg l
 
-data Both f g a = Both (f a) (g a)
+data Both f g a = Both (f a) (g a) deriving (Show, Eq)
 fst' (Both x _) = x
 snd' (Both _ y) = y
+
+
 
 zipArgs :: PreArgs f a -> PreArgs g a -> PreArgs (Both f g) a
 zipArgs ArgsNil ArgsNil = ArgsNil
@@ -582,7 +603,7 @@ outvar :: Arg env (Out sh e) -> Arg env (Var' sh)
 outvar (ArgArray Out (ArrayR shr _) sh _) = ArgVar $ groundToExpVar (shapeType shr) sh
 
 varout :: Arg env (Var' sh) -> Arg env (Out sh e)
-varout (ArgVar sh) = ArgArray Out (ArrayR (fromJust $ typeShape $ varsType sh) undefined) (expToGroundVar sh) undefined
+varout (ArgVar sh) = ArgArray Out (ArrayR (fromJust $ typeShape $ varsType sh) (error "fake")) (expToGroundVar sh) (error "fake")
 
 
 slv  :: (forall sh e. f (Out sh e) -> f (Var' sh)) -> SubArgs args args' -> PreArgs f args -> PreArgs f args'

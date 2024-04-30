@@ -83,15 +83,17 @@ class ( MakesILP op
   varToValue   :: BackendClusterArg2 op env (Var'  sh)       -> BackendClusterArg2 op env (Value sh e)
   varToSh      :: BackendClusterArg2 op env (Var'  sh)       -> BackendClusterArg2 op env (Sh    sh e)
   shToVar      :: BackendClusterArg2 op env (Sh    sh e)     -> BackendClusterArg2 op env (Var'  sh  )
-  shrinkOrGrow :: BackendClusterArg2 op env (m     sh e')    -> BackendClusterArg2 op env (m     sh e)
+  shrinkOrGrow :: Arg env (n sh e') -> Arg env (n sh e) -> BackendClusterArg2 op env (m     sh e')    -> BackendClusterArg2 op env (m     sh e)
   addTup       :: BackendClusterArg2 op env (v     sh e)     -> BackendClusterArg2 op env (v     sh ((), e))
   unitToVar    :: BackendClusterArg2 op env (m     sh ())    -> BackendClusterArg2 op env (Var'  sh  )
   varToUnit    :: BackendClusterArg2 op env (Var' sh)        -> BackendClusterArg2 op env (m     sh ())
   inToVar      :: BackendClusterArg2 op env (In sh e)        -> BackendClusterArg2 op env (Var' sh   )
-  pairinfo     :: BackendClusterArg2 op env (m sh a)         -> BackendClusterArg2 op env (m sh b) -> BackendClusterArg2 op env (m sh (a,b))
+  pairinfo     :: Arg env (n sh (a,b)) -> BackendClusterArg2 op env (m sh a)         -> BackendClusterArg2 op env (m sh b) -> BackendClusterArg2 op env (m sh (a,b))
   -- pairinfo a b = if shrinkOrGrow a == b then shrinkOrGrow a else error $ "pairing unequal: " <> show a <> ", " <> show b
-  unpairinfo   :: BackendClusterArg2 op env (m sh (a,b))     -> (BackendClusterArg2 op env (m sh a),  BackendClusterArg2 op env (m sh b))
-  unpairinfo x = (shrinkOrGrow x, shrinkOrGrow x)
+  unpairinfo   :: Arg env (n sh (a,b)) -> BackendClusterArg2 op env (m sh (a,b))     -> (BackendClusterArg2 op env (m sh a),  BackendClusterArg2 op env (m sh b))
+  unpairinfo arg@(ArgArray m (ArrayR shr (TupRpair a b)) sh (TupRpair a' b')) x = 
+    ( shrinkOrGrow arg (ArgArray m (ArrayR shr a) sh a') x
+    , shrinkOrGrow arg (ArgArray m (ArrayR shr b) sh b') x)
 
 foo :: StaticClusterAnalysis op => SubArgs big small -> Args env small -> BackendArgs op env (OutArgsOf small) -> FEnv op env -> BackendCluster op small -> BackendArgs op env (OutArgsOf big)
 foo SubArgsNil                          ArgsNil    ArgsNil  _   _  = ArgsNil
@@ -102,33 +104,51 @@ foo (SubArgKeep `SubArgsLive` subargs)  (a:>:as)   bs       env (_ :>: cs) = cas
   ArgVar _ -> foo subargs as bs env cs
   ArgExp _ -> foo subargs as bs env cs
   ArgFun _ -> foo subargs as bs env cs
-foo (SubArgOut _ `SubArgsLive` subargs) (_ :>: as) (b:>:bs) env (_ :>: cs) = shrinkOrGrow b :>: foo subargs as bs env cs
+foo (SubArgOut s `SubArgsLive` subargs) (a :>: as) (b:>:bs) env (c :>: cs) = shrinkOrGrow a (grow' s a) b :>: foo subargs as bs env cs
 foo (SubArgsDead subargs)               (a :>: as) bs       env (c :>: cs) = 
   shToOut (varToSh (def a env c)) :>: foo subargs as bs env cs
+
+grow' :: SubTupR big small -> Arg env (m sh small) -> Arg env (m sh big)
+grow' SubTupRskip (ArgArray m (ArrayR shr ty) sh buf) = ArgArray m (ArrayR shr (TupRsingle $ error "fused away output")) sh (TupRsingle $ error "fused away output")
+grow' SubTupRkeep a = a
+grow' (SubTupRpair l r) a = error "todo"
 
 makeBackendArg :: forall op env args. StaticClusterAnalysis op => Args env args -> FEnv op env -> Cluster op args -> BackendCluster op args -> BackendArgs op env args
 makeBackendArg args env c b = go args c (defaultOuts args b) b
   where
     go :: forall args. Args env args -> Cluster op args -> BackendArgs op env (OutArgsOf args) -> BackendCluster op args -> BackendArgs op env args
     go args (Fused f l r) outputs bs = let
-      backR = go (right f args) r (rightB args f outputs) (right' bcaid bcaid f bs)
+      backR = go (right f args) r (rightB args f outputs) (right' (const bcaid) bcaid f bs)
       backL = go (left  f args) l (backleft f backR outputs) (left' bcaid f bs)
       in fuseBack f backL backR
     go args (Op (SLV (SOp (SOAOp op soa) (SA sort unsort)) subargs) _l) outputs bs =
         slv outToVar subargs 
       . sort 
-      . soaExpand uncombineB soa 
+      . mapArgs snd'
+      . soaExpand uncombineB' soa
+      . zipArgs (soaShrink combine soa . unsort $ slv' varout subargs args)
       $ onOp @op 
               op 
               (forgetIn (soaShrink combine soa . unsort $ slv' varout subargs args) 
-                        . soaShrink combineB soa . unsort $ inventIn (slv' varout subargs args) (foo subargs args outputs env bs)) 
+                        . mapArgs snd'
+                        . soaShrink combineB' soa . unsort $ zipArgs (slv' varout subargs args) $ inventIn (slv' varout subargs args) (foo subargs args outputs env bs)) 
               (soaShrink combine soa . unsort $ slv' varout subargs args) 
               env
 
-    combineB   :: BackendClusterArg2 op env (f l) -> BackendClusterArg2 op env (f r) -> BackendClusterArg2 op env (f (l,r))
-    combineB   = unsafeCoerce $ pairinfo   @op
-    uncombineB :: BackendClusterArg2 op env (f (l,r)) -> (BackendClusterArg2 op env (f l), BackendClusterArg2 op env (f r))
+    combineB   :: Arg env (g (l,r)) -> BackendClusterArg2 op env (f l) -> BackendClusterArg2 op env (f r) -> BackendClusterArg2 op env (f (l,r))
+    combineB = unsafeCoerce $ pairinfo @op
+    uncombineB :: Arg env (g (l,r)) -> BackendClusterArg2 op env (f (l,r)) -> (BackendClusterArg2 op env (f l), BackendClusterArg2 op env (f r))
     uncombineB = unsafeCoerce $ unpairinfo @op
+    combineB' :: Both (Arg env) (BackendClusterArg2 op env) (g l)
+              -> Both (Arg env) (BackendClusterArg2 op env) (g r)
+              -> Both (Arg env) (BackendClusterArg2 op env) (g (l, r))
+    combineB' (Both al l) (Both ar r) = Both (combine al ar) (combineB (combine al ar) l r)
+    uncombineB' :: Both (Arg env) (BackendClusterArg2 op env) (g (l, r))
+                -> (Both (Arg env) (BackendClusterArg2 op env) (g l),
+                    Both (Arg env) (BackendClusterArg2 op env) (g r))
+    uncombineB' (Both a x) = let (al, ar) = split a
+                                 (l, r) = uncombineB a x
+                             in (Both al l, Both ar r)
 
     defaultOuts :: Args env args -> BackendCluster op args -> BackendArgs op env (OutArgsOf args)
     defaultOuts args backendcluster = forgetIn args $ fuseArgsWith args backendcluster (\arg b -> def arg env b)
@@ -155,7 +175,7 @@ makeBackendArg args env c b = go args c (defaultOuts args b) b
            -> Fusion largs rargs args
            -> BackendArgs op env (OutArgsOf  args)
            -> BackendArgs op env (OutArgsOf rargs)
-    rightB args f = forgetIn (right f args) . right' (valueToIn . varToValue) (valueToIn . outToValue) f . inventIn args
+    rightB args f = forgetIn (right f args) . right' (const $ valueToIn . varToValue) (valueToIn . outToValue) f . inventIn args
 
     backleft :: forall largs rargs args
               . StaticClusterAnalysis op
@@ -230,8 +250,8 @@ splitFromArg' :: (EvalOp op) => FromArg' op env (Value sh (l,r)) -> (FromArg' op
 splitFromArg' (FromArg v) = bimap FromArg FromArg $ unpair' v
 
 pairInArg :: (EvalOp op) => Arg env (arg (l,r)) -> BackendArgEnvElem op env (InArg (arg l)) ->  BackendArgEnvElem op env (InArg (arg r)) ->  BackendArgEnvElem op env (InArg (arg (l,r)))
-pairInArg (ArgArray In  _ _ _) l r = getCompose $ pair' (Compose l) (Compose r)
-pairInArg (ArgArray Out _ _ _) l r = getCompose $ pair' (Compose l) (Compose r)
+pairInArg a@(ArgArray In  _ _ _) (BAE x b) (BAE y d) = BAE (pair' x y) (pairinfo a b d)
+pairInArg a@(ArgArray Out _ _ _) (BAE x b) (BAE y d) = BAE (pair' x y) (pairinfo a b d)
 pairInArg _ _ _ = error "SOA'd non-array args"
 
 evalCluster :: (EvalOp op) => Cluster op args -> BackendCluster op args -> Args env args -> FEnv op env -> Index op -> EvalMonad op ()
@@ -382,25 +402,25 @@ instance TupRmonoid (Sh' op sh) where
   unpair' (Shape' shr sh) = (Shape' shr sh, Shape' shr sh)
 
 
-instance EvalOp op => TupRmonoid (Compose (BackendArgEnvElem op env) (Value sh)) where
-  pair' (Compose (BAE x b)) (Compose (BAE y d)) =
-    Compose $ BAE (pair' x y) (pairinfo b d)
-  unpair' (Compose (BAE x b)) =
-    biliftA2
-      (Compose .* BAE)
-      (Compose .* BAE)
-      (unpair' x)
-      (unpairinfo b)
+-- instance EvalOp op => TupRmonoid (Compose (BackendArgEnvElem op env) (Value sh)) where
+--   pair' (Compose (BAE x b)) (Compose (BAE y d)) =
+--     Compose $ BAE (pair' x y) (Debug.Trace.trace "pair'" $ pairinfo b d)
+--   unpair' (Compose (BAE x b)) =
+--     biliftA2
+--       (Compose .* BAE)
+--       (Compose .* BAE)
+--       (unpair' x)
+--       (unpairinfo _ b)
 
-instance EvalOp op => TupRmonoid (Compose (BackendArgEnvElem op env) (Sh sh)) where
-  pair' (Compose (BAE x b)) (Compose (BAE y d)) =
-    Compose $ BAE (pair' x y) (pairinfo b d)
-  unpair' (Compose (BAE x b)) =
-    biliftA2
-      (Compose .* BAE)
-      (Compose .* BAE)
-      (unpair' x)
-      (unpairinfo b)
+-- instance EvalOp op => TupRmonoid (Compose (BackendArgEnvElem op env) (Sh sh)) where
+--   pair' (Compose (BAE x b)) (Compose (BAE y d)) =
+--     Compose $ BAE (pair' x y) (pairinfo b d)
+--   unpair' (Compose (BAE x b)) =
+--     biliftA2
+--       (Compose .* BAE)
+--       (Compose .* BAE)
+--       (unpair' x)
+--       (unpairinfo _ b)
 
 
 

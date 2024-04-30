@@ -46,7 +46,7 @@ instance PrettyOp op => PrettyOp (Clustered op) where
   prettyOpWithArgs env (Clustered c _) = prettyOpWithArgs env c
 
 instance PrettyOp op => PrettyOp (Cluster op) where
-  prettyOp (Fused _ l r) = "Fused (" <> prettyOp l <> ", " <> prettyOp r
+  prettyOp (Fused _ l r) = "Fused" -- (" <> prettyOp l <> ", " <> prettyOp r
   prettyOp (Op (SLV (SOp (SOAOp op _) _) _) _) = prettyOp op
   prettyOpWithArgs env (Fused f l r) args = "Fused" -- (" <> prettyOpWithArgs env l (left f args) <> ", " <> prettyOpWithArgs env r (right f args)
   prettyOpWithArgs env (Op (SLV (SOp (SOAOp op soa) (SA _ unsort)) subargs) _) args = 

@@ -166,7 +166,7 @@ instance StaticClusterAnalysis InterpretOp where
   varToValue   (BCA f sz) = BCA f sz
   varToSh      (BCA f sz) = BCA f sz
   shToVar      (BCA f sz) = BCA f sz
-  shrinkOrGrow (BCA f sz) = BCA f sz
+  shrinkOrGrow _ _ (BCA f sz) = BCA f sz
   addTup       (BCA f sz) = BCA f sz
   unitToVar    (BCA f sz) = BCA f sz
   varToUnit    (BCA f sz) = BCA f sz
@@ -675,7 +675,7 @@ iterationsize (Op _ _) ((BCA _ n) :>: args) = if n==0 then iterationsize (Op und
 iterationsize (P.Fused f l r) b = 
   let lsz = iterationsize l (left' (\(BCA f x) -> BCA f x) f b) 
   in if lsz == 0 
-     then iterationsize r (right' (\(BCA f x)->BCA f x) (\(BCA f x)->BCA f x) f b) 
+     then iterationsize r (right' (\_ (BCA f x)->BCA f x) (\(BCA f x)->BCA f x) f b) 
      else lsz
 
 -- iterationsize (Op _) ArgsNil env = Nothing

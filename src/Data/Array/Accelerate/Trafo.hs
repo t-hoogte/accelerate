@@ -100,8 +100,8 @@ testWithObjective obj f
   ++ Pretty.renderForTerminal (Pretty.prettyAfun operation)
   ++ "\n\nPartitionedAcc:\n"
   ++ Pretty.renderForTerminal (Pretty.prettyAfun partitioned)
-  ++ "\nSLV'd PartitionedAcc:\n"
-  ++ Pretty.renderForTerminal (Pretty.prettyAfun slvpartitioned)
+  -- ++ "\nSLV'd PartitionedAcc:\n"
+  -- ++ Pretty.renderForTerminal (Pretty.prettyAfun slvpartitioned)
   ++ "\n\nSchedule:\n"
   ++ Pretty.renderForTerminal (Pretty.prettySchedule schedule)
   where
