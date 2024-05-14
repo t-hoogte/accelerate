@@ -189,6 +189,13 @@ class (ShrinkArg (BackendClusterArg op), Eq (BackendVar op), Ord (BackendVar op)
   -- allow the backend to add constraints/bounds for every node
   finalize :: [Label] -> Constraint op
 
+-- use finalize = finalizeNoFusion to prevent all fusion in a backend
+finalizeNoFusion :: [Label] -> Constraint op
+finalizeNoFusion = foldMap $ \l -> manifest l .==. int 0 -- each array is manifest
+                                <> c (InDir  l) .==. int (_labelId l) -- each operation reads in its own order
+                                <> c (OutDir l) .==. int (_labelId l) -- each operation writes in its own order
+
+
   -- -- e.g. for backpermutes. This allows the backend to say that horizontal fusion should not be possible between
   -- -- two edges from the same source that have different Ints in this map.
   -- -- this default implementation just uses InDir, a backend may choose to change it if other variables are also relevant.
