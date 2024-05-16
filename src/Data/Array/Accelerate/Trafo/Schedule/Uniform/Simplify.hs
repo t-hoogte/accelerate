@@ -74,6 +74,11 @@ data BuildSchedule kernel env =
   BuildSchedule{
     -- Sorted, without duplicates
     directlyAwaits :: [Idx env Signal],
+    -- The SignalResolvers that this term resolves at the end of its execution.
+    -- 'End' here is the place where the Continuation would be placed
+    -- (as 'end' is otherwise ambiguous if the term has Spawns).
+    -- Sorted, without duplicates
+    finallyResolves :: [Idx env SignalResolver],
     trivial :: Bool,
     -- Constructs a schedule, but doesn't wait on the directlyAwaits signals.
     -- constructFull adds that.
@@ -89,6 +94,7 @@ instance Sink' (BuildSchedule kernel) where
   weaken' k schedule =
     BuildSchedule{
       directlyAwaits = sort $ map (weaken k) $ directlyAwaits schedule,
+      finallyResolves = sort $ map (weaken k) $ finallyResolves schedule,
       trivial = trivial schedule,
       construct = \k' -> construct schedule (k' .> k)
     }
@@ -239,6 +245,7 @@ instance Sink' (Continuation kernel) where
 buildReturn :: BuildSchedule kernel env
 buildReturn = BuildSchedule{
     directlyAwaits = [],
+    finallyResolves = [],
     trivial = True,
     construct = \_ env -> \case
       ContinuationEnd -> Return
@@ -255,12 +262,14 @@ buildLet lhs binding body
   | trivialBinding binding =
     BuildSchedule{
       directlyAwaits = map (fromMaybe (internalError "Illegal schedule: deadlock") . strengthenWithLHS lhs) $ directlyAwaits body,
+      finallyResolves = mapMaybe (strengthenWithLHS lhs) $ finallyResolves body,
       trivial = trivialBinding binding && trivial body,
       construct = constructLet False
     }
   | otherwise =
     BuildSchedule{
       directlyAwaits = [],
+      finallyResolves = mapMaybe (strengthenWithLHS lhs) $ finallyResolves body,
       trivial = False,
       construct = constructLet True
     }
@@ -289,6 +298,8 @@ buildLet lhs binding body
 buildEnvExtend :: BLeftHandSide t env1 env2 -> Binding env1 t -> BuildEnv env1 -> BuildEnv env2
 buildEnvExtend (LeftHandSidePair (LeftHandSideSingle _) (LeftHandSideSingle _)) (NewSignal _) env =
   env `BPush` INone `BPush` IResolvesNext
+buildEnvExtend (LeftHandSidePair (LeftHandSideSingle _) (LeftHandSideSingle _)) (NewRef _) env =
+  env `BPush` INone `BPush` IWritesNext
 buildEnvExtend (LeftHandSideSingle _) (RefRead refVar) env = env `BPush` IValue [varIdx refVar]
 buildEnvExtend lhs _ env = buildEnvSkip lhs env
 
@@ -309,6 +320,11 @@ buildEffect (SignalResolve []) next = next
 buildEffect (SignalResolve resolvers) next =
   BuildSchedule{
     directlyAwaits = [],
+    finallyResolves =
+      if trivial next && null (directlyAwaits next) then
+        resolvers' `mergeDedup` finallyResolves next
+      else
+        finallyResolves next,
     trivial = False,
     construct = \k env cont ->
       let
@@ -323,6 +339,7 @@ buildEffect (SignalResolve resolvers) next =
 buildEffect (SignalAwait signals) next =
   BuildSchedule{
     directlyAwaits = sort signals `mergeDedup` directlyAwaits next,
+    finallyResolves = finallyResolves next,
     trivial = trivial next,
     construct = construct next
   }
@@ -330,18 +347,20 @@ buildEffect effect next
   | canPostpone =
     BuildSchedule{
       directlyAwaits = directlyAwaits next,
+      finallyResolves = finallyResolves next,
       trivial = trivialEffect effect && trivial next,
       construct = \k env cont ->
         Effect (weaken' k effect)
-          $ construct next k env cont
+          $ construct next k (updateEnv k env) cont
     }
   | otherwise =
     BuildSchedule{
       directlyAwaits = [],
+      finallyResolves = finallyResolves next,
       trivial = trivialEffect effect && trivial next,
       construct = \k env cont ->
         Effect (weaken' k effect)
-          $ constructFull next k env cont
+          $ constructFull next k (updateEnv k env) cont
     }
   where
     -- Write may be postponed: a write doesn't do synchronisation,
@@ -360,10 +379,17 @@ buildSeq :: BuildSchedule kernel env -> BuildSchedule kernel env -> BuildSchedul
 buildSeq a b =
   BuildSchedule {
     directlyAwaits = directlyAwaits a,
-    trivial = trivial a && trivial b && directlyAwaits b `isSubsequenceOf` directlyAwaits a,
+    finallyResolves =
+      if trivial b && isSubseq then
+        finallyResolves a `mergeDedup` finallyResolves b
+      else
+        finallyResolves b,
+    trivial = trivial a && trivial b && isSubseq,
     construct = \k env cont ->
       construct a k env $ ContinuationDo k b weakenId cont
   }
+  where
+    isSubseq = directlyAwaits b `isSubsequenceOf` directlyAwaits a
 
 buildSpawn :: BuildSchedule kernel env -> BuildSchedule kernel env -> BuildSchedule kernel env
 buildSpawn a b
@@ -374,11 +400,22 @@ buildSpawn a b
   | otherwise =
     BuildSchedule{
       directlyAwaits = directlyAwaits a `sortedIntersection` directlyAwaits b,
+      -- Only return the resolved signals at the place where the continuation is placed.
+      -- We thus ignore 'a' here.
+      finallyResolves = finallyResolves b,
       trivial = False,
       construct = \k env cont ->
-        Spawn
-          (constructFull a{directlyAwaits = directlyAwaits a `sortedMinus` directlyAwaits b} k env cont)
-          (constructFull b{directlyAwaits = directlyAwaits b `sortedMinus` directlyAwaits a} k env ContinuationEnd)
+        let
+          aResolves = sort $ mapMaybe ((`findSignal` env) . weaken k) $ finallyResolves a
+          a' = a{directlyAwaits = directlyAwaits a `sortedMinus` directlyAwaits b}
+          b' = b{directlyAwaits = directlyAwaits b `sortedMinus` directlyAwaits a}
+        in
+          if not $ null (aResolves `sortedIntersection` sort (map (weaken k) $ directlyAwaits b)) then
+            constructFull a' k env $ ContinuationDo k b' weakenId cont
+          else
+            Spawn
+              (constructFull a' k env cont)
+              (constructFull b' k env ContinuationEnd)
     }
 
 buildAcond
@@ -390,6 +427,7 @@ buildAcond
 buildAcond var true false next =
   BuildSchedule{
     directlyAwaits = directlyAwaits true `sortedIntersection` directlyAwaits false,
+    finallyResolves = finallyResolves next,
     trivial = False,
     construct = \k env cont -> Acond
       (weaken k var)
@@ -407,6 +445,7 @@ buildAwhile
 buildAwhile io step initial next =
   BuildSchedule{
     directlyAwaits = [], -- TODO: Compute this based on the use of the initial state and free variables of step.
+    finallyResolves = finallyResolves next,
     trivial = False,
     construct = \k env cont -> Awhile
       io
