@@ -1,4 +1,5 @@
 {-# LANGUAGE ConstraintKinds     #-}
+{-# LANGUAGE EmptyCase           #-}
 {-# LANGUAGE FlexibleInstances   #-}
 {-# LANGUAGE GADTs               #-}
 {-# LANGUAGE KindSignatures      #-}
@@ -37,6 +38,7 @@ module Data.Array.Accelerate.Trafo.Schedule.Uniform.Simplify (
   buildAcond, buildAwhile, buildEffect, buildSpawn,
   buildLet, buildReturn, buildSeq,
   buildFunBody, buildFunLam,
+  BuildEnv(BEmpty),
 ) where
 import Debug.Trace
 import Data.Array.Accelerate.AST.Environment
@@ -46,6 +48,7 @@ import qualified Data.Array.Accelerate.AST.IdxSet           as IdxSet
 import qualified Data.Array.Accelerate.AST.CountEnv         as CountEnv
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.AST.Schedule.Uniform
+import Data.Array.Accelerate.Analysis.Match
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Type
@@ -697,11 +700,6 @@ data BuildSchedule kernel env =
       -> UniformSchedule kernel env'
   }
 
-data BuildEnv env =
-  BuildEnv{
-    buildEnvResolved :: IdxSet env -- Set of resolved signals
-  }
-
 instance Sink' (BuildSchedule kernel) where
   weaken' k schedule =
     BuildSchedule{
@@ -715,6 +713,7 @@ newtype BuildScheduleFun kernel env t =
     funConstruct
       :: forall env'.
          env :> env'
+      -> BuildEnv env'
       -> UniformScheduleFun kernel env' t
   }
 
@@ -729,12 +728,113 @@ constructFull schedule k env cont
   | null $ directlyAwaits schedule = construct schedule k env cont
   | signals' <-
     -- Don't wait on already resolved signals
-    filter (\idx -> not (idx `IdxSet.member` buildEnvResolved env))
+    filter (\idx -> not (isResolved idx env))
       $ map (weaken k)
       $ directlyAwaits schedule
-  , env' <- BuildEnv $ IdxSet.union (IdxSet.fromList' signals') $ buildEnvResolved env
+  , env' <- markResolved signals' env
     = (if null signals' then id else Effect $ SignalAwait signals')
       $ construct schedule k env' cont
+
+data BuildEnv env where
+  BEmpty :: BuildEnv ()
+  BPush  :: BuildEnv env -> BuildEnvInfo env t -> BuildEnv (env, t)
+
+data BuildEnvInfo env t where
+  -- No information available.
+  INone
+    :: BuildEnvInfo env t
+
+  -- This SignalResolver resolves the Signal at the next index in the environment.
+  IResolvesNext
+    :: BuildEnvInfo (env, Signal) SignalResolver
+
+  -- This Signal is resolved.
+  IResolved
+    :: BuildEnvInfo env Signal
+  
+  -- This OutputRef writes to the Ref at the next index in the environment.
+  IWritesNext
+    :: BuildEnvInfo (env, Ref t) (OutputRef t)
+  
+  -- This Ref contains the value of the specified variable.
+  IRefContains
+    :: Idx env t
+    -> BuildEnvInfo env (Ref t)
+
+  -- This variable has the value of the given Refs.
+  -- Only for Buffer and Scalar variables.
+  IValue
+    :: [Idx env (Ref t)]
+    -> BuildEnvInfo env t
+
+data BuildEnvPrj t where
+  BuildEnvPrj :: BuildEnvInfo env t -> BuildEnvPrj t
+
+buildEnvPrj :: Idx env t -> BuildEnv env -> BuildEnvPrj t
+buildEnvPrj ZeroIdx       (BPush _   v) = BuildEnvPrj v
+buildEnvPrj (SuccIdx idx) (BPush env _) = buildEnvPrj idx env
+
+data BuildEnvPrj' env t where
+  BuildEnvPrj' :: Skip env env' -> BuildEnvInfo env' t -> BuildEnvPrj' env t
+
+buildEnvPrj' :: Idx env t -> BuildEnv env -> BuildEnvPrj' env t
+buildEnvPrj' = go SkipNone
+  where
+    go :: Skip env env' -> Idx env' t -> BuildEnv env' -> BuildEnvPrj' env t
+    go skip ZeroIdx       (BPush _   v) = BuildEnvPrj' (SkipSucc skip) v
+    go skip (SuccIdx idx) (BPush env _) = go (SkipSucc skip) idx env
+
+findSignal :: Idx env SignalResolver -> BuildEnv env -> Maybe (Idx env Signal)
+findSignal idx env = case buildEnvPrj' idx env of
+  BuildEnvPrj' skip IResolvesNext -> Just $ weaken (skipWeakenIdx skip) ZeroIdx
+  _ -> Nothing
+
+findRef :: Idx env (OutputRef t) -> BuildEnv env -> Maybe (Idx env (Ref t))
+findRef idx env = case buildEnvPrj' idx env of
+  BuildEnvPrj' skip IWritesNext -> Just $ weaken (skipWeakenIdx skip) ZeroIdx
+  _ -> Nothing
+
+-- Given a sorted list of unique signals, marks those signals as resolved in the BuildEnv.
+markResolved :: [Idx env Signal] -> BuildEnv env -> BuildEnv env
+markResolved [] env = env
+markResolved signals (BPush env info)
+  | ZeroIdx : signals' <- signals
+    = BPush (markResolved (map forceWeaken signals') env) IResolved
+  | otherwise
+    = BPush (markResolved (map forceWeaken signals) env) info
+  where
+    forceWeaken :: Idx (env, t) s -> Idx env s
+    forceWeaken ZeroIdx = internalError "markResolved: input was not sorted or contains duplicates"
+    forceWeaken (SuccIdx idx) = idx
+markResolved (s:_) BEmpty = case s of {}
+
+isResolved :: Idx env Signal -> BuildEnv env -> Bool
+isResolved signal env
+  | BuildEnvPrj IResolved <- buildEnvPrj signal env = True
+  | otherwise = False
+
+markRefValue :: Idx env (Ref t) -> Idx env t -> BuildEnv env -> BuildEnv env
+markRefValue (SuccIdx refIdx) (SuccIdx valueIdx) (BPush env info) = BPush (markRefValue refIdx valueIdx env) info
+markRefValue ZeroIdx (SuccIdx valueIdx) (BPush env _) = BPush env (IRefContains valueIdx)
+markRefValue (SuccIdx refIdx) ZeroIdx (BPush env info) = BPush env $ case info of
+  INone
+    -> IValue [refIdx]
+  IValue refs
+    -> IValue (refIdx : refs)
+  _ -> info
+
+-- Finds the value of a reference, if available
+findRefValue :: Idx env (Ref t) -> BuildEnv env -> Maybe (Idx env t)
+findRefValue = go SkipNone
+  where
+    go :: Skip env env' -> Idx env' (Ref t) -> BuildEnv env' -> Maybe (Idx env t)
+    go skip ZeroIdx (BPush _ info) = case info of
+      IRefContains value -> Just $ weaken (skipWeakenIdx $ SkipSucc skip) value
+      _ -> Nothing
+    go skip (SuccIdx refIdx) (BPush env info)
+      | IValue refs <- info
+      , Refl : _ <- mapMaybe (matchIdx refIdx) refs = Just $ weaken (skipWeakenIdx skip) ZeroIdx
+      | otherwise = go (SkipSucc skip) refIdx env
 
 data Continuation kernel env where
   ContinuationEnd
@@ -767,7 +867,7 @@ buildLet
   -> BuildSchedule kernel env2
   -> BuildSchedule kernel env1
 buildLet lhs binding body
-  | trivialBinding binding || null (directlyAwaits body) =
+  | trivialBinding binding =
     BuildSchedule{
       directlyAwaits = map (fromMaybe (internalError "Illegal schedule: deadlock") . strengthenWithLHS lhs) $ directlyAwaits body,
       trivial = trivialBinding binding && trivial body,
@@ -787,6 +887,12 @@ buildLet lhs binding body
       -> Continuation kernel env1'
       -> UniformSchedule kernel env1'
     constructLet shouldAwait k env cont
+      -- Eliminate this let-binding, if it reads from a Ref, and we already know the value of that Ref.
+      | RefRead refVar <- binding
+      , Just valueIdx <- findRefValue (weaken k $ varIdx refVar) env
+      , LeftHandSideSingle _ <- lhs =
+        -- Note that RefRead is a trivial binding, so shouldAwait is False
+        construct body (weakenReplace valueIdx k) env cont
       | Exists lhs' <- rebuildLHS lhs
       , k' <- sinkWithLHS lhs lhs' k
       , binding' <- weaken k binding =
@@ -796,13 +902,39 @@ buildLet lhs binding body
           $ weaken' (weakenWithLHS lhs') cont
 
 buildEnvExtend :: BLeftHandSide t env1 env2 -> Binding env1 t -> BuildEnv env1 -> BuildEnv env2
-buildEnvExtend lhs _ (BuildEnv resolved) = BuildEnv $ IdxSet.skip' lhs resolved
+buildEnvExtend (LeftHandSidePair (LeftHandSideSingle _) (LeftHandSideSingle _)) (NewSignal _) env =
+  env `BPush` INone `BPush` IResolvesNext
+buildEnvExtend (LeftHandSideSingle _) (RefRead refVar) env = env `BPush` IValue [varIdx refVar]
+buildEnvExtend lhs _ env = buildEnvSkip lhs env
+
+buildEnvSkip :: BLeftHandSide t env1 env2 -> BuildEnv env1 -> BuildEnv env2
+buildEnvSkip lhs env = case lhs of
+  LeftHandSideWildcard _ -> env
+  LeftHandSideSingle _
+    -> env `BPush` INone
+  LeftHandSidePair lhs1 lhs2
+    -> buildEnvSkip lhs2 $ buildEnvSkip lhs1 $ env
 
 buildEffect
-  :: Effect kernel env
+  :: forall kernel env.
+     Effect kernel env
   -> BuildSchedule kernel env
   -> BuildSchedule kernel env
 buildEffect (SignalResolve []) next = next
+buildEffect (SignalResolve resolvers) next =
+  BuildSchedule{
+    directlyAwaits = [],
+    trivial = False,
+    construct = \k env cont ->
+      let
+        signals = mapMaybe (\r -> findSignal (weaken k r) env) resolvers
+        env' = markResolved signals env
+      in
+        Effect (weaken' k $ SignalResolve resolvers')
+          $ constructFull next k env' cont
+  }
+  where
+    resolvers' = sort resolvers
 buildEffect (SignalAwait signals) next =
   BuildSchedule{
     directlyAwaits = sort signals `mergeDedup` directlyAwaits next,
@@ -810,7 +942,7 @@ buildEffect (SignalAwait signals) next =
     construct = construct next
   }
 buildEffect effect next
-  | canPostpone || null (directlyAwaits next) =
+  | canPostpone =
     BuildSchedule{
       directlyAwaits = directlyAwaits next,
       trivial = trivialEffect effect && trivial next,
@@ -821,7 +953,7 @@ buildEffect effect next
   | otherwise =
     BuildSchedule{
       directlyAwaits = [],
-      trivial = False,
+      trivial = trivialEffect effect && trivial next,
       construct = \k env cont ->
         Effect (weaken' k effect)
           $ constructFull next k env cont
@@ -832,6 +964,12 @@ buildEffect effect next
     canPostpone
       | RefWrite{} <- effect = True
       | otherwise = False
+    updateEnv :: env :> env' -> BuildEnv env' -> BuildEnv env'
+    updateEnv k env = case effect of
+      RefWrite outRefVar valueVar 
+        | Just refIdx <- findRef (k >:> varIdx outRefVar) env
+          -> markRefValue refIdx (k >:> varIdx valueVar) env
+      _ -> env
 
 buildSeq :: BuildSchedule kernel env -> BuildSchedule kernel env -> BuildSchedule kernel env
 buildSeq a b =
@@ -887,7 +1025,7 @@ buildAwhile io step initial next =
     trivial = False,
     construct = \k env cont -> Awhile
       io
-      (funConstruct step k)
+      (funConstruct step k env)
       (mapTupR (weaken k) initial)
       (constructFull next k env cont)
   }
@@ -898,14 +1036,14 @@ buildFunLam
   -> BuildScheduleFun kernel env1 (t -> f)
 buildFunLam lhs body =
   BuildScheduleFun{
-    funConstruct = \k -> case rebuildLHS lhs of
-      Exists lhs' -> Slam lhs' $ funConstruct body (sinkWithLHS lhs lhs' k)
+    funConstruct = \k env -> case rebuildLHS lhs of
+      Exists lhs' -> Slam lhs' $ funConstruct body (sinkWithLHS lhs lhs' k) (buildEnvSkip lhs' env)
   }
 
 buildFunBody :: BuildSchedule kernel env -> BuildScheduleFun kernel env ()
 buildFunBody body =
   BuildScheduleFun{
-    funConstruct = \k -> Sbody $ constructFull body k (BuildEnv IdxSet.empty) ContinuationEnd
+    funConstruct = \k env -> Sbody $ constructFull body k env ContinuationEnd
   }
 
 -- Assumes that the input arrays are sorted,

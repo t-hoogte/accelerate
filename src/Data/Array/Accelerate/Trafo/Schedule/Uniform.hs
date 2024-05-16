@@ -126,20 +126,22 @@ transformAfun
   :: IsKernel kernel
   => PartitionedAfun (KernelOperation kernel) () f
   -> UniformScheduleFun kernel () (Scheduled UniformScheduleFun f)
-transformAfun afun = go FEnvEnd afun
+transformAfun afun = funConstruct (go FEnvEnd afun) weakenId BEmpty
   where
-    go :: IsKernel kernel => FutureEnv fenv genv -> PartitionedAfun (KernelOperation kernel) genv f -> UniformScheduleFun kernel fenv (Scheduled UniformScheduleFun f)
+    go
+      :: IsKernel kernel
+      => FutureEnv fenv genv
+      -> PartitionedAfun (KernelOperation kernel) genv f
+      -> BuildScheduleFun kernel fenv (Scheduled UniformScheduleFun f)
     go env (C.Alam lhs f)
       | DeclareInput _ lhs' env' <- declareInput lhs env
-      = Slam lhs' $ go env' f
+      = buildFunLam lhs' $ go env' f
     go env (C.Abody body)
       | Refl <- reprIsBody @UniformScheduleFun $ groundsR body
       , schedule <- convertAccPartial body
       , DeclareOutput skip lhs dest <- declareOutput $ groundsR body
-      = funConstruct
-          (buildFunLam lhs $ buildFunBody $
-            transformSub (fenvFSkipMany skip env) Parallel (CtxNormal $ dest SkipNone) [] schedule)
-          weakenId
+      = buildFunLam lhs $ buildFunBody $
+          transformSub (fenvFSkipMany skip env) Parallel (CtxNormal $ dest SkipNone) [] schedule
 
 -- Transforms a SyncSchedule to a UniformSchedule.
 -- Assumes that the FutureEnv corresponds with the syncEnv of the schedule.
@@ -222,14 +224,16 @@ transform' (SyncSchedule _ simple schedule) = case schedule of
     case ctx of
       CtxLoop{} -> internalError "Loop impossible"
       CtxNormal dest
-        | (dest', instr) <- returnValues fenv parallelism updateTup dest ->
-          let
-            parallelism'
-              -- Use the parallel style, if there are terms to be placed in the first fork.
-              -- These may fill the variables we need here, and waiting on them here sequentially could cause a deadlock.
-              | _:_ <- firstSpawn = Parallel
-              | otherwise = parallelism
-          in buildSeqOrSpawn parallelism' instr $ transformSub fenv parallelism (CtxNormal dest') firstSpawn next
+        | (dest', instr) <- returnValues fenv parallelism updateTup dest
+        , next' <- transformSub fenv parallelism (CtxNormal dest') firstSpawn next ->
+          if
+            -- Spawn a new term to return the values, if there are terms to be placed in the first fork of a let-binding.
+            -- These terms may fill the variables we need here, and waiting on them here sequentially could cause a deadlock.
+            | _:_ <- firstSpawn
+            , Sequential <- parallelism ->
+              buildSpawn (instr buildReturn) next'
+            | otherwise ->
+              instr next'
 
   -- Effects
   PExec kernel args -> TransformSchedule $ \fenv _ _ firstSpawn ->
@@ -366,7 +370,7 @@ transform' (SyncSchedule _ simple schedule) = case schedule of
             (writeLoopCondition destBool False)
             $ buildSpawn
               release
-              $ snd $ returnValues fenv Parallel (toPartialReturn us vars) dest
+              $ snd (returnValues fenv Parallel (toPartialReturn us vars) dest) buildReturn
 
 transformWhile
   :: IsKernel kernel =>
@@ -469,15 +473,24 @@ returnValues
   -> Parallelism
   -> UpdateTuple genv t1 t2
   -> Destinations fenv t2
-  -> (Destinations fenv t1, BuildSchedule kernel fenv)
-returnValues _ _ UpdateKeep dest = (dest, buildReturn)
-returnValues env _ (UpdateSet u var) (TupRsingle dest) = 
-  (TupRunit, returnValue env u var dest)
-returnValues env par (UpdatePair up1 up2) (TupRpair dest1 dest2)
-  | (dest1', s1) <- returnValues env par up1 dest1
-  , (dest2', s2) <- returnValues env par up2 dest2
-  = (TupRpair dest1' dest2', buildSeqOrSpawn par s1 s2)
-returnValues _ _ _ _ = internalError "Tuple mismatch"
+  -> (Destinations fenv t1, BuildSchedule kernel fenv -> BuildSchedule kernel fenv)
+returnValues fenv par tup dest = (dest', \next -> foldr (buildSeqOrSpawn par) next terms)
+  where
+    (dest', terms) = returnValuesSpawns fenv tup dest
+
+returnValuesSpawns
+  :: FutureEnv fenv genv
+  -> UpdateTuple genv t1 t2
+  -> Destinations fenv t2
+  -> (Destinations fenv t1, [BuildSchedule kernel fenv])
+returnValuesSpawns _ UpdateKeep dest = (dest, [])
+returnValuesSpawns env (UpdateSet u var) (TupRsingle dest) = 
+  (TupRunit, [returnValue env u var dest])
+returnValuesSpawns env (UpdatePair up1 up2) (TupRpair dest1 dest2)
+  | (dest1', s1) <- returnValuesSpawns env up1 dest1
+  , (dest2', s2) <- returnValuesSpawns env up2 dest2
+  = (TupRpair dest1' dest2', s1 ++ s2)
+returnValuesSpawns _ _ _ = internalError "Tuple mismatch"
 
 returnValue
   :: FutureEnv fenv genv
