@@ -127,7 +127,7 @@ transformAfun
   :: IsKernel kernel
   => PartitionedAfun (KernelOperation kernel) () f
   -> UniformScheduleFun kernel () (Scheduled UniformScheduleFun f)
-transformAfun afun = stronglyLiveVariablesFun $ funConstruct (go FEnvEnd afun) weakenId BEmpty
+transformAfun afun = simplify $ stronglyLiveVariablesFun $ funConstruct (go FEnvEnd afun) weakenId BEmpty
   where
     go
       :: IsKernel kernel

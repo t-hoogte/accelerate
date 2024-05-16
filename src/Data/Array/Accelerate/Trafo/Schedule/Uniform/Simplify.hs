@@ -28,13 +28,15 @@
 --
 
 module Data.Array.Accelerate.Trafo.Schedule.Uniform.Simplify (
-
   -- Construction DSL
   BuildSchedule, BuildScheduleFun, funConstruct,
   buildAcond, buildAwhile, buildEffect, buildSpawn,
   buildLet, buildReturn, buildSeq,
   buildFunBody, buildFunLam,
   BuildEnv(BEmpty),
+
+  -- Optimize
+  simplify
 ) where
 import Debug.Trace
 import Data.Array.Accelerate.AST.Environment
@@ -86,6 +88,7 @@ data BuildSchedule kernel env =
       :: forall env'.
          env :> env'
       -> BuildEnv env'
+      -> [Idx env' SignalResolver] -- The SignalResolvers that should be resolved before doing serious work
       -> Continuation kernel env'
       -> UniformSchedule kernel env'
   }
@@ -113,18 +116,27 @@ constructFull
   :: BuildSchedule kernel env
   -> env :> env'
   -> BuildEnv env'
+  -> [Idx env' SignalResolver]
   -> Continuation kernel env'
   -> UniformSchedule kernel env'
-constructFull schedule k env cont
-  | null $ directlyAwaits schedule = construct schedule k env cont
+constructFull schedule k env resolvers cont
+  | null $ directlyAwaits schedule = construct schedule k env resolvers cont
   | signals' <-
     -- Don't wait on already resolved signals
     filter (\idx -> not (isResolved idx env))
       $ map (weaken k)
       $ directlyAwaits schedule
-  , env' <- markResolved signals' env
-    = (if null signals' then id else Effect $ SignalAwait signals')
-      $ construct schedule k env' cont
+  , env' <- markResolved signals' env =
+    if null signals' then
+      construct schedule k env' resolvers cont
+    else
+      effectResolve resolvers
+        $ Effect (SignalAwait signals')
+        $ construct schedule k env' [] cont
+
+effectResolve :: [Idx env SignalResolver] -> UniformSchedule kernel env -> UniformSchedule kernel env
+effectResolve [] = id
+effectResolve resolvers = Effect (SignalResolve resolvers)
 
 data BuildEnv env where
   BEmpty :: BuildEnv ()
@@ -247,9 +259,9 @@ buildReturn = BuildSchedule{
     directlyAwaits = [],
     finallyResolves = [],
     trivial = True,
-    construct = \_ env -> \case
-      ContinuationEnd -> Return
-      ContinuationDo k2 build k3 cont -> constructFull build k2 env $ weaken' k3 cont
+    construct = \_ env resolvers -> \case
+      ContinuationEnd -> effectResolve resolvers Return
+      ContinuationDo k2 build k3 cont -> constructFull build k2 env resolvers $ weaken' k3 cont
   }
 
 buildLet
@@ -278,21 +290,24 @@ buildLet lhs binding body
       :: Bool
       -> env1 :> env1'
       -> BuildEnv env1'
+      -> [Idx env1' SignalResolver]
       -> Continuation kernel env1'
       -> UniformSchedule kernel env1'
-    constructLet shouldAwait k env cont
+    constructLet shouldAwait k env resolvers cont
       -- Eliminate this let-binding, if it reads from a Ref, and we already know the value of that Ref.
       | RefRead refVar <- binding
       , Just valueIdx <- findRefValue (weaken k $ varIdx refVar) env
       , LeftHandSideSingle _ <- lhs =
         -- Note that RefRead is a trivial binding, so shouldAwait is False
-        construct body (weakenReplace valueIdx k) env cont
+        construct body (weakenReplace valueIdx k) env resolvers cont
       | Exists lhs' <- rebuildLHS lhs
       , k' <- sinkWithLHS lhs lhs' k
       , binding' <- weaken k binding =
-        Alet lhs' binding'
+        effectResolve (if shouldAwait then resolvers else [])
+          $ Alet lhs' binding'
           $ constructFull (if shouldAwait then body else body{ directlyAwaits = [] }) k'
             (buildEnvExtend lhs' binding' env)
+            (if shouldAwait then [] else map (weaken (weakenWithLHS lhs')) resolvers)
           $ weaken' (weakenWithLHS lhs') cont
 
 buildEnvExtend :: BLeftHandSide t env1 env2 -> Binding env1 t -> BuildEnv env1 -> BuildEnv env2
@@ -326,13 +341,12 @@ buildEffect (SignalResolve resolvers) next =
       else
         finallyResolves next,
     trivial = False,
-    construct = \k env cont ->
+    construct = \k env otherResolvers cont ->
       let
         signals = mapMaybe (\r -> findSignal (weaken k r) env) resolvers
         env' = markResolved signals env
       in
-        Effect (weaken' k $ SignalResolve resolvers')
-          $ constructFull next k env' cont
+        constructFull next k env' (map (weaken k) resolvers' ++ otherResolvers) cont
   }
   where
     resolvers' = sort resolvers
@@ -341,28 +355,30 @@ buildEffect (SignalAwait signals) next =
     directlyAwaits = sort signals `mergeDedup` directlyAwaits next,
     finallyResolves = finallyResolves next,
     trivial = trivial next,
-    construct = construct next
+    construct = \k env resolvers cont -> effectResolve resolvers $ construct next k env [] cont
   }
 buildEffect effect next
   | canPostpone =
     BuildSchedule{
       directlyAwaits = directlyAwaits next,
       finallyResolves = finallyResolves next,
-      trivial = trivialEffect effect && trivial next,
-      construct = \k env cont ->
+      trivial = effectIsTrivial && trivial next,
+      construct = \k env resolvers cont ->
         Effect (weaken' k effect)
-          $ construct next k (updateEnv k env) cont
+          $ construct next k (updateEnv k env) resolvers cont
     }
   | otherwise =
     BuildSchedule{
       directlyAwaits = [],
       finallyResolves = finallyResolves next,
-      trivial = trivialEffect effect && trivial next,
-      construct = \k env cont ->
-        Effect (weaken' k effect)
-          $ constructFull next k (updateEnv k env) cont
+      trivial = effectIsTrivial && trivial next,
+      construct = \k env resolvers cont ->
+        effectResolve (if effectIsTrivial then [] else resolvers)
+          $ Effect (weaken' k effect)
+          $ constructFull next k (updateEnv k env) (if effectIsTrivial then resolvers else []) cont
     }
   where
+    effectIsTrivial = trivialEffect effect
     -- Write may be postponed: a write doesn't do synchronisation,
     -- that is done by a signal(resolver).
     canPostpone
@@ -385,8 +401,8 @@ buildSeq a b =
       else
         finallyResolves b,
     trivial = trivial a && trivial b && isSubseq,
-    construct = \k env cont ->
-      construct a k env $ ContinuationDo k b weakenId cont
+    construct = \k env resolvers cont ->
+      construct a k env resolvers $ ContinuationDo k b weakenId cont
   }
   where
     isSubseq = directlyAwaits b `isSubsequenceOf` directlyAwaits a
@@ -404,18 +420,19 @@ buildSpawn a b
       -- We thus ignore 'a' here.
       finallyResolves = finallyResolves b,
       trivial = False,
-      construct = \k env cont ->
+      construct = \k env resolvers cont ->
         let
           aResolves = sort $ mapMaybe ((`findSignal` env) . weaken k) $ finallyResolves a
           a' = a{directlyAwaits = directlyAwaits a `sortedMinus` directlyAwaits b}
           b' = b{directlyAwaits = directlyAwaits b `sortedMinus` directlyAwaits a}
         in
           if not $ null (aResolves `sortedIntersection` sort (map (weaken k) $ directlyAwaits b)) then
-            constructFull a' k env $ ContinuationDo k b' weakenId cont
+            constructFull a' k env resolvers $ ContinuationDo k b' weakenId cont
           else
-            Spawn
-              (constructFull a' k env cont)
-              (constructFull b' k env ContinuationEnd)
+            effectResolve resolvers
+              $ Spawn
+                (constructFull a' k env [] ContinuationEnd)
+                (constructFull b' k env [] cont)
     }
 
 buildAcond
@@ -429,11 +446,13 @@ buildAcond var true false next =
     directlyAwaits = directlyAwaits true `sortedIntersection` directlyAwaits false,
     finallyResolves = finallyResolves next,
     trivial = False,
-    construct = \k env cont -> Acond
-      (weaken k var)
-      (constructFull  true{directlyAwaits = directlyAwaits true `sortedMinus` directlyAwaits false} k env ContinuationEnd)
-      (constructFull false{directlyAwaits = directlyAwaits false `sortedMinus` directlyAwaits true} k env ContinuationEnd)
-      (constructFull next k env cont)
+    construct = \k env resolvers cont ->
+      effectResolve resolvers
+        $ Acond
+          (weaken k var)
+          (constructFull  true{directlyAwaits = directlyAwaits true `sortedMinus` directlyAwaits false} k env [] ContinuationEnd)
+          (constructFull false{directlyAwaits = directlyAwaits false `sortedMinus` directlyAwaits true} k env [] ContinuationEnd)
+          (constructFull next k env [] cont)
   }
 
 buildAwhile
@@ -447,11 +466,13 @@ buildAwhile io step initial next =
     directlyAwaits = [], -- TODO: Compute this based on the use of the initial state and free variables of step.
     finallyResolves = finallyResolves next,
     trivial = False,
-    construct = \k env cont -> Awhile
-      io
-      (funConstruct step k env)
-      (mapTupR (weaken k) initial)
-      (constructFull next k env cont)
+    construct = \k env resolvers cont ->
+      effectResolve resolvers
+        $ Awhile
+          io
+          (funConstruct step k env)
+          (mapTupR (weaken k) initial)
+          (constructFull next k env [] cont)
   }
 
 buildFunLam
@@ -467,7 +488,7 @@ buildFunLam lhs body =
 buildFunBody :: BuildSchedule kernel env -> BuildScheduleFun kernel env ()
 buildFunBody body =
   BuildScheduleFun{
-    funConstruct = \k env -> Sbody $ constructFull body k env ContinuationEnd
+    funConstruct = \k env -> Sbody $ constructFull body k env [] ContinuationEnd
   }
 
 -- Assumes that the input arrays are sorted,
@@ -503,3 +524,25 @@ sortedMinus as@(a:as') bs@(b:bs')
   | otherwise = sortedMinus as  bs'
 sortedMinus as [] = as
 sortedMinus [] _  = []
+
+-- Simplify schedule, by rebuilding it using the build functions
+simplify :: UniformScheduleFun kernel () t -> UniformScheduleFun kernel () t
+simplify f = funConstruct (rebuildFun f) weakenId BEmpty
+
+rebuildFun :: UniformScheduleFun kernel env t -> BuildScheduleFun kernel env t
+rebuildFun (Slam lhs f) = buildFunLam lhs $ rebuildFun f
+rebuildFun (Sbody body) = buildFunBody $ rebuild body
+
+rebuild :: UniformSchedule kernel env -> BuildSchedule kernel env
+rebuild = \case
+  Return -> buildReturn
+  Alet lhs bnd body ->
+    buildLet lhs bnd $ rebuild body
+  Effect eff next ->
+    buildEffect eff $ rebuild next
+  Acond var true false next ->
+    buildAcond var (rebuild true) (rebuild false) (rebuild next)
+  Awhile io f input next ->
+    buildAwhile io (rebuildFun f) input (rebuild next)
+  Spawn a b ->
+    buildSpawn (rebuild a) (rebuild b)
