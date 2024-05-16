@@ -53,6 +53,7 @@ import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Trafo.Schedule.Partial
 import Data.Array.Accelerate.Trafo.Schedule.Uniform.Future
 import Data.Array.Accelerate.Trafo.Schedule.Uniform.Simplify
+import Data.Array.Accelerate.Trafo.Schedule.Uniform.LiveVars
 import Data.Array.Accelerate.Trafo.SkipEnvironment (Skip'(..), lhsSkip', skipWeakenIdx')
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.AST.Partitioned (PartitionedAfun)
@@ -126,7 +127,7 @@ transformAfun
   :: IsKernel kernel
   => PartitionedAfun (KernelOperation kernel) () f
   -> UniformScheduleFun kernel () (Scheduled UniformScheduleFun f)
-transformAfun afun = funConstruct (go FEnvEnd afun) weakenId BEmpty
+transformAfun afun = stronglyLiveVariablesFun $ funConstruct (go FEnvEnd afun) weakenId BEmpty
   where
     go
       :: IsKernel kernel
