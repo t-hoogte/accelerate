@@ -162,7 +162,7 @@ makeILP obj (Info
 
 
 
-    myConstraints = acyclic <> infusible <> manifestC <> numberOfClustersConstraint <> readConstraints <> finalize (S.toList nodes) 
+    myConstraints = acyclic <> infusible <> manifestC <> numberOfClustersConstraint <> readConstraints <> inputConstraints <> finalize (S.toList nodes) 
 
     -- x_ij <= pi_j - pi_i <= n*x_ij for all edges
     acyclic = foldMap
@@ -180,6 +180,11 @@ makeILP obj (Info
     manifestC = foldMap
                 (\(i :-> j) -> notB (fused i j) `impliesB` manifest i)
                 edges
+
+
+    inputConstraints = flip foldMap fuseEdges $ \(lIn :-> l) -> 
+                    timesN (fused lIn l) .>=. c (InDir  l) .-. c (OutDir  lIn)
+        <> (-1) .*. timesN (fused lIn l) .<=. c (InDir  l) .-. c (OutDir  lIn)
 
     myBounds :: Bounds op
     --            0 <= pi_i <= n
