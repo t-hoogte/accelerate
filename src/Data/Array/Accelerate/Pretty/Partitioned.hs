@@ -50,7 +50,7 @@ instance PrettyOp op => PrettyOp (Cluster op) where
   prettyOp (Op (SLV (SOp (SOAOp op _) _) _) _) = prettyOp op
   prettyOpWithArgs env (Fused f l r) args = "Fused" -- (" <> prettyOpWithArgs env l (left f args) <> ", " <> prettyOpWithArgs env r (right f args)
   prettyOpWithArgs env (Op (SLV (SOp (SOAOp op soa) (SA _ unsort)) subargs) _) args = 
-    prettyOpWithArgs env op (soaShrink combine soa . unsort . slv' varout subargs $ args)
+    prettyOp op -- WithArgs env op (soaShrink combine soa . unsort . slv' varout subargs $ args)
 
   -- prettyOpWithArgs :: forall env t. Val env -> Cluster op t -> Args env t -> Adoc
   -- prettyOpWithArgs env (Op (SLVOp (SOp (SOAOp op soa) (SA _ unsort)) sa) _) args = prettyOpWithArgs env op (soaShrink combine soa . unsort . slv' varToOut sa $ args)
