@@ -111,10 +111,6 @@ data Parallelism
   = Parallel
   -- This let-binding is sequential. The binding is executed before the body.
   | Sequential
-  -- This let-binding should be placed as a sequential let-binding in the following parallel let-binding.
-  -- The body of this let-binding should be a (possibly empty) chain of SequentialInNextParallel let bindings,
-  -- followed by a Parallel let-binding.
-  | SequentialInNextParallel
   deriving Eq
 
 data PrePartialScheduleFun (schedule :: (Type -> Type) -> Type -> Type -> Type) kernel env t where
@@ -331,7 +327,6 @@ data Built p (kernel :: Type -> Type) env t =
     -- the let should be executed sequentially.
     finallyReleases :: IdxSet env,
     trivial :: Bool,
-    firstSpawnDirectlyAwaits :: IdxSet env,
     term :: !(p kernel env t)
   }
 
@@ -525,7 +520,6 @@ buildExec kernel args available =
     writes = output,
     finallyReleases = output,
     trivial = False,
-    firstSpawnDirectlyAwaits = IdxSet.empty,
     term = PartialSchedule $ PExec kernel args
   }
   where
@@ -545,10 +539,6 @@ buildLet parallelismHint lhs us bnd' body' available =
     writes = writes bnd `IdxSet.union` IdxSet.drop' lhs (writes body),
     finallyReleases = thisReleases,
     trivial = sequential && trivial bnd && trivial body,
-    firstSpawnDirectlyAwaits = case parallelism of
-      Sequential -> IdxSet.empty
-      SequentialInNextParallel -> directlyAwaits bnd `IdxSet.union` bodyFirstSpawnDirectlyAwaitsDropped
-      Parallel -> directlyAwaits bnd,
     term =
       PartialSchedule $ PLet
         parallelism
@@ -563,7 +553,6 @@ buildLet parallelismHint lhs us bnd' body' available =
 
     bodyAwaitsDropped = IdxSet.drop' lhs (directlyAwaits body)
     bodyReleasesDropped = IdxSet.drop' lhs (finallyReleases body)
-    bodyFirstSpawnDirectlyAwaitsDropped = IdxSet.drop' lhs (firstSpawnDirectlyAwaits body)
 
     thisAwaits
       | sequential && trivial bnd = IdxSet.union (directlyAwaits bnd) bodyAwaitsDropped
@@ -603,13 +592,7 @@ buildLet parallelismHint lhs us bnd' body' available =
       -- or the binding is trivial and the body directly awaits on the result of this expression.
       || trivial bnd && thisLhsIndices `IdxSet.overlaps` directlyAwaits body
 
-    parallelism
-      | sequential = Sequential
-      -- If this is a trivial binding, and the next spawned term directly awaits on the result of this expression,
-      -- then inline this binding into that spawned term.
-      | trivial bnd && lhsIndices lhs `IdxSet.overlaps` firstSpawnDirectlyAwaits body
-        = SequentialInNextParallel
-      | otherwise = Parallel
+    parallelism = if sequential then Sequential else Parallel
 
 buildAlloc :: ShapeR sh -> ScalarType e -> ExpVars env sh -> Build PartialSchedule kernel env (Buffer e)
 buildAlloc shr tp vars available =
@@ -619,7 +602,6 @@ buildAlloc shr tp vars available =
     writes = IdxSet.empty,
     finallyReleases = IdxSet.empty,
     trivial = True,
-    firstSpawnDirectlyAwaits = IdxSet.empty,
     term = PartialSchedule $ PAlloc shr tp vars
   }
 
@@ -631,7 +613,6 @@ buildUse tp sz buf _ =
     writes = IdxSet.empty,
     finallyReleases = IdxSet.empty,
     trivial = True,
-    firstSpawnDirectlyAwaits = IdxSet.empty,
     term = PartialSchedule $ PUse tp sz buf
   }
 
@@ -643,7 +624,6 @@ buildUnit var available =
     writes = IdxSet.empty,
     finallyReleases = IdxSet.empty,
     trivial = True,
-    firstSpawnDirectlyAwaits = IdxSet.empty,
     term = PartialSchedule $ PUnit var
   }
 
@@ -655,7 +635,6 @@ buildCompute expr available =
     writes = IdxSet.empty,
     finallyReleases = IdxSet.empty,
     trivial = expIsTrivial (const True) expr,
-    firstSpawnDirectlyAwaits = IdxSet.empty,
     term = PartialSchedule $ PCompute expr
   }
   where
@@ -669,7 +648,6 @@ buildReturnEnd tup _ =
     writes = IdxSet.empty,
     finallyReleases = IdxSet.empty,
     trivial = True,
-    firstSpawnDirectlyAwaits = IdxSet.empty,
     term = PartialSchedule $ PReturnEnd tup
   }
 
@@ -690,7 +668,6 @@ buildReturnValues updateTup next' available =
     -- If the next instruction is trivial, and the return nor the next do not await on any values,
     -- we can also treat it as trivial.
     trivial = (nextIsEmpty && hasOne) || (allAvailable && trivial next && IdxSet.null (directlyAwaits next)),
-    firstSpawnDirectlyAwaits = firstSpawnDirectlyAwaits next,
     term = PartialSchedule $ PReturnValues updateTup $ term next
   }
   where
@@ -725,7 +702,6 @@ buildAcond var true' false' available =
     -- true and false branch may have different sets of free variables,
     -- hence we cannot treat an it as a trivial term.
     trivial = False,
-    firstSpawnDirectlyAwaits = IdxSet.empty,
     term = PartialSchedule $ PAcond var (term true) (term false)
   }
   where
@@ -752,7 +728,6 @@ buildAwhile us (BuildUnary lhs fn') initial available =
     writes = IdxSet.drop' lhs (writes fn),
     finallyReleases = IdxSet.empty,
     trivial = False,
-    firstSpawnDirectlyAwaits = IdxSet.empty,
     term = PartialSchedule $ PAwhile
       us
       (Plam lhs $ Pbody $ term fn)
@@ -771,7 +746,6 @@ buildContinue next' available =
     writes = writes next,
     finallyReleases = finallyReleases next,
     trivial = False,
-    firstSpawnDirectlyAwaits = IdxSet.empty,
     term = PartialSchedule $ PContinue $ term next
   }
   where
@@ -788,7 +762,6 @@ buildBreak us vars _ =
     writes = IdxSet.empty,
     finallyReleases = IdxSet.empty,
     trivial = False,
-    firstSpawnDirectlyAwaits = IdxSet.empty,
     term = PartialSchedule $ PBreak us vars
   }
 
