@@ -38,38 +38,21 @@ module Data.Array.Accelerate.Trafo.Schedule.Uniform.Simplify (
   -- Optimize
   simplify
 ) where
-import Debug.Trace
+
 import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.AST.Idx
-import Data.Array.Accelerate.AST.IdxSet (IdxSet)
-import qualified Data.Array.Accelerate.AST.IdxSet           as IdxSet
-import qualified Data.Array.Accelerate.AST.CountEnv         as CountEnv
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.AST.Schedule.Uniform
 import Data.Array.Accelerate.Analysis.Match
 import Data.Array.Accelerate.Error
-import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Type
-import Data.Array.Accelerate.Trafo.Exp.Simplify             ( simplifyExp )
 import Data.Array.Accelerate.Trafo.Exp.Substitution
-import Data.Array.Accelerate.Trafo.Operation.Substitution   ( weakenArrayInstr )
 import Data.Array.Accelerate.Trafo.Substitution             hiding ( weakenArrayInstr )
-import Data.Array.Accelerate.Trafo.WeakenedEnvironment
 import Data.Array.Accelerate.Trafo.Schedule.Uniform.Substitution ()
-import Data.Array.Accelerate.Type
 import Data.Maybe
 import Data.List
-    ( foldl',
-      find,
-      isSubsequenceOf,
-      (\\),
-      nub,
-      partition,
-      sort,
-      mapAccumR )
-import qualified Data.List as List
-import Control.Monad
-import Data.Bifunctor (first)
+    ( isSubsequenceOf,
+      sort )
 
 -- TODO: Move fork combining and/or InfoEnv into this utility?
 data BuildSchedule kernel env =
@@ -88,7 +71,7 @@ data BuildSchedule kernel env =
       :: forall env'.
          env :> env'
       -> BuildEnv env'
-      -> [Idx env' SignalResolver] -- The SignalResolvers that should be resolved before doing serious work
+      -> Postponed kernel env'
       -> Continuation kernel env'
       -> UniformSchedule kernel env'
   }
@@ -111,16 +94,39 @@ newtype BuildScheduleFun kernel env t =
       -> UniformScheduleFun kernel env' t
   }
 
+data BuildSpawn kernel env =
+  BuildSpawn{
+    -- The signals that this term resolves at the end.
+    -- Corresponds with finallyResolves, but the SignalResolvers are converted to Signals.
+    spawnFinallyResolves :: [Idx env Signal],
+    spawnTerm :: (BuildSchedule kernel env)
+  }
+
+instance Sink' (BuildSpawn kernel) where
+  weaken' k (BuildSpawn signals schedule) = BuildSpawn (map (weaken k) signals) (weaken' k schedule)
+
+data Postponed kernel env = Postponed
+  [BuildSpawn kernel env] -- The terms that should be spawned before doing serious work, in reverse order
+  [Idx env SignalResolver] -- The SignalResolvers that should be resolved before doing serious work
+
+nothingPostponed :: Postponed kernel env
+nothingPostponed = Postponed [] []
+
+instance Sink' (Postponed kernel) where
+  weaken' k (Postponed spawns resolvers) = Postponed
+    (map (weaken' k) spawns)
+    (map (weaken k) resolvers)
+
 -- Constructs a schedule, and waits on the directlyAwaits signals.
 constructFull
   :: BuildSchedule kernel env
   -> env :> env'
   -> BuildEnv env'
-  -> [Idx env' SignalResolver]
+  -> Postponed kernel env'
   -> Continuation kernel env'
   -> UniformSchedule kernel env'
-constructFull schedule k env resolvers cont
-  | null $ directlyAwaits schedule = construct schedule k env resolvers cont
+constructFull schedule k env postponed cont
+  | null $ directlyAwaits schedule = construct schedule k env postponed cont
   | signals' <-
     -- Don't wait on already resolved signals
     filter (\idx -> not (isResolved idx env))
@@ -128,15 +134,78 @@ constructFull schedule k env resolvers cont
       $ directlyAwaits schedule
   , env' <- markResolved signals' env =
     if null signals' then
-      construct schedule k env' resolvers cont
+      construct schedule k env' postponed cont
     else
-      effectResolve resolvers
-        $ Effect (SignalAwait signals')
-        $ construct schedule k env' [] cont
+      case findDependingSpawn postponed signals' of
+        Nothing ->
+          placePostponed postponed env
+            $ Effect (SignalAwait signals')
+            $ construct schedule k env' nothingPostponed cont
+        Just (BuildSpawn _ prepend, postponed') ->
+          constructFull prepend weakenId env postponed' $ ContinuationDo k schedule weakenId cont
 
-effectResolve :: [Idx env SignalResolver] -> UniformSchedule kernel env -> UniformSchedule kernel env
-effectResolve [] = id
-effectResolve resolvers = Effect (SignalResolve resolvers)
+placePostponed :: Postponed kernel env -> BuildEnv env -> UniformSchedule kernel env -> UniformSchedule kernel env
+placePostponed (Postponed spawns resolvers) env next = 
+  foldl
+    (\other (BuildSpawn _ term) -> spawnAndRotate (constructFull term weakenId env nothingPostponed ContinuationEnd) other)
+    next'
+    spawns
+  where
+    next'
+      | [] <- resolvers = next
+      | otherwise = Effect (SignalResolve resolvers) next
+
+spawnAndRotate :: UniformSchedule kernel env -> UniformSchedule kernel env -> UniformSchedule kernel env
+spawnAndRotate (Spawn a b) c = Spawn a $ spawnAndRotate b c
+spawnAndRotate a Return = a
+spawnAndRotate a (Effect eff@(SignalResolve _) Return) = Effect eff $ a
+spawnAndRotate a b = Spawn a b
+
+resolveSignalsInPostponed :: [Idx env Signal] -> [Idx env SignalResolver] -> Postponed kernel env -> Postponed kernel env
+resolveSignalsInPostponed signals newResolvers (Postponed spawns resolvers) = Postponed
+  (map (\(BuildSpawn r s) -> BuildSpawn r s{ directlyAwaits = filter (`notElem` signals) $ directlyAwaits s }) spawns)
+  (newResolvers ++ resolvers)
+
+spawnPostponed :: forall kernel env. BuildSpawn kernel env -> Postponed kernel env -> Postponed kernel env
+spawnPostponed spawn (Postponed spawns resolvers)
+  | Just spawns' <- tryCombine spawns = Postponed spawns' resolvers
+  | otherwise = Postponed (spawn : spawns) resolvers
+  where
+    -- Tries to combine 'spawn' with a BuildSpawn in spawns.
+    tryCombine :: [BuildSpawn kernel env] -> Maybe [BuildSpawn kernel env]
+    tryCombine [] = Nothing -- It wasn't possible to combine it.
+    tryCombine (x:xs)
+      -- If 'spawn' waits on a result of 'x'
+      | not $ null $ spawnFinallyResolves x `sortedIntersection` directlyAwaits (spawnTerm spawn)
+      = Just $ combine x spawn : xs
+
+      -- If 'x' waits on a result of 'spawn'
+      | not $ null $ spawnFinallyResolves spawn `sortedIntersection` directlyAwaits (spawnTerm x)
+      = Just $ combine spawn x : xs
+
+      | otherwise
+      = (x:) <$> tryCombine xs
+
+    combine :: BuildSpawn kernel env -> BuildSpawn kernel env -> BuildSpawn kernel env
+    combine first second = BuildSpawn
+      (spawnFinallyResolves second)
+      (buildSeq (spawnTerm first) (spawnTerm second))
+
+-- Finds a spawned term, on which the next term (given by the directly-awaits
+-- list) directly depends on.
+findDependingSpawn :: forall kernel env. Postponed kernel env -> [Idx env Signal] -> Maybe (BuildSpawn kernel env, Postponed kernel env)
+findDependingSpawn (Postponed spawns resolvers) nextDirectlyAwaits = case go spawns of
+  Just (y, ys) -> Just (y, Postponed ys resolvers)
+  Nothing -> Nothing
+  where
+    go :: [BuildSpawn kernel env] -> Maybe (BuildSpawn kernel env, [BuildSpawn kernel env])
+    go (x:xs)
+      | not $ null $ spawnFinallyResolves x `sortedIntersection` nextDirectlyAwaits
+        = Just (x, xs)
+      | otherwise = case go xs of
+        Nothing -> Nothing
+        Just (y, ys) -> Just (y, y:ys)
+    go [] = Nothing
 
 data BuildEnv env where
   BEmpty :: BuildEnv ()
@@ -259,9 +328,9 @@ buildReturn = BuildSchedule{
     directlyAwaits = [],
     finallyResolves = [],
     trivial = True,
-    construct = \_ env resolvers -> \case
-      ContinuationEnd -> effectResolve resolvers Return
-      ContinuationDo k2 build k3 cont -> constructFull build k2 env resolvers $ weaken' k3 cont
+    construct = \_ env postponed -> \case
+      ContinuationEnd -> placePostponed postponed env Return
+      ContinuationDo k2 build k3 cont -> constructFull build k2 env postponed $ weaken' k3 cont
   }
 
 buildLet
@@ -290,24 +359,24 @@ buildLet lhs binding body
       :: Bool
       -> env1 :> env1'
       -> BuildEnv env1'
-      -> [Idx env1' SignalResolver]
+      -> Postponed kernel env1'
       -> Continuation kernel env1'
       -> UniformSchedule kernel env1'
-    constructLet shouldAwait k env resolvers cont
+    constructLet shouldAwait k env postponed cont
       -- Eliminate this let-binding, if it reads from a Ref, and we already know the value of that Ref.
       | RefRead refVar <- binding
       , Just valueIdx <- findRefValue (weaken k $ varIdx refVar) env
       , LeftHandSideSingle _ <- lhs =
         -- Note that RefRead is a trivial binding, so shouldAwait is False
-        construct body (weakenReplace valueIdx k) env resolvers cont
+        construct body (weakenReplace valueIdx k) env postponed cont
       | Exists lhs' <- rebuildLHS lhs
       , k' <- sinkWithLHS lhs lhs' k
       , binding' <- weaken k binding =
-        effectResolve (if shouldAwait then resolvers else [])
+        placePostponed (if shouldAwait then postponed else nothingPostponed) env
           $ Alet lhs' binding'
           $ constructFull (if shouldAwait then body else body{ directlyAwaits = [] }) k'
             (buildEnvExtend lhs' binding' env)
-            (if shouldAwait then [] else map (weaken (weakenWithLHS lhs')) resolvers)
+            (if shouldAwait then nothingPostponed else weaken' (weakenWithLHS lhs') postponed)
           $ weaken' (weakenWithLHS lhs') cont
 
 buildEnvExtend :: BLeftHandSide t env1 env2 -> Binding env1 t -> BuildEnv env1 -> BuildEnv env2
@@ -341,12 +410,13 @@ buildEffect (SignalResolve resolvers) next =
       else
         finallyResolves next,
     trivial = False,
-    construct = \k env otherResolvers cont ->
+    construct = \k env postponed cont ->
       let
-        signals = mapMaybe (\r -> findSignal (weaken k r) env) resolvers
+        resolvers'' = map (weaken k) resolvers'
+        signals = mapMaybe (\r -> findSignal r env) resolvers''
         env' = markResolved signals env
       in
-        constructFull next k env' (map (weaken k) resolvers' ++ otherResolvers) cont
+        constructFull next k env' (resolveSignalsInPostponed signals resolvers'' postponed) cont
   }
   where
     resolvers' = sort resolvers
@@ -355,7 +425,7 @@ buildEffect (SignalAwait signals) next =
     directlyAwaits = sort signals `mergeDedup` directlyAwaits next,
     finallyResolves = finallyResolves next,
     trivial = trivial next,
-    construct = \k env resolvers cont -> effectResolve resolvers $ construct next k env [] cont
+    construct = \k env postponed cont -> construct next k env postponed cont
   }
 buildEffect effect next
   | canPostpone =
@@ -363,19 +433,19 @@ buildEffect effect next
       directlyAwaits = directlyAwaits next,
       finallyResolves = finallyResolves next,
       trivial = effectIsTrivial && trivial next,
-      construct = \k env resolvers cont ->
+      construct = \k env postponed cont ->
         Effect (weaken' k effect)
-          $ construct next k (updateEnv k env) resolvers cont
+          $ construct next k (updateEnv k env) postponed cont
     }
   | otherwise =
     BuildSchedule{
       directlyAwaits = [],
       finallyResolves = finallyResolves next,
       trivial = effectIsTrivial && trivial next,
-      construct = \k env resolvers cont ->
-        effectResolve (if effectIsTrivial then [] else resolvers)
+      construct = \k env postponed cont ->
+        placePostponed (if effectIsTrivial then nothingPostponed else postponed) env
           $ Effect (weaken' k effect)
-          $ constructFull next k (updateEnv k env) (if effectIsTrivial then resolvers else []) cont
+          $ constructFull next k (updateEnv k env) (if effectIsTrivial then postponed else nothingPostponed) cont
     }
   where
     effectIsTrivial = trivialEffect effect
@@ -401,8 +471,8 @@ buildSeq a b =
       else
         finallyResolves b,
     trivial = trivial a && trivial b && isSubseq,
-    construct = \k env resolvers cont ->
-      construct a k env resolvers $ ContinuationDo k b weakenId cont
+    construct = \k env postponed cont ->
+      construct a k env postponed $ ContinuationDo k b weakenId cont
   }
   where
     isSubseq = directlyAwaits b `isSubsequenceOf` directlyAwaits a
@@ -420,19 +490,16 @@ buildSpawn a b
       -- We thus ignore 'a' here.
       finallyResolves = finallyResolves b,
       trivial = False,
-      construct = \k env resolvers cont ->
+      construct = \k env postponed cont ->
         let
           aResolves = sort $ mapMaybe ((`findSignal` env) . weaken k) $ finallyResolves a
           a' = a{directlyAwaits = directlyAwaits a `sortedMinus` directlyAwaits b}
           b' = b{directlyAwaits = directlyAwaits b `sortedMinus` directlyAwaits a}
         in
           if not $ null (aResolves `sortedIntersection` sort (map (weaken k) $ directlyAwaits b)) then
-            constructFull a' k env resolvers $ ContinuationDo k b' weakenId cont
+            constructFull a' k env postponed $ ContinuationDo k b' weakenId cont
           else
-            effectResolve resolvers
-              $ Spawn
-                (constructFull a' k env [] ContinuationEnd)
-                (constructFull b' k env [] cont)
+            constructFull b' k env (spawnPostponed (BuildSpawn aResolves $ weaken' k a') postponed) cont
     }
 
 buildAcond
@@ -446,13 +513,13 @@ buildAcond var true false next =
     directlyAwaits = directlyAwaits true `sortedIntersection` directlyAwaits false,
     finallyResolves = finallyResolves next,
     trivial = False,
-    construct = \k env resolvers cont ->
-      effectResolve resolvers
+    construct = \k env postponed cont ->
+      placePostponed postponed env
         $ Acond
           (weaken k var)
-          (constructFull  true{directlyAwaits = directlyAwaits true `sortedMinus` directlyAwaits false} k env [] ContinuationEnd)
-          (constructFull false{directlyAwaits = directlyAwaits false `sortedMinus` directlyAwaits true} k env [] ContinuationEnd)
-          (constructFull next k env [] cont)
+          (constructFull  true{directlyAwaits = directlyAwaits true `sortedMinus` directlyAwaits false} k env nothingPostponed ContinuationEnd)
+          (constructFull false{directlyAwaits = directlyAwaits false `sortedMinus` directlyAwaits true} k env nothingPostponed ContinuationEnd)
+          (constructFull next k env nothingPostponed cont)
   }
 
 buildAwhile
@@ -466,13 +533,13 @@ buildAwhile io step initial next =
     directlyAwaits = [], -- TODO: Compute this based on the use of the initial state and free variables of step.
     finallyResolves = finallyResolves next,
     trivial = False,
-    construct = \k env resolvers cont ->
-      effectResolve resolvers
+    construct = \k env postponed cont ->
+      placePostponed postponed env
         $ Awhile
           io
           (funConstruct step k env)
           (mapTupR (weaken k) initial)
-          (constructFull next k env [] cont)
+          (constructFull next k env nothingPostponed cont)
   }
 
 buildFunLam
@@ -488,7 +555,7 @@ buildFunLam lhs body =
 buildFunBody :: BuildSchedule kernel env -> BuildScheduleFun kernel env ()
 buildFunBody body =
   BuildScheduleFun{
-    funConstruct = \k env -> Sbody $ constructFull body k env [] ContinuationEnd
+    funConstruct = \k env -> Sbody $ constructFull body k env nothingPostponed ContinuationEnd
   }
 
 -- Assumes that the input arrays are sorted,
