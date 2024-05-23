@@ -204,7 +204,7 @@ findDependingSpawn (Postponed spawns resolvers) nextDirectlyAwaits = case go spa
         = Just (x, xs)
       | otherwise = case go xs of
         Nothing -> Nothing
-        Just (y, ys) -> Just (y, y:ys)
+        Just (y, ys) -> Just (y, x:ys)
     go [] = Nothing
 
 data BuildEnv env where

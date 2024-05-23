@@ -119,11 +119,11 @@ testWithObjective obj f
       $ Sharing.convertAfunWith defaultOptions f
 
     partitioned = 
-      -- Operation.simplifyFun $ 
+      Operation.simplifyFun $ 
       NewNewFusion.convertAfun obj operation
 
     slvpartitioned = 
-      -- Operation.simplifyFun $ 
+      Operation.simplifyFun $ 
       Operation.stronglyLiveVariablesFun partitioned
 
     schedule = convertScheduleFun @sched @kernel slvpartitioned
@@ -153,8 +153,8 @@ convertAccWith
   -> sched kernel () (ScheduleOutput sched (DesugaredArrays (ArraysR arrs)) -> ())
 convertAccWith config
   = phase' "codegen"     rnfSchedule convertSchedule
-  . phase  "partition-live-vars"    ({-Operation.simplify . -} Operation.stronglyLiveVariables)
-  . phase  "array-fusion"           ({-Operation.simplify . -} NewNewFusion.convertAccWith config defaultObjective)
+  . phase  "partition-live-vars"    (Operation.simplify . Operation.stronglyLiveVariables)
+  . phase  "array-fusion"           (Operation.simplify . NewNewFusion.convertAccWith config defaultObjective)
   . phase  "operation-live-vars"    (Operation.simplify . Operation.stronglyLiveVariables)
   . phase  "desugar"                (Operation.simplify . desugar)
   . phase  "array-split-lets"       LetSplit.convertAcc
@@ -169,8 +169,8 @@ convertAccBench
   -> sched kernel () (ScheduleOutput sched (DesugaredArrays (ArraysR arrs)) -> ())
 convertAccBench b
   = phase' "codegen"     rnfSchedule convertSchedule
-  . phase  "partition-live-vars"    ({-Operation.simplify . -} Operation.stronglyLiveVariables)
-  . phase  "array-fusion"           ({-Operation.simplify . -} NewNewFusion.convertAccBench b)
+  . phase  "partition-live-vars"    (Operation.simplify . Operation.stronglyLiveVariables)
+  . phase  "array-fusion"           (Operation.simplify . NewNewFusion.convertAccBench b)
   . phase  "operation-live-vars"    (Operation.simplify . Operation.stronglyLiveVariables)
   . phase  "desugar"                (Operation.simplify . desugar)
   . phase  "array-split-lets"       LetSplit.convertAcc
@@ -185,8 +185,8 @@ convertAfunBench
   -> sched kernel () (Scheduled sched (DesugaredAfun (ArraysFunctionR f)))
 convertAfunBench b
   = phase' "codegen"     rnfSchedule convertScheduleFun
-  . phase  "partition-live-vars"    ({- Operation.simplifyFun . -} Operation.stronglyLiveVariablesFun)
-  . phase  "array-fusion"           ({- Operation.simplifyFun . -} NewNewFusion.convertAccBenchF b)
+  . phase  "partition-live-vars"    (Operation.simplifyFun . Operation.stronglyLiveVariablesFun)
+  . phase  "array-fusion"           (Operation.simplifyFun . NewNewFusion.convertAccBenchF b)
   . phase  "operation-live-vars"    (Operation.simplifyFun . Operation.stronglyLiveVariablesFun)
   . phase  "desugar"                (Operation.simplifyFun . desugarAfun)
   . phase  "array-split-lets"       LetSplit.convertAfun
@@ -202,8 +202,8 @@ convertAccWithObj
   -> sched kernel () (ScheduleOutput sched (DesugaredArrays (ArraysR arrs)) -> ())
 convertAccWithObj obj
   = phase' "codegen"     rnfSchedule convertSchedule
-  . phase  "partition-live-vars"    ({-Operation.simplify . -} Operation.stronglyLiveVariables)
-  . phase  "array-fusion"           ({-Operation.simplify . -} NewNewFusion.convertAccWith defaultOptions obj)
+  . phase  "partition-live-vars"    (Operation.simplify . Operation.stronglyLiveVariables)
+  . phase  "array-fusion"           (Operation.simplify . NewNewFusion.convertAccWith defaultOptions obj)
   . phase  "operation-live-vars"    (Operation.simplify . Operation.stronglyLiveVariables)
   . phase  "desugar"                (Operation.simplify . desugar)
   . phase  "array-split-lets"       LetSplit.convertAcc
@@ -230,8 +230,8 @@ convertAfunWith
 convertAfunWith config
   = (\s -> Debug.Trace.trace (Pretty.renderForTerminal (Pretty.prettySchedule s)) s)
   . phase' "codegen"     rnfSchedule convertScheduleFun
-  . phase  "partition-live-vars"    ({- Operation.simplifyFun . -} Operation.stronglyLiveVariablesFun)
-  . phase  "array-fusion"           ({- Operation.simplifyFun . -} NewNewFusion.convertAfunWith config defaultObjective)
+  . phase  "partition-live-vars"    (Operation.simplifyFun . Operation.stronglyLiveVariablesFun)
+  . phase  "array-fusion"           (Operation.simplifyFun . NewNewFusion.convertAfunWith config defaultObjective)
   . phase  "operation-live-vars"    (Operation.simplifyFun . Operation.stronglyLiveVariablesFun)
   . phase  "desugar"                (Operation.simplifyFun . desugarAfun)
   . phase  "array-split-lets"       LetSplit.convertAfun
@@ -246,8 +246,8 @@ convertAfunWithObj
   -> sched kernel () (Scheduled sched (DesugaredAfun (ArraysFunctionR f)))
 convertAfunWithObj obj
   = phase' "codegen"     rnfSchedule convertScheduleFun
-  . phase  "partition-live-vars"    ({- Operation.simplifyFun . -} Operation.stronglyLiveVariablesFun)
-  . phase  "array-fusion"           ({- Operation.simplifyFun . -} NewNewFusion.convertAfunWith defaultOptions obj)
+  . phase  "partition-live-vars"    (Operation.simplifyFun . Operation.stronglyLiveVariablesFun)
+  . phase  "array-fusion"           (Operation.simplifyFun . NewNewFusion.convertAfunWith defaultOptions obj)
   . phase  "operation-live-vars"    (Operation.simplifyFun . Operation.stronglyLiveVariablesFun)
   . phase  "desugar"                (Operation.simplifyFun . desugarAfun)
   . phase  "array-split-lets"       LetSplit.convertAfun

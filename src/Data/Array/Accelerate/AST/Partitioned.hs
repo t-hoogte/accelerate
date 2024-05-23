@@ -44,6 +44,7 @@ import Data.Array.Accelerate.AST.Operation hiding (OperationAcc, OperationAfun)
 import Prelude hiding ( take )
 import Data.Bifunctor
 import Data.Array.Accelerate.Trafo.Desugar (ArrayDescriptor(..))
+import Data.Array.Accelerate.Trafo.Operation.Simplify (SimplifyOperation(..))
 import Data.Array.Accelerate.Representation.Array (Array, Buffers, ArrayR (..))
 import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.Representation.Shape (ShapeR (..), shapeType, typeShape)
@@ -535,6 +536,9 @@ instance ShrinkArg (BackendClusterArg op) => SLVOperation (Clustered op) where
       ShrunkOperation' cluster' args ->
         ShrunkOperation (Clustered cluster' $ shrinkArgs ff' b) args
   
+instance SimplifyOperation (Clustered op)
+  -- Default implementation, where detectCopy always returns []
+
 -- instance SLVOperation (Cluster op) where
 --   slvOperation cluster = -- Nothing
 --     Just $ ShrinkOperation $ \sub args' args ->
