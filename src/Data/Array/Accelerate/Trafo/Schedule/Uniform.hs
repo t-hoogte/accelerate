@@ -53,6 +53,7 @@ import Data.Array.Accelerate.Trafo.Var
 import Data.Array.Accelerate.Trafo.Schedule.Partial
 import Data.Array.Accelerate.Trafo.Schedule.Uniform.Future
 import Data.Array.Accelerate.Trafo.Schedule.Uniform.Simplify
+import Data.Array.Accelerate.Trafo.Schedule.Uniform.LiveVars
 import Data.Array.Accelerate.Trafo.SkipEnvironment (Skip'(..), lhsSkip', skipWeakenIdx')
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.AST.Partitioned (PartitionedAfun)
@@ -64,13 +65,6 @@ import Control.DeepSeq
 import Control.Concurrent
 import Data.IORef
 import System.IO.Unsafe (unsafePerformIO)
-
-import Data.Array.Accelerate.Pretty.Operation
-import Data.Functor.Identity
-import Data.Array.Accelerate.AST.Partitioned (Clustered)
-
-
-import System.IO
 
 instance IsSchedule UniformScheduleFun where
   type ScheduleInput  UniformScheduleFun a = Input a
@@ -132,20 +126,22 @@ transformAfun
   :: IsKernel kernel
   => PartitionedAfun (KernelOperation kernel) () f
   -> UniformScheduleFun kernel () (Scheduled UniformScheduleFun f)
-transformAfun afun = go FEnvEnd afun
+transformAfun afun = simplify $ stronglyLiveVariablesFun $ simplify $ stronglyLiveVariablesFun $ simplify $ stronglyLiveVariablesFun $ funConstruct (go FEnvEnd afun) weakenId BEmpty
   where
-    go :: IsKernel kernel => FutureEnv fenv genv -> PartitionedAfun (KernelOperation kernel) genv f -> UniformScheduleFun kernel fenv (Scheduled UniformScheduleFun f)
+    go
+      :: IsKernel kernel
+      => FutureEnv fenv genv
+      -> PartitionedAfun (KernelOperation kernel) genv f
+      -> BuildScheduleFun kernel fenv (Scheduled UniformScheduleFun f)
     go env (C.Alam lhs f)
       | DeclareInput _ lhs' env' <- declareInput lhs env
-      = Slam lhs' $ go env' f
+      = buildFunLam lhs' $ go env' f
     go env (C.Abody body)
       | Refl <- reprIsBody @UniformScheduleFun $ groundsR body
       , schedule <- convertAccPartial body
       , DeclareOutput skip lhs dest <- declareOutput $ groundsR body
-      = funConstruct
-          (buildFunLam lhs $ buildFunBody $
-            transformSub (fenvFSkipMany skip env) Parallel (CtxNormal $ dest SkipNone) schedule)
-          weakenId
+      = buildFunLam lhs $ buildFunBody $
+          transformSub (fenvFSkipMany skip env) Parallel (CtxNormal $ dest SkipNone) schedule
 
 -- Transforms a SyncSchedule to a UniformSchedule.
 -- Assumes that the FutureEnv corresponds with the syncEnv of the schedule.
@@ -160,13 +156,14 @@ transform env parallelism ctx schedule = case transform' schedule of
   TransformSchedule f -> f env parallelism ctx
   TransformBinding f
     | TransformToBinding tp skip instr resolvers binding <- f env
-    , DeclareVars lhs k vars <- declareVars tp -> case ctx of
-      CtxLoop{} -> internalError "Loop impossible"
-      CtxNormal dest ->
-        instr
-          $ buildLet (mapLeftHandSide BaseRground lhs) binding
-          $ buildEffect (SignalResolve $ weaken (weakenWithLHS lhs) <$> resolvers)
-          $ writeOutput (mapTupR (weaken k . weaken (skipWeakenIdx skip)) dest) (vars weakenId)
+    , DeclareVars lhs k vars <- declareVars tp -> 
+      case ctx of
+        CtxLoop{} -> internalError "Loop impossible"
+        CtxNormal dest ->
+          instr
+            $ buildLet (mapLeftHandSide BaseRground lhs) binding
+            $ buildEffect (SignalResolve $ weaken (weakenWithLHS lhs) <$> resolvers)
+            $ writeOutput (mapTupR (weaken k . weaken (skipWeakenIdx skip)) dest) (vars weakenId)
 
 -- Variant of 'transform' that also performs the subenvironment rule:
 -- transform assumes that the FutureEnv corresponds with the syncEnv of the schedule,
@@ -205,6 +202,7 @@ data TransformToBinding kernel fenv t where
 -- Invariants:
 -- - If 'simple' then Parallelism (argument of TransformSchedule) is Sequential.
 -- - If 'simple' then we may not introduce forks for this term.
+-- - Parallelism is not SequentialInNextParallel
 transform'
   :: IsKernel kernel
   => SyncSchedule kernel genv t -- The SyncSchedule that should be transformed to a UniformSchedule
@@ -212,11 +210,13 @@ transform'
 transform' (SyncSchedule _ simple schedule) = case schedule of
   -- Return & return values
   PReturnEnd _ -> TransformSchedule $ \_ _ _ -> buildReturn
-  PReturnValues updateTup next -> TransformSchedule $ \fenv parallelism ctx -> case ctx of
-    CtxLoop{} -> internalError "Loop impossible"
-    CtxNormal dest
-      | (dest', instr) <- returnValues fenv parallelism updateTup dest ->
-        buildSeqOrSpawn parallelism instr $ transformSub fenv parallelism (CtxNormal dest') next
+  PReturnValues updateTup next -> TransformSchedule $ \fenv parallelism ctx ->
+    case ctx of
+      CtxLoop{} -> internalError "Loop impossible"
+      CtxNormal dest
+        | (dest', instr) <- returnValues fenv parallelism updateTup dest
+        , next' <- transformSub fenv parallelism (CtxNormal dest') next ->
+          instr next'
 
   -- Effects
   PExec kernel args -> TransformSchedule $ \fenv _ _ ->
@@ -264,18 +264,21 @@ transform' (SyncSchedule _ simple schedule) = case schedule of
   PLet bndParallelism (LeftHandSideWildcard tp) _ bnd body -> TransformSchedule $ \fenv parallelism ctx ->
     case chainFutureEnvironmentSeqIf (bndParallelism == Sequential && simple) fenv (syncEnv bnd) (syncEnv body) of
       ChainFutureEnv instr skip bndEnv bodyEnv ->
-        instr $ buildSeqOrSpawn bndParallelism
-          (transform bndEnv bndParallelism (CtxNormal $ mapTupR (const DestinationIgnore) tp) bnd)
-          (transform bodyEnv parallelism (weaken (skipWeakenIdx skip) ctx) body)
+        let
+          bnd' = transform bndEnv bndParallelism (CtxNormal $ mapTupR (const DestinationIgnore) tp) bnd
+          body' = transform bodyEnv parallelism (weaken (skipWeakenIdx skip) ctx) body
+        in instr $ buildSeqOrSpawn bndParallelism bnd' body'
 
   PLet Parallel lhs us bnd body -> TransformSchedule $ \fenv parallelism ctx ->
     case chainFutureEnvironment SkipNone fenv (syncEnv bnd) (environmentDropLHS (syncEnv body) lhs) of
       ChainFutureEnv instr1 skip1 bndEnv bodyEnv
         | DeclareDestinations skip2 instr2 bndDestinations bodyEnv' <- declareDestinations Parallel bodyEnv lhs us
         , bodyEnv'' <- restrictEnvForLHS lhs bodyEnv' $ syncEnv body ->
-          instr1 $ instr2 $ buildSpawn
-            (transform (fenvFSkipMany skip2 bndEnv) Parallel (CtxNormal $ bndDestinations SkipNone) bnd)
-            (transform bodyEnv'' parallelism (weaken (skipWeakenIdx skip2 .> skipWeakenIdx skip1) ctx) body)
+          let
+            k = skipWeakenIdx skip2 .> skipWeakenIdx skip1
+            bnd' = transform (fenvFSkipMany skip2 bndEnv) Parallel (CtxNormal $ bndDestinations SkipNone) bnd
+            body' = transform bodyEnv'' parallelism (weaken k ctx) body
+          in instr1 $ instr2 $ buildSpawn bnd' body'
 
   PLet Sequential lhs us bnd body -> TransformSchedule $ \fenv parallelism ctx ->
     case chainFutureEnvironmentSeqIf simple fenv (syncEnv bnd) (environmentDropLHS (syncEnv body) lhs) of
@@ -314,21 +317,23 @@ transform' (SyncSchedule _ simple schedule) = case schedule of
   PAwhile us fn initial -> TransformSchedule $ \fenv _ ctx ->
     transformWhile fenv us fn initial ctx
 
-  PContinue next -> TransformSchedule $ \fenv parallelism ctx -> case ctx of
-    CtxNormal _ -> internalError "Loop impossible"
-    CtxLoop _ destBool dest _ ->
-      buildSeq
-        (writeLoopCondition destBool True)
-        (transform fenv parallelism (CtxNormal dest) next)
+  PContinue next -> TransformSchedule $ \fenv parallelism ctx -> 
+    case ctx of
+      CtxNormal _ -> internalError "Loop impossible"
+      CtxLoop _ destBool dest _ ->
+        buildSeq
+          (writeLoopCondition destBool True)
+          (transform fenv parallelism (CtxNormal dest) next)
 
-  PBreak us vars -> TransformSchedule $ \fenv _ ctx -> case ctx of
-    CtxNormal _ -> internalError "Loop impossible"
-    CtxLoop release destBool _ dest ->
-      buildSeq
-        (writeLoopCondition destBool False)
-        $ buildSpawn
-          release
-          $ snd $ returnValues fenv Parallel (toPartialReturn us vars) dest
+  PBreak us vars -> TransformSchedule $ \fenv _ ctx ->
+    case ctx of
+      CtxNormal _ -> internalError "Loop impossible"
+      CtxLoop release destBool _ dest ->
+        buildSeq
+          (writeLoopCondition destBool False)
+          $ buildSpawn
+            release
+            $ snd (returnValues fenv Parallel (toPartialReturn us vars) dest) buildReturn
 
 transformWhile
   :: IsKernel kernel =>
@@ -431,15 +436,24 @@ returnValues
   -> Parallelism
   -> UpdateTuple genv t1 t2
   -> Destinations fenv t2
-  -> (Destinations fenv t1, BuildSchedule kernel fenv)
-returnValues _ _ UpdateKeep dest = (dest, buildReturn)
-returnValues env _ (UpdateSet u var) (TupRsingle dest) = 
-  (TupRunit, returnValue env u var dest)
-returnValues env par (UpdatePair up1 up2) (TupRpair dest1 dest2)
-  | (dest1', s1) <- returnValues env par up1 dest1
-  , (dest2', s2) <- returnValues env par up2 dest2
-  = (TupRpair dest1' dest2', buildSeqOrSpawn par s1 s2)
-returnValues _ _ _ _ = internalError "Tuple mismatch"
+  -> (Destinations fenv t1, BuildSchedule kernel fenv -> BuildSchedule kernel fenv)
+returnValues fenv par tup dest = (dest', \next -> foldr (buildSeqOrSpawn par) next terms)
+  where
+    (dest', terms) = returnValuesSpawns fenv tup dest
+
+returnValuesSpawns
+  :: FutureEnv fenv genv
+  -> UpdateTuple genv t1 t2
+  -> Destinations fenv t2
+  -> (Destinations fenv t1, [BuildSchedule kernel fenv])
+returnValuesSpawns _ UpdateKeep dest = (dest, [])
+returnValuesSpawns env (UpdateSet u var) (TupRsingle dest) = 
+  (TupRunit, [returnValue env u var dest])
+returnValuesSpawns env (UpdatePair up1 up2) (TupRpair dest1 dest2)
+  | (dest1', s1) <- returnValuesSpawns env up1 dest1
+  , (dest2', s2) <- returnValuesSpawns env up2 dest2
+  = (TupRpair dest1' dest2', s1 ++ s2)
+returnValuesSpawns _ _ _ = internalError "Tuple mismatch"
 
 returnValue
   :: FutureEnv fenv genv
@@ -480,7 +494,7 @@ returnValue env u var dest
 
 buildSeqOrSpawn :: Parallelism -> BuildSchedule kernel fenv -> BuildSchedule kernel fenv -> BuildSchedule kernel fenv
 buildSeqOrSpawn Sequential = buildSeq
-buildSeqOrSpawn Parallel = buildSpawn
+buildSeqOrSpawn _ = buildSpawn
 
 data Destination fenv t
   = DestinationIgnore

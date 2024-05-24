@@ -106,7 +106,12 @@ weakenSyncEnv (LeftHandSidePair l1 l2) env           = weakenSyncEnv l1 $ weaken
 
 -- Intermediate representation, used during the transformation
 
-data Parallelism = Parallel | Sequential deriving Eq
+data Parallelism
+  -- This let-binding is parallel: the binding is spawned in a separate task, and the body is directly executed.
+  = Parallel
+  -- This let-binding is sequential. The binding is executed before the body.
+  | Sequential
+  deriving Eq
 
 data PrePartialScheduleFun (schedule :: (Type -> Type) -> Type -> Type -> Type) kernel env t where
   Plam  :: GLeftHandSide s env env'
@@ -571,17 +576,21 @@ buildLet parallelismHint lhs us bnd' body' available =
       -- If the binding is trivial and doesn't wait on variables.
       || trivial bnd && IdxSet.null (directlyAwaits bnd)
 
+    thisLhsIndices = lhsIndices lhs
+
     -- Make it sequential if:
     sequential =
       -- the early test already made it sequential,
       sequentialEarlyTest
-      -- the body directly needs all declared variables,
-      || IdxSet.fromVarList (lhsVars lhs) `IdxSet.isSubsetOf` directlyAwaits body
-      -- or the binding is trivial and doesn't use other variables than the
+      -- the body directly needs all declared variables (and there is at least one such variable),
+      || not (IdxSet.isEmpty thisLhsIndices) && thisLhsIndices `IdxSet.isSubsetOf` directlyAwaits body
+      -- the binding is trivial and doesn't use other variables than the
       -- body already waits on.
       -- Note that the awaits set contains all free variables (minus the available variables)
       -- if the program is trivial.
       || trivial bnd && directlyAwaits bnd `IdxSet.isSubsetOf` bodyAwaitsDropped
+      -- or the binding is trivial and the body directly awaits on the result of this expression.
+      || trivial bnd && thisLhsIndices `IdxSet.overlaps` directlyAwaits body
 
     parallelism = if sequential then Sequential else Parallel
 

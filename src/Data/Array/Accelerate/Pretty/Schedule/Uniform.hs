@@ -152,6 +152,11 @@ prettyUniformSchedule env = \case
         <> hardline <> hang 4 ("  (" <+> prettyUniformScheduleFun env body)
         <> hardline <> "  )"
         <> prettyNext next
+  Spawn (Effect (SignalAwait signals) body) next
+    -> annotate Statement "spawn await" <+> list (map (prettyIdx env) signals) <+> "{"
+        <> hardline <> indent 2 (prettyUniformSchedule env body)
+        <> hardline <> "}"
+        <> prettyNext next
   Spawn body next
     -> annotate Statement "spawn" <+> "{"
         <> hardline <> indent 2 (prettyUniformSchedule env body)

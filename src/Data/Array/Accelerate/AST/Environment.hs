@@ -31,7 +31,7 @@ module Data.Array.Accelerate.AST.Environment (
   Skip(..), skipIdx, chainSkip, skipWeakenIdx, lhsSkip,
 
   prjUpdate', prjReplace', update', updates', mapEnv,
-  (:>)(..), weakenId, weakenSucc, weakenSucc', weakenEmpty,
+  (:>)(..), weakenId, weakenSucc, weakenSucc', weakenEmpty, weakenReplace,
   sink, (.>), sinkWithLHS, weakenWithLHS, substituteLHS,
   varsGet, varsGetVal, stripWithLhs,weakenKeep) where
 
@@ -313,6 +313,11 @@ mapEnv g (Push env f) = Push (mapEnv g env) (g f)
 --
 newtype env :> env' = Weaken { (>:>) :: forall (t' :: Type). Idx env t' -> Idx env' t' } -- Weak or Weaken
 
+-- Weaken is currently just a function. We could consider to partially defunctionalize this and define
+-- it as a data type, which constructors for the following functions.
+-- Note that we may then also need to fold a chain of weakenSucc to a SkipIdx, and change the internal
+-- definition of SkipIdx to Int (like we also did for Idx).
+
 weakenId :: env :> env
 weakenId = Weaken id
 
@@ -329,6 +334,13 @@ weakenKeep (Weaken f) = Weaken $ \case
 
 weakenEmpty :: () :> env'
 weakenEmpty = Weaken $ \(VoidIdx x) -> x
+
+weakenReplace :: forall env env' t. Idx env' t -> env :> env' -> (env, t) :> env'
+weakenReplace other k = Weaken f
+  where
+    f :: forall s. Idx (env, t) s -> Idx env' s
+    f ZeroIdx = other
+    f (SuccIdx idx) = k >:> idx
 
 sink :: forall env env' t. env :> env' -> (env, t) :> (env', t)
 sink (Weaken f) = Weaken g

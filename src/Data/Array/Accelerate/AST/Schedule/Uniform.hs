@@ -402,12 +402,11 @@ reorder = uncurry await . go Just
 trivialBinding :: Binding env t -> Bool
 trivialBinding (NewSignal _)       = True
 trivialBinding (NewRef _)          = True
-trivialBinding (Alloc ShapeRz _ _) = True
+trivialBinding (Alloc _ _ _)       = True
 trivialBinding (Use _ _ _)         = True
 trivialBinding (Unit _)            = True
 trivialBinding (RefRead _)         = True
 trivialBinding (Compute e)         = expIsTrivial (const True) e
-trivialBinding _                   = False
 
 -- If a schedule does not do blocking or slow operations, we say it's trivial
 -- and don't need to spawn it as we do not gain much task parallelism from it.
