@@ -338,7 +338,10 @@ reEnvSubArgs re (a :>: as)
   | ReEnvSubArgs subs as' <- reEnvSubArgs re as =
     case a of
       ArgArray Out (ArrayR shr tp) sh buffers -> case reEnvSubBuffers re tp buffers of
-        ReEnvSubBuffers SubTupRskip _        -> ReEnvSubArgs (SubArgsDead subs) (ArgVar (fromGrounds $ expectJust $ reEnvVars re sh) :>: as')
+        ReEnvSubBuffers SubTupRskip _
+          -- don't kill unit outputs
+          | TupRunit <- tp                   -> ReEnvSubArgs (SubArgsLive SubArgKeep subs) (ArgArray Out (ArrayR shr tp) (expectJust $ reEnvVars re sh) TupRunit :>: as')
+          | otherwise                        -> ReEnvSubArgs (SubArgsDead subs) (ArgVar (fromGrounds $ expectJust $ reEnvVars re sh) :>: as')
         ReEnvSubBuffers SubTupRkeep buffers' -> ReEnvSubArgs (SubArgsLive SubArgKeep subs) (ArgArray Out (ArrayR shr tp) (expectJust $ reEnvVars re sh) buffers' :>: as')
         ReEnvSubBuffers sub         buffers' -> ReEnvSubArgs (SubArgsLive (SubArgOut sub) subs) (ArgArray Out (ArrayR shr $ subTupR sub tp) (expectJust $ reEnvVars re sh) buffers' :>: as')
       _ -> ReEnvSubArgs (SubArgsLive SubArgKeep subs) (reEnvArg re a :>: as')
@@ -374,4 +377,4 @@ subTupUniqueness :: SubTupR t t' -> Uniquenesses t -> Uniquenesses t'
 subTupUniqueness SubTupRskip         _                = TupRunit
 subTupUniqueness SubTupRkeep         t                = t
 subTupUniqueness (SubTupRpair s1 s2) (TupRpair t1 t2) = subTupUniqueness s1 t1 `TupRpair` subTupUniqueness s2 t2
-subTupUniqueness (SubTupRpair s1 s2) (TupRsingle Shared) = TupRsingle $ Shared
+subTupUniqueness (SubTupRpair s1 s2) (TupRsingle Shared) = TupRpair (subTupUniqueness s1 (TupRsingle Shared)) (subTupUniqueness s2 (TupRsingle Shared)) --TupRsingle Shared
