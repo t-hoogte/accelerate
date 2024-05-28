@@ -176,15 +176,22 @@ spawnPostponed spawn (Postponed spawns resolvers)
     tryCombine [] = Nothing -- It wasn't possible to combine it.
     tryCombine (x:xs)
       -- If 'spawn' waits on a result of 'x'
-      | not $ null $ spawnFinallyResolves x `sortedIntersection` directlyAwaits (spawnTerm spawn)
+      | shouldCombine x spawn
       = Just $ combine x spawn : xs
 
       -- If 'x' waits on a result of 'spawn'
-      | not $ null $ spawnFinallyResolves spawn `sortedIntersection` directlyAwaits (spawnTerm x)
+      | shouldCombine spawn x
       = Just $ combine spawn x : xs
 
       | otherwise
       = (x:) <$> tryCombine xs
+
+    shouldCombine :: BuildSpawn kernel env -> BuildSpawn kernel env -> Bool
+    shouldCombine before after
+      -- If 'after' waits on a result of 'before'
+      = not (null $ spawnFinallyResolves before `sortedIntersection` directlyAwaits (spawnTerm after))
+      -- If 'before' is trivial and does not wait on other signals than 'after'
+      || trivial (spawnTerm before) && directlyAwaits (spawnTerm before) `isSubsequenceOf` directlyAwaits (spawnTerm after)
 
     combine :: BuildSpawn kernel env -> BuildSpawn kernel env -> BuildSpawn kernel env
     combine first second = BuildSpawn
@@ -496,7 +503,7 @@ buildSpawn a b
           a' = a{directlyAwaits = directlyAwaits a `sortedMinus` directlyAwaits b}
           b' = b{directlyAwaits = directlyAwaits b `sortedMinus` directlyAwaits a}
         in
-          if not $ null (aResolves `sortedIntersection` sort (map (weaken k) $ directlyAwaits b)) then
+          if not $ null (aResolves `sortedIntersection` map (weaken k) (directlyAwaits b)) then
             constructFull a' k env postponed $ ContinuationDo k b' weakenId cont
           else
             constructFull b' k env (spawnPostponed (BuildSpawn aResolves $ weaken' k a') postponed) cont

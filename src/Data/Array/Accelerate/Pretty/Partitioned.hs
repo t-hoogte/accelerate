@@ -23,21 +23,24 @@
 -- Portability : non-portable (GHC extensions)
 --
 
-module Data.Array.Accelerate.Pretty.Partitioned where
+module Data.Array.Accelerate.Pretty.Partitioned ({- instance PrettyOp (Cluster op) -}) where
 
 import Data.Array.Accelerate.Pretty.Exp hiding (Val(..))
 import qualified Data.Array.Accelerate.Pretty.Exp as Pretty
 import Data.Array.Accelerate.Pretty.Operation
 import Data.Array.Accelerate.AST.Partitioned
+import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.Type
+import Data.Array.Accelerate.Trafo.Operation.LiveVars
 
 import Prettyprinter
 
 import Prelude hiding (exp)
-import Data.Array.Accelerate.Representation.Type (TupR (..))
+import Data.Array.Accelerate.Representation.Type
+import Data.Array.Accelerate.Representation.Shape
+import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.AST.Idx (Idx (..))
 import Data.Bifunctor (second)
-import Data.Array.Accelerate.Representation.Array (ArrayR(..))
 import Data.Array.Accelerate.AST.Var (varsType)
 
 instance PrettyOp op => PrettyOp (Clustered op) where
@@ -46,254 +49,177 @@ instance PrettyOp op => PrettyOp (Clustered op) where
   prettyOpWithArgs env (Clustered c _) = prettyOpWithArgs env c
 
 instance PrettyOp op => PrettyOp (Cluster op) where
-  prettyOp (Fused _ l r) = "Fused" -- (" <> prettyOp l <> ", " <> prettyOp r
-  prettyOp (Op (SLV (SOp (SOAOp op _) _) _) _) = prettyOp op
-  prettyOpWithArgs env (Fused f l r) args = "Fused" -- (" <> prettyOpWithArgs env l (left f args) <> ", " <> prettyOpWithArgs env r (right f args)
-  prettyOpWithArgs env (Op (SLV (SOp (SOAOp op soa) (SA _ unsort)) subargs) _) args = 
-    prettyOp op -- WithArgs env op (soaShrink combine soa . unsort . slv' varout subargs $ args)
+  prettyOp _ = "cluster"
 
-  -- prettyOpWithArgs :: forall env t. Val env -> Cluster op t -> Args env t -> Adoc
-  -- prettyOpWithArgs env (Op (SLVOp (SOp (SOAOp op soa) (SA _ unsort)) sa) _) args = prettyOpWithArgs env op (soaShrink combine soa . unsort . slv' varToOut sa $ args)
-  -- prettyOpWithArgs env cluster1 args1 =
-  --   annotate Execute "execute" <+> "cluster {"
-  --   <> hardline
-  --   <> indent 2 (vsep operations)
-  --   <> hardline <> "}"
-  --   where
-  --     operations = gather cluster1 args1
+  prettyOpWithArgs env cluster args
+    | isSingle cluster = body
+    | otherwise = annotate Execute "execute" <+> "{" <> line
+      <> indent 2 body <> line <> "}"
+    where
+      body = fst $ prettyCluster True cluster (mapArgs (toPrettyArg env) args) 0
 
-  --     gather :: Cluster op s -> Args env s -> [Adoc]
-  --     gather (Fused f l r) args = gather l (left f args) ++ gather r (right f args)
-  --     gather (Op (SLVOp (SOp (SOAOp op soa) (SA _ unsort)) sa) _) args =
-  --       pure $ hang 2 $ group $ vsep [prettyOp op, prettyArgs env args']
-  --       where
-  --         args' = soaShrink combine soa . unsort . slv' varToOut sa $ args
+isSingle :: Cluster op t -> Bool
+isSingle SingleOp{} = True
+isSingle _ = False
 
--- clusterEnv :: forall env f input output. Pretty.Val env -> ClusterIO f input output -> Args env f -> (Pretty.Val input, PartialVal output)
--- clusterEnv env = \cio args -> (input cio args, output cio args)
---   where
---     input :: ClusterIO t input' output' -> Args env t -> Pretty.Val input'
---     input Empty ArgsNil
---       = Pretty.Empty
---     input (Vertical _ _ cio) (ArgVar sh :>: as)
---       = Pretty.Push (input cio as) (prettyShapeVars env sh)
---     input (Input cio) (a :>: as)
---       = Pretty.Push (input cio as) (prettyArg env a)
---     input (Output _ _ _ cio) (ArgArray Out _ sh _ :>: as)
---       = Pretty.Push (input cio as) (prettyShapeVars env sh)
---     input (MutPut cio) (a :>: as)
---       = Pretty.Push (input cio as) (prettyArg env a)
---     input (ExpPut' cio) (a :>: as)
---       = Pretty.Push (input cio as) (prettyArg env a)
---     input (Trivial io) (a :>: as) = Pretty.Push (input io as) (prettyArg env a)
+data PrettyArg t where
+  PrettyArgArray
+    :: Modifier m
+    -> Adoc -- shape variables
+    -> TupR Adoc' (Buffers e) -- buffer variables
+    -> PrettyArg (m sh e)
 
---     output :: ClusterIO t input' output' -> Args env t -> PartialVal output'
---     output Empty ArgsNil
---       = PEnd
---     output (Vertical t _ cio) (_ :>: as)
---       = pSkipAt t (output cio as) -- We will name intermediate arrays in 'forward (Make _ _) _ _ _'
---     output (Input cio) (a :>: as)
---       = PPush (output cio as) (prettyArg env a)
---     output (Output t _ _ cio) (a :>: as)
---       = pInsertAt t (prettyArg env a) (output cio as)
---     output (MutPut cio) (a :>: as)
---       = PPush (output cio as) (prettyArg env a)
---     output (ExpPut' cio) (a :>: as)
---       = PPush (output cio as) (prettyArg env a)
---     output (Trivial io) (a :>: as)
---       = PPush (output io as) (prettyArg env a)
+  PrettyArgVarShape
+    :: Adoc -- Pretty printed as normal variables
+    -> Adoc -- Pretty printed as shape
+    -> PrettyArg t
+  
+  PrettyArgOther
+    :: Adoc
+    -> PrettyArg t
 
--- -- The pretty printer gets an environment with Adocs of input variables (Val env, from clusterEnv)
--- -- which is propagated in the same flow as the cluster.
--- -- It also gets the names for the output environment (PartialVal result), which we propagate in reverse
--- -- direction. Hence this function both *takes* a 'Val env' (originating from the input variables)
--- -- and *returns* a 'PartialVal env' (originating from the output variables).
--- -- Variables which are absent in both environments represent arrays which are fused away.
--- --
--- prettyClusterAST :: PrettyOp op => PartialVal result -> ClusterAST op env result -> (PartialVal env, Int -> Pretty.Val env -> [Adoc])
--- -- prettyClusterAST = undefined
--- prettyClusterAST envResult None = (envResult, \_ _ -> [])
--- prettyClusterAST envResult (Bind lhs op _ next) =
---   ( backward lhs envOut
---   , \fresh envIn ->
---       let
---         (fresh', envNext, args) = forward lhs fresh envIn envOut
---       in
---         prettyOpWithArgs' op args
---         : next' fresh' envNext
---   )
---   where
---     (envOut, next') = prettyClusterAST envResult next
+type PrettyArgs = PreArgs PrettyArg
 
--- prettyOpWithArgs' :: PrettyOp op => op t -> [Adoc] -> Adoc
--- prettyOpWithArgs' op args = hang 2 $ group $ vsep [prettyOp op, tupled args]
+newtype Adoc' t = Adoc' Adoc
 
--- forward :: LeftHandSideArgs body env scope -> Int -> Pretty.Val env -> PartialVal scope -> (Int, Pretty.Val scope, [Adoc])
--- forward Base             fresh env _   = (fresh, env, [])
--- forward (Reqr t1 t2 lhs) fresh env out =
---   ( fresh'
---   , env''
---   , newargs <> args
---   )
---   where
---     newargs = prjs t1 env
---     -- env' = removeAt t1 env
---     -- out' = pRemoveAt t2 out
---     (fresh', env'', args) = forward lhs fresh env out
--- forward (Make t1 t2 lhs)     fresh env out =
---   ( fresh''
---   , fst $ insertAts t1 names env'
---   , args' <> args
---   )
---   where
---     (args', names, fresh', _) = pTakeAts sh t1 out fresh
---     (fresh'', env', args) = forward lhs fresh' (pRemoveAts' t2 env) (pRemoveAts t1 out)
---     (sh, _) = unCons t2 env
--- forward (ExpArg lhs)     fresh env out = forwardSingle lhs fresh env out
--- forward (Adju lhs)       fresh env out = forwardSingle lhs fresh env out
--- forward (Ignr lhs)       fresh (Pretty.Push env x) out = (\(a, b, c) -> (a, Pretty.Push b x, c)) (forward lhs fresh env (pEnvTail out))
+prettyCluster :: Bool -> PrettyOp op => Cluster op t -> PrettyArgs t -> Int -> (Adoc, Int)
+prettyCluster topLevel (SingleOp singleOp _) args fresh = (prettySingleOp topLevel singleOp args, fresh)
+prettyCluster _ (Fused fusion left right) args fresh
+  | (leftArgs, rightArgs, horizontals, verticals, diagonals, fresh') <- splitEnv fusion args fresh
+  , (leftDoc, fresh'') <- prettyCluster False left leftArgs fresh'
+  , (rightDoc, fresh''') <- prettyCluster False right rightArgs fresh''
+  = ( leftDoc <> line <>
+      prettyFuseList (annotate Statement "fused horizontally") horizontals <>
+      prettyFuseList (annotate Statement "fused vertically") verticals <>
+      prettyFuseList (annotate Statement "fused diagonally") diagonals <>
+      rightDoc
+    , fresh''')
 
--- unCons :: ConsBuffers (Sh sh) e env env1 -> Pretty.Val env -> (Adoc, Pretty.Val env1)
--- unCons ConsUnit env = (viaShow (), env)
--- unCons ConsSingle (Pretty.Push env doc) = (doc, env)
--- unCons (ConsPair l r) env = let (x, env') = unCons r env
---                                 (y, env'') = unCons l env'
---                             in  (x <> y, env'')
--- -- unCons (ConsUnitFusedAway cb) (Pretty.Push env doc) = second (`Pretty.Push` doc) $ unCons cb env
+prettySingleOp :: PrettyOp op => Bool -> SingleOp op t -> PrettyArgs t -> Adoc
+prettySingleOp topLevel (Single op soas (SA _ sortArgs) subArgs) args =
+  hang 2 $ group $ vsep $
+    [ annotate Execute "execute" | topLevel]
+    ++
+    [
+      prettyOp op,
+      tupled $ map (\(Exists a) -> prettyPrettyArg a) $ argsToList args'''
+    ]
+  where
+    args' = prettyExtendArgs subArgs args
+    args'' = sortArgs args'
+    args''' = prettySoaArgs soas args''
 
--- intermediate :: Modifier m -> Int -> Adoc -> Adoc
--- intermediate m idx sh = group $ vsep [prettyModifier m, "(" <> sh <> ")", "%" <> pretty idx]
+toPrettyArg :: Val env -> Arg env t -> PrettyArg t
+toPrettyArg env (ArgArray m _ sh buffers) = PrettyArgArray m (prettyShapeVars env sh) (mapTupR (Adoc' . prettyVar env) buffers)
+toPrettyArg env arg@(ArgVar vars)
+  | Just _ <- typeShape $ varsType vars
+  = PrettyArgVarShape (prettyArg env arg) (prettyShapeVars env vars)
+toPrettyArg env arg = PrettyArgOther $ prettyArg env arg
 
--- forwardSingle :: LeftHandSideArgs body env scope -> Int -> Pretty.Val (env, t) -> PartialVal (scope, t) -> (Int, Pretty.Val (scope, t), [Adoc])
--- forwardSingle lhs fresh (Pretty.Push env a) out = (fresh', Pretty.Push env' a, a : args)
---   where
---     (fresh', env', args) = forward lhs fresh env $ pEnvTail out
+prettyPrettyArg :: PrettyArg t -> Adoc
+prettyPrettyArg (PrettyArgArray m sh buffers) = group $ vsep [prettyModifier m, "(" <> sh <> ")", prettyTupR (\_ (Adoc' doc) -> doc) 0 buffers]
+prettyPrettyArg (PrettyArgVarShape doc _) = doc
+prettyPrettyArg (PrettyArgOther doc) = doc
 
--- backward :: LeftHandSideArgs body env scope -> PartialVal scope -> PartialVal env
--- backward _ PEnd = PEnd
--- backward (Reqr t1 t2 lhs) env = fst $ pWriteAts t1 (prjs' t2 env) $ backward lhs env
--- backward (Make t1 t2 lhs) env = pSkips t2 $ backward lhs $ pRemoveAts t1 env
--- backward (ExpArg lhs) env = backwardSingle lhs env
--- backward (Adju lhs) env = backwardSingle lhs env
--- backward (Ignr lhs) env = backwardSingle lhs env
+prettyExtendArgs :: SubArgs a b -> PrettyArgs b -> PrettyArgs a
+prettyExtendArgs SubArgsNil ArgsNil = ArgsNil
+prettyExtendArgs (SubArgsLive subArg subArgs) (a :>: as) = prettyExtendArg subArg a :>: prettyExtendArgs subArgs as
+prettyExtendArgs (SubArgsDead subArgs) (a :>: as) = case a of
+  PrettyArgVarShape _ sh
+    -> PrettyArgArray Out sh (TupRsingle $ Adoc' "_") :>: prettyExtendArgs subArgs as
+  _ -> PrettyArgOther "?" :>: prettyExtendArgs subArgs as
 
--- prjs' :: TupR (IdxF (Value sh) scope) e -> PartialVal scope -> [Maybe Adoc]
--- prjs' TupRunit _ = []
--- prjs' (TupRsingle (IdxF idx)) env = [ix idx env]
--- prjs' (TupRpair l r) env = prjs' l env <> prjs' r env
+prettyExtendArg :: SubArg a b -> PrettyArg b -> PrettyArg a
+prettyExtendArg (SubArgOut subTup) (PrettyArgArray m sh buffers) = PrettyArgArray m sh $ prettyExtendTup subTup buffers
+prettyExtendArg (SubArgOut _) _ = PrettyArgOther "?"
+prettyExtendArg SubArgKeep arg = arg
 
--- ix :: Idx env e -> PartialVal env -> Maybe Adoc
--- ix _ PEnd = Nothing
--- ix ZeroIdx (PSkip _) = Nothing
--- ix ZeroIdx (PPush _ a) = Just a
--- ix (SuccIdx idx) (PPush env _) = ix idx env
--- ix (SuccIdx idx) (PSkip env) = ix idx env
+prettyExtendTup :: SubTupR a b -> TupR Adoc' (Buffers b) -> TupR Adoc' (Buffers a)
+prettyExtendTup SubTupRskip _ = TupRsingle $ Adoc' "_"
+prettyExtendTup SubTupRkeep a = a
+prettyExtendTup (SubTupRpair s1 s2) (TupRpair t1 t2) = prettyExtendTup s1 t1 `TupRpair` prettyExtendTup s2 t2
 
+prettySoaArgs :: SOAs args expanded -> PrettyArgs expanded -> PrettyArgs args
+prettySoaArgs SOArgsNil _ = ArgsNil
+prettySoaArgs (SOArgsCons xs x) args
+  | (arg, args') <- prettySoaArg x args
+  = arg :>: prettySoaArgs xs args'
 
--- pWriteAts :: TupR (IdxF (Value sh) env) e -> [Maybe Adoc] -> PartialVal env -> (PartialVal env, [Maybe Adoc])
--- pWriteAts TupRunit as env = (env, as)
--- pWriteAts (TupRsingle (IdxF idx)) ~(a:as) env = (pWriteAt' idx a env, as)
--- pWriteAts (TupRpair l r) as env = let (env', as') = pWriteAts l as env in pWriteAts r as' env'
+prettySoaArg :: SOA arg appendto result -> PrettyArgs result -> (PrettyArg arg, PrettyArgs appendto)
+prettySoaArg SOArgSingle (a :>: as) = (a, as)
+prettySoaArg (SOArgTup right left) as
+  | (left', as') <- prettySoaArg left as
+  , (right', as'') <- prettySoaArg right as'
+  = (prettyPairArg left' right', as'')
 
--- -- Helper for 'backward'
--- backwardSingle :: LeftHandSideArgs body env scope -> PartialVal (scope, t) -> PartialVal (env, t)
--- backwardSingle lhs (PSkip env)   = PSkip (backward lhs env)
--- backwardSingle lhs (PPush env a) = PPush (backward lhs env) a
--- backwardSingle _   PEnd          = PEnd
+prettyPairArg :: PrettyArg (f left) -> PrettyArg (f right) -> PrettyArg (f (left, right))
+prettyPairArg (PrettyArgArray m sh left) (PrettyArgArray _ _ right) = PrettyArgArray m sh $ TupRpair left right
+prettyPairArg _ _ = PrettyArgOther "?"
 
--- insertAt :: Take t env' env -> Adoc -> Pretty.Val env -> Pretty.Val env'
--- insertAt Here      a env                 = Pretty.Push env a
--- insertAt (There t) a (Pretty.Push env b) = Pretty.Push (insertAt t a env) b
+splitEnv :: Fusion largs rargs t -> PrettyArgs t -> Int -> (PrettyArgs largs, PrettyArgs rargs, [Adoc], [Adoc], [Adoc], Int)
+splitEnv EmptyF _ fresh = (ArgsNil, ArgsNil, [], [], [], fresh)
+splitEnv (Vertical _ next) (a :>: as) fresh =
+  let
+    (left, right, horizontals, verticals, diagonals, fresh') = splitEnv next as (fresh + 1)
+    sh = case a of
+      PrettyArgVarShape _ sh' -> sh'
+      _ -> "?"
+    buffer = "%" <> viaShow fresh
+    buffers = TupRsingle $ Adoc' buffer
+  in
+    ( PrettyArgArray Out sh buffers :>: left
+    , PrettyArgArray In  sh buffers :>: right
+    , horizontals
+    , buffer : verticals
+    , diagonals
+    , fresh'
+    )
+splitEnv (Horizontal next) (a :>: as) fresh =
+  let
+    (left, right, horizontals, verticals, diagonals, fresh') = splitEnv next as fresh
+    buffer = case a of
+      PrettyArgArray _ _ (TupRsingle (Adoc' b)) -> b
+      _ -> prettyPrettyArg a
+  in
+    ( a :>: left
+    , a :>: right
+    , buffer : horizontals
+    , verticals
+    , diagonals
+    , fresh'
+    )
+splitEnv (Diagonal next) (a :>: as) fresh =
+  let
+    (left, right, horizontals, verticals, diagonals, fresh') = splitEnv next as fresh
+    a' = case a of
+      PrettyArgArray _ sh bs -> PrettyArgArray In sh bs
+      _ -> PrettyArgOther "?"
+    buffer = case a of
+      PrettyArgArray _ _ (TupRsingle (Adoc' b)) -> b
+      _ -> prettyPrettyArg a
+  in
+    ( a :>: left
+    , a' :>: right
+    , horizontals
+    , verticals
+    , buffer : diagonals
+    , fresh'
+    )
+splitEnv (IntroI1 next) as fresh = splitEnv (IntroL next) as fresh
+splitEnv (IntroO1 next) as fresh = splitEnv (IntroL next) as fresh
+splitEnv (IntroI2 next) as fresh = splitEnv (IntroR next) as fresh
+splitEnv (IntroO2 next) as fresh = splitEnv (IntroR next) as fresh
+splitEnv (IntroL next) (a :>: as) fresh =
+  let
+    (left, right, horizontals, verticals, diagonals, fresh') = splitEnv next as fresh
+  in
+    (a :>: left, right, horizontals, verticals, diagonals, fresh')
+splitEnv (IntroR next) (a :>: as) fresh =
+  let
+    (left, right, horizontals, verticals, diagonals, fresh') = splitEnv next as fresh
+  in
+    (left, a :>: right, horizontals, verticals, diagonals, fresh')
 
--- insertAts :: TakeBuffers f t env' env -> [Adoc] -> Pretty.Val env -> (Pretty.Val env', [Adoc])
--- insertAts TakeUnit      as env  = (env, as)
--- insertAts (TakeSingle t) ~(a:as) env = (insertAt t a env, as)
--- insertAts (TakePair x y) as env = let (env', as') = insertAts x as env in insertAts y as' env'
-
-
--- removeAt :: Take t env env' -> Pretty.Val env -> Pretty.Val env'
--- removeAt Here (Pretty.Push env _) = env
--- removeAt (There t) (Pretty.Push env a) = Pretty.Push (removeAt t env) a
-
--- pInsertAt :: Take t env' env -> Adoc -> PartialVal env -> PartialVal env'
--- pInsertAt Here      a env = PPush env a
--- pInsertAt (There t) a env = case env of
---   PEnd         -> PSkip (pInsertAt t a PEnd)
---   PSkip env'   -> PSkip (pInsertAt t a env')
---   PPush env' b -> PPush (pInsertAt t a env') b
-
--- pRemoveAt :: Take t env env' -> PartialVal env -> PartialVal env'
--- pRemoveAt Here      = pEnvTail
--- pRemoveAt (There t) = \case
---   PEnd        -> PEnd
---   PSkip env   -> PSkip (pRemoveAt t env)
---   PPush env a -> PPush (pRemoveAt t env) a
-
--- pRemoveAts :: TakeBuffers (Value sh) e scope scope1 -> PartialVal scope -> PartialVal scope1
--- pRemoveAts TakeUnit env = env
--- pRemoveAts (TakeSingle t) env = pRemoveAt t env
--- pRemoveAts (TakePair l r) env = pRemoveAts l $ pRemoveAts r env
-
--- pRemoveAts' :: ConsBuffers (Sh sh) e env env1 -> Pretty.Val env -> Pretty.Val env1
--- pRemoveAts' ConsUnit env = env
--- pRemoveAts' ConsSingle (Pretty.Push env _) = env
--- pRemoveAts' (ConsPair l r) env = pRemoveAts' l $ pRemoveAts' r env
--- -- pRemoveAts' (ConsUnitFusedAway x) (Pretty.Push env y) = Pretty.Push (pRemoveAts' x env) y
-
--- pWriteAt :: Take t env' env -> Maybe Adoc -> PartialVal env -> PartialVal env'
--- pWriteAt t Nothing  = pSkipAt t
--- pWriteAt t (Just a) = pInsertAt t a
-
--- pWriteAt' :: Idx env e -> Maybe Adoc -> PartialVal env -> PartialVal env
--- pWriteAt' ZeroIdx Nothing PEnd = PEnd
--- pWriteAt' ZeroIdx (Just doc) PEnd = PPush PEnd doc
--- pWriteAt' ZeroIdx Nothing (PSkip env) = PSkip env
--- pWriteAt' ZeroIdx (Just doc) (PSkip env) = PPush env doc
--- pWriteAt' ZeroIdx Nothing (PPush env _) = PSkip env -- TODO check: throwing away info???
--- pWriteAt' ZeroIdx (Just doc) (PPush env _) = PPush env doc
--- pWriteAt' (SuccIdx idx) a PEnd = PSkip $ pWriteAt' idx a PEnd
--- pWriteAt' (SuccIdx idx) a (PSkip env) = PSkip $ pWriteAt' idx a env
--- pWriteAt' (SuccIdx idx) a (PPush env doc) = PPush (pWriteAt' idx a env) doc
-
--- pSkipAt :: Take t env' env -> PartialVal env -> PartialVal env'
--- pSkipAt _         PEnd = PEnd
--- pSkipAt Here      env = PSkip env
--- pSkipAt (There t) (PSkip env)   = PSkip (pSkipAt t env)
--- pSkipAt (There t) (PPush env a) = PPush (pSkipAt t env) a
-
--- pTakeAt :: Take t env env' -> PartialVal env -> (Maybe Adoc, PartialVal env')
--- pTakeAt Here      (PPush env a) = (Just a, env)
--- pTakeAt Here      (PSkip env) = (Nothing, env)
--- pTakeAt (There t) (PPush env a) = second (`PPush` a) $ pTakeAt t env
--- pTakeAt (There t) (PSkip env)   = second PSkip $ pTakeAt t env
--- pTakeAt _          PEnd       = (Nothing, PEnd)
-
-
--- pTakeAts :: Adoc -> TakeBuffers f t env env' -> PartialVal env -> Int -> ([Adoc], [Adoc], Int, PartialVal env')
--- pTakeAts _ TakeUnit env fresh = ([],[],fresh, env)
--- pTakeAts sh (TakeSingle t) env fresh = case pTakeAt t env of
---   (Just a, env') -> ([a],[a], fresh, env')
---   (Nothing, env') -> ([intermediate Out fresh sh],[intermediate In fresh sh],fresh+1, env')
--- pTakeAts sh (TakePair l r) env fresh = let (xs, ys, fresh', env')     = pTakeAts sh r env fresh
---                                            (xs', ys', fresh'', env'') = pTakeAts sh l env' fresh'
---                                        in  (xs <> xs', ys <> ys', fresh'', env'')
-
--- data PartialVal env where
---   PEnd  ::                           PartialVal env
---   PSkip :: PartialVal env         -> PartialVal (env, t)
---   PPush :: PartialVal env -> Adoc -> PartialVal (env, t)
--- deriving instance Show (PartialVal env)
-
--- pSkips :: ConsBuffers f t env env' -> PartialVal env' -> PartialVal env
--- pSkips ConsUnit = id
--- pSkips ConsSingle = PSkip
--- pSkips (ConsPair l r) = pSkips r . pSkips l
--- -- pSkips (ConsUnitFusedAway x) = \case
--- --   PPush env y -> PPush (pSkips x env) y
--- --   PSkip env -> PSkip (pSkips x env)
--- --   PEnd -> error "huh"
-
--- pEnvTail :: PartialVal (env, t) -> PartialVal env
--- pEnvTail PEnd          = PEnd
--- pEnvTail (PSkip env)   = env
--- pEnvTail (PPush env _) = env
+prettyFuseList :: Adoc -> [Adoc] -> Adoc
+prettyFuseList _ [] = ""
+prettyFuseList name docs = (hang 2 $ group $ vsep $ [name <> ":", tupled docs]) <> line
