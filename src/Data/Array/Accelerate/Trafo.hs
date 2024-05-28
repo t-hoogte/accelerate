@@ -228,8 +228,8 @@ convertAfunWith
   -> f
   -> sched kernel () (Scheduled sched (DesugaredAfun (ArraysFunctionR f)))
 convertAfunWith config
-  = (\s -> Debug.Trace.trace (Pretty.renderForTerminal (Pretty.prettySchedule s)) s)
-  . phase' "codegen"     rnfSchedule convertScheduleFun
+  = --(\s -> Debug.Trace.trace (Pretty.renderForTerminal (Pretty.prettySchedule s)) s) .
+    phase' "codegen"     rnfSchedule convertScheduleFun
   . phase  "partition-live-vars"    (Operation.simplifyFun . Operation.stronglyLiveVariablesFun)
   . phase  "array-fusion"           (Operation.simplifyFun . NewNewFusion.convertAfunWith config defaultObjective)
   . phase  "operation-live-vars"    (Operation.simplifyFun . Operation.stronglyLiveVariablesFun)

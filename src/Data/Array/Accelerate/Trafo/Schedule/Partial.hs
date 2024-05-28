@@ -65,7 +65,7 @@ import Prelude hiding (id, (.), read)
 import Control.Category
 
 import Data.Functor.Identity
-
+import Debug.Trace
 -- Constructs a partial schedule. It is partial as many details still need
 -- to be filled in for the actual schedule. This schedule does however
 -- decide whether the binding and body of a let-binding should be executed
@@ -336,7 +336,7 @@ data Exists' (a :: (Type -> Type -> Type) -> Type) where
 combineMod :: Modifier m -> Modifier m' -> Exists' Modifier
 combineMod In  In  = Exists' In
 combineMod Out Out = Exists' Out
-combineMod _   _   = Exists' Mut
+combineMod _   _   = error "Remove this error once we add in place updates" -- Exists' Mut
 
 combineAccessGroundR :: AccessGroundR t -> AccessGroundR t -> AccessGroundR t
 combineAccessGroundR (AccessGroundRbuffer m1 tp) (AccessGroundRbuffer m2 _)

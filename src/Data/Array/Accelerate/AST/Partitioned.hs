@@ -55,7 +55,7 @@ import Data.Array.Accelerate.Type (ScalarType (..), SingleType (..), NumType (..
 import Data.Array.Accelerate.AST.Environment (Env (..), prj')
 import Data.Functor.Identity
 
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (LabelledArgs, LabelledArg (..), ALabel (..), ALabels (..), ELabel (..), Label)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (Labels, LabelledArgs, LabelledArg (..), ALabel (..), ALabels (..), ELabel (..), Label)
 import Data.List (nub, sortOn)
 import Lens.Micro (_1)
 import qualified Data.Functor.Const as C
@@ -410,7 +410,10 @@ instance TupRmonoid (TupR f) where
 
 
 unOpLabels' :: LabelledArgsOp op env args -> LabelledArgs env args
-unOpLabels' = mapArgs $ \(LOp arg l _) -> L arg l
+unOpLabels' = mapArgs unOpLabel
+
+unOpLabel :: LabelledArgOp op env args -> LabelledArg env args
+unOpLabel (LOp arg l _) = L arg l
 
 data Both f g a = Both (f a) (g a) deriving (Show, Eq)
 fst' (Both x _) = x
@@ -439,7 +442,8 @@ fuse' :: MakesILP op => LabelledArgsOp op env l -> LabelledArgsOp op env r -> Pr
       -> (forall sh e. f (Out sh e) -> f (In sh e) -> f (Var' sh))
       -> (forall args. PreArgs f args -> Cluster op args -> result)
       -> result
-fuse' labl labr largs rargs l r c k = mkFused labl labr $ \f -> k (both c f largs rargs) (Fused f l r)
+fuse' labl labr largs rargs l r c k = 
+  mkFused labl labr $ \f -> k (both c f largs rargs) (Fused f l r)
 
 mkFused :: MakesILP op => LabelledArgsOp op env l -> LabelledArgsOp op env r -> (forall args. Fusion l r args -> result) -> result
 mkFused ArgsNil ArgsNil k = k EmptyF
@@ -449,10 +453,13 @@ mkFused ((LOp l ((NotArr,_)) _) :>: ls) rs k = mkFused ls rs $ \f -> k (addleft 
 mkFused ls ((LOp r ((NotArr,_))_ ) :>: rs) k = mkFused ls rs $ \f -> k (addright r f)
 mkFused ((LOp l ((Arr TupRunit,_))_ ) :>: ls) rs k = mkFused ls rs $ \f -> k (addleft l f)
 mkFused ls ((LOp r ((Arr TupRunit,_))_) :>: rs) k = mkFused ls rs $ \f -> k (addright r f)
-mkFused (l'@(LOp l ((Arr (TupRsingle (C.Const (ELabel llab))), lls))lop) :>: ls) (r'@(LOp r ((Arr (TupRsingle (C.Const (ELabel rlab))), rls))rop) :>: rs) k
-  | lls == rls = mkFused ls rs $ \f -> addboth l r f k
-  | lls <  rls = mkFused ls (r':>:rs) $ \f -> k (addleft l f)
-  | lls >  rls = mkFused (l':>:ls) rs $ \f -> k (addright r f)
+mkFused (l'@(LOp l _ _) :>: ls) (r'@(LOp r _ _) :>: rs) k
+  | Left le <- getElabelForSort $ unOpLabel l'
+  , Left re <- getElabelForSort $ unOpLabel r'
+    = case compare le re of
+      EQ -> mkFused ls rs $ \f -> addboth l r f k
+      LT -> mkFused ls (r':>:rs) $ \f -> k (addleft l f)
+      GT -> mkFused (l':>:ls) rs $ \f -> k (addright r f)
   | otherwise = error "simple math, the truth cannot be questioned"
 mkFused ((LOp l@(ArgArray Mut _ _ _) _ _) :>: ls) rs k = mkFused ls rs $ \f -> k (addleft l f)
 mkFused ls ((LOp r@(ArgArray Mut _ _ _) _ _) :>: rs) k = mkFused ls rs $ \f -> k (addright r f)
@@ -501,11 +508,20 @@ sortArgs args k =
     unsort :: PreArgs f sorted -> PreArgs f args
     unsort srts = case argsFromList . map snd . sortOn fst . zip ls' . argsToList $ srts of Exists a -> unsafeCoerce a
     args' = argsToList args
-    ls = map (\(Exists (L _ (_,l)))->l) args'
+    ls = map (\(Exists l) -> getElabelForSort l) args'
     ls' = map snd $ sortOn fst $ zip ls [1..]
     keepAll :: LabelledArgs env args -> SubArgs args args
     keepAll ArgsNil = SubArgsNil
     keepAll (_:>:as) = SubArgKeep `SubArgsLive` keepAll as
+-- If it's a buffer, we only care about its unique label. If it's not a buffer, the other labels suffice to give any ordering.
+getElabelForSort :: LabelledArg env a -> Either ELabel Labels
+getElabelForSort (L (ArgArray m (ArrayR _ TupRsingle{}) _ _) (Arr (TupRsingle (C.Const e)),_)) 
+  | In  <- m = Left e
+  | Out <- m = Left e
+getElabelForSort (L _ (_,ls)) = Right ls
+
+
+
 
 subargsId :: PreArgs f args -> SubArgs args args
 subargsId ArgsNil = SubArgsNil
@@ -643,4 +659,8 @@ slvOut (a :>: args)  (SubArgsLive SubArgKeep sas) env = case a of
 slvOut _ _ _ = error "not soa'ed"
 
 
-
+showSorted :: LabelledArgsOp op env args -> String
+showSorted ArgsNil = ""
+showSorted (a :>: args) = case a of
+  LOp (ArgArray m _ _ _) (_,ls) _ -> show m <> "{" <> show ls <> "}" <> showSorted args
+  _ -> showSorted args 

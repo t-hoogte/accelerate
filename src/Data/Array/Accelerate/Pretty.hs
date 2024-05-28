@@ -129,7 +129,7 @@ terminalLayoutOptions
   = unsafePerformIO
   $ do term <- Term.size
        return $ case term of
-                  Nothing -> defaultLayoutOptions
+                  Nothing -> LayoutOptions { layoutPageWidth = Unbounded }
                   Just t  -> LayoutOptions { layoutPageWidth = AvailablePerLine (min w 120) f }
                     where
                       w = Term.width t
