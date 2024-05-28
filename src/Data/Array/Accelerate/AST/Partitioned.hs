@@ -154,8 +154,10 @@ deriving instance Show (Fusion l r total)
 
 
 soaShrink :: forall args expanded f
-           . (forall a. Show (f a))
-          => (forall l r g. f (g l) -> f (g r) -> f (g (l,r)))
+           . 
+          --  (forall a. Show (f a))
+          -- => 
+          (forall l r g. f (g l) -> f (g r) -> f (g (l,r)))
           -> SOAs args expanded -> PreArgs f expanded -> PreArgs f args
 soaShrink _ SOArgsNil ArgsNil = ArgsNil
 soaShrink f (SOArgsCons soas soa) args = case go soa args of (arg :>: args') -> arg :>: soaShrink f soas args'
@@ -448,9 +450,9 @@ mkFused ls ((LOp r ((NotArr,_))_ ) :>: rs) k = mkFused ls rs $ \f -> k (addright
 mkFused ((LOp l ((Arr TupRunit,_))_ ) :>: ls) rs k = mkFused ls rs $ \f -> k (addleft l f)
 mkFused ls ((LOp r ((Arr TupRunit,_))_) :>: rs) k = mkFused ls rs $ \f -> k (addright r f)
 mkFused (l'@(LOp l ((Arr (TupRsingle (C.Const (ELabel llab))), lls))lop) :>: ls) (r'@(LOp r ((Arr (TupRsingle (C.Const (ELabel rlab))), rls))rop) :>: rs) k
-  | (llab,lop) == (rlab,rop) = mkFused ls rs $ \f -> addboth l r f k
-  | (llab,lop) <  (rlab,rop) = mkFused ls (r':>:rs) $ \f -> k (addleft l f)
-  | (llab,lop) >  (rlab,rop) = mkFused (l':>:ls) rs $ \f -> k (addright r f)
+  | lls == rls = mkFused ls rs $ \f -> addboth l r f k
+  | lls <  rls = mkFused ls (r':>:rs) $ \f -> k (addleft l f)
+  | lls >  rls = mkFused (l':>:ls) rs $ \f -> k (addright r f)
   | otherwise = error "simple math, the truth cannot be questioned"
 mkFused ((LOp l@(ArgArray Mut _ _ _) _ _) :>: ls) rs k = mkFused ls rs $ \f -> k (addleft l f)
 mkFused ls ((LOp r@(ArgArray Mut _ _ _) _ _) :>: rs) k = mkFused ls rs $ \f -> k (addright r f)
@@ -489,13 +491,15 @@ singleton l largs op k = mkSOAs (mapArgs (\(LOp a _ _) -> a) largs) $ \soas ->
 
 sortArgs :: LabelledArgs env args -> (forall sorted. SortedArgs args sorted -> SubArgs sorted sorted -> r) -> r
 sortArgs args k =
-  -- if nub ls /= ls then error "not sure if this works" -- this means that some arguments have identical sets of labels. This should only be a problem if two array arguments share labelsets.
-  -- else 
     k (SA
-        (\args -> case argsFromList . map snd . sortOn fst . zip ls  . argsToList $ args of Exists a -> unsafeCoerce a)
-        (\srts -> case argsFromList . map snd . sortOn fst . zip ls' . argsToList $ srts of Exists a -> unsafeCoerce a))
-      (unsafeCoerce $ keepAll args) -- same length, so coerce is safe
+        sort
+        unsort)
+      (keepAll $ sort args)
   where
+    sort :: PreArgs f args -> PreArgs f sorted
+    sort   args = case argsFromList . map snd . sortOn fst . zip ls  . argsToList $ args of Exists a -> unsafeCoerce a
+    unsort :: PreArgs f sorted -> PreArgs f args
+    unsort srts = case argsFromList . map snd . sortOn fst . zip ls' . argsToList $ srts of Exists a -> unsafeCoerce a
     args' = argsToList args
     ls = map (\(Exists (L _ (_,l)))->l) args'
     ls' = map snd $ sortOn fst $ zip ls [1..]
