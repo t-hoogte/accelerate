@@ -135,7 +135,8 @@ prettyPreOpenExp ctx prettyArrayInstr env exp =
         --
         single = parensIf (needsParens ctx (Operator "?:" Infix N 0))
                $ sep [ p', pretty '?', t', pretty ':', e' ]
-        multi  = hang 3
+        multi  = parensIf (ctxPrecedence ctx > 0)
+               $ hang 3
                $ vsep [ if_ <+> p'
                       , hang shiftwidth (sep [ then_, t' ])
                       , hang shiftwidth (sep [ else_, e' ]) ]
