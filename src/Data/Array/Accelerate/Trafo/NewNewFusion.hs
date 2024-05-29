@@ -49,15 +49,13 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (Objective (..))
 import System.IO.Unsafe -- for debugging
 #endif
 
-data Benchmarking = GreedyFusion | NoFusion
-  deriving (Show, Eq)
 
 convertAccBench :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Benchmarking -> OperationAcc op () a -> PartitionedAcc op () a
-convertAccBench GreedyFusion = withSimplStats (greedy FusedEdges)
 convertAccBench NoFusion = withSimplStats (no FusedEdges)
+convertAccBench greedydir = withSimplStats (greedy greedydir FusedEdges)
 convertAccBenchF :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Benchmarking -> OperationAfun op () a -> PartitionedAfun op () a
-convertAccBenchF GreedyFusion = withSimplStats (greedyF FusedEdges)
 convertAccBenchF NoFusion = withSimplStats (noF FusedEdges)
+convertAccBenchF greedydir = withSimplStats (greedyF greedydir FusedEdges)
 
 
 -- Array Fusion

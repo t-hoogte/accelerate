@@ -79,7 +79,8 @@ import qualified Data.Array.Accelerate.AST.Operation as Operation
 import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Graph
 import Data.Array.Accelerate.Eval (EvalOp)
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (Objective)
-import Data.Array.Accelerate.Trafo.NewNewFusion (Benchmarking(..))
+import Data.Array.Accelerate.Trafo.Partitioning.ILP (Benchmarking)
+
 
 class
   ( Desugar.DesugarAcc (Operation backend)

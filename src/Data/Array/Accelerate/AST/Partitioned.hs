@@ -419,6 +419,9 @@ data Both f g a = Both (f a) (g a) deriving (Show, Eq)
 fst' (Both x _) = x
 snd' (Both _ y) = y
 
+instance (TupRmonoid f, TupRmonoid g) => TupRmonoid (Both f g) where
+  pair' (Both a b) (Both c d) = Both (pair' a c) (pair' b d)
+  unpair' (Both (unpair' -> (a, c)) (unpair' -> (b, d))) = (Both a b, Both c d)
 
 
 zipArgs :: PreArgs f a -> PreArgs g a -> PreArgs (Both f g) a
