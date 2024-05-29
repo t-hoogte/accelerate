@@ -11,6 +11,7 @@
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE LambdaCase #-}
 
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.MIP (
   -- Exports default paths to 6 solvers, as well as an instance to ILPSolver for all of them
@@ -44,7 +45,7 @@ instance (MakesILP op, MIP.IsSolver s IO) => ILPSolver s op where
   solve s (ILP dir obj constr bnds n) = makeSolution names . addZeroes problem <$> MIP.solve s options problem
     where
       options = def { MIP.solveTimeLimit   = Just 60
-                                , MIP.solveLogger      = const (pure ()) --putStrLn . ("AccILPSolver: "      ++)
+                                , MIP.solveLogger      = const $ pure () -- putStrLn . ("AccILPSolver: "      ++)
                                 , MIP.solveErrorLogger = putStrLn . ("AccILPSolverError: " ++)
       } --, MIP.solveCondensedSolution = False }
       
@@ -53,7 +54,13 @@ instance (MakesILP op, MIP.IsSolver s IO) => ILPSolver s op where
         <$> (Problem (Just "AccelerateILP") <$> (mkFun dir <$> expr n obj) <*> cons n constr <*> pure [] <*> pure []) 
         <*> (bounds bnds >>= finishBounds) 
         <*> vartypes -- If any variables are not given a type, they won't get fixed by `solveCondensedSoluton` (and I'm also not sure whether Integer is the default).
-      (problem, (names,_)) = runState stateProblem ((mempty, mempty),"")
+      (problem', (names,_)) = runState stateProblem ((mempty, mempty),"")
+      -- add empty constraints for variables that are only in bounds
+      problem = case problem' of
+        Problem name o c _ _ b t -> Problem name o (c <> [MIP.constExpr (negate $ fromIntegral n) MIP..<=. MIP.varExpr x | x <- M.keys b, x `notElem` varsOf c]) [] [] b t
+      varsOf :: [MIP.Constraint Scientific] -> [MIP.Var]
+      varsOf = concatMap $ concatMap (\(Term _ vs)->vs) . (\(Expr ts)->ts) . MIP.constrExpr
+
 
       mkFun Maximise = ObjectiveFunction (Just "AccelerateObjective") OptMax
       mkFun Minimise = ObjectiveFunction (Just "AccelerateObjective") OptMin

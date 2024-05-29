@@ -33,7 +33,7 @@ module Data.Array.Accelerate.Trafo (
   Function, EltFunctionR,
   convertExp, convertFun,
 
-  test, testWithObjective, convertAccWithObj, convertAfunWithObj, convertAccBench, convertAfunBench,
+  test, testWithObjective, testBench, convertAccWithObj, convertAfunWithObj, convertAccBench, convertAfunBench,
 ) where
 
 import Data.Array.Accelerate.Sugar.Array                  ( ArraysR )
@@ -129,6 +129,48 @@ testWithObjective obj f
     schedule = convertScheduleFun @sched @kernel slvpartitioned
 
 
+testBench
+  :: forall sched kernel f. (Afunction f, DesugarAcc (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), Pretty.PrettyKernel kernel, IsSchedule sched, IsKernel kernel, Pretty.PrettySchedule sched, Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))
+  => Benchmarking
+  -> f
+  -> String
+testBench bench f
+  = "OriginalAcc:\n"
+  ++ Pretty.renderForTerminal (Pretty.prettyPreOpenAfun configPlain prettyOpenAcc Empty original)
+  ++ "\n\nDesugared OperationAcc:\n"
+  ++ Pretty.renderForTerminal (Pretty.prettyAfun desugared)
+  ++ "\n\nSimplified OperationAcc:\n"
+  ++ Pretty.renderForTerminal (Pretty.prettyAfun operation)
+  ++ "\n\nPartitionedAcc:\n"
+  ++ Pretty.renderForTerminal (Pretty.prettyAfun partitioned)
+  ++ "\nSLV'd PartitionedAcc:\n"
+  ++ Pretty.renderForTerminal (Pretty.prettyAfun slvpartitioned)
+  ++ "\n\nSchedule:\n"
+  ++ Pretty.renderForTerminal (Pretty.prettySchedule schedule)
+  where
+    operation
+      = 
+      Operation.simplifyFun $
+      Operation.stronglyLiveVariablesFun $
+      Operation.simplifyFun $
+       desugared
+    desugared =
+        desugarAfun @(KernelOperation kernel)
+      $ original
+    original =
+        LetSplit.convertAfun 
+      $ Sharing.convertAfunWith defaultOptions f
+
+    partitioned = 
+      Operation.simplifyFun $ 
+      NewNewFusion.convertAccBenchF bench operation
+
+    slvpartitioned = 
+      Operation.simplifyFun $ 
+      Operation.stronglyLiveVariablesFun partitioned
+
+    schedule = convertScheduleFun @sched @kernel slvpartitioned
+
 
 
 
@@ -163,12 +205,13 @@ convertAccWith config
 
 convertAccBench 
   :: forall sched kernel arrs.
-     (DesugarAcc (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel, Operation.NFData' (Graph.BackendClusterArg (KernelOperation kernel)),  Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))
+     (Pretty.PrettySchedule sched, Pretty.PrettyKernel kernel, DesugarAcc (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel, Operation.NFData' (Graph.BackendClusterArg (KernelOperation kernel)),  Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))
   => NewNewFusion.Benchmarking
   -> Acc arrs
   -> sched kernel () (ScheduleOutput sched (DesugaredArrays (ArraysR arrs)) -> ())
 convertAccBench b
-  = phase' "codegen"     rnfSchedule convertSchedule
+  = --(\s -> Debug.Trace.trace (Pretty.renderForTerminal (Pretty.prettySchedule s)) s) .
+    phase' "codegen"     rnfSchedule convertSchedule
   . phase  "partition-live-vars"    (Operation.simplify . Operation.stronglyLiveVariables)
   . phase  "array-fusion"           (Operation.simplify . NewNewFusion.convertAccBench b)
   . phase  "operation-live-vars"    (Operation.simplify . Operation.stronglyLiveVariables)
@@ -179,12 +222,13 @@ convertAccBench b
 
 convertAfunBench
   :: forall sched kernel f.
-     (Afunction f, DesugarAcc (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel, Operation.NFData' (Graph.BackendClusterArg (KernelOperation kernel)),  Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))
+     (Pretty.PrettySchedule sched, Pretty.PrettyKernel kernel, Afunction f, DesugarAcc (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), IsSchedule sched, IsKernel kernel, Operation.NFData' (Graph.BackendClusterArg (KernelOperation kernel)),  Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))
   => NewNewFusion.Benchmarking
   -> f
   -> sched kernel () (Scheduled sched (DesugaredAfun (ArraysFunctionR f)))
 convertAfunBench b
-  = phase' "codegen"     rnfSchedule convertScheduleFun
+  = --(\s -> Debug.Trace.trace (Pretty.renderForTerminal (Pretty.prettySchedule s)) s) .
+    phase' "codegen"     rnfSchedule convertScheduleFun
   . phase  "partition-live-vars"    (Operation.simplifyFun . Operation.stronglyLiveVariablesFun)
   . phase  "array-fusion"           (Operation.simplifyFun . NewNewFusion.convertAccBenchF b)
   . phase  "operation-live-vars"    (Operation.simplifyFun . Operation.stronglyLiveVariablesFun)

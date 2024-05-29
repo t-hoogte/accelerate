@@ -43,6 +43,7 @@ data Objective
   | ArrayReadsWrites
   | IntermediateArrays
   | FusedEdges
+  | Everything
   deriving (Show, Bounded, Enum)
   
 
@@ -89,6 +90,7 @@ makeILP obj (Info
       ArrayReadsWrites    -> (Minimise, numberOfArrayReadsWrites)
       IntermediateArrays  -> (Minimise, numberOfManifestArrays)
       FusedEdges          -> (Minimise, numberOfUnfusedEdges)
+      Everything          -> (Minimise, numberOfClusters .+. numberOfArrayReadsWrites) -- arrayreadswrites already indictly includes everything else
 
 
     -- objective function that maximises the number of edges we fuse, and minimises the number of array reads if you ignore horizontal fusion
@@ -146,6 +148,7 @@ makeILP obj (Info
     numberOfClusters  = c (Other "maximumClusterNumber")
     -- removing this from myConstraints makes the ILP slightly smaller, but disables the use of this cost function
     numberOfClustersConstraint = case obj of NumClusters -> foldMap (\l -> pi l .<=. numberOfClusters) nodes
+                                             Everything  -> foldMap (\l -> pi l .<=. numberOfClusters) nodes
                                              _ -> mempty
 
     -- attempt at execpi:

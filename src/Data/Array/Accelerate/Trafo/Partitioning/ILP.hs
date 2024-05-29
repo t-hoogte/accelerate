@@ -118,7 +118,7 @@ greedyFusion' k1 k2 s obj acc = fusedAcc
     go n info -- loop over all fusible edges. Try to set the current one to fused, if there's still a legal solution, keep it fused and continue.
       | n >= nedges = info
       | otherwise = let
-        i:->j = graph^.fusibleEdges&Set.elemAt n
+        i:->j = graph^.fusibleEdges&Set.elemAt (nedges - n - 1)
         info'' = info&constr<>~(fused i j .==. int 0)
         in go (n+1) $ if check info'' then info'' else info
     check :: Information op -> Bool
