@@ -13,6 +13,7 @@
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver where
 
 import qualified Data.Map as M
+import qualified Data.Set as S
 -- Uses an hs-boot file to break an unfortunate cyclic import situation with D.A.A.T.P.ILP.Graph:
 -- `ILPSolver` references `Var` in type signatures, `Var` contains `BackendVar`,
 -- `BackendVar` is in the class `MakesILP`, which references `Information`,
@@ -24,11 +25,23 @@ import {-# SOURCE #-} Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph ( Var, 
 -- Currently the only instance is for MIP, which gives bindings to a couple of solvers.
 -- Still, this way we minimise the surface that has to interact with MIP, can more easily
 -- adapt if it changes, and we could easily add more bindings.
-class (MakesILP op) => ILPSolver ilp op where
-  solve :: ilp -> ILP op -> IO (Maybe (Solution op))
+class (MakesILP op) => ILPSolver ilp op where 
+  solvePartial :: ilp -> ILP op -> IO (Maybe (Solution op))
 
+-- MakesILP op implies Ord (Var op), but not through Graph.hs-boot
+solve :: (ILPSolver ilp op, Ord (Var op)) => ilp -> ILP op -> IO (Maybe (Solution op))
+solve x ilp = fmap (<> M.fromSet (const 0) (allVars ilp)) -- add zeroes to the ILP for missing variables
+           <$> solvePartial x (finalize ilp)
 
-
+-- adds potentially missing constraints and bounds:
+-- some solvers require all variables to have a bound
+-- or all variables to be in a constraint.
+finalize :: Ord (Var op) => ILP op -> ILP op
+finalize ilp@(ILP dir obj constr bnds n) =
+  ILP dir obj (constr <> extraconstr) (bnds <> extrabnds) n
+  where
+    extraconstr = foldMap (\v -> int (-5) .<=. c v) (allVars ilp)
+    extrabnds   = foldMap (\v -> Lower (-5) v)      (allVars ilp)
 
 data OptDir = Maximise | Minimise
   deriving Show
@@ -75,7 +88,7 @@ instance Semigroup (Bounds op) where (<>) = (:<>)
 instance Monoid    (Bounds op) where mempty = NoBounds
 
 
--- Synonyms for the constructors above
+-- Synonyms for the constructors above: ease of defining ILP
 infixl 8 .+.
 infixl 8 .-.
 infixl 8 .*.
@@ -152,3 +165,25 @@ isEqualRangeN = isEqualRange timesN
 -- note that r can always be 1
 isEqualRange :: (Expression op -> Expression op) -> Expression op -> Expression op -> Expression op -> Constraint op
 isEqualRange f a b r = a .-. f r .<=. b <> b .<=. a .+. f r
+
+
+-- helpers for solving an ILP
+allVars :: Ord (Var op) => ILP op -> S.Set (Var op)
+allVars (ILP _ cost constraint bounds _) = varsExpr cost <> varsConstr constraint <> varsBounds bounds
+
+varsExpr (Constant _) = mempty
+varsExpr (a :+ b) = varsExpr a <> varsExpr b
+varsExpr (_ :* v) = S.singleton v
+
+varsConstr TrueConstraint = mempty
+varsConstr (a :&& b) = varsConstr a <> varsConstr b
+varsConstr (a :>= b) = varsExpr a <> varsExpr b
+varsConstr (a :== b) = varsExpr a <> varsExpr b
+varsConstr (a :<= b) = varsExpr a <> varsExpr b
+
+varsBounds NoBounds  = mempty
+varsBounds (a :<> b) = varsBounds a <> varsBounds b
+varsBounds (Binary v) = S.singleton v
+varsBounds (LowerUpper _ v _) = S.singleton v
+varsBounds (Lower _ v) = S.singleton v
+varsBounds (Upper v _) = S.singleton v

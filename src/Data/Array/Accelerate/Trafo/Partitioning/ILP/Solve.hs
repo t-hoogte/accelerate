@@ -10,7 +10,7 @@ module Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve where
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels
     (Label, parent, Labels )
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver hiding (finalize)
 
 import Data.List (groupBy, sortOn)
 import Prelude hiding ( pi )
@@ -29,7 +29,6 @@ import Data.Maybe (fromJust,  mapMaybe )
 import Control.Monad.State
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.NameGeneration (freshName)
 import Data.Foldable
-import qualified Debug.Trace
 
 -- Any edge of this form will either be trivial (if fusible) or impossible (if infusible). 
 -- They originate from the smart constructor -?>, which is not quite smart enough: It should really perform this check,
@@ -165,7 +164,7 @@ makeILP obj (Info
 
 
 
-    myConstraints = acyclic <> infusible <> manifestC <> numberOfClustersConstraint <> readConstraints <> inputConstraints <> finalize (S.toList nodes) 
+    myConstraints = acyclic <> infusible <> manifestC <> numberOfClustersConstraint <> readConstraints <> orderConstraints <> finalize (S.toList nodes) 
 
     -- x_ij <= pi_j - pi_i <= n*x_ij for all edges
     acyclic = foldMap
@@ -185,7 +184,7 @@ makeILP obj (Info
                 edges
 
 
-    inputConstraints = flip foldMap fuseEdges $ \(lIn :-> l) -> 
+    orderConstraints = flip foldMap fuseEdges $ \(lIn :-> l) -> 
                     timesN (fused lIn l) .>=. c (InDir  l) .-. c (OutDir  lIn)
         <> (-1) .*. timesN (fused lIn l) .<=. c (InDir  l) .-. c (OutDir  lIn)
 

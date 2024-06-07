@@ -78,6 +78,8 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (Objective(..))
 import Data.Array.Accelerate.Trafo.NewNewFusion (Benchmarking)
 
 defaultObjective = IntermediateArrays
+-- TODO: so much duplication here, and I keep worrying that there are differences hiding in one of them.
+-- need to abstract a bit!
 
 test
   :: forall sched kernel f. (Afunction f, DesugarAcc (KernelOperation kernel), Operation.SimplifyOperation (KernelOperation kernel), Operation.SLVOperation (KernelOperation kernel), Partitioning.MakesILP (KernelOperation kernel), Pretty.PrettyOp (KernelOperation kernel), Pretty.PrettyKernel kernel, IsSchedule sched, IsKernel kernel, Pretty.PrettySchedule sched, Operation.ShrinkArg (Partitioning.BackendClusterArg (KernelOperation kernel)))

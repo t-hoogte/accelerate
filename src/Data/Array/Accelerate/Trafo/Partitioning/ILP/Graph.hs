@@ -390,7 +390,7 @@ mkFullGraph (Exec op args) = do
   lenv %= flip (updateLabelEnv args) l -- replace the labels of the buffers of output arrays with l
   let labelledArgs = getLabelArgs args env -- uses the old env! Notably, gets the Alloc (or its lhs?) for empty arrays, and the previous writer for Permute
   let    fuseedges = S.map (-?> l) $ getInputArgLabels args env -- add fusible edges to all inputs
-  let nonfuseedges = S.map (-?> l) $ getOutputArgLabels args env
+  let nonfuseedges = S.map (-?> l) $ getOutputArgLabels args env -- add infusible edges to the allocator/last user of the previous value in the buffer we use for output
   let backInfo = mkGraph op labelledArgs l -- query the backend for its fusion information - we add l and fuseedges next line
   return $ FGRes (backInfo
                     & graphI.graphNodes    %~ S.insert l

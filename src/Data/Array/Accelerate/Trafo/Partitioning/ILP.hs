@@ -17,9 +17,9 @@ import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.AST.Operation
     ( OperationAcc, OperationAfun )
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solver
-    ( ILPSolver(solve), (.==.), int )
+    ( ILPSolver, solve, (.==.), int )
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.MIP
-    ( cbc, cplex, glpsol, gurobiCl, lpSolve, scip )
+    ( cbc, cplex, glpsol, gurobiCl, lpSolve, scip, MIP(..) )
 
 import System.IO.Unsafe (unsafePerformIO)
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (Label)
@@ -27,29 +27,55 @@ import Data.Map (Map)
 import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
 import Data.Function ((&))
 import qualified Data.Set as Set
-import Lens.Micro ((^.), (%~), (<>~), (.~))
+import Lens.Micro ((^.), (<>~))
 import Data.Maybe (isJust)
+-- import Data.Array.Accelerate.Trafo.Partitioning.ILP.HiGHS (HiGHS(Highs))
 
 data Benchmarking = GreedyUp | GreedyDown | NoFusion
-  deriving (Show, Eq)
+  deriving (Show, Eq, Bounded, Enum)
+
+-- data type that should probably be in the options
+data Solver = MIPSolver MIPSolver -- | HiGHS
+data MIPSolver = CBC | Gurobi | CPLEX | GLPSOL | LPSOLVE | SCIP
+
+ilpFusion'' :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Solver -> Objective -> OperationAcc op () a -> PartitionedAcc op () a
+ilpFusion'' (MIPSolver s) = case s of
+  CBC     -> ilpFusion (MIP cbc)
+  Gurobi  -> ilpFusion (MIP gurobiCl)
+  CPLEX   -> ilpFusion (MIP cplex)
+  GLPSOL  -> ilpFusion (MIP glpsol)
+  LPSOLVE -> ilpFusion (MIP lpSolve)
+  SCIP    -> ilpFusion (MIP scip)
+-- ilpFusion'' HiGHS = ilpFusion Highs
+
+
+ilpFusionF'' :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Solver -> Objective -> OperationAfun op () a -> PartitionedAfun op () a
+ilpFusionF'' (MIPSolver s) = case s of
+  CBC     -> ilpFusionF (MIP cbc)
+  Gurobi  -> ilpFusionF (MIP gurobiCl)
+  CPLEX   -> ilpFusionF (MIP cplex)
+  GLPSOL  -> ilpFusionF (MIP glpsol)
+  LPSOLVE -> ilpFusionF (MIP lpSolve)
+  SCIP    -> ilpFusionF (MIP scip)
+-- ilpFusionF'' HiGHS = ilpFusionF Highs
 
 cbcFusion, gurobiFusion, cplexFusion, glpsolFusion, lpSolveFusion, scipFusion 
   :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Objective -> OperationAcc op () a -> PartitionedAcc op () a
-cbcFusion     = ilpFusion cbc
-gurobiFusion  = ilpFusion gurobiCl
-cplexFusion   = ilpFusion cplex
-glpsolFusion  = ilpFusion glpsol
-lpSolveFusion = ilpFusion lpSolve
-scipFusion    = ilpFusion scip
+cbcFusion     = ilpFusion (MIP cbc)
+gurobiFusion  = ilpFusion (MIP gurobiCl)
+cplexFusion   = ilpFusion (MIP cplex)
+glpsolFusion  = ilpFusion (MIP glpsol)
+lpSolveFusion = ilpFusion (MIP lpSolve)
+scipFusion    = ilpFusion (MIP scip)
 
 cbcFusionF, gurobiFusionF, cplexFusionF, glpsolFusionF, lpSolveFusionF, scipFusionF 
   :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Objective -> OperationAfun op () a -> PartitionedAfun op () a
-cbcFusionF     = ilpFusionF cbc
-gurobiFusionF  = ilpFusionF gurobiCl
-cplexFusionF   = ilpFusionF cplex
-glpsolFusionF  = ilpFusionF glpsol
-lpSolveFusionF = ilpFusionF lpSolve
-scipFusionF    = ilpFusionF scip
+cbcFusionF     = ilpFusionF (MIP cbc)
+gurobiFusionF  = ilpFusionF (MIP gurobiCl)
+cplexFusionF   = ilpFusionF (MIP cplex)
+glpsolFusionF  = ilpFusionF (MIP glpsol)
+lpSolveFusionF = ilpFusionF (MIP lpSolve)
+scipFusionF    = ilpFusionF (MIP scip)
 
 ilpFusion  :: (MakesILP op, ILPSolver s op, Pretty.PrettyOp (Cluster op)) => s -> Objective -> OperationAcc  op () a -> PartitionedAcc op () a
 ilpFusion  = ilpFusion' makeFullGraph  (reconstruct False)
@@ -116,12 +142,12 @@ greedyFusion' :: forall s op x y. (MakesILP op, ILPSolver s op)
 greedyFusion' k1 k2 s b obj acc = fusedAcc
   where
     (info'@(Info graph _ _), constrM') = k1 acc
-    nedges = graph^.fusibleEdges & Set.size
+    nedges = (graph^.fusibleEdges) Set.\\ (graph^.infusibleEdges) & Set.size
     go :: Int -> Information op -> Information op
     go n info -- loop over all fusible edges. Try to set the current one to fused, if there's still a legal solution, keep it fused and continue.
       | n >= nedges = info
       | otherwise = let
-        i:->j = graph^.fusibleEdges&Set.elemAt (case b of
+        i:->j = (graph^.fusibleEdges) Set.\\ (graph^.infusibleEdges)&Set.elemAt (case b of
           GreedyUp -> n 
           GreedyDown -> nedges - n - 1)
         info'' = info&constr<>~(fused i j .==. int 0)
@@ -143,13 +169,13 @@ greedyFusion' k1 k2 s b obj acc = fusedAcc
       Just y -> y
 
 greedy :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Benchmarking -> Objective -> OperationAcc op () a -> PartitionedAcc op () a
-greedy = greedyFusion gurobiCl
+greedy = greedyFusion (MIP gurobiCl)
 no :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Objective -> OperationAcc op () a -> PartitionedAcc op () a
-no = noFusion gurobiCl
+no = noFusion (MIP gurobiCl)
 greedyF :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Benchmarking -> Objective -> OperationAfun op () a -> PartitionedAfun op () a
-greedyF = greedyFusionF gurobiCl
+greedyF = greedyFusionF (MIP gurobiCl)
 noF :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Objective -> OperationAfun op () a -> PartitionedAfun op () a
-noF = noFusionF gurobiCl
+noF = noFusionF (MIP gurobiCl)
 greedyFusion  :: (MakesILP op, ILPSolver s op, Pretty.PrettyOp (Cluster op)) => s -> Benchmarking -> Objective -> OperationAcc  op () a -> PartitionedAcc op () a
 greedyFusion  = greedyFusion' makeFullGraph  (reconstruct False)
 greedyFusionF :: (MakesILP op, ILPSolver s op, Pretty.PrettyOp (Cluster op)) => s -> Benchmarking -> Objective -> OperationAfun op () a -> PartitionedAfun op () a

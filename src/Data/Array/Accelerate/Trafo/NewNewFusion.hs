@@ -43,6 +43,7 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP)
 import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (Objective (..))
+-- import Data.Array.Accelerate.Trafo.Partitioning.ILP.HiGHS (HiGHS(..))
 
 
 #ifdef ACCELERATE_DEBUG
@@ -61,6 +62,9 @@ convertAccBenchF greedydir = withSimplStats (greedyF greedydir FusedEdges)
 -- Array Fusion
 -- ============
 
+defaultSolver = 
+  MIPSolver Gurobi
+
 -- | Apply the fusion transformation to a de Bruijn AST
 --
 convertAccWith
@@ -69,7 +73,7 @@ convertAccWith
     -> Objective
     -> OperationAcc op () a
     -> PartitionedAcc op () a
-convertAccWith _ = withSimplStats cbcFusion
+convertAccWith _ = withSimplStats (ilpFusion'' defaultSolver)
 
 convertAcc :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => Objective -> OperationAcc op () a -> PartitionedAcc op () a
 convertAcc = convertAccWith defaultOptions
@@ -80,7 +84,7 @@ convertAfun :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => Obje
 convertAfun = convertAfunWith defaultOptions
 
 convertAfunWith :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => Config -> Objective -> OperationAfun op () f -> PartitionedAfun op () f
-convertAfunWith _ = withSimplStats cbcFusionF
+convertAfunWith _ = withSimplStats (ilpFusionF'' defaultSolver)
 
 
 withSimplStats :: a -> a
