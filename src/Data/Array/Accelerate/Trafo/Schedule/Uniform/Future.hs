@@ -707,7 +707,7 @@ loopFuture resolved (FutureBuffer tp ref (Move readLockSignal) (Just (Move write
             $ Just $ Borrow (Just signalW) resolverR
       | otherwise -> internalError "input or output impossible"
   }
-loopFuture resolved (FutureBuffer tp ref (Lock readLockSignal readLockResolver) (Just (Lock writeLockSignal writeLockResolver))) = undefined
+loopFuture resolved (FutureBuffer tp ref (Lock readLockSignal readLockResolver) (Just (Lock writeLockSignal writeLockResolver))) =
   -- A borrowed writable buffer
   -- We must add two signals (and accompanying signal resolvers) to the state
   -- to synchronize read and write access. Furthermore we need to declare two

@@ -129,7 +129,9 @@ constructFull schedule k env postponed cont
   | null $ directlyAwaits schedule = construct schedule k env postponed cont
   | signals' <-
     -- Don't wait on already resolved signals
-    filter (\idx -> not (isResolved idx env))
+    sortedDedup
+      $ sort
+      $ filter (\idx -> not (isResolved idx env))
       $ map (weaken k)
       $ directlyAwaits schedule
   , env' <- markResolved signals' env =
@@ -278,13 +280,13 @@ markResolved :: [Idx env Signal] -> BuildEnv env -> BuildEnv env
 markResolved [] env = env
 markResolved signals (BPush env info)
   | ZeroIdx : signals' <- signals
-    = BPush (markResolved (map forceWeaken signals') env) IResolved
+    = BPush (markResolved (map unSucc signals') env) IResolved
   | otherwise
-    = BPush (markResolved (map forceWeaken signals) env) info
+    = BPush (markResolved (map unSucc signals) env) info
   where
-    forceWeaken :: Idx (env, t) s -> Idx env s
-    forceWeaken ZeroIdx = internalError "markResolved: input was not sorted or contains duplicates"
-    forceWeaken (SuccIdx idx) = idx
+    unSucc :: Idx (env, t) s -> Idx env s
+    unSucc ZeroIdx = internalError "markResolved: input was not sorted or contains duplicates"
+    unSucc (SuccIdx idx) = idx
 markResolved (s:_) BEmpty = case s of {}
 
 isResolved :: Idx env Signal -> BuildEnv env -> Bool
@@ -386,6 +388,35 @@ buildLet lhs binding body
             (if shouldAwait then nothingPostponed else weaken' (weakenWithLHS lhs') postponed)
           $ weaken' (weakenWithLHS lhs') cont
 
+buildLetNewSignal :: String -> [Idx env SignalResolver] -> BuildSchedule kernel ((env, Signal), SignalResolver) -> BuildSchedule kernel env
+buildLetNewSignal comment resolvers body =
+  -- NewSignal is trivial
+  BuildSchedule{
+    directlyAwaits = map (fromMaybe (internalError "Illegal schedule: deadlock") . strengthenWithLHS lhs) $ directlyAwaits body,
+    finallyResolves = mapMaybe (strengthenWithLHS lhs) $ finallyResolves body,
+    trivial = trivial body,
+    construct = \k env postponed cont -> if
+      | otherSignal : _ <- mapMaybe (\idx -> k >:> idx `findSignal` env) resolvers
+      , k' <- sink $ weakenReplace otherSignal k ->
+        -- Remove the index for the signal.
+        -- Replace all occurrences of that signal with 'otherSignal',
+        -- as their resolvers are resolved at the same time.
+        Alet lhsResolver (NewSignal comment)
+          $ construct body k'
+            (buildEnvExtend lhsResolver (NewSignal comment) env)
+            (weaken' (weakenSucc weakenId) postponed)
+          $ weaken' (weakenSucc weakenId) cont
+      | k' <- sink $ sink k ->
+        Alet lhs (NewSignal comment)
+          $ construct body k'
+            (buildEnvExtend lhs (NewSignal comment) env)
+            (weaken' (weakenSucc $ weakenSucc weakenId) postponed)
+          $ weaken' (weakenSucc $ weakenSucc weakenId) cont
+  }
+  where
+    lhs = LeftHandSideSingle BaseRsignal `LeftHandSidePair` LeftHandSideSingle BaseRsignalResolver
+    lhsResolver = LeftHandSideWildcard (TupRsingle BaseRsignal) `LeftHandSidePair` LeftHandSideSingle BaseRsignalResolver
+
 buildEnvExtend :: BLeftHandSide t env1 env2 -> Binding env1 t -> BuildEnv env1 -> BuildEnv env2
 buildEnvExtend (LeftHandSidePair (LeftHandSideSingle _) (LeftHandSideSingle _)) (NewSignal _) env =
   env `BPush` INone `BPush` IResolvesNext
@@ -420,7 +451,7 @@ buildEffect (SignalResolve resolvers) next =
     construct = \k env postponed cont ->
       let
         resolvers'' = map (weaken k) resolvers'
-        signals = mapMaybe (\r -> findSignal r env) resolvers''
+        signals = sort $ mapMaybe (\r -> findSignal r env) resolvers''
         env' = markResolved signals env
       in
         constructFull next k env' (resolveSignalsInPostponed signals resolvers'' postponed) cont
@@ -578,6 +609,16 @@ mergeDedup as@(a:as') bs@(b:bs')
 mergeDedup as [] = as
 mergeDedup [] bs = bs
 
+sortedDedup :: Eq a => [a] -> [a]
+sortedDedup = \case
+  [] -> []
+  a : as -> go a as
+  where
+    go x (y:ys)
+      | x == y = go x ys
+      | otherwise = x : go y ys
+    go x [] = [x]
+
 -- Constructs the intersection of two lists,
 -- assuming they are sorted and have no duplicates.
 sortedIntersection :: Ord a => [a] -> [a] -> [a]
@@ -605,18 +646,113 @@ simplify f = funConstruct (rebuildFun f) weakenId BEmpty
 
 rebuildFun :: UniformScheduleFun kernel env t -> BuildScheduleFun kernel env t
 rebuildFun (Slam lhs f) = buildFunLam lhs $ rebuildFun f
-rebuildFun (Sbody body) = buildFunBody $ rebuild body
+rebuildFun (Sbody body) = buildFunBody $ snd $ rebuild body
 
-rebuild :: UniformSchedule kernel env -> BuildSchedule kernel env
+rebuild :: UniformSchedule kernel env -> (SignalAnalysis env, BuildSchedule kernel env)
 rebuild = \case
-  Return -> buildReturn
-  Alet lhs bnd body ->
-    buildLet lhs bnd $ rebuild body
-  Effect eff next ->
-    buildEffect eff $ rebuild next
-  Acond var true false next ->
-    buildAcond var (rebuild true) (rebuild false) (rebuild next)
-  Awhile io f input next ->
-    buildAwhile io (rebuildFun f) input (rebuild next)
-  Spawn a b ->
-    buildSpawn (rebuild a) (rebuild b)
+  Return -> (SEmpty, buildReturn)
+  Alet lhs bnd body
+    | (analysis, body') <- rebuild body ->
+      ( analysisDrop lhs analysis
+      , rebuildLet lhs bnd analysis body'
+      )
+  Effect eff next
+    | (analysis, next') <- rebuild next ->
+      ( analyseEffect eff `analysisJoin` analysis
+      , buildEffect eff next'
+      )
+  Acond var true false next
+    | (aTrue, true') <- rebuild true
+    , (aFalse, false') <- rebuild false
+    , (aNext, next') <- rebuild next ->
+      ( analysisMeet aTrue aFalse `analysisJoin` aNext
+      , buildAcond var true' false' next'
+      )
+  Awhile io f input next
+    | (analysis, next') <- rebuild next ->
+      ( analysis
+      , buildAwhile io (rebuildFun f) input next'
+      )
+  Spawn term1 term2
+    | (analysis1, term1') <- rebuild term1
+    , (analysis2, term2') <- rebuild term2 ->
+      ( analysisJoin analysis1 analysis2
+      , buildSpawn term1' term2'
+      )
+
+rebuildLet
+  :: BLeftHandSide t env env'
+  -> Binding env t
+  -> SignalAnalysis env'
+  -> BuildSchedule kernel env'
+  -> BuildSchedule kernel env
+rebuildLet (LeftHandSidePair LeftHandSideSingle{} LeftHandSideSingle{}) (NewSignal comment) (SPush _ (SIResolvedWith resolvers)) body = buildLetNewSignal comment (map unSucc resolvers) body
+  where
+    unSucc :: Idx (env, Signal) SignalResolver -> Idx env SignalResolver
+    unSucc (SuccIdx idx) = idx
+rebuildLet lhs bnd _ body = buildLet lhs bnd body
+
+-- Signal analysis
+data SignalAnalysis env where
+  SEmpty :: SignalAnalysis env
+  SPush  :: SignalAnalysis env -> SignalInfo env t -> SignalAnalysis (env, t)
+
+spush :: SignalAnalysis env -> SignalInfo env t -> SignalAnalysis (env, t)
+spush SEmpty SINone = SEmpty
+spush env info = SPush env info
+
+data SignalInfo env t where
+  -- This SignalResolver is resolved at the same time as the given list of SignalResolvers.
+  SIResolvedWith
+    :: [Idx env SignalResolver]
+    -> SignalInfo env SignalResolver
+
+  SINone
+    :: SignalInfo env t
+
+analysisDrop :: LeftHandSide s t env env' -> SignalAnalysis env' -> SignalAnalysis env
+analysisDrop _ SEmpty = SEmpty
+analysisDrop LeftHandSideWildcard{} env = env
+analysisDrop LeftHandSideSingle{} (SPush env _) = env
+analysisDrop (LeftHandSidePair lhs1 lhs2) env = analysisDrop lhs1 $ analysisDrop lhs2 env
+
+-- Use this when two terms are both executed, for instance in a spawn
+analysisJoin :: SignalAnalysis env -> SignalAnalysis env -> SignalAnalysis env
+analysisJoin SEmpty env = env
+analysisJoin env SEmpty = env
+analysisJoin (SPush as a) (SPush bs b) = analysisJoin as bs `SPush` signalInfoJoin a b
+
+signalInfoJoin :: SignalInfo env t -> SignalInfo env t -> SignalInfo env t
+signalInfoJoin SINone info = info
+signalInfoJoin info SINone = info
+signalInfoJoin (SIResolvedWith as) (SIResolvedWith bs) = SIResolvedWith $ as `mergeDedup` bs
+
+-- Use this when only one of the two terms is executed, for instance in an if-then-else
+analysisMeet :: SignalAnalysis env -> SignalAnalysis env -> SignalAnalysis env
+analysisMeet SEmpty _ = SEmpty
+analysisMeet _ SEmpty = SEmpty
+analysisMeet (SPush as a) (SPush bs b) = analysisMeet as bs `SPush` signalInfoMeet a b
+
+signalInfoMeet :: SignalInfo env t -> SignalInfo env t -> SignalInfo env t
+signalInfoMeet SINone _ = SINone
+signalInfoMeet _ SINone = SINone
+signalInfoMeet (SIResolvedWith as) (SIResolvedWith bs) = SIResolvedWith $ as `sortedIntersection` bs
+
+analyseEffect :: Effect kernel env -> SignalAnalysis env
+analyseEffect (SignalResolve resolvers) = analyseSignalResolve resolvers
+analyseEffect _ = SEmpty
+
+analyseSignalResolve :: [Idx env SignalResolver] -> SignalAnalysis env
+analyseSignalResolve = const SEmpty -- go . sort
+  where
+    -- input is sorted from low indices to high indices
+    go :: [Idx env SignalResolver] -> SignalAnalysis env
+    go [] = SEmpty
+    go [_] = SEmpty
+    go (ZeroIdx : ids) = go ids' `SPush` SIResolvedWith ids'
+      where ids' = map unSucc ids
+    go ids@(SuccIdx _ : _) = go (map unSucc ids) `spush` SINone
+
+    unSucc :: Idx (env, s) t -> Idx env t
+    unSucc (SuccIdx idx) = idx
+    unSucc ZeroIdx = internalError "Expected non-zero index. Is the list of indices sorted and unique?"
