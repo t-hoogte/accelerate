@@ -46,8 +46,7 @@ module Data.Array.Accelerate.Interpreter (
 ) where
 
 import Prelude                                                      hiding (take, (!!), sum, Either(..) )
-import Data.Array.Accelerate.AST.Partitioned hiding (Empty)
-import Data.Array.Accelerate.AST.Operation
+import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.AST.Kernel
 import Data.Array.Accelerate.Trafo.Desugar
 import qualified Data.Array.Accelerate.Debug.Internal as Debug
@@ -82,7 +81,7 @@ import Lens.Micro ((.~), (&))
 import Data.Array.Accelerate.Array.Buffer
 import Data.Array.Accelerate.Pretty.Partitioned ()
 import Data.Array.Accelerate.AST.Idx
-import Data.Array.Accelerate.AST.LeftHandSide (LeftHandSide (LeftHandSideWildcard, LeftHandSideUnit))
+import Data.Array.Accelerate.AST.LeftHandSide (LeftHandSide (LeftHandSideUnit))
 import Data.Array.Accelerate.AST.Schedule
 
 import Control.Concurrent (forkIO)
@@ -97,7 +96,6 @@ import qualified Data.Map as M
 import Control.Monad (when)
 import Data.Array.Accelerate.Trafo.Var (DeclareVars(DeclareVars), declareVars)
 import Data.Array.Accelerate.Trafo.Operation.Substitution (alet, aletUnique, weaken, LHS (LHS), mkLHS)
-import Control.DeepSeq (rnf)
 import Data.Map (Map)
 import System.IO.Unsafe (unsafePerformIO)
 
@@ -105,8 +103,6 @@ import Data.Array.Accelerate.Eval
 import qualified Data.Array.Accelerate.AST.Partitioned as P
 import Data.Functor.Identity
 import Data.Array.Accelerate.Trafo.LiveVars
-import qualified Debug.Trace
-import Data.Maybe (fromJust)
 
 data Interpreter
 instance Backend Interpreter where
@@ -114,6 +110,7 @@ instance Backend Interpreter where
   type Kernel Interpreter = InterpretKernel
 
 
+(!?!) :: (Ord a1, Show a1, Show a2) => Map a1 a2 -> a1 -> a2
 map !?! key = case map M.!? key of
   Just x -> x
   Nothing -> error ("error: map "<> show map <> "does not contain key " <> show key)
@@ -128,7 +125,7 @@ instance Eq (BackendClusterArg2 InterpretOp env arg) where
   BCA f x == BCA g y = map f [1..100] == map g [1..100] && x == y
 
 instance Show (BackendClusterArg2 InterpretOp env arg) where
-  show (BCA f a) = "bca"
+  show (BCA _ _) = "bca"
 
 instance StaticClusterAnalysis InterpretOp where
   data BackendClusterArg2 InterpretOp env arg = BCA (Int -> Int) Int -- backpermute function and iteration size
@@ -714,7 +711,7 @@ doNTimes n f
 linearIndexToSh :: ShapeR sh -> sh -> Int -> sh
 linearIndexToSh ShapeRz () 0 = ()
 linearIndexToSh ShapeRz () _ = error "non-zero index in unit array"
-linearIndexToSh (ShapeRsnoc shr) (sh, outer) i = let
+linearIndexToSh (ShapeRsnoc shr) (sh, _) i = let
   innerSize = arrsize shr sh
   outerIndex = i `div` innerSize
   innerIndex = linearIndexToSh shr sh (i `mod` innerSize)
@@ -722,7 +719,7 @@ linearIndexToSh (ShapeRsnoc shr) (sh, outer) i = let
 
 shToLinearIndex :: ShapeR sh -> sh -> sh -> Int
 shToLinearIndex ShapeRz () () = 0
-shToLinearIndex (ShapeRsnoc shr) (sh, x) (sh', y) = let
+shToLinearIndex (ShapeRsnoc shr) (sh, _) (sh', y) = let
   innerSize = arrsize shr sh
   innerIndex = shToLinearIndex shr sh sh'
   in y*innerSize+innerIndex

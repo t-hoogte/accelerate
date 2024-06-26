@@ -1,16 +1,12 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
-{-# LANGUAGE BangPatterns        #-}
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE GADTs               #-}
-{-# LANGUAGE MagicHash           #-}
 {-# LANGUAGE PatternGuards       #-}
 {-# LANGUAGE RankNTypes          #-}
-{-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications    #-}
 {-# LANGUAGE TypeFamilies        #-}
 {-# LANGUAGE TypeOperators       #-}
-{-# LANGUAGE ViewPatterns        #-}
 
 -- |
 -- Module      : Data.Array.Accelerate.Backend
@@ -51,7 +47,7 @@ module Data.Array.Accelerate.Backend (
   Pretty.PrettyOp(..),
   Execute(..),
   Operation.NFData'(..),
-  Operation.ShrinkArg(..), runWithObj, runNWithObj, runNBench, Benchmarking(..)
+  Operation.ShrinkArg(..), runWithObj, runNWithObj, runNBench, Benchmarking
 ) where
 
 import qualified Data.Array.Accelerate.Smart as Smart
@@ -77,7 +73,6 @@ import Data.Type.Equality
 import System.IO.Unsafe (unsafePerformIO)
 import qualified Data.Array.Accelerate.AST.Operation as Operation
 import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Graph
-import Data.Array.Accelerate.Eval (EvalOp)
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (Objective)
 import Data.Array.Accelerate.Trafo.Partitioning.ILP (Benchmarking)
 

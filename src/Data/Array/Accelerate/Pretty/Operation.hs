@@ -4,11 +4,8 @@
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE PatternGuards       #-}
 {-# LANGUAGE RankNTypes          #-}
-{-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications    #-}
-{-# LANGUAGE TypeOperators       #-}
-{-# LANGUAGE ViewPatterns        #-}
+
 -- |
 -- Module      : Data.Array.Accelerate.Pretty.Operation
 -- Copyright   : [2008..2020] The Accelerate Team
@@ -40,7 +37,7 @@ import Data.Array.Accelerate.Representation.Elt
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Type
 
-import Data.Text.Prettyprint.Doc
+import Prettyprinter
 import Data.String
 
 import Prelude hiding (exp)

@@ -2,12 +2,8 @@
 {-# LANGUAGE GADTs               #-}
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE OverloadedStrings   #-}
-{-# LANGUAGE PatternGuards       #-}
 {-# LANGUAGE RankNTypes          #-}
-{-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications    #-}
-{-# LANGUAGE TypeOperators       #-}
 {-# LANGUAGE ViewPatterns        #-}
 -- |
 -- Module      : Data.Array.Accelerate.Pretty.Print
@@ -96,7 +92,7 @@ ansiKeyword Execute     = color Blue
 ansiKeyword Modifier    = colorDull Blue
 
 -- Configuration for the pretty-printing functions
-data PrettyConfig acc
+newtype PrettyConfig acc
   = PrettyConfig { confOperator :: forall aenv arrs.
                                    PreOpenAcc acc aenv arrs
                                 -> String
@@ -126,7 +122,7 @@ prettyPreOpenAfun
     -> Val aenv
     -> PreOpenAfun acc aenv f
     -> Adoc
-prettyPreOpenAfun config prettyAcc aenv0 = next (pretty '\\') aenv0
+prettyPreOpenAfun config prettyAcc = next (pretty '\\')
   where
     next :: Adoc -> Val aenv' -> PreOpenAfun acc aenv' f' -> Adoc
     next vs aenv (Abody body)   =

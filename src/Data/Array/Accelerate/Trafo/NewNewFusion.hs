@@ -3,16 +3,9 @@
 {-# LANGUAGE FlexibleContexts     #-}
 {-# LANGUAGE FlexibleInstances    #-}
 {-# LANGUAGE GADTs                #-}
-{-# LANGUAGE InstanceSigs         #-}
 {-# LANGUAGE KindSignatures       #-}
-{-# LANGUAGE LambdaCase           #-}
-{-# LANGUAGE OverloadedStrings    #-}
-{-# LANGUAGE PatternGuards        #-}
 {-# LANGUAGE RankNTypes           #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
-{-# LANGUAGE TypeApplications     #-}
-{-# LANGUAGE TypeOperators        #-}
-{-# LANGUAGE ViewPatterns         #-}
 
 -- |
 -- Module      : Data.Array.Accelerate.Trafo.NewNewFusion
@@ -30,8 +23,8 @@ module Data.Array.Accelerate.Trafo.NewNewFusion (
 
   convertAcc,  convertAccWith,
   convertAfun, convertAfunWith,
-  
-  Benchmarking(..), convertAccBench, convertAccBenchF
+
+  Benchmarking(..)
 
 ) where
 
@@ -43,48 +36,41 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP)
 import qualified Data.Array.Accelerate.Pretty.Operation as Pretty
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (Objective (..))
--- import Data.Array.Accelerate.Trafo.Partitioning.ILP.HiGHS (HiGHS(..))
 
 
-#ifdef ACCELERATE_DEBUG
-import System.IO.Unsafe -- for debugging
-#endif
 
 
-convertAccBench :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Benchmarking -> OperationAcc op () a -> PartitionedAcc op () a
-convertAccBench NoFusion = withSimplStats (no FusedEdges)
-convertAccBench greedydir = withSimplStats (greedy greedydir FusedEdges)
-convertAccBenchF :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Benchmarking -> OperationAfun op () a -> PartitionedAfun op () a
-convertAccBenchF NoFusion = withSimplStats (noF FusedEdges)
-convertAccBenchF greedydir = withSimplStats (greedyF greedydir FusedEdges)
 
 
 -- Array Fusion
 -- ============
 
-defaultSolver = 
-  MIPSolver Gurobi
+defaultSolver :: Solver
+defaultSolver =
+  MIPSolver CBC
 
 -- | Apply the fusion transformation to a de Bruijn AST
 --
 convertAccWith
     :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op))
     => Config
-    -> Objective
+    -> FusionType
     -> OperationAcc op () a
     -> PartitionedAcc op () a
-convertAccWith _ = withSimplStats (ilpFusion'' defaultSolver)
+convertAccWith _ (Fusion o)       = withSimplStats (ilpFusion'' defaultSolver o)
+convertAccWith _ (Benchmarking b) = withSimplStats (bench b FusedEdges)
 
-convertAcc :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => Objective -> OperationAcc op () a -> PartitionedAcc op () a
+convertAcc :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => FusionType -> OperationAcc op () a -> PartitionedAcc op () a
 convertAcc = convertAccWith defaultOptions
 
 -- | Apply the fusion transformation to a function of array arguments
 --
-convertAfun :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => Objective -> OperationAfun op () f -> PartitionedAfun op () f
+convertAfun :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => FusionType -> OperationAfun op () f -> PartitionedAfun op () f
 convertAfun = convertAfunWith defaultOptions
 
-convertAfunWith :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => Config -> Objective -> OperationAfun op () f -> PartitionedAfun op () f
-convertAfunWith _ = withSimplStats (ilpFusionF'' defaultSolver)
+convertAfunWith :: (HasCallStack, MakesILP op, Pretty.PrettyOp (Cluster op)) => Config -> FusionType -> OperationAfun op () f -> PartitionedAfun op () f
+convertAfunWith _ (Fusion o)       = withSimplStats (ilpFusionF'' defaultSolver o)
+convertAfunWith _ (Benchmarking b) = withSimplStats (benchF b FusedEdges)
 
 
 withSimplStats :: a -> a

@@ -185,7 +185,7 @@ type Afun = OpenAfun ()
 
 -- Vanilla open array computations
 --
-newtype OpenAcc aenv t = OpenAcc (PreOpenAcc OpenAcc aenv t)
+newtype OpenAcc aenv t = OpenAcc { runOpenAcc :: PreOpenAcc OpenAcc aenv t }
 
 -- | Closed array expression aka an array program
 --
@@ -632,7 +632,7 @@ rnfPreOpenAcc rnfA pacc =
       rnfB = rnfBoundary
 
       rnfM :: Message a -> ()
-      rnfM (Message f g msg) = f `seq` rnfMaybe (\x -> x `seq` ()) g `seq` rnf msg
+      rnfM (Message f g msg) = f `seq` rnfMaybe (`seq` ()) g `seq` rnf msg
   in
   case pacc of
     Alet lhs bnd body         -> rnfALeftHandSide lhs `seq` rnfA bnd `seq` rnfA body

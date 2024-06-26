@@ -1,6 +1,5 @@
 {-# LANGUAGE MonoLocalBinds #-}
 {-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE LambdaCase #-}
@@ -29,13 +28,18 @@ import Data.Function ((&))
 import qualified Data.Set as Set
 import Lens.Micro ((^.), (<>~))
 import Data.Maybe (isJust)
--- import Data.Array.Accelerate.Trafo.Partitioning.ILP.HiGHS (HiGHS(Highs))
+-- import Data.Array.Accelerate.Trafo.Partitioning.ILP.HiGHS
 
 data Benchmarking = GreedyUp | GreedyDown | NoFusion
   deriving (Show, Eq, Bounded, Enum)
 
+data FusionType = Fusion Objective | Benchmarking Benchmarking
+
+defaultObjective :: FusionType
+defaultObjective = Fusion IntermediateArrays
+
 -- data type that should probably be in the options
-data Solver = MIPSolver MIPSolver -- | HiGHS
+newtype Solver = MIPSolver MIPSolver
 data MIPSolver = CBC | Gurobi | CPLEX | GLPSOL | LPSOLVE | SCIP
 
 ilpFusion'' :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Solver -> Objective -> OperationAcc op () a -> PartitionedAcc op () a
@@ -46,7 +50,6 @@ ilpFusion'' (MIPSolver s) = case s of
   GLPSOL  -> ilpFusion (MIP glpsol)
   LPSOLVE -> ilpFusion (MIP lpSolve)
   SCIP    -> ilpFusion (MIP scip)
--- ilpFusion'' HiGHS = ilpFusion Highs
 
 
 ilpFusionF'' :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Solver -> Objective -> OperationAfun op () a -> PartitionedAfun op () a
@@ -57,25 +60,7 @@ ilpFusionF'' (MIPSolver s) = case s of
   GLPSOL  -> ilpFusionF (MIP glpsol)
   LPSOLVE -> ilpFusionF (MIP lpSolve)
   SCIP    -> ilpFusionF (MIP scip)
--- ilpFusionF'' HiGHS = ilpFusionF Highs
 
-cbcFusion, gurobiFusion, cplexFusion, glpsolFusion, lpSolveFusion, scipFusion 
-  :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Objective -> OperationAcc op () a -> PartitionedAcc op () a
-cbcFusion     = ilpFusion (MIP cbc)
-gurobiFusion  = ilpFusion (MIP gurobiCl)
-cplexFusion   = ilpFusion (MIP cplex)
-glpsolFusion  = ilpFusion (MIP glpsol)
-lpSolveFusion = ilpFusion (MIP lpSolve)
-scipFusion    = ilpFusion (MIP scip)
-
-cbcFusionF, gurobiFusionF, cplexFusionF, glpsolFusionF, lpSolveFusionF, scipFusionF 
-  :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Objective -> OperationAfun op () a -> PartitionedAfun op () a
-cbcFusionF     = ilpFusionF (MIP cbc)
-gurobiFusionF  = ilpFusionF (MIP gurobiCl)
-cplexFusionF   = ilpFusionF (MIP cplex)
-glpsolFusionF  = ilpFusionF (MIP glpsol)
-lpSolveFusionF = ilpFusionF (MIP lpSolve)
-scipFusionF    = ilpFusionF (MIP scip)
 
 ilpFusion  :: (MakesILP op, ILPSolver s op, Pretty.PrettyOp (Cluster op)) => s -> Objective -> OperationAcc  op () a -> PartitionedAcc op () a
 ilpFusion  = ilpFusion' makeFullGraph  (reconstruct False)
@@ -149,7 +134,8 @@ greedyFusion' k1 k2 s b obj acc = fusedAcc
       | otherwise = let
         i:->j = (graph^.fusibleEdges) Set.\\ (graph^.infusibleEdges)&Set.elemAt (case b of
           GreedyUp -> n 
-          GreedyDown -> nedges - n - 1)
+          GreedyDown -> nedges - n - 1
+          _ -> error "nope")
         info'' = info&constr<>~(fused i j .==. int 0)
         in go (n+1) $ if check info'' then info'' else info
     check :: Information op -> Bool
@@ -168,6 +154,12 @@ greedyFusion' k1 k2 s b obj acc = fusedAcc
       Nothing -> error "Accelerate: No ILP solution found"
       Just y -> y
 
+bench :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Benchmarking -> Objective -> OperationAcc op () a -> PartitionedAcc op () a
+bench NoFusion = no
+bench b = greedy b
+benchF :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Benchmarking -> Objective -> OperationAfun op () a -> PartitionedAfun op () a
+benchF NoFusion = noF
+benchF b = greedyF b
 greedy :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Benchmarking -> Objective -> OperationAcc op () a -> PartitionedAcc op () a
 greedy = greedyFusion (MIP gurobiCl)
 no :: (MakesILP op, Pretty.PrettyOp (Cluster op)) => Objective -> OperationAcc op () a -> PartitionedAcc op () a

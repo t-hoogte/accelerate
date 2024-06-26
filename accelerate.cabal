@@ -355,8 +355,6 @@ library
         , hashable                      >= 1.1
         , hashtables                    >= 1.2.3
         , hedgehog                      >= 0.5
-        -- , highs-lp                      >= 0.0
-        -- , linear-programming            >= 0.0.0.1
         , microlens                     >= 0.4
         , microlens-th                  >= 0.4
         , microlens-mtl                 >= 0.2

@@ -1,18 +1,14 @@
 {-# LANGUAGE FlexibleInstances   #-}
 {-# LANGUAGE GADTs               #-}
-{-# LANGUAGE KindSignatures      #-}
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE MultiWayIf          #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE PatternGuards       #-}
 {-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections       #-}
-{-# LANGUAGE TypeApplications    #-}
 {-# LANGUAGE TypeFamilies        #-}
-{-# LANGUAGE TypeOperators       #-}
 {-# OPTIONS_HADDOCK hide #-}
-{-# LANGUAGE InstanceSigs #-}
+
 -- |
 -- Module      : Data.Array.Accelerate.Trafo.Operation.LiveVars
 -- Copyright   : [2012..2020] The Accelerate Team
@@ -47,10 +43,8 @@ import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Data.Array.Accelerate.Trafo.LiveVars
 import Data.Array.Accelerate.Error
 
-import Data.List ( foldl' )
 import Data.Maybe
 import Data.Type.Equality
-import Data.Array.Accelerate.Representation.Shape (shapeType)
 
 stronglyLiveVariablesFun :: SLVOperation op => PreOpenAfun op () t -> PreOpenAfun op () t
 stronglyLiveVariablesFun acc = acc' ReEnvEnd

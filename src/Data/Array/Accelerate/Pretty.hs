@@ -4,8 +4,6 @@
 {-# LANGUAGE GADTs                #-}
 {-# LANGUAGE OverloadedStrings    #-}
 {-# LANGUAGE ScopedTypeVariables  #-}
-{-# LANGUAGE TemplateHaskell      #-}
-{-# LANGUAGE TypeApplications     #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 {-# OPTIONS_HADDOCK hide #-}
@@ -32,20 +30,15 @@ module Data.Array.Accelerate.Pretty (
 
   -- ** Graphviz
   Graph,
-  PrettyGraph(..), Detail(..),
+  PrettyGraph, Detail,
   graphDelayedAcc, graphDelayedAfun,
 
 ) where
 
 import Data.Array.Accelerate.AST                                    hiding ( Acc, Exp )
 import Data.Array.Accelerate.Debug.Internal.Flags
-import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Pretty.Graphviz
 import Data.Array.Accelerate.Pretty.Print                           hiding ( Keyword(..) )
-import Data.Array.Accelerate.Pretty.Exp                             hiding ( Keyword(..) )
-import Data.Array.Accelerate.Smart                                  ( Acc, Exp )
-import Data.Array.Accelerate.Sugar.Array
-import Data.Array.Accelerate.Sugar.Elt
 -- import Data.Array.Accelerate.Trafo.Delayed
 
 import Data.Maybe
@@ -58,7 +51,6 @@ import System.IO.Unsafe
 import qualified Data.Text.Lazy                                     as T
 import qualified System.Console.ANSI                                as Term
 import qualified System.Console.Terminal.Size                       as Term
-import Data.Array.Accelerate.AST.Operation (OperationAcc, OperationAfun)
 
 #if ACCELERATE_DEBUG
 import Control.DeepSeq
@@ -87,13 +79,6 @@ instance PrettyEnv aenv => Show (OpenAcc aenv a) where
 instance PrettyEnv aenv => Show (OpenAfun aenv f) where
   show = renderForTerminal . prettyPreOpenAfun configPlain prettyOpenAcc (prettyEnv (pretty 'a'))
 
-instance PrettyEnv aenv => Show (OperationAcc op aenv a) where
-  -- show = let config = if shouldPrintHash then configWithHash else configPlain
-  --        in renderForTerminal . prettyDelayedOpenAcc config context0 (prettyEnv (pretty 'a'))
-
-instance PrettyEnv aenv => Show (OperationAfun op aenv f) where
-  -- show = let config = if shouldPrintHash then configWithHash else configPlain
-  --        in renderForTerminal . prettyPreOpenAfun config prettyDelayedOpenAcc (prettyEnv (pretty 'a'))
 
 instance (PrettyEnv env, PrettyEnv aenv) => Show (OpenExp env aenv e) where
   show = renderForTerminal . prettyOpenExp context0 (prettyEnv (pretty 'x')) (prettyEnv (pretty 'a'))
@@ -122,8 +107,6 @@ terminalSupportsANSI :: Bool
 terminalSupportsANSI = unsafePerformIO $ Term.hSupportsANSI stdout
 
 {-# NOINLINE terminalLayoutOptions #-}
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE TypeApplications #-}
 terminalLayoutOptions :: LayoutOptions
 terminalLayoutOptions
   = unsafePerformIO

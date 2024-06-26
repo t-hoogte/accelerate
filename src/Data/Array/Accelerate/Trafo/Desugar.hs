@@ -1,4 +1,3 @@
-{-# LANGUAGE EmptyCase            #-}
 {-# LANGUAGE GADTs                #-}
 {-# LANGUAGE OverloadedStrings    #-}
 {-# LANGUAGE RankNTypes           #-}
@@ -207,7 +206,7 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
                 -> Arg env (In  (sh, Int) e)
                 -> Arg env (Out sh        e)
                 -> OperationAcc op env ()
-  mkFold f def input@(ArgArray _ repr@(ArrayR shr tp) _ _) output = mkDefaultFoldSequential f def input output
+  mkFold f def input@(ArgArray _ _ _ _) output = mkDefaultFoldSequential f def input output
 
   mkFoldSeg     :: IntegralType i
                 -> Arg env (Fun' (e -> e -> e))
@@ -217,7 +216,7 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
                 -> Arg env (Out (sh, Int) e)
                 -> OperationAcc op env ()
   -- Default implementation using generate. It is sequential per segment, which is inefficient for some backends.
-  mkFoldSeg itp f def input segments output = mkGenerate (ArgFun $ mkDefaultFoldSegFunction itp f def input segments) output
+  mkFoldSeg itp f def input segments = mkGenerate (ArgFun $ mkDefaultFoldSegFunction itp f def input segments)
 
   mkScan        :: Direction
                 -> Arg env (Fun' (e -> e -> e))
@@ -1163,11 +1162,11 @@ mkIntersect shr x y
     mkIntersect' (ShapeRsnoc _)   _                _                = error "Impossible pair"
 
 mkDefaultFoldSequential :: forall benv op sh e. DesugarAcc op => Arg benv (Fun' (e -> e -> e)) -> Maybe (Arg benv (Exp' e)) -> Arg benv (In (sh, Int) e) -> Arg benv (Out sh e) -> OperationAcc op benv ()
-mkDefaultFoldSequential op def argIn argOut = mkGenerate (mkDefaultFoldFunction op def argIn) argOut
+mkDefaultFoldSequential op def argIn = mkGenerate (mkDefaultFoldFunction op def argIn)
 
 mkDefaultFoldFunction :: Arg benv (Fun' (e -> e -> e)) -> Maybe (Arg benv (Exp' e)) -> Arg benv (In (sh, Int) e) -> Arg benv (Fun' (sh -> e))
 mkDefaultFoldFunction (ArgFun op) def (ArgArray _ (ArrayR (ShapeRsnoc shr) tp) (sh `TupRpair` n) buffers)
-  | DeclareVars lhsIdx k1 valueIdx <- declareVars $ shapeType shr
+  | DeclareVars lhsIdx _k1 valueIdx <- declareVars $ shapeType shr
   , DeclareVars lhsVal k2 valueVal <- declareVars tp =
     let
       initial = case def of
@@ -1202,7 +1201,7 @@ mkDefaultFoldFunction (ArgFun op) def (ArgArray _ (ArrayR (ShapeRsnoc shr) tp) (
 -- The default value is placed as the first value in case of a left-to-right scan, or as the
 -- last value for a right-to-left scan.
 mkDefaultScanPrepend :: Direction -> Arg benv (Exp' e) -> Arg benv (In (sh, Int) e) -> Fun benv ((sh, Int) -> e)
-mkDefaultScanPrepend dir (ArgExp def) (ArgArray _ repr@(ArrayR (ShapeRsnoc shr) tp) sh input)
+mkDefaultScanPrepend dir (ArgExp def) (ArgArray _ repr@(ArrayR (ShapeRsnoc shr) _) sh input)
   | DeclareVars lhs k value <- declareVars $ shapeType shr
   = let
       first = case dir of
@@ -1223,7 +1222,7 @@ mkDefaultScanPrepend dir (ArgExp def) (ArgArray _ repr@(ArrayR (ShapeRsnoc shr) 
 -- TODO: Is the order of arguments to 'f' correct, in both directions?
 mkDefaultScanFunction :: Direction -> GroundVar benv Int -> Arg benv (Fun' (e -> e -> e)) -> Arg benv (In (sh, Int) e) -> Fun benv ((sh, Int) -> e)
 mkDefaultScanFunction dir inc (ArgFun f) (ArgArray _ repr@(ArrayR (ShapeRsnoc shr) tp) sh input)
-  | DeclareVars lhs k value <- declareVars $ shapeType shr
+  | DeclareVars lhs _ value <- declareVars $ shapeType shr
   = let
       op = case dir of
         LeftToRight -> PrimSub

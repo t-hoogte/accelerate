@@ -16,9 +16,6 @@ extra-deps:
   commit: 4295aa21a24a30926b55770c55ac00f749fb8a39
   subdirs:
   - MIP
-# - highs-lp-0.0
-# - comfort-array-0.5.5
-# - linear-programming-0.0.1
 
 
 
