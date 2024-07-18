@@ -173,10 +173,6 @@ openReconstructF a b c d l e f = (\(Right x) -> x) $ openReconstruct' a b c d (J
 
 openReconstruct' :: forall op aenv. MakesILP op => Bool -> LabelEnv aenv -> Graph -> [ClusterLs] -> Maybe Label -> M.Map Label [ClusterLs] -> M.Map Label (Construction op)  -> Either (Exists (PreOpenAcc (Clustered op) aenv)) (Exists (PreOpenAfun (Clustered op) aenv))
 openReconstruct' singletons labelenv graph clusterslist mlab subclustersmap construct = 
-  Debug.Trace.traceShow ("number of execs:", M.size $ M.filter (\case
-    CExe{} -> True
-    CExe'{} -> True
-    _ -> False) construct) $
   case mlab of
   Just l  -> Right $ makeASTF labelenv l mempty
   Nothing -> Left $ makeAST labelenv clusters mempty

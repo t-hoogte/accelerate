@@ -34,8 +34,8 @@ instance MakesILP op => ILPSolver HiGHS op where
         Minimise -> LP.Minimize
       cost' = case highexpr n cost of (term,_constant) -> fromMap . M.unionWith (+) (M.fromSet (const 0) vs) $ term2Map term
 
-getSolution (s, Nothing)      = Debug.Trace.traceShow s Nothing
-getSolution (s, Just (c,arr)) = Debug.Trace.traceShow (s,c) $ Just (round <$> toMap arr) 
+getSolution (s, Nothing)      = Nothing
+getSolution (s, Just (c,arr)) = Just (round <$> toMap arr) 
 
 term2Map [] = mempty
 term2Map ((Term d v):ts) = M.unionWith (+) (M.singleton v d) (term2Map ts)

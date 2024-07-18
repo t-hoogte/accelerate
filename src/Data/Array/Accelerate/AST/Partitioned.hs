@@ -446,22 +446,22 @@ mkFused :: MakesILP op => LabelledArgsOp op env l -> LabelledArgsOp op env r -> 
 mkFused ArgsNil ArgsNil k = k EmptyF
 mkFused ArgsNil ((LOp r _ _) :>: rs) k = mkFused ArgsNil rs $ \f -> k (addright r f)
 mkFused (LOp l _ _ :>: ls) ArgsNil k = mkFused ls ArgsNil $ \f -> k (addleft l f)
-mkFused ((LOp l ((NotArr,_)) _) :>: ls) rs k = mkFused ls rs $ \f -> k (addleft l f)
-mkFused ls ((LOp r ((NotArr,_))_ ) :>: rs) k = mkFused ls rs $ \f -> k (addright r f)
-mkFused ((LOp l ((Arr TupRunit,_))_ ) :>: ls) rs k = mkFused ls rs $ \f -> k (addleft l f)
-mkFused ls ((LOp r ((Arr TupRunit,_))_) :>: rs) k = mkFused ls rs $ \f -> k (addright r f)
-mkFused (l'@(LOp l _ _) :>: ls) (r'@(LOp r _ _) :>: rs) k
+mkFused ((LOp l (NotArr,_) _) :>: ls) rs k = mkFused ls rs $ \f -> k (addleft l f)
+mkFused ls ((LOp r (NotArr,_)_ ) :>: rs) k = mkFused ls rs $ \f -> k (addright r f)
+mkFused ((LOp l (Arr TupRunit,_)_ ) :>: ls) rs k = mkFused ls rs $ \f -> k (addleft l f)
+mkFused ls ((LOp r (Arr TupRunit,_)_) :>: rs) k = mkFused ls rs $ \f -> k (addright r f)
+mkFused (l'@(LOp l _ bl) :>: ls) (r'@(LOp r _ br) :>: rs) k
   | Left le <- getElabelForSort $ unOpLabel l'
   , Left re <- getElabelForSort $ unOpLabel r'
     = case compare le re of
-      EQ -> mkFused ls rs $ \f -> addboth l r f k
       LT -> mkFused ls (r':>:rs) $ \f -> k (addleft l f)
       GT -> mkFused (l':>:ls) rs $ \f -> k (addright r f)
-  | otherwise = error "simple math, the truth cannot be questioned"
+      EQ -> mkFused ls rs $ \f -> if bl == br then addboth l r f k else k (addleft l (addright r f))
 mkFused ((LOp l@(ArgArray Mut _ _ _) _ _) :>: ls) rs k = mkFused ls rs $ \f -> k (addleft l f)
 mkFused ls ((LOp r@(ArgArray Mut _ _ _) _ _) :>: rs) k = mkFused ls rs $ \f -> k (addright r f)
 mkFused ((LOp _ (Arr TupRpair{}, _)_) :>: _) _ _ = error "not soa'd array"
 mkFused _ ((LOp _ (Arr TupRpair{}, _)_) :>: _) _ = error "not soa'd array"
+mkFused _ _ _ = error "exhaustive"
 
 addleft :: Arg env arg -> Fusion left right args -> Fusion (arg->left) right (arg->args)
 addleft (ArgVar _          ) f = IntroL  f

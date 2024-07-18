@@ -136,7 +136,7 @@ makeBackendArg args env c b = go args c (defaultOuts args b) b
               env
 
     combineB   :: Arg env (g (l,r)) -> BackendClusterArg2 op env (f l) -> BackendClusterArg2 op env (f r) -> BackendClusterArg2 op env (f (l,r))
-    combineB = unsafeCoerce $ pairinfo @op
+    combineB a x y = (unsafeCoerce $ pairinfo @op) a x y
     uncombineB :: Arg env (g (l,r)) -> BackendClusterArg2 op env (f (l,r)) -> (BackendClusterArg2 op env (f l), BackendClusterArg2 op env (f r))
     uncombineB = unsafeCoerce $ unpairinfo @op
     combineB' :: Both (Arg env) (BackendClusterArg2 op env) (g l)
