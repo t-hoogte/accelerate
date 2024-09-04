@@ -58,12 +58,15 @@ import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Partition
 import Data.Array.Accelerate.Representation.Ground (DesugaredArrays, DesugaredAfun)
 import Data.Array.Accelerate.Trafo.Desugar (DesugarAcc, desugar, desugarAfun)
 import qualified Data.Array.Accelerate.Trafo.NewNewFusion as NewNewFusion
+import Prettyprinter                                      as Pretty
 import qualified Data.Array.Accelerate.Pretty             as Pretty
 import qualified Data.Array.Accelerate.Pretty.Operation   as Pretty
 import qualified Data.Array.Accelerate.Pretty.Schedule    as Pretty
 import Data.Array.Accelerate.Pretty (prettyOpenAcc)
 import Data.Array.Accelerate.Pretty.Partitioned ()
-import Data.Text.Lazy.Builder
+import Data.String (fromString)
+import Data.Char (toUpper)
+import Data.Text.Lazy.Builder hiding (fromString)
 import qualified Data.Array.Accelerate.AST.Operation as Operation
 import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Graph
 import Data.Array.Accelerate.Pretty.Print (configPlain, Val (Empty))
@@ -189,11 +192,11 @@ convertAccFullOptions config ft pprint acc = runWriter $
   >=> phase'' "operation-live-vars" (Operation.simplify . Operation.stronglyLiveVariables)        Pretty.prettyAcc
   >=> phase'' "array-fusion"        (Operation.simplify . NewNewFusion.convertAccWith config ft)  Pretty.prettyAcc
   >=> phase'' "partition-live-vars" (Operation.simplify . Operation.stronglyLiveVariables)        Pretty.prettyAcc
-  >=> (\x -> let y = phase' "codegen" rnfSchedule convertSchedule x in writer (y, pprint $ Pretty.prettySchedule y))
+  >=> (\x -> let y = phase' "codegen" rnfSchedule convertSchedule x in writer (y, pprint $ vsep ["CODEGEN", Pretty.prettySchedule y]))
   ) acc
   where
-    phase'' :: NFData b => Builder -> (a -> b) -> (b -> Pretty.Adoc) -> a -> Writer m b
-    phase'' name f pp a = let b = phase name f a in writer (b, pprint $ pp b)
+    phase'' :: NFData b => String -> (a -> b) -> (b -> Pretty.Adoc) -> a -> Writer m b
+    phase'' name f pp a = let b = phase name f a in writer (b, pprint $ Pretty.vsep [fromString $ map toUpper name, pp b, mempty, mempty])
 
 convertAfunFullOptions
   :: forall sched kernel f m.
@@ -207,11 +210,11 @@ convertAfunFullOptions config ft pprint f = runWriter $
   >=> phase'' "operation-live-vars" (Operation.simplifyFun . Operation.stronglyLiveVariablesFun)     Pretty.prettyAfun
   >=> phase'' "array-fusion"        (Operation.simplifyFun . NewNewFusion.convertAfunWith config ft) Pretty.prettyAfun
   >=> phase'' "partition-live-vars" (Operation.simplifyFun . Operation.stronglyLiveVariablesFun)     Pretty.prettyAfun
-  >=> (\x -> let y = phase' "codegen" rnfSchedule convertScheduleFun x in writer (y, pprint $ Pretty.prettySchedule y))
+  >=> (\x -> let y = phase' "codegen" rnfSchedule convertScheduleFun x in writer (y, pprint $ vsep ["CODEGEN", Pretty.prettySchedule y]))
   ) f
   where
-    phase'' :: NFData b => Builder -> (a -> b) -> (b -> Pretty.Adoc) -> a -> Writer m b
-    phase'' name g pp a = let b = phase name g a in writer (b, pprint $ pp b)
+    phase'' :: NFData b => String -> (a -> b) -> (b -> Pretty.Adoc) -> a -> Writer m b
+    phase'' name g pp a = let b = phase name g a in writer (b, pprint $ Pretty.vsep [fromString $ map toUpper name, pp b, mempty, mempty])
 
 
 
@@ -239,18 +242,18 @@ convertFun
 -- Execute a phase of the compiler and (possibly) print some timing/gc
 -- statistics.
 --
-phase :: NFData b => Builder -> (a -> b) -> a -> b
+phase :: NFData b => String -> (a -> b) -> a -> b
 phase n = phase' n rnf
 
 -- Execute a phase of the compiler and (possibly) print some timing/gc
 -- statistics.
 --
-phase' :: Builder -> (b -> ()) -> (a -> b) -> a -> b
+phase' :: String -> (b -> ()) -> (a -> b) -> a -> b
 #ifdef ACCELERATE_DEBUG
 phase' n rnf'' f x = unsafePerformIO $ do
   enabled <- getFlag dump_phases
   if enabled
-    then timed dump_phases (now ("phase " <> n <> ": ") % elapsed) (let y = f x in rnf'' y `seq` return y)
+    then timed dump_phases (now ("phase " <> fromString n <> ": ") % elapsed) (let y = f x in rnf'' y `seq` return y)
     else return (f x)
 #else
 phase' _ _ f = f

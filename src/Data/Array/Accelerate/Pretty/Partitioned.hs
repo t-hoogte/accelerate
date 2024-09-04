@@ -222,4 +222,4 @@ splitEnv (IntroR next) (a :>: as) fresh =
 
 prettyFuseList :: Adoc -> [Adoc] -> Adoc
 prettyFuseList _ [] = ""
-prettyFuseList name docs = (hang 2 $ group $ vsep $ [name <> ":", tupled docs]) <> line
+prettyFuseList name docs = (hang 2 $ group $ vsep $ [name, tupled docs]) <> line
