@@ -105,16 +105,18 @@ run = runWith @backend defaultOptions
 
 runWith :: forall backend t. (Sugar.Arrays t, Backend backend) => Config -> Smart.Acc t -> t
 runWith config acc
-  = Sugar.toArr $ sugarArrays repr $ unsafePerformIO $ executeAcc (desugarArraysR repr) schedule
+  = Sugar.toArr $ sugarArrays repr $ unsafePerformIO $ executeAcc (desugarArraysR repr) program
   where
     repr = Sugar.arraysR @t
     schedule = convertAccWith @(Schedule backend) @(Kernel backend) config acc
+    program = linkAfunSchedule schedule
 
 runWithObj :: forall backend t. (Sugar.Arrays t, Backend backend) => Objective -> Smart.Acc t -> t
-runWithObj obj acc = Sugar.toArr $ sugarArrays repr $ unsafePerformIO $ executeAcc (desugarArraysR repr) schedule
+runWithObj obj acc = Sugar.toArr $ sugarArrays repr $ unsafePerformIO $ executeAcc (desugarArraysR repr) program
   where
     repr = Sugar.arraysR @t
     schedule = convertAccWithObj @(Schedule backend) @(Kernel backend) obj acc
+    program = linkAfunSchedule schedule
 
 run1
   :: forall backend s t.
@@ -144,9 +146,10 @@ runNWith
   => Config
   -> f
   -> AfunctionR f
-runNWith config f = schedule `seq` sugarFunction (afunctionRepr @f) $ executeAfun (afunctionGroundR @f) schedule
+runNWith config f = program `seq` sugarFunction (afunctionRepr @f) $ executeAfun (afunctionGroundR @f) program
   where
     schedule = convertAfunWith @(Schedule backend) @(Kernel backend) config f
+    program = linkAfunSchedule schedule
 
 runNWithObj
   :: forall backend f.
@@ -154,9 +157,10 @@ runNWithObj
   => Objective
   -> f
   -> AfunctionR f
-runNWithObj obj f = schedule `seq` sugarFunction (afunctionRepr @f) $ executeAfun (afunctionGroundR @f) schedule
+runNWithObj obj f = program `seq` sugarFunction (afunctionRepr @f) $ executeAfun (afunctionGroundR @f) program
   where
     schedule = convertAfunWithObj @(Schedule backend) @(Kernel backend) obj f
+    program = linkAfunSchedule schedule
 
 runNBench
   :: forall backend f.
@@ -164,9 +168,10 @@ runNBench
   => Benchmarking
   -> f
   -> AfunctionR f
-runNBench b f = schedule `seq` sugarFunction (afunctionRepr @f) $ executeAfun (afunctionGroundR @f) schedule
+runNBench b f = program `seq` sugarFunction (afunctionRepr @f) $ executeAfun (afunctionGroundR @f) program
   where
     schedule = convertAfunBench @(Schedule backend) @(Kernel backend) b f
+    program = linkAfunSchedule schedule
 
 sugarFunction
   :: forall f.

@@ -1,3 +1,5 @@
+{-# LANGUAGE AllowAmbiguousTypes   #-}
+{-# LANGUAGE DefaultSignatures     #-}
 {-# LANGUAGE GADTs                 #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
@@ -28,14 +30,22 @@ import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.AST.Schedule
 import Data.Array.Accelerate.Representation.Ground
 import Data.Type.Equality
+import Data.Kind
 
 class Execute sched kernel where
-  executeAfunSchedule :: GFunctionR t -> sched kernel () (Scheduled sched t) -> IOFun (Scheduled sched t)
+  data Linked sched kernel :: Type -> Type
+  -- For a backend that doesn't require a linking stage,
+  -- one can directly store a schedule in the Linked data type.
+  -- data Linked sched kernel = MyBackendLinked (sched kernel ())
 
-executeAfun :: forall sched kernel t. (IsSchedule sched, Execute sched kernel) => GFunctionR t -> sched kernel () (Scheduled sched t) -> IOFun t
-executeAfun repr sched = flattenIOFun repr $ callScheduledFun @sched repr $ executeAfunSchedule repr sched
+  linkAfunSchedule :: sched kernel () t -> Linked sched kernel t
 
-executeAcc :: forall sched kernel t. (IsSchedule sched, Execute sched kernel) => GroundsR t -> sched kernel () (ScheduleOutput sched t -> ()) -> IO t
+  executeAfunSchedule :: GFunctionR t -> Linked sched kernel (Scheduled sched t) -> IOFun (Scheduled sched t)
+
+executeAfun :: forall sched kernel t. (IsSchedule sched, Execute sched kernel) => GFunctionR t -> Linked sched kernel (Scheduled sched t) -> IOFun t
+executeAfun repr sched = flattenIOFun repr $ callScheduledFun @sched repr $ executeAfunSchedule @sched @kernel repr sched
+
+executeAcc :: forall sched kernel t. (IsSchedule sched, Execute sched kernel) => GroundsR t -> Linked sched kernel (ScheduleOutput sched t -> ()) -> IO t
 executeAcc repr sched
   | Refl <- reprIsBody @sched repr
-  = executeAfun (GFunctionRbody repr) sched
+  = executeAfun @sched @kernel (GFunctionRbody repr) sched

@@ -488,7 +488,9 @@ instance PrettyOp InterpretOp where
   -- prettyOp (IAppend _ _) = "append"
 
 instance Execute UniformScheduleFun InterpretKernel where
-  executeAfunSchedule = const $ executeScheduleFun Empty
+  data Linked UniformScheduleFun InterpretKernel t = InterpretLinked (UniformScheduleFun InterpretKernel () t)
+  linkAfunSchedule = InterpretLinked
+  executeAfunSchedule _ (InterpretLinked sched) = executeScheduleFun Empty sched
 
 executeScheduleFun :: Val env -> UniformScheduleFun InterpretKernel env t -> IOFun t
 executeScheduleFun env (S.Sbody schedule) = executeSchedule env schedule
