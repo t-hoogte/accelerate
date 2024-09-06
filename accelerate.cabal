@@ -369,7 +369,6 @@ library
         , terminal-size                 >= 0.3
         , text                          >= 1.2.4
         , transformers                  >= 0.3
-        , unique
         , unordered-containers          >= 0.2
         , vector                        >= 0.10
   exposed-modules:
@@ -415,7 +414,6 @@ library
         Data.Array.Accelerate.Array.Remote.Class
         Data.Array.Accelerate.Array.Remote.LRU
         Data.Array.Accelerate.Array.Remote.Table
-        Data.Array.Accelerate.Array.Unique
         Data.Array.Accelerate.Async
         Data.Array.Accelerate.Backend
         Data.Array.Accelerate.Error

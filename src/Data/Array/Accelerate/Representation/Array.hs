@@ -322,11 +322,8 @@ liftArraysR (TupRpair a b)    = [|| TupRpair $$(liftArraysR a) $$(liftArraysR b)
 
 liftArray :: forall sh e. ArrayR (Array sh e) -> Array sh e -> CodeQ (Array sh e)
 liftArray (ArrayR shR tp) (Array sh buffers) =
-  [|| Array $$(liftElt (shapeType shR) sh) $$(liftBuffers sz tp buffers) ||] `at` [t| Array $(liftTypeQ (shapeType shR)) $(liftTypeQ tp) |]
+  [|| Array $$(liftElt (shapeType shR) sh) $$(liftBuffers tp buffers) ||] `at` [t| Array $(liftTypeQ (shapeType shR)) $(liftTypeQ tp) |]
   where
-    sz :: Int
-    sz = size shR sh
-
     at :: CodeQ t -> Q Type -> CodeQ t
     at e t = unsafeCodeCoerce $ sigE (unTypeCode e) t
 

@@ -40,9 +40,6 @@ module Data.Array.Accelerate.Array.Buffer (
   -- * Type macros
   HTYPE_INT, HTYPE_WORD, HTYPE_CLONG, HTYPE_CULONG, HTYPE_CCHAR,
 
-  -- * Allocator internals
-  registerForeignPtrAllocator,
-
   -- * Utilities for type classes
   SingleArrayDict(..), singleArrayDict,
   ScalarArrayDict(..), scalarArrayDict,
@@ -51,7 +48,6 @@ module Data.Array.Accelerate.Array.Buffer (
   liftBuffers, liftBuffer,
 ) where
 
-import Data.Array.Accelerate.Array.Unique
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Type
@@ -71,10 +67,13 @@ import Data.Bits
 import Data.IORef
 import Data.Primitive                                               ( sizeOf# )
 import Data.Typeable                                                ( (:~:)(..) )
+import Foreign.Ptr
 import Foreign.ForeignPtr
 import Foreign.Storable
+import Foreign.Marshal.Array                                        ( copyArray, peekArray )
 import Formatting                                                   hiding ( bytes )
 import Language.Haskell.TH.Extra                                    hiding ( Type )
+import Language.Haskell.TH.Syntax
 import System.IO.Unsafe
 import Prelude                                                      hiding ( mapM )
 
@@ -82,22 +81,22 @@ import GHC.Exts                                                     hiding ( bui
 import GHC.ForeignPtr
 import GHC.Types
 
+import System.Mem
+
 -- | A buffer is a piece of memory representing one of the fields
 -- of the SoA of an array. It does not have a multi-dimensional size,
 -- e.g. the shape of the array should be stored elsewhere.
 -- Replaces the former 'ScalarArrayData' type synonym.
 --
-newtype Buffer e = Buffer (UniqueArray (ScalarArrayDataR e))
+newtype Buffer e = Buffer (ForeignPtr (ScalarArrayDataR e))
 
 -- | A structure of buffers represents an array, corresponding to the SoA conversion.
--- NOTE: We use a standard (non-strict) pair to enable lazy device-host data transfers.
 -- Replaces the old 'ArrayData' and 'MutableArrayData' type aliasses and the
 -- 'GArrayDataR' type family.
 --
 type Buffers e = Distribute Buffer e
 
-newtype MutableBuffer e = MutableBuffer (UniqueArray (ScalarArrayDataR e))
-
+data MutableBuffer e = MutableBuffer (ForeignPtr (ScalarArrayDataR e))
 type MutableBuffers e = Distribute MutableBuffer e
 
 -- | Mapping from scalar type to the type as represented in memory in an
@@ -120,6 +119,33 @@ type family ScalarArrayDataR t where
   ScalarArrayDataR (Vec n t) = t
   ScalarArrayDataR t         = t
 
+-- SEE: [HLS and GHC IDE]
+--
+#ifndef __GHCIDE__
+
+foreign import ccall unsafe "accelerate_buffer_alloc" memoryAlloc :: Word64 -> IO (Ptr ())
+foreign import ccall unsafe "accelerate_buffer_byte_size" memoryByteSize :: Ptr () -> IO Word64
+foreign import ccall unsafe "accelerate_buffer_retain" memoryRetain :: Ptr () -> IO ()
+foreign import ccall unsafe "&accelerate_buffer_release" memoryReleaseRef :: FunPtr (Ptr () -> IO ())
+
+#else
+
+memoryAlloc :: Word64 -> IO (Ptr ())
+memoryAlloc = undefined
+
+memoryRetain :: Ptr () -> IO ()
+memoryRetain = undefined
+
+memoryRelease :: Ptr () -> IO ()
+memoryRelease = undefined
+
+#endif
+
+-- SEE: [linking to .c files]
+--
+runQ $ do
+  addForeignFilePath LangC "cbits/memory.c"
+  return []
 
 data ScalarArrayDict a where
   ScalarArrayDict :: ( Buffers a ~ Buffer a, ScalarArrayDataR a ~ ScalarArrayDataR b, Storable b, Buffers b ~ Buffer b )
@@ -210,17 +236,18 @@ readBuffers (TupRsingle t)   !buffer  !ix
   | Refl <- reprIsSingle @ScalarType @e @MutableBuffer t = readBuffer t buffer ix
 
 readBuffer :: forall e. ScalarType e -> MutableBuffer e -> Int -> IO e
-readBuffer (SingleScalarType s) !(MutableBuffer array) !ix
+readBuffer (SingleScalarType s) !(MutableBuffer buffer) !ix
   | SingleDict      <- singleDict s
   , SingleArrayDict <- singleArrayDict s
-  = unsafeReadArray array ix
-readBuffer (VectorScalarType v) !(MutableBuffer array) (I# ix#)
+  = withForeignPtr buffer $ \ptr -> peekElemOff ptr ix
+readBuffer (VectorScalarType v) !(MutableBuffer buffer) (I# ix#)
   | VectorType (I# w#) s <- v
   , SingleDict           <- singleDict s
   , SingleArrayDict      <- singleArrayDict s
-  = let
+  = withForeignPtr buffer $ \ptr ->
+    let
         !bytes# = w# *# sizeOf# (undefined :: ScalarArrayDataR e)
-        !addr#  = unPtr# (unsafeUniqueArrayPtr array) `plusAddr#` (ix# *# bytes#)
+        !addr#  = unPtr# ptr `plusAddr#` (ix# *# bytes#)
      in
      IO $ \s0 ->
        case newAlignedPinnedByteArray# bytes# 16# s0     of { (# s1, mba# #) ->
@@ -236,17 +263,18 @@ writeBuffers (TupRsingle t)   arr      !ix !val
   | Refl <- reprIsSingle @ScalarType @e @MutableBuffer t = writeBuffer t arr ix val
 
 writeBuffer :: forall e. ScalarType e -> MutableBuffer e -> Int -> e -> IO ()
-writeBuffer (SingleScalarType s) (MutableBuffer arr) !ix !val
+writeBuffer (SingleScalarType s) (MutableBuffer buffer) !ix !val
   | SingleDict <- singleDict s
   , SingleArrayDict <- singleArrayDict s
-  = unsafeWriteArray arr ix val
-writeBuffer (VectorScalarType v) (MutableBuffer arr) (I# ix#) (Vec ba#)
+  = withForeignPtr buffer $ \ptr -> pokeElemOff ptr ix val
+writeBuffer (VectorScalarType v) (MutableBuffer buffer) (I# ix#) (Vec ba#)
   | VectorType (I# w#) s <- v
   , SingleDict           <- singleDict s
   , SingleArrayDict      <- singleArrayDict s
-  = let
+  = withForeignPtr buffer $ \ptr ->
+    let
        !bytes# = w# *# sizeOf# (undefined :: ScalarArrayDataR e)
-       !addr#  = unPtr# (unsafeUniqueArrayPtr arr) `plusAddr#` (ix# *# bytes#)
+       !addr#  = unPtr# ptr `plusAddr#` (ix# *# bytes#)
      in
      IO $ \s0 -> case copyByteArrayToAddr# ba# 0# addr# bytes# s0 of
                    s1 -> (# s1, () #)
@@ -269,10 +297,10 @@ touchMutableBuffers (TupRsingle t)   buffer
   | Refl <- reprIsSingle @ScalarType @e @MutableBuffer t = touchMutableBuffer buffer
 
 touchBuffer :: Buffer e -> IO ()
-touchBuffer (Buffer arr) = touchUniqueArray arr
+touchBuffer (Buffer buffer) = touchForeignPtr buffer
 
 touchMutableBuffer :: MutableBuffer e -> IO ()
-touchMutableBuffer (MutableBuffer arr) = touchUniqueArray arr
+touchMutableBuffer (MutableBuffer buffer) = touchForeignPtr buffer
 
 rnfBuffers :: forall e. TypeR e -> Buffers e -> ()
 rnfBuffers TupRunit         ()       = ()
@@ -281,7 +309,7 @@ rnfBuffers (TupRsingle t)   arr
   | Refl <- reprIsSingle @ScalarType @e @Buffer t = rnfBuffer arr
 
 rnfBuffer :: Buffer e -> ()
-rnfBuffer (Buffer arr) = rnf (unsafeUniqueArrayPtr arr)
+rnfBuffer !_ = ()
 
 unPtr# :: Ptr a -> Addr#
 unPtr# (Ptr addr#) = addr#
@@ -320,46 +348,35 @@ veryUnsafeUnfreezeBuffer (Buffer arr) = MutableBuffer arr
 -- Allocate a new buffer with enough storage to hold the given number of
 -- elements.
 --
--- The buffer is uninitialised and, in particular, allocated lazily. The latter
--- is important because it means that for backends that have discrete memory
--- spaces (e.g. GPUs), we will not increase host memory pressure simply to track
--- intermediate buffers that contain meaningful data only on the device.
+-- The buffer is uninitialised.
 --
-allocateArray :: forall e. (HasCallStack, Storable e) => Int -> IO (UniqueArray e)
+allocateArray :: forall e. (HasCallStack, Storable e) => Int -> IO (ForeignPtr e)
 allocateArray !size = internalCheck "size must be >= 0" (size >= 0) $ do
-  arr <- newUniqueArray <=< unsafeInterleaveIO $ do
-           let bytes = size * sizeOf (undefined :: e)
-           new <- readIORef __mallocForeignPtrBytes
-           ptr <- new bytes
-           traceM dump_gc ("gc: allocated new host array (size=" % int % ", ptr=" % build % ")") bytes (unsafeForeignPtrToPtr ptr)
-           local_memory_alloc (unsafeForeignPtrToPtr ptr) bytes
-           return (castForeignPtr ptr)
-#ifdef ACCELERATE_DEBUG
-  addFinalizer (uniqueArrayData arr) (local_memory_free (unsafeUniqueArrayPtr arr))
-#endif
-  return arr
+  let bytes = size * sizeOf (undefined :: e)
 
--- | Register the given function as the callback to use to allocate new array
--- data on the host containing the specified number of bytes. The returned array
--- must be pinned (with respect to Haskell's GC), so that it can be passed to
--- foreign code.
---
-registerForeignPtrAllocator
-    :: (Int -> IO (ForeignPtr Word8))
-    -> IO ()
-registerForeignPtrAllocator new = do
-  traceM dump_gc "registering new array allocator"
-  atomicWriteIORef __mallocForeignPtrBytes new
+  -- Once per 1GB of allocations, perform garbage collection.
+  -- Buffers are allocated outside of the Haskell world, so we have to force
+  -- GC to deallocate them indirectly.
+  let maxSize = 1024 * 1024 * 1024
+  gc <- atomicModifyIORef' bytesAllocatedSinceGC $ \sz ->
+    let newSize = sz + bytes
+    in if newSize < maxSize then (newSize, False) else (newSize `mod` maxSize, True)
+  if gc then performGC else return ()
+
+  ptr <- memoryAlloc $ fromIntegral bytes
+  foreignPtr <- newForeignPtr memoryReleaseRef ptr
+  traceM dump_gc ("gc: allocated new host array (size=" % int % ", ptr=" % build % ")") bytes ptr
+  return $ castForeignPtr foreignPtr
+
+{-# NOINLINE bytesAllocatedSinceGC #-}
+bytesAllocatedSinceGC :: IORef Int
+bytesAllocatedSinceGC = unsafePerformIO $ newIORef 0
 
 bufferToList :: ScalarType e -> Int -> Buffer e -> [e]
 bufferToList tp n buffer = go 0
   where
     go !i | i >= n    = []
           | otherwise = indexBuffer tp buffer i : go (i + 1)
-
-{-# NOINLINE __mallocForeignPtrBytes #-}
-__mallocForeignPtrBytes :: IORef (Int -> IO (ForeignPtr Word8))
-__mallocForeignPtrBytes = unsafePerformIO $! newIORef mallocPlainForeignPtrBytesAligned
 
 -- | Allocate the given number of bytes with 64-byte (cache line)
 -- alignment. This is essential for SIMD instructions.
@@ -375,17 +392,32 @@ mallocPlainForeignPtrBytesAligned (I# size#) = IO $ \s0 ->
     (# s1, mbarr# #) -> (# s1, ForeignPtr (byteArrayContents# (unsafeCoerce# mbarr#)) (PlainPtr mbarr#) #)
 
 
-liftBuffers :: forall e. Int -> TypeR e -> Buffers e -> CodeQ (Buffers e)
-liftBuffers _ TupRunit         ()       = [|| () ||]
-liftBuffers n (TupRpair t1 t2) (b1, b2) = [|| ($$(liftBuffers n t1 b1), $$(liftBuffers n t2 b2)) ||]
-liftBuffers n (TupRsingle s)   buffer
-  | Refl <- reprIsSingle @ScalarType @e @Buffer s = liftBuffer n s buffer
+liftBuffers :: forall e. TypeR e -> Buffers e -> CodeQ (Buffers e)
+liftBuffers TupRunit         ()       = [|| () ||]
+liftBuffers (TupRpair t1 t2) (b1, b2) = [|| ($$(liftBuffers t1 b1), $$(liftBuffers t2 b2)) ||]
+liftBuffers (TupRsingle s)   buffer
+  | Refl <- reprIsSingle @ScalarType @e @Buffer s = liftBuffer s buffer
 
-liftBuffer :: forall e. Int -> ScalarType e -> Buffer e -> CodeQ (Buffer e)
-liftBuffer n (VectorScalarType (VectorType w t)) (Buffer arr)
-  | SingleArrayDict <- singleArrayDict t = [|| Buffer $$(liftUniqueArray (n * w) arr) ||]
-liftBuffer n (SingleScalarType t)                (Buffer arr)
-  | SingleArrayDict <- singleArrayDict t = [|| Buffer $$(liftUniqueArray n arr) ||]
+liftBuffer :: forall e. ScalarType e -> Buffer e -> CodeQ (Buffer e)
+liftBuffer (VectorScalarType (VectorType w t)) (Buffer arr)
+  | SingleArrayDict <- singleArrayDict t = [|| Buffer $$(liftBufferData arr) ||]
+liftBuffer (SingleScalarType t)                (Buffer arr)
+  | SingleArrayDict <- singleArrayDict t = [|| Buffer $$(liftBufferData arr) ||]
+
+liftBufferData :: forall a. Storable a => ForeignPtr a -> CodeQ (ForeignPtr a)
+liftBufferData buffer = unsafePerformIO $ withForeignPtr buffer $ \ptr -> do
+  byteSize <- fromIntegral <$> memoryByteSize (castPtr ptr)
+  let size = byteSize `div` sizeOf (undefined::a)
+  bytes <- peekArray byteSize (castPtr ptr :: Ptr Word8)
+
+  return [||
+    unsafePerformIO $ do
+      let ptrData = Ptr $$(unsafeCodeCoerce $ litE (StringPrimL bytes)) :: Ptr Word8
+      result <- allocateArray size
+      withForeignPtr result $ \p ->
+        copyArray (castPtr p) ptrData byteSize
+      return result
+   ||]
 
 -- Determine the underlying type of a Haskell CLong or CULong.
 --

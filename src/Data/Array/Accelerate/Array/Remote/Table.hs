@@ -42,9 +42,13 @@ module Data.Array.Accelerate.Array.Remote.Table (
 
 ) where
 
+-- TODO: This is currently broken due to refactoring for the new pipeline.
+-- Depending on the choices we make for the new GPU backends, this file should
+-- either be removed, or reimplemented.
+
 import Control.Concurrent                                           ( yield )
 import Control.Concurrent.MVar                                      ( MVar, newMVar, withMVar, mkWeakMVar )
-import Control.Concurrent.Unique                                    ( Unique )
+-- import Control.Concurrent.Unique                                    ( Unique )
 import Control.Monad.IO.Class                                       ( MonadIO, liftIO )
 import Data.Functor
 import Data.Hashable                                                ( hash, Hashable )
@@ -60,7 +64,7 @@ import qualified Data.HashTable.IO                                  as HT
 
 import Data.Array.Accelerate.Error                              ( internalError )
 import Data.Array.Accelerate.Type
-import Data.Array.Accelerate.Array.Unique                       ( UniqueArray(..) )
+-- import Data.Array.Accelerate.Array.Unique                       ( UniqueArray(..) )
 import Data.Array.Accelerate.Array.Buffer
 -- import Data.Array.Accelerate.Array.Data
 import Data.Array.Accelerate.Array.Remote.Class
@@ -102,7 +106,7 @@ data RemoteArray p where
 
 -- | An untyped reference to a buffer, similar to a StableName.
 --
-newtype StableBuffer = StableBuffer Unique
+newtype StableBuffer = StableBuffer () -- Unique
   deriving (Eq, Hashable)
 
 instance Show StableBuffer where
@@ -372,7 +376,7 @@ makeStableBuffer
     -> m StableBuffer
 makeStableBuffer !tp !(MutableBuffer ad)
   | SingleArrayDict <- singleArrayDict tp
-  = return $! StableBuffer (uniqueArrayId ad)
+  = return $! StableBuffer $ error "Not reimplemented yet for new allocator" -- (uniqueArrayId ad)
 
 
 -- Weak arrays
@@ -389,11 +393,12 @@ makeWeakArrayData
     -> Maybe (IO ())
     -> IO (Weak c)
 makeWeakArrayData !tp !(MutableBuffer ad) !c !mf | SingleArrayDict <- singleArrayDict tp = do
-  let !uad = uniqueArrayData ad
+  {- let !uad = uniqueArrayData ad
   case mf of
     Nothing -> return ()
     Just f  -> addFinalizer uad f
-  mkWeak uad c
+  mkWeak uad c -}
+  error "Not reimplemented yet for new allocator"
 
 
 -- Debug
