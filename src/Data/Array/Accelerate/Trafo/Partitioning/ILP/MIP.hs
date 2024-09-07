@@ -45,7 +45,7 @@ instance (MakesILP op, MIP.IsSolver s IO) => ILPSolver (MIP s) op where
   solvePartial (MIP s) ilp@(ILP dir obj constr bnds n) = makeSolution names <$> MIP.solve s options problem
     where
       options = def { MIP.solveTimeLimit   = Nothing --Just 60
-                                , MIP.solveLogger      = putStrLn . ("AccILPSolver: "      ++)
+                                -- , MIP.solveLogger      = putStrLn . ("AccILPSolver: "      ++)
                                 , MIP.solveErrorLogger = putStrLn . ("AccILPSolverError: " ++)
       } --, MIP.solveCondensedSolution = False }
       vs = allVars ilp
