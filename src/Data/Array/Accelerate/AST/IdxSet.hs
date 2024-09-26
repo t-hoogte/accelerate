@@ -19,8 +19,8 @@
 module Data.Array.Accelerate.AST.IdxSet (
   IdxSet(..),
   member, varMember, overlaps, isSubsetOf, intersect, union, unions, (\\), (>>=),
-  insert, insertVar, skip, skip',
-  push, push', empty, isEmpty, drop, drop', remove, partialEnvRemoveSet,
+  insert, insertVar, insertVars, skip, skip',
+  push, push', empty, isEmpty, drop, drop', remove, partialEnvRemoveSet, partialEnvFilterSet,
   fromList, fromList', fromVarList, fromVars, map,
   singleton, singletonVar, first, null,
   toList
@@ -32,6 +32,7 @@ import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.AST.Environment hiding ( push, push' )
 import Data.Array.Accelerate.AST.LeftHandSide
+import Data.Array.Accelerate.Representation.Type
 import Data.Maybe
 
 newtype IdxSet env = IdxSet { unIdxSet :: PartialEnv Present env }
@@ -82,11 +83,19 @@ insert idx (IdxSet a) = IdxSet $ partialUpdate Present idx a
 insertVar :: Var s env t -> IdxSet env -> IdxSet env
 insertVar (Var _ idx) = insert idx
 
+insertVars :: Vars s env t -> IdxSet env -> IdxSet env
+insertVars (TupRsingle (Var _ idx)) = insert idx
+insertVars (TupRpair v1 v2) = insertVars v1 . insertVars v2
+insertVars TupRunit = id
+
 remove :: Idx env t -> IdxSet env -> IdxSet env
 remove idx (IdxSet a) = IdxSet $ partialRemove idx a
 
 partialEnvRemoveSet :: IdxSet env -> PartialEnv f env -> PartialEnv f env
 partialEnvRemoveSet (IdxSet set) env = diffPartialEnv env set
+
+partialEnvFilterSet :: IdxSet env -> PartialEnv f env -> PartialEnv f env
+partialEnvFilterSet (IdxSet set) env = intersectPartialEnv (\_ f -> f) set env
 
 skip :: IdxSet env -> IdxSet (env, t)
 skip = IdxSet . PNone . unIdxSet

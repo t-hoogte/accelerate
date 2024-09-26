@@ -35,7 +35,7 @@ module Data.Array.Accelerate.Array.Buffer (
   indexBuffers, indexBuffers', indexBuffer, readBuffers, readBuffer, writeBuffers, writeBuffer,
   touchBuffers, touchBuffer, touchMutableBuffers, touchMutableBuffer,
   rnfBuffers, rnfBuffer, unsafeFreezeBuffer, unsafeFreezeBuffers,
-  veryUnsafeUnfreezeBuffers, bufferToList,
+  veryUnsafeUnfreezeBuffers, bufferToList, bufferRetainAndGetRef, bufferRelease, bufferFromPtr,
 
   -- * Type macros
   HTYPE_INT, HTYPE_WORD, HTYPE_CLONG, HTYPE_CULONG, HTYPE_CCHAR,
@@ -126,6 +126,7 @@ type family ScalarArrayDataR t where
 foreign import ccall unsafe "accelerate_buffer_alloc" memoryAlloc :: Word64 -> IO (Ptr ())
 foreign import ccall unsafe "accelerate_buffer_byte_size" memoryByteSize :: Ptr () -> IO Word64
 foreign import ccall unsafe "accelerate_buffer_retain" memoryRetain :: Ptr () -> IO ()
+foreign import ccall unsafe "accelerate_buffer_release" memoryRelease :: Ptr () -> IO ()
 foreign import ccall unsafe "&accelerate_buffer_release" memoryReleaseRef :: FunPtr (Ptr () -> IO ())
 
 #else
@@ -146,6 +147,7 @@ memoryRelease = undefined
 runQ $ do
   addForeignFilePath LangC "cbits/memory.c"
   return []
+
 
 data ScalarArrayDict a where
   ScalarArrayDict :: ( Buffers a ~ Buffer a, ScalarArrayDataR a ~ ScalarArrayDataR b, Storable b, Buffers b ~ Buffer b )
@@ -391,6 +393,19 @@ mallocPlainForeignPtrBytesAligned (I# size#) = IO $ \s0 ->
   case newAlignedPinnedByteArray# size# 64# s0 of
     (# s1, mbarr# #) -> (# s1, ForeignPtr (byteArrayContents# (unsafeCoerce# mbarr#)) (PlainPtr mbarr#) #)
 
+bufferRetainAndGetRef :: Buffer e -> IO (Ptr (ScalarArrayDataR e))
+bufferRetainAndGetRef (Buffer foreignPtr) = withForeignPtr foreignPtr $ \ptr -> do
+  memoryRetain $ castPtr ptr
+  return $ castPtr ptr
+
+-- Ptr should originate from bufferRetainAndGetRef
+bufferRelease :: Ptr e -> IO ()
+bufferRelease = memoryRelease . castPtr
+
+bufferFromPtr :: Ptr e -> IO (Buffer e)
+bufferFromPtr ptr = do
+  fp <- newForeignPtr memoryReleaseRef $ castPtr ptr
+  return $ Buffer $ castForeignPtr fp
 
 liftBuffers :: forall e. TypeR e -> Buffers e -> CodeQ (Buffers e)
 liftBuffers TupRunit         ()       = [|| () ||]

@@ -37,7 +37,7 @@ void accelerate_buffer_retain(void* interior) {
 void accelerate_buffer_release(void* interior) {
   struct ObjectHeader* header = (struct ObjectHeader*) (interior - sizeof(struct ObjectHeader));
   // Release is always needed, acquire only when the reference count drops to zero.
-  int old = atomic_fetch_add_explicit(&header->reference_count, 1, memory_order_acq_rel);
+  int old = atomic_fetch_add_explicit(&header->reference_count, -1, memory_order_acq_rel);
   if (old == 1) {
     // TODO: call ___tracy_emit_memory_free
     free(header);
