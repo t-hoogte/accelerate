@@ -21,7 +21,7 @@ module Data.Array.Accelerate.AST.LeftHandSide
   (
     Exists(..),
     LeftHandSide(.., LeftHandSideUnit), leftHandSidePair,
-    lhsToTupR, leftHandSideIsVoid,
+    lhsToTupR, lhsSize, leftHandSideIsVoid,
     rnfLeftHandSide, liftLeftHandSide, mapLeftHandSide, flattenTupR)
   where
 
@@ -60,6 +60,11 @@ lhsToTupR :: LeftHandSide s v env env' -> TupR s v
 lhsToTupR (LeftHandSideSingle s)   = TupRsingle s
 lhsToTupR (LeftHandSideWildcard r) = r
 lhsToTupR (LeftHandSidePair as bs) = TupRpair (lhsToTupR as) (lhsToTupR bs)
+
+lhsSize :: LeftHandSide s v env env' -> Int
+lhsSize (LeftHandSideWildcard _) = 0
+lhsSize (LeftHandSidePair l1 l2) = lhsSize l1 + lhsSize l2
+lhsSize (LeftHandSideSingle _)   = 1
 
 rnfLeftHandSide :: (forall b. s b -> ()) -> LeftHandSide s v env env' -> ()
 rnfLeftHandSide f (LeftHandSideWildcard r) = rnfTupR f r

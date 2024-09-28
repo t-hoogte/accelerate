@@ -29,17 +29,30 @@ uint64_t accelerate_buffer_byte_size(void* interior) {
   return header->byte_size;
 }
 
-void accelerate_buffer_retain(void* interior) {
+void accelerate_buffer_retain_by(void* interior, uint64_t amount) {
+  if (amount == 0) return;
   struct ObjectHeader* header = (struct ObjectHeader*) (interior - sizeof(struct ObjectHeader));
-  atomic_fetch_add_explicit(&header->reference_count, 1, memory_order_acquire);
+  atomic_fetch_add_explicit(&header->reference_count, amount, memory_order_acquire);
 }
 
-void accelerate_buffer_release(void* interior) {
+void accelerate_buffer_retain(void* interior) {
+  accelerate_buffer_retain_by(interior, 1);
+}
+
+void accelerate_buffer_release_by(void* interior, uint64_t amount) {
+  if (amount == 0) return;
   struct ObjectHeader* header = (struct ObjectHeader*) (interior - sizeof(struct ObjectHeader));
   // Release is always needed, acquire only when the reference count drops to zero.
-  int old = atomic_fetch_add_explicit(&header->reference_count, -1, memory_order_acq_rel);
-  if (old == 1) {
+  uint64_t old = atomic_fetch_add_explicit(&header->reference_count, -amount, memory_order_acq_rel);
+  if (old == amount) {
     // TODO: call ___tracy_emit_memory_free
     free(header);
   }
+  if (old < amount) {
+    printf("Reference count underflow\n");
+  }
+}
+
+void accelerate_buffer_release(void* interior) {
+  accelerate_buffer_release_by(interior, 1);
 }
