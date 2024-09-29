@@ -408,6 +408,7 @@ library
         Data.Array.Accelerate.Analysis.Hash
         Data.Array.Accelerate.Analysis.Hash.Exp
         Data.Array.Accelerate.Analysis.Hash.Operation
+        Data.Array.Accelerate.Analysis.Hash.Schedule.Uniform
         Data.Array.Accelerate.Analysis.Match
         Data.Array.Accelerate.Array.Buffer
         Data.Array.Accelerate.Array.Remote

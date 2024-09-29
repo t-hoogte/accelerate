@@ -46,13 +46,14 @@ module Data.Array.Accelerate.Interpreter (
 ) where
 
 import Prelude                                                      hiding (take, (!!), sum, Either(..) )
+import qualified Prelude
 import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.AST.Kernel
 import Data.Array.Accelerate.Trafo.Desugar
 import qualified Data.Array.Accelerate.Debug.Internal as Debug
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Error
-import Data.Array.Accelerate.Analysis.Hash.Exp ( intHost, hashQ )
+import Data.Array.Accelerate.Analysis.Hash.Exp ( intHost, hashQ, encodeTupR, encodeIdx )
 import Data.Array.Accelerate.Analysis.Hash.Operation
 import Data.Array.Accelerate.Representation.Ground
 import Data.Array.Accelerate.Representation.Type
@@ -299,6 +300,9 @@ instance IsKernel InterpretKernel where
   type KernelMetadata  InterpretKernel = NoKernelMetadata
 
   compileKernel = const InterpretKernel
+
+  encodeKernel (InterpretKernel cluster args)
+    = Prelude.Right $ encodeOperation cluster <> encodePreArgs encodeArg args
 
 instance PrettyKernel InterpretKernel where
   -- PrettyKernelBody provides a Val but prettyOpWithArgs expects a Val', should we change them to have the

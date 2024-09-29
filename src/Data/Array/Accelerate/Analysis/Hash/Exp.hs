@@ -30,6 +30,7 @@ module Data.Array.Accelerate.Analysis.Hash.Exp (
   encodeArraysType,
   encodeArrayType,
   encodeIdx,
+  encodeShapeR,
   encodeScalarType,
   encodeScalarConst,
   encodeTypeR,

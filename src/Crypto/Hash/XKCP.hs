@@ -19,7 +19,7 @@
 
 module Crypto.Hash.XKCP (
 
-  SHA3_256,
+  SHA3_256(..),
   hash, hashlazy,
 
 ) where

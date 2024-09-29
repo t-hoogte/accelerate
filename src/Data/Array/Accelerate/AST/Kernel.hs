@@ -28,6 +28,7 @@ import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.Representation.Shape
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Array.Buffer
+import Data.Array.Accelerate.Analysis.Hash.Exp
 import Data.Kind
 
 class (NFData' kernel, NFData' (KernelMetadata kernel)) => IsKernel kernel where
@@ -39,6 +40,11 @@ class (NFData' kernel, NFData' (KernelMetadata kernel)) => IsKernel kernel where
   kernelMetadata :: KernelFun kernel f -> KernelMetadata kernel f
   default kernelMetadata :: KernelMetadata kernel ~ NoKernelMetadata => KernelFun kernel f -> KernelMetadata kernel f
   kernelMetadata _ = NoKernelMetadata
+
+  -- Depending on the backend, it may either be easier
+  -- to return the hash/UID of an already hashed kernel,
+  -- or manually encode the kernel.
+  encodeKernel :: kernel env -> Either Hash Builder
 
 type KernelFun kernel = OpenKernelFun kernel ()
 

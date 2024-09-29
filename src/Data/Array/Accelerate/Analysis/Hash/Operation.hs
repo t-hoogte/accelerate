@@ -17,7 +17,7 @@
 -- Portability : non-portable (GHC extensions)
 --
 
-module Data.Array.Accelerate.Analysis.Hash.Operation ( EncodeOperation(..), hashOperation ) where
+module Data.Array.Accelerate.Analysis.Hash.Operation ( EncodeOperation(..), hashOperation, encodePreArgs, encodeArg ) where
 
 import Data.Array.Accelerate.Analysis.Hash.Exp
 import Data.Array.Accelerate.AST.Idx
