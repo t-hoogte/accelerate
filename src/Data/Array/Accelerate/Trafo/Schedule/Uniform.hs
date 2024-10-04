@@ -1,12 +1,15 @@
 {-# LANGUAGE ConstraintKinds     #-}
 {-# LANGUAGE FlexibleInstances   #-}
 {-# LANGUAGE GADTs               #-}
+{-# LANGUAGE ImpredicativeTypes  #-}
 {-# LANGUAGE LambdaCase          #-}
+{-# LANGUAGE MultiWayIf          #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE PatternGuards       #-}
 {-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications    #-}
+{-# LANGUAGE TypeOperators       #-}
 {-# LANGUAGE TypeFamilies        #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 {-# OPTIONS_HADDOCK hide #-}
@@ -24,7 +27,7 @@
 module Data.Array.Accelerate.Trafo.Schedule.Uniform (
   -- Exports the instance IsSchedule UniformScheduleFun
 
-  compileKernel', CompiledKernel(..), rnfSArg, rnfSArgs
+  compileKernel', CompiledKernel(..), rnfSArg, rnfSArgs,
 ) where
 
 import Data.Array.Accelerate.Analysis.Match
@@ -48,7 +51,7 @@ import Data.Array.Accelerate.Trafo.Schedule.Partial
 import Data.Array.Accelerate.Trafo.Schedule.Uniform.Future
 import Data.Array.Accelerate.Trafo.Schedule.Uniform.Simplify
 import Data.Array.Accelerate.Trafo.Schedule.Uniform.LiveVars
-import Data.Array.Accelerate.Trafo.SkipEnvironment (Skip'(..), lhsSkip', skipWeakenIdx')
+import Data.Array.Accelerate.Trafo.SkipEnvironment
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.AST.Partitioned (PartitionedAfun)
 import qualified Data.Array.Accelerate.AST.Partitioned as C
@@ -120,7 +123,7 @@ transformAfun
   :: IsKernel kernel
   => PartitionedAfun (KernelOperation kernel) () f
   -> UniformScheduleFun kernel () (Scheduled UniformScheduleFun f)
-transformAfun afun = simplify $ stronglyLiveVariablesFun $ simplify $ stronglyLiveVariablesFun $ simplify $ stronglyLiveVariablesFun $ funConstruct (go FEnvEnd afun) weakenId BEmpty
+transformAfun afun = simplify $ stronglyLiveVariablesFun $ simplify $ stronglyLiveVariablesFun $ simplify $ stronglyLiveVariablesFun $ makeFunSpawnClosed $ funConstruct (go FEnvEnd afun) weakenId BEmpty
   where
     go
       :: IsKernel kernel
@@ -1117,3 +1120,153 @@ rnfSArg (SArgBuffer mod' var) = mod' `seq` rnfGroundVar var
 rnfInputOutputR :: InputOutputR input output -> ()
 rnfInputOutputR (InputOutputRpair io1 io2) = rnfInputOutputR io1 `seq` rnfInputOutputR io2
 rnfInputOutputR _ = () -- all other options have no information
+
+makeFunSpawnClosed :: UniformScheduleFun kernel env t -> UniformScheduleFun kernel env t
+makeFunSpawnClosed = makeFunSpawnClosed' weakenId
+
+makeFunSpawnClosed' :: env :> env' -> UniformScheduleFun kernel env t -> UniformScheduleFun kernel env' t
+makeFunSpawnClosed' k (Slam lhs f) 
+  | Exists lhs' <- rebuildLHS lhs
+  , k' <- sinkWithLHS lhs lhs' k =
+    Slam lhs' $ makeFunSpawnClosed' k' f
+makeFunSpawnClosed' k (Sbody s) = Sbody $ makeSpawnClosed' k PEnd s
+
+-- Maybe we should make this a core utility, if we need this on more locations
+type TypedIdxSet t = PartialEnv ((:~:) t)
+
+makeSpawnClosed' :: env :> env' -> TypedIdxSet Signal env' -> UniformSchedule kernel env -> UniformSchedule kernel env'
+makeSpawnClosed' k awaitEnd = \case
+  Return -> case toList awaitEnd of
+    [] -> Return
+    list -> Effect (SignalAwait list) Return
+  Alet lhs bnd next
+    | Exists lhs' <- rebuildLHS lhs
+    , k' <- sinkWithLHS lhs lhs' k ->
+      Alet lhs' (weaken k bnd) $ makeSpawnClosed' k' (partialEnvSkipLHS lhs' awaitEnd ) next
+  Effect effect next ->
+    Effect (weaken' k effect) $ makeSpawnClosed' k awaitEnd next
+  Acond var true false next ->
+    Acond (weaken k var) (makeSpawnClosed' k PEnd true) (makeSpawnClosed' k PEnd false) (makeSpawnClosed' k awaitEnd next)
+  Awhile io step initial next ->
+    Awhile io (makeFunSpawnClosed' k step) (mapTupR (weaken k) initial) $ makeSpawnClosed' k awaitEnd next
+  Spawn a b
+    | (count, a') <- addSync a ->
+      -- Bind signals for all spawns in 'a', and this current spawn.
+      bindSignals (count + 1) $
+        \skip signals resolvers ->
+          Spawn
+            (a' (skipWeakenIdx' skip .> k) weakenId (toList resolvers))
+            (makeSpawnClosed' (skipWeakenIdx' skip .> k)
+              (unionPartialEnv const signals $ skipWeakenPartialEnv' skip awaitEnd) b)
+  where
+    -- Counts the number of Spawn nodes, in a term.
+    -- Does not recurse into the step of Awhile node.
+    -- For conditionals, we take the maximum of the two branches.
+    countSpawns :: UniformSchedule kernel env -> Int
+    countSpawns Return = 0
+    countSpawns (Alet _ _ next) = countSpawns next
+    countSpawns (Effect _ next) = countSpawns next
+    countSpawns (Acond _ true false next)
+      -- Since only 'true' or 'false' is executed, not both,
+      -- we take the maximum of both counts
+      = (countSpawns true `max` countSpawns false) + countSpawns next
+    countSpawns (Awhile _ _ _ next) = countSpawns next
+    countSpawns (Spawn a b) = countSpawns a + countSpawns b + 1
+
+    bindSignals
+      :: Int
+      -> (forall env2. Skip' env2 env1 -> TypedIdxSet Signal env2 -> TypedIdxSet SignalResolver env2 -> UniformSchedule kernel env2)
+      -> UniformSchedule kernel env1
+    bindSignals 0 f = f SkipNone' PEnd PEnd
+    bindSignals n f = bindSignals (n - 1) $ \skip signals resolvers ->
+      Alet lhsSignal (NewSignal "Synchronisation to make schedule spawn-closed") $
+        f (SkipSucc' $ SkipSucc' skip) (PNone $ PPush signals Refl) (PPush (PNone resolvers) Refl)
+
+    -- Returns the number of spawns and adds synchronisation points to the end of all Spawns.
+    addSync
+      :: UniformSchedule kernel env
+      -> ( Int -- Number of spawns, excluding spawns in the step function of Awhile loops
+         -- Function to do the actual transformation
+         -- The list of SignalResolvers is either as long as the number of spawns,
+         -- or one longer.
+         -- If the latter is the case, then the final Return of this term should resolve one of these SignalResolvers.
+         -- If the former is the case, then no such SignalResolver should be resolved at the end;
+         -- the SignalResolvers are then only needed for any spawned terms.
+         , forall env1 env2. env :> env1 -> env2 :> env1 -> [Idx env2 SignalResolver] -> UniformSchedule kernel env1)
+    addSync Return =
+      ( 0
+      , \_ k2 -> \case
+          [] -> Return
+          [s] -> Effect (SignalResolve [weaken k2 s]) Return
+          _ -> internalError "makeSpawnClosed: number of Signals is incorrect."
+      )
+    addSync (Alet lhs bnd next) =
+      ( count
+      , \k1 k2 resolvers -> if
+        | Exists lhs' <- rebuildLHS lhs
+        , k1' <- sinkWithLHS lhs lhs' k1
+        , k2' <- weakenWithLHS lhs' .> k2 ->
+          Alet lhs' (weaken k1 bnd) $ next' k1' k2' resolvers
+      )
+      where
+        (count, next') = addSync next
+    addSync (Effect effect next) =
+      ( count
+      , \k1 k2 resolvers ->
+        Effect (weaken' k1 effect) $ next' k1 k2 resolvers
+      )
+      where
+        (count, next') = addSync next
+    addSync (Acond var true false next) =
+      -- Since only 'true' or 'false' is executed, not both,
+      -- we take the maximum of both counts
+      ( (trueCount `max` falseCount) + nextCount
+      , \k1 k2 resolvers ->
+        let
+          (branchResolvers, nextResolvers) = splitAt (trueCount `max` falseCount) resolvers
+        in
+          Acond (weaken k1 var)
+            -- If the true branch requires fewer signals than the false branch,
+            -- resolve all the extra signals here.
+            ( resolve (map (weaken k2) $ drop trueCount branchResolvers)
+              $ true' k1 k2 (take trueCount branchResolvers)
+            )
+            -- If the false branch requires fewer signals than the true branch,
+            -- resolve all the extra signals here.
+            ( resolve (map (weaken k2) $ drop falseCount branchResolvers)
+              $ false' k1 k2 (take falseCount branchResolvers)
+            )
+            ( next' k1 k2 nextResolvers )
+      )
+      where
+        (trueCount, true') = addSync true
+        (falseCount, false') = addSync false
+        (nextCount, next') = addSync next
+    addSync (Awhile io f initial next) =
+      ( count
+      , \k1 k2 resolvers ->
+          Awhile
+            io
+            (makeFunSpawnClosed' k1 f)
+            (mapTupR (weaken k1) initial)
+            $ next' k1 k2 resolvers
+      )
+      where
+        (count, next') = addSync next
+    addSync (Spawn a b) =
+      -- +1 for this Spawn
+      ( aCount + bCount + 1
+      , \k1 k2 resolvers ->
+        Spawn
+          -- Give the first (aCount + 1) resolvers to term 'a', the others to 'b'.
+          -- Note that 'b' gets either bCount or (bCount + 1) resolvers,
+          -- see the comment at the start of 'addSync'.
+          (a' k1 k2 (take (aCount + 1) resolvers))
+          (b' k1 k2 (drop (aCount + 1) resolvers))
+      )
+      where
+        (aCount, a') = addSync a
+        (bCount, b') = addSync b
+
+    toList :: TypedIdxSet t env -> [Idx env t]
+    toList = map (\(EnvBinding idx Refl) -> idx) . partialEnvToList

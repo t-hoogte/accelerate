@@ -61,6 +61,43 @@ import Data.Typeable                                                ( (:~:)(..) 
 -- The schedule will exploit task parallelism.
 
 -- The schedule consists of bindings, effects and (parallel) control flow
+--
+-- Some schedules/terms may be 'spawn-closed'. These terms guarantee that when
+-- the execution of the term finishes, all spawned tasks have also finished.
+-- For instance, this program is spawn-closed:
+--
+-- (s0, s0') = new signal
+-- spawn {
+--   ...
+--   resolve [s0']
+-- }
+-- ...
+-- await [s0]
+--
+-- However, this term is not self-closed, as the spawned term may outlive the
+-- outer term.
+--
+-- spawn {
+--   ...
+-- }
+-- ...
+--
+-- Note that not necessarily all subterms of a spawn-closed term as spawn-closed.
+-- For instance, consider:
+--
+-- (s0, s0') = new signal
+-- (s1, s1') = new signal
+-- spawn {
+--   spawn {
+--     resolve [s1']
+--   }
+--   resolve [s0']
+-- }
+-- await [s0, s1]
+-- Here, the first spawned term is not self-closed:
+-- its execution may finish before the execution of the inner spawned term ends.
+-- The entire term is self-closed, as it waits on the completions of both
+-- spawned subterms.
 data UniformSchedule kernel env where
   Return  :: UniformSchedule kernel env
 
@@ -83,6 +120,8 @@ data UniformSchedule kernel env where
   -- proceed. If true, then the other output values should also be filled, possibly at
   -- a later point in time. If it is false, then no other output values may be filled.
   Awhile  :: InputOutputR input output
+          -- The body of the while loop.
+          -- Should be spawn-closed.
           -> UniformScheduleFun kernel env (input -> Output PrimBool -> output -> ())
           -> BaseVars env input
           -> UniformSchedule kernel env -- Operations after the while loop
