@@ -35,6 +35,8 @@ module Data.Array.Accelerate.Trafo.Schedule.Uniform.Simplify (
   buildFunBody, buildFunLam,
   BuildEnv(BEmpty),
 
+  lhsSignal, lhsRef,
+
   -- Optimize
   simplify
 ) where
@@ -49,6 +51,7 @@ import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Trafo.Exp.Substitution
 import Data.Array.Accelerate.Trafo.Substitution             hiding ( weakenArrayInstr )
 import Data.Array.Accelerate.Trafo.Schedule.Uniform.Substitution ()
+import Data.Array.Accelerate.Trafo.SkipEnvironment (Skip'(..), skipWeakenIdx')
 import Data.Maybe
 import Data.List
     ( isSubsequenceOf,
@@ -65,6 +68,8 @@ data BuildSchedule kernel env =
     -- Sorted, without duplicates
     finallyResolves :: [Idx env SignalResolver],
     trivial :: Bool,
+    -- How deep Awhile(Seq)s are nested within this term
+    awhileHeight :: Int,
     -- Constructs a schedule, but doesn't wait on the directlyAwaits signals.
     -- constructFull adds that.
     construct
@@ -82,24 +87,42 @@ instance Sink' (BuildSchedule kernel) where
       directlyAwaits = sort $ map (weaken k) $ directlyAwaits schedule,
       finallyResolves = sort $ map (weaken k) $ finallyResolves schedule,
       trivial = trivial schedule,
+      awhileHeight = awhileHeight schedule,
       construct = \k' -> construct schedule (k' .> k)
     }
 
-newtype BuildScheduleFun kernel env t =
-  BuildScheduleFun{
-    funConstruct
-      :: forall env'.
-         env :> env'
-      -> BuildEnv env'
-      -> UniformScheduleFun kernel env' t
-  }
+data BuildScheduleFun kernel env t where
+  BuildBody
+    :: BuildSchedule kernel env
+    -> BuildScheduleFun kernel env ()
+
+  BuildLam
+    :: BLeftHandSide t env env'
+    -> BuildScheduleFun kernel env' f
+    -> BuildScheduleFun kernel env (t -> f)
+
+funConstruct :: BuildScheduleFun kernel env t -> env :> env' -> BuildEnv env' -> UniformScheduleFun kernel env' t
+funConstruct (BuildBody body) k env = Sbody $ constructFull body k env nothingPostponed ContinuationEnd
+funConstruct (BuildLam lhs f) k env
+  | Exists lhs' <- rebuildLHS lhs
+  = Slam lhs' $ funConstruct f (sinkWithLHS lhs lhs' k) $ buildEnvSkip lhs' env
+
+funAwhileHeight :: BuildScheduleFun kernel env t -> Int
+funAwhileHeight (BuildBody b) = awhileHeight b
+funAwhileHeight (BuildLam _ f) = funAwhileHeight f
+
+instance Sink (BuildScheduleFun kernel) where
+  weaken k (BuildBody body) = BuildBody $ weaken' k body
+  weaken k (BuildLam lhs f)
+    | Exists lhs' <- rebuildLHS lhs
+    = BuildLam lhs' $ weaken (sinkWithLHS lhs lhs' k) f
 
 data BuildSpawn kernel env =
   BuildSpawn{
     -- The signals that this term resolves at the end.
     -- Corresponds with finallyResolves, but the SignalResolvers are converted to Signals.
     spawnFinallyResolves :: [Idx env Signal],
-    spawnTerm :: (BuildSchedule kernel env)
+    spawnTerm :: BuildSchedule kernel env
   }
 
 instance Sink' (BuildSpawn kernel) where
@@ -337,6 +360,7 @@ buildReturn = BuildSchedule{
     directlyAwaits = [],
     finallyResolves = [],
     trivial = True,
+    awhileHeight = 0,
     construct = \_ env postponed -> \case
       ContinuationEnd -> placePostponed postponed env Return
       ContinuationDo k2 build k3 cont -> constructFull build k2 env postponed $ weaken' k3 cont
@@ -353,7 +377,8 @@ buildLet lhs binding body
     BuildSchedule{
       directlyAwaits = map (fromMaybe (internalError "Illegal schedule: deadlock") . strengthenWithLHS lhs) $ directlyAwaits body,
       finallyResolves = mapMaybe (strengthenWithLHS lhs) $ finallyResolves body,
-      trivial = trivialBinding binding && trivial body,
+      trivial = trivial body,
+      awhileHeight = awhileHeight body,
       construct = constructLet False
     }
   | otherwise =
@@ -361,6 +386,7 @@ buildLet lhs binding body
       directlyAwaits = [],
       finallyResolves = mapMaybe (strengthenWithLHS lhs) $ finallyResolves body,
       trivial = False,
+      awhileHeight = awhileHeight body,
       construct = constructLet True
     }
   where
@@ -395,6 +421,7 @@ buildLetNewSignal comment resolvers body =
     directlyAwaits = map (fromMaybe (internalError "Illegal schedule: deadlock") . strengthenWithLHS lhs) $ directlyAwaits body,
     finallyResolves = mapMaybe (strengthenWithLHS lhs) $ finallyResolves body,
     trivial = trivial body,
+    awhileHeight = awhileHeight body,
     construct = \k env postponed cont -> if
       | otherSignal : _ <- mapMaybe (\idx -> k >:> idx `findSignal` env) resolvers
       , k' <- sink $ weakenReplace otherSignal k ->
@@ -447,7 +474,8 @@ buildEffect (SignalResolve resolvers) next =
         resolvers' `mergeDedup` finallyResolves next
       else
         finallyResolves next,
-    trivial = False,
+    trivial = trivial next,
+    awhileHeight = awhileHeight next,
     construct = \k env postponed cont ->
       let
         resolvers'' = map (weaken k) resolvers'
@@ -463,6 +491,7 @@ buildEffect (SignalAwait signals) next =
     directlyAwaits = sort signals `mergeDedup` directlyAwaits next,
     finallyResolves = finallyResolves next,
     trivial = trivial next,
+    awhileHeight = awhileHeight next,
     construct = \k env postponed cont -> construct next k env postponed cont
   }
 buildEffect effect next
@@ -471,6 +500,7 @@ buildEffect effect next
       directlyAwaits = directlyAwaits next,
       finallyResolves = finallyResolves next,
       trivial = effectIsTrivial && trivial next,
+      awhileHeight = awhileHeight next,
       construct = \k env postponed cont ->
         Effect (weaken' k effect)
           $ construct next k (updateEnv k env) postponed cont
@@ -480,6 +510,7 @@ buildEffect effect next
       directlyAwaits = [],
       finallyResolves = finallyResolves next,
       trivial = effectIsTrivial && trivial next,
+      awhileHeight = awhileHeight next,
       construct = \k env postponed cont ->
         placePostponed (if effectIsTrivial then nothingPostponed else postponed) env
           $ Effect (weaken' k effect)
@@ -509,6 +540,7 @@ buildSeq a b =
       else
         finallyResolves b,
     trivial = trivial a && trivial b && isSubseq,
+    awhileHeight = awhileHeight a `max` awhileHeight b,
     construct = \k env postponed cont ->
       construct a k env postponed $ ContinuationDo k b weakenId cont
   }
@@ -528,6 +560,7 @@ buildSpawn a b
       -- We thus ignore 'a' here.
       finallyResolves = finallyResolves b,
       trivial = False,
+      awhileHeight = awhileHeight a `max` awhileHeight b,
       construct = \k env postponed cont ->
         let
           aResolves = sort $ mapMaybe ((`findSignal` env) . weaken k) $ finallyResolves a
@@ -551,6 +584,7 @@ buildAcond var true false next =
     directlyAwaits = directlyAwaits true `sortedIntersection` directlyAwaits false,
     finallyResolves = finallyResolves next,
     trivial = False,
+    awhileHeight = awhileHeight true `max` awhileHeight false `max` awhileHeight next,
     construct = \k env postponed cont ->
       placePostponed postponed env
         $ Acond
@@ -571,30 +605,95 @@ buildAwhile io step initial next =
     directlyAwaits = [], -- TODO: Compute this based on the use of the initial state and free variables of step.
     finallyResolves = finallyResolves next,
     trivial = False,
+    awhileHeight = (funAwhileHeight step + 1) `max` awhileHeight next,
     construct = \k env postponed cont ->
       placePostponed postponed env
-        $ Awhile
+        -- TODO: Decide whether this Awhile should become an AwhileSeq
+        $ if True {- awhileHeight .. > 1 -} then
+            let
+              env' = env `BPush` IResolved `BPush` INone
+              k' = weakenSucc' $ weakenSucc' k
+              step' = downgradeAwhileFun (SuccIdx ZeroIdx) $ weaken k' step
+            in
+              await (weaken k <$> varsGetSignals initial)
+                $ Alet lhsSignal (NewSignal "Signal for awhile to awhile-seq downgrade")
+                $ Effect (SignalResolve [ZeroIdx])
+                $ AwhileSeq
+                  (ioRemoveSignal io)
+                  (funConstruct step' weakenId env')
+                  (mapTupR (weaken k') $ varsRemoveSignal initial)
+                  (constructFull next k' env' nothingPostponed $ weaken' (weakenSucc $ weakenSucc weakenId) cont)
+          else
+            Awhile
+              io
+              (funConstruct step k env)
+              (mapTupR (weaken k) initial)
+              (constructFull next k env nothingPostponed cont)
+  }
+
+buildAwhileSeq
+  -- Should not contain InputOutputRsignal
+  :: InputOutputR input output
+  -> BuildScheduleFun kernel env (input -> OutputRef PrimBool -> output -> ())
+  -> BaseVars env input
+  -> BuildSchedule kernel env -- Operations after the while loop
+  -> BuildSchedule kernel env
+buildAwhileSeq io step initial next =
+  BuildSchedule{
+    directlyAwaits = [], -- TODO: Compute this based on the use of the initial state and free variables of step.
+    finallyResolves = finallyResolves next,
+    trivial = False,
+    awhileHeight = (funAwhileHeight step + 1) `max` awhileHeight next,
+    construct = \k env postponed cont ->
+      placePostponed postponed env
+        $ AwhileSeq
           io
           (funConstruct step k env)
           (mapTupR (weaken k) initial)
           (constructFull next k env nothingPostponed cont)
   }
 
+downgradeAwhileFun
+  :: forall kernel env input output.
+     Idx env Signal -- Index to a resolved signal
+  -> BuildScheduleFun kernel env (input -> (SignalResolver, OutputRef PrimBool) -> output -> ())
+  -> BuildScheduleFun kernel env (NoSignal input -> OutputRef PrimBool -> NoSignal output -> ())
+downgradeAwhileFun signalIdx (BuildLam lhsInput (BuildLam lhsBool (BuildLam lhsOutput (BuildBody f))))
+  | Exists lhsInput' <- lhsRemoveSignal lhsInput
+  , kInput <- declareRemovedSignal lhsInput lhsInput' signalIdx weakenId
+  , Exists lhsBoolOutput' <- lhsRemoveSignal (LeftHandSidePair lhsBool lhsOutput)
+  , DeclareRemovedResolvers termOutput kOutput <-
+      declareRemovedResolvers @kernel
+        (LeftHandSidePair lhsBool lhsOutput)
+        lhsBoolOutput'
+        kInput
+  , LeftHandSidePair lhsBool' lhsOutput' <- lhsBoolOutput'
+  = BuildLam lhsInput'
+  $ BuildLam (lhsSnd lhsBool')
+  $ BuildLam lhsOutput'
+  $ BuildBody
+  $ termOutput
+  $ weaken' kOutput f
+  where
+    lhsSnd :: BLeftHandSide ((), b) e1 e2 -> BLeftHandSide b e1 e2
+    lhsSnd (LeftHandSidePair LeftHandSideWildcard{} l) = l
+    lhsSnd (LeftHandSideWildcard (TupRpair _ t)) = LeftHandSideWildcard t
+    lhsSnd _ = internalError "Pair impossible"
+
 buildFunLam
   :: BLeftHandSide t env1 env2
   -> BuildScheduleFun kernel env2 f
   -> BuildScheduleFun kernel env1 (t -> f)
-buildFunLam lhs body =
-  BuildScheduleFun{
-    funConstruct = \k env -> case rebuildLHS lhs of
-      Exists lhs' -> Slam lhs' $ funConstruct body (sinkWithLHS lhs lhs' k) (buildEnvSkip lhs' env)
-  }
+buildFunLam = BuildLam
 
 buildFunBody :: BuildSchedule kernel env -> BuildScheduleFun kernel env ()
-buildFunBody body =
-  BuildScheduleFun{
-    funConstruct = \k env -> Sbody $ constructFull body k env nothingPostponed ContinuationEnd
-  }
+buildFunBody = BuildBody
+
+lhsSignal :: BLeftHandSide (Signal, SignalResolver) fenv ((fenv, Signal), SignalResolver)
+lhsSignal = LeftHandSidePair (LeftHandSideSingle BaseRsignal) (LeftHandSideSingle BaseRsignalResolver)
+
+lhsRef :: GroundR tp -> LeftHandSide BaseR (Ref tp, OutputRef tp) fenv ((fenv, Ref tp), OutputRef tp)
+lhsRef tp = LeftHandSidePair (LeftHandSideSingle $ BaseRref tp) (LeftHandSideSingle $ BaseRrefWrite tp)
 
 -- Assumes that the input arrays are sorted,
 -- with no duplicates.
@@ -672,6 +771,11 @@ rebuild = \case
     | (analysis, next') <- rebuild next ->
       ( analysis
       , buildAwhile io (rebuildFun f) input next'
+      )
+  AwhileSeq io f input next
+    | (analysis, next') <- rebuild next ->
+      ( analysis
+      , buildAwhileSeq io (rebuildFun f) input next'
       )
   Spawn term1 term2
     | (analysis1, term1') <- rebuild term1
@@ -756,3 +860,160 @@ analyseSignalResolve = const SEmpty -- go . sort
     unSucc :: Idx (env, s) t -> Idx env t
     unSucc (SuccIdx idx) = idx
     unSucc ZeroIdx = internalError "Expected non-zero index. Is the list of indices sorted and unique?"
+
+-- Removes Signals from the InputOutputR of an awhile loop
+ioRemoveSignal :: InputOutputR input output -> InputOutputR (NoSignal input) (NoSignal output)
+ioRemoveSignal InputOutputRsignal = InputOutputRunit
+ioRemoveSignal (InputOutputRref tp) = InputOutputRref tp
+ioRemoveSignal InputOutputRunit = InputOutputRunit
+ioRemoveSignal (InputOutputRpair a b) = ioRemoveSignal a `InputOutputRpair` ioRemoveSignal b
+
+typeRemoveSignal :: BasesR input -> BasesR (NoSignal input)
+typeRemoveSignal TupRunit = TupRunit
+typeRemoveSignal (TupRsingle t) = case t of
+  BaseRsignal -> TupRunit
+  BaseRsignalResolver -> TupRunit
+  BaseRref _ -> TupRsingle t
+  BaseRrefWrite _ -> TupRsingle t
+  _ -> internalError "Only expected Signals, SignalResolvers, and Refs"
+typeRemoveSignal (TupRpair t1 t2) = typeRemoveSignal t1 `TupRpair` typeRemoveSignal t2
+
+lhsRemoveSignal :: BLeftHandSide input env1 env2 -> Exists (BLeftHandSide (NoSignal input) env3)
+lhsRemoveSignal (LeftHandSideWildcard tp) = Exists $ LeftHandSideWildcard $ typeRemoveSignal tp
+lhsRemoveSignal (LeftHandSideSingle tp) = case tp of
+  BaseRsignal -> Exists $ LeftHandSideWildcard TupRunit
+  BaseRsignalResolver -> Exists $ LeftHandSideWildcard TupRunit
+  BaseRref _ -> Exists $ LeftHandSideSingle tp
+  BaseRrefWrite _ -> Exists $ LeftHandSideSingle tp
+  _ -> internalError "Only expected Signals, SignalResolvers, and Refs"
+lhsRemoveSignal (LeftHandSidePair lhs1 lhs2)
+  | Exists lhs1' <- lhsRemoveSignal lhs1
+  , Exists lhs2' <- lhsRemoveSignal lhs2
+  = Exists $ LeftHandSidePair lhs1' lhs2'
+
+varsRemoveSignal :: BaseVars env input -> BaseVars env (NoSignal input)
+varsRemoveSignal TupRunit = TupRunit
+varsRemoveSignal vars@(TupRsingle (Var t _)) = case t of
+  BaseRsignal -> TupRunit
+  BaseRsignalResolver -> TupRunit
+  BaseRref _ -> vars
+  BaseRrefWrite _ -> vars
+  _ -> internalError "Only expected Signals, SignalResolvers, and Refs"
+varsRemoveSignal (TupRpair v1 v2) = varsRemoveSignal v1 `TupRpair` varsRemoveSignal v2
+
+varsGetSignals :: BaseVars env input -> [Idx env Signal]
+varsGetSignals (TupRsingle (Var BaseRsignal idx)) = [idx]
+varsGetSignals (TupRpair v1 v2) = varsGetSignals v1 ++ varsGetSignals v2
+varsGetSignals _ = [] -- TupRunit or TupRsingle of a different type
+
+type family NoSignal input where
+  NoSignal Signal = ()
+  NoSignal SignalResolver = ()
+  NoSignal (a, b) = (NoSignal a, NoSignal b)
+  NoSignal input = input
+
+-- Substitutes the uses of a removed Signal variable to a newly introduced
+-- Signal, that is directly resolved.
+-- This is needed for converting an awhile to an awhile-seq.
+-- Only call this function on the input of the body of an awhile loop.
+-- This function expects that the left hand side only binds Refs and Signals.
+-- Furthermore, it expects that 'Exists lhsNew = lhsRemoveSignal lhsOld'.
+-- The newly introduced Signal (and SignalResolver) should eventually be
+-- removed. The Signal is directly resolved, and our optimizer will thus
+-- remove SignalAwaits waiting on that signal. This will make the variables
+-- dead, and strongly live variable analysis will then remove it.
+-- We go via this indirection, since BuildSchedule cannot remove variables;
+-- it can only rename variables.
+declareRemovedSignal
+  :: forall env0 env1 env1' env2' t kernel.
+     BLeftHandSide t env0 env1
+  -> BLeftHandSide (NoSignal t) env0 env1'
+  -> Idx env0 Signal -- Index of a resolved signal
+  -> env1' :> env2'
+  -> env1 :> env2'
+declareRemovedSignal lhsOld lhsNew signalIdx k =
+  go lhsOld lhsNew k (k .> weakenWithLHS lhsNew)
+  where
+    go
+      :: BLeftHandSide s envA envB
+      -> BLeftHandSide (NoSignal s) envA' envB'
+      -> envB' :> env2'
+      -> envA :> env2'
+      -> envB :> env2'
+    -- A preserved variable.
+    go (LeftHandSideSingle t) (LeftHandSideSingle _) kB' kA = case t of
+      BaseRref _ -> weakenReplace (weaken kB' ZeroIdx) kA
+      _ -> internalError "Signal impossible, other types not expected"
+    -- A removed Signal. Use the newly introduced signal instead.
+    go (LeftHandSideSingle BaseRsignal) (LeftHandSideWildcard _) _ kA =
+      weakenReplace (weaken (k .> weakenWithLHS lhsNew) signalIdx) kA
+    go (LeftHandSidePair old1 old2) (LeftHandSidePair new1 new2) kB' kA =
+      go old2 new2 kB' $ go old1 new1 (kB' .> weakenWithLHS new2) kA
+    go (LeftHandSideWildcard _) (LeftHandSideWildcard _) _ kA = kA
+    go _ _ _ _ = internalError "LeftHandSide mismatch"
+
+-- Similar to declareRemovedSignal, but
+-- 1. This function is about removed SignalResolvers.
+-- 2. This function operates on the output and thus expects OutputRefs instead of Refs
+-- 3. Instead of defining one SignalResolver and using that for each removed variable,
+--    we must now define one SignalResolver per variable.
+declareRemovedResolvers
+  :: forall kernel env0 env0' env1 env1' t.
+     BLeftHandSide t env0 env1
+  -> BLeftHandSide (NoSignal t) env0' env1'
+  -> env0 :> env0'
+  -> DeclareRemovedResolvers kernel env1 env1'
+declareRemovedResolvers lhsOld lhsNew k =
+  bindResolvers removed $ \skip term resolvers ->
+    DeclareRemovedResolvers
+      term
+      $ snd $ go resolvers lhsOld lhsNew
+        (skipWeakenIdx' skip)
+        (skipWeakenIdx' skip .> weakenWithLHS lhsNew .> k)
+  where
+    removed = lhsSize lhsOld - lhsSize lhsNew
+
+    bindResolvers
+      :: Int
+      -> (forall env2'.
+          Skip' env2' env1'
+          -> (BuildSchedule kernel env2' -> BuildSchedule kernel env1')
+          -> [Idx env2' SignalResolver]
+          -> DeclareRemovedResolvers kernel env1 env1')
+      -> DeclareRemovedResolvers kernel env1 env1'
+    bindResolvers 0 f = f SkipNone' id []
+    bindResolvers n f = bindResolvers (n - 1) $ \skip term resolvers ->
+      f
+        (SkipSucc' skip)
+        (term . buildLet lhsOnlyResolver (NewSignal "SignalResolver for awhile to awhile-seq downgrade"))
+        (ZeroIdx : map SuccIdx resolvers)
+      where
+        lhsOnlyResolver :: BLeftHandSide (Signal, SignalResolver) e (e, SignalResolver)
+        lhsOnlyResolver = LeftHandSideWildcard (TupRsingle BaseRsignal) `LeftHandSidePair` LeftHandSideSingle BaseRsignalResolver
+
+    go
+      :: [Idx env2' SignalResolver]
+      -> BLeftHandSide s envA envB
+      -> BLeftHandSide (NoSignal s) envA' envB'
+      -> envB' :> env2'
+      -> envA :> env2'
+      -> ([Idx env2' SignalResolver], envB :> env2')
+    go resolvers (LeftHandSideSingle t) (LeftHandSideSingle _) kB' kA = case t of
+      BaseRrefWrite _ -> (resolvers, weakenReplace (weaken kB' ZeroIdx) kA)
+      _ -> internalError "SignalResolver impossible, other types not expected"
+    -- A removed Resolver. Use a newly introduced resolver instead.
+    go resolvers (LeftHandSideSingle BaseRsignalResolver) (LeftHandSideWildcard _) _ kA = case resolvers of
+      [] -> internalError "Not enough new SignalResolvers"
+      r:rs -> (rs, weakenReplace r kA)
+    go resolvers (LeftHandSidePair old1 old2) (LeftHandSidePair new1 new2) kB' kA
+      | (resolvers1, kA1) <- go resolvers old1 new1 (kB' .> weakenWithLHS new2) kA
+      = go resolvers1 old2 new2 kB' kA1
+    go resolvers (LeftHandSideWildcard _) (LeftHandSideWildcard _) _ kA = (resolvers, kA)
+    go _ _ _ _ _ = internalError "LeftHandSide mismatch"
+
+-- Captures existential env2'
+data DeclareRemovedResolvers kernel env1 env1' where
+  DeclareRemovedResolvers
+    :: (BuildSchedule kernel env2' -> BuildSchedule kernel env1')
+    -> env1 :> env2'
+    -> DeclareRemovedResolvers kernel env1 env1'

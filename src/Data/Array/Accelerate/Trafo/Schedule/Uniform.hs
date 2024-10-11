@@ -1089,6 +1089,7 @@ rnfSchedule' (Alet lhs bnd body)           = rnfLeftHandSide rnfBaseR lhs `seq` 
 rnfSchedule' (Effect eff next)             = rnfEffect eff `seq` rnfSchedule' next
 rnfSchedule' (Acond c true false next)     = rnfExpVar c `seq` rnfSchedule' true `seq` rnfSchedule' false `seq` rnfSchedule' next
 rnfSchedule' (Awhile io body initial next) = rnfInputOutputR io `seq` rnfSchedule body `seq` rnfTupR rnfBaseVar initial `seq` rnfSchedule' next
+rnfSchedule' (AwhileSeq io body ini  next) = rnfInputOutputR io `seq` rnfSchedule body `seq` rnfTupR rnfBaseVar ini     `seq` rnfSchedule' next
 rnfSchedule' (Spawn a b)                   = rnfSchedule' a `seq` rnfSchedule' b
 
 rnfBinding :: Binding env t -> ()
@@ -1145,10 +1146,28 @@ makeSpawnClosed' k awaitEnd = \case
       Alet lhs' (weaken k bnd) $ makeSpawnClosed' k' (partialEnvSkipLHS lhs' awaitEnd ) next
   Effect effect next ->
     Effect (weaken' k effect) $ makeSpawnClosed' k awaitEnd next
-  Acond var true false next ->
-    Acond (weaken k var) (makeSpawnClosed' k PEnd true) (makeSpawnClosed' k PEnd false) (makeSpawnClosed' k awaitEnd next)
+  Acond var true false next
+    | (trueCount, true') <- addSync true
+    , (falseCount, false') <- addSync false ->
+      bindSignals (trueCount `max` falseCount) $
+        \skip signals resolvers ->
+          let
+            k2 = skipWeakenIdx' skip .> k
+            resolvers' = toList resolvers
+          in
+            Acond
+              (weaken k2 var)
+              (resolve (drop trueCount resolvers')
+                $ true' k2 weakenId (take trueCount resolvers'))
+              (resolve (drop falseCount resolvers')
+                $ false' k2 weakenId (take falseCount resolvers'))
+              (makeSpawnClosed' k2
+                (unionPartialEnv const signals $ skipWeakenPartialEnv' skip awaitEnd) next)
+    -- Acond (weaken k var) (makeSpawnClosed' k PEnd true) (makeSpawnClosed' k PEnd false) (makeSpawnClosed' k awaitEnd next)
   Awhile io step initial next ->
     Awhile io (makeFunSpawnClosed' k step) (mapTupR (weaken k) initial) $ makeSpawnClosed' k awaitEnd next
+  AwhileSeq io step initial next ->
+    AwhileSeq io (makeFunSpawnClosed' k step) (mapTupR (weaken k) initial) $ makeSpawnClosed' k awaitEnd next
   Spawn a b
     | (count, a') <- addSync a ->
       -- Bind signals for all spawns in 'a', and this current spawn.
@@ -1159,20 +1178,6 @@ makeSpawnClosed' k awaitEnd = \case
             (makeSpawnClosed' (skipWeakenIdx' skip .> k)
               (unionPartialEnv const signals $ skipWeakenPartialEnv' skip awaitEnd) b)
   where
-    -- Counts the number of Spawn nodes, in a term.
-    -- Does not recurse into the step of Awhile node.
-    -- For conditionals, we take the maximum of the two branches.
-    countSpawns :: UniformSchedule kernel env -> Int
-    countSpawns Return = 0
-    countSpawns (Alet _ _ next) = countSpawns next
-    countSpawns (Effect _ next) = countSpawns next
-    countSpawns (Acond _ true false next)
-      -- Since only 'true' or 'false' is executed, not both,
-      -- we take the maximum of both counts
-      = (countSpawns true `max` countSpawns false) + countSpawns next
-    countSpawns (Awhile _ _ _ next) = countSpawns next
-    countSpawns (Spawn a b) = countSpawns a + countSpawns b + 1
-
     bindSignals
       :: Int
       -> (forall env2. Skip' env2 env1 -> TypedIdxSet Signal env2 -> TypedIdxSet SignalResolver env2 -> UniformSchedule kernel env2)
@@ -1246,6 +1251,17 @@ makeSpawnClosed' k awaitEnd = \case
       ( count
       , \k1 k2 resolvers ->
           Awhile
+            io
+            (makeFunSpawnClosed' k1 f)
+            (mapTupR (weaken k1) initial)
+            $ next' k1 k2 resolvers
+      )
+      where
+        (count, next') = addSync next
+    addSync (AwhileSeq io f initial next) =
+      ( count
+      , \k1 k2 resolvers ->
+          AwhileSeq
             io
             (makeFunSpawnClosed' k1 f)
             (mapTupR (weaken k1) initial)

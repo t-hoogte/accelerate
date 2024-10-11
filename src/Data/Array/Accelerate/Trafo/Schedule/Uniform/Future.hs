@@ -36,7 +36,6 @@ module Data.Array.Accelerate.Trafo.Schedule.Uniform.Future (
   IsNewSignal(..), localBaseR, declareSignals,
   subFutureEnvironment, restrictEnvForLHS,
   MaybeSignal, MaybeSignalResolver, buildAwait,
-  lhsSignal, lhsRef,
 
   assertFutureEnv,
 ) where
@@ -886,12 +885,6 @@ buildAwait :: [MaybeSignal fenv] -> BuildSchedule kernel fenv -> BuildSchedule k
 buildAwait signals = case catMaybes signals of
   [] -> id
   signals' -> buildEffect (SignalAwait signals')
-
-lhsSignal :: BLeftHandSide (Signal, SignalResolver) fenv ((fenv, Signal), SignalResolver)
-lhsSignal = LeftHandSidePair (LeftHandSideSingle BaseRsignal) (LeftHandSideSingle BaseRsignalResolver)
-
-lhsRef :: GroundR tp -> LeftHandSide BaseR (Ref tp, OutputRef tp) fenv ((fenv, Ref tp), OutputRef tp)
-lhsRef tp = LeftHandSidePair (LeftHandSideSingle $ BaseRref tp) (LeftHandSideSingle $ BaseRrefWrite tp)
 
 -- Asserts that the FutureEnv corresponds with the SyncEnv, i.e. that it
 -- provides the expected buffers, with expected (read/write) capabilities

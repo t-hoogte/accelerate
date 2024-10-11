@@ -75,6 +75,12 @@ encodeUniformSchedule (Awhile io fn initial next)
   <> encodeUniformScheduleFun fn
   <> encodeTupR (\(Var _ idx) -> encodeIdx idx) initial
   <> encodeUniformSchedule next
+encodeUniformSchedule (AwhileSeq io fn initial next)
+  = intHost $(hashQ "AwhileSeq")
+  <> encodeIO io
+  <> encodeUniformScheduleFun fn
+  <> encodeTupR (\(Var _ idx) -> encodeIdx idx) initial
+  <> encodeUniformSchedule next
 encodeUniformSchedule (Spawn a b)
   = intHost $(hashQ "Spawn")
   <> encodeUniformSchedule a

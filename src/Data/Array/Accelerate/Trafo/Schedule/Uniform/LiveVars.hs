@@ -128,6 +128,19 @@ stronglyLiveVariables' liveness = \case
           (step' re)
           (expectJust $ reEnvVars re initial)
           (next' re)
+  AwhileSeq io step initial next ->
+    let
+      -- TODO: We could track which parts of the state are used
+      liveness1 = setVarsLive initial liveness
+      LVAnalysisFun liveness2 step' = stronglyLiveVariablesFun' liveness1 step
+      LVAnalysis'   liveness3 next' = stronglyLiveVariables' liveness2 next
+    in
+      LVAnalysis'
+        liveness3
+        $ \re -> AwhileSeq io
+          (step' re)
+          (expectJust $ reEnvVars re initial)
+          (next' re)
   Spawn a b ->
     let
       LVAnalysis' liveness1 a' = stronglyLiveVariables' liveness  a

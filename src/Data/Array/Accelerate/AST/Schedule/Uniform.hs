@@ -119,10 +119,32 @@ data UniformSchedule kernel env where
   -- The step function of the loop outputs a bool to denote whether the loop should
   -- proceed. If true, then the other output values should also be filled, possibly at
   -- a later point in time. If it is false, then no other output values may be filled.
+  --
+  -- An Awhile loop may be executed in parallel, meaning that we may work on multiple
+  -- iterations of the loop in parallel. This may be possible, typically if the state
+  -- of the loop consists of multiple variables. Synchronisations are handled via
+  -- Signal(Resolver)s in 'input' and 'output'.
+  -- A sequential variant is available in AwhileSeq.
   Awhile  :: InputOutputR input output
           -- The body of the while loop.
           -- Should be spawn-closed.
           -> UniformScheduleFun kernel env (input -> Output PrimBool -> output -> ())
+          -> BaseVars env input
+          -> UniformSchedule kernel env -- Operations after the while loop
+          -> UniformSchedule kernel env
+
+  -- Variant of Awhile, that can be executed sequentially. This only applies to
+  -- parallelism between iterations of the loop. Within an iteration, parallelism
+  -- can be exploited as usual.
+  -- Iteration 'i+1' only starts when iteration 'i' is finished. Since the
+  -- step function is spawn-closed, this guarantees proper synchronisations.
+  -- Hence we don't need Signal(Resolver)s in 'input' or 'output'.
+  AwhileSeq
+          -- Should not contain InputOutputRsignal
+          :: InputOutputR input output
+          -- The body of the while loop
+          -- Should be spawn-closed.
+          -> UniformScheduleFun kernel env (input -> OutputRef PrimBool -> output -> ())
           -> BaseVars env input
           -> UniformSchedule kernel env -- Operations after the while loop
           -> UniformSchedule kernel env
@@ -332,6 +354,10 @@ freeVars (Acond c t f s)
   $ IdxSet.union (freeVars f)
   $ freeVars s
 freeVars (Awhile _ step ini continuation)
+  = IdxSet.union (funFreeVars step)
+  $ IdxSet.union (IdxSet.fromVarList $ flattenTupR ini)
+  $ freeVars continuation
+freeVars (AwhileSeq _ step ini continuation)
   = IdxSet.union (funFreeVars step)
   $ IdxSet.union (IdxSet.fromVarList $ flattenTupR ini)
   $ freeVars continuation

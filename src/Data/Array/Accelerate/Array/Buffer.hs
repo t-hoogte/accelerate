@@ -96,7 +96,7 @@ newtype Buffer e = Buffer (ForeignPtr (ScalarArrayDataR e))
 --
 type Buffers e = Distribute Buffer e
 
-data MutableBuffer e = MutableBuffer (ForeignPtr (ScalarArrayDataR e))
+newtype MutableBuffer e = MutableBuffer (ForeignPtr (ScalarArrayDataR e))
 type MutableBuffers e = Distribute MutableBuffer e
 
 -- | Mapping from scalar type to the type as represented in memory in an
@@ -147,7 +147,6 @@ memoryRelease = undefined
 runQ $ do
   addForeignFilePath LangC "cbits/memory.c"
   return []
-
 
 data ScalarArrayDict a where
   ScalarArrayDict :: ( Buffers a ~ Buffer a, ScalarArrayDataR a ~ ScalarArrayDataR b, Storable b, Buffers b ~ Buffer b )
