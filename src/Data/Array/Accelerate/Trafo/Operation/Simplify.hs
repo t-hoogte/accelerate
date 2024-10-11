@@ -126,10 +126,6 @@ newtype InfoEnv env = InfoEnv { unInfoEnv :: WEnv Info env }
 emptySimplifyEnv :: InfoEnv ()
 emptySimplifyEnv = InfoEnv wempty
 
-copiedTo :: Info env t -> [Idx env t]
-copiedTo (InfoBuffer _ _ c) = c
-copiedTo _                  = []
-
 matchVars' :: InfoEnv env -> GroundVars env t -> GroundVars env t' -> Maybe (t :~: t')
 matchVars' env = matchTupR (matchVar' env)
 
@@ -245,6 +241,12 @@ simplify' uniquenesses = \case
           in bindLet lhs us bnd'' (body' env')
       )
   Alloc shr tp sh -> (IdxSet.empty, \env -> Alloc shr tp $ mapTupR (weaken $ substitute env) sh)
+  Use tp 1 buffer ->
+    ( IdxSet.empty
+    , const
+      $ Alet (LeftHandSideSingle (GroundRscalar tp)) (TupRsingle Shared) (Compute $ Const tp $ indexBuffer tp buffer 0)
+      $ Unit (Var tp ZeroIdx)
+    )
   Use tp n buffer -> (IdxSet.empty, const $ Use tp n buffer)
   Unit var -> (IdxSet.empty, \env -> Unit $ weaken (substitute env) var)
   Acond cond true false ->
