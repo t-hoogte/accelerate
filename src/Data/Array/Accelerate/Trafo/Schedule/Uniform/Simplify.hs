@@ -478,7 +478,7 @@ buildEffect (SignalResolve resolvers) next =
         resolvers' `mergeDedup` finallyResolves next
       else
         finallyResolves next,
-    trivial = trivial next,
+    trivial = trivial next && null (directlyAwaits next),
     awhileHeight = awhileHeight next,
     construct = \k env postponed cont ->
       let
