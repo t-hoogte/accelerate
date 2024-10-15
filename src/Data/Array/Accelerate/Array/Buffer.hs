@@ -355,19 +355,23 @@ allocateArray :: forall e. (HasCallStack, Storable e) => Int -> IO (ForeignPtr e
 allocateArray !size = internalCheck "size must be >= 0" (size >= 0) $ do
   let bytes = size * sizeOf (undefined :: e)
 
-  -- Once per 1GB of allocations, perform garbage collection.
-  -- Buffers are allocated outside of the Haskell world, so we have to force
-  -- GC to deallocate them indirectly.
-  let maxSize = 1024 * 1024 * 1024
-  gc <- atomicModifyIORef' bytesAllocatedSinceGC $ \sz ->
-    let newSize = sz + bytes
-    in if newSize < maxSize then (newSize, False) else (newSize `mod` maxSize, True)
-  if gc then performGC else return ()
+  hintGCAlloc bytes
 
   ptr <- memoryAlloc $ fromIntegral bytes
   foreignPtr <- newForeignPtr memoryReleaseRef ptr
   traceM dump_gc ("gc: allocated new host array (size=" % int % ", ptr=" % build % ")") bytes ptr
   return $ castForeignPtr foreignPtr
+
+-- Once per 1GB of allocations, perform garbage collection.
+-- Buffers are allocated outside of the Haskell world, so we have to force
+-- GC to deallocate them indirectly.
+hintGCAlloc :: Int -> IO ()
+hintGCAlloc bytes = do
+  let maxSize = 1024 * 1024 * 1024
+  gc <- atomicModifyIORef' bytesAllocatedSinceGC $ \sz ->
+    let newSize = sz + bytes
+    in if newSize < maxSize then (newSize, False) else (newSize `mod` maxSize, True)
+  if gc then performGC else return ()
 
 {-# NOINLINE bytesAllocatedSinceGC #-}
 bytesAllocatedSinceGC :: IORef Int
@@ -403,6 +407,8 @@ bufferRelease = memoryRelease . castPtr
 
 bufferFromPtr :: Ptr e -> IO (Buffer e)
 bufferFromPtr ptr = do
+  byteSize <- fromIntegral <$> memoryByteSize (castPtr ptr)
+  hintGCAlloc byteSize
   fp <- newForeignPtr memoryReleaseRef $ castPtr ptr
   return $ Buffer $ castForeignPtr fp
 
