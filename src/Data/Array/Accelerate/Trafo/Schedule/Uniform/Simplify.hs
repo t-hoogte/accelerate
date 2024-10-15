@@ -111,6 +111,10 @@ funAwhileHeight :: BuildScheduleFun kernel env t -> Int
 funAwhileHeight (BuildBody b) = awhileHeight b
 funAwhileHeight (BuildLam _ f) = funAwhileHeight f
 
+funDirectlyAwaits :: BuildScheduleFun kernel env t -> [Idx env Signal]
+funDirectlyAwaits (BuildBody b) = directlyAwaits b
+funDirectlyAwaits (BuildLam lhs f) = mapMaybe (strengthenWithLHS lhs) $ funDirectlyAwaits f
+
 instance Sink (BuildScheduleFun kernel) where
   weaken k (BuildBody body) = BuildBody $ weaken' k body
   weaken k (BuildLam lhs f)
@@ -220,8 +224,8 @@ spawnPostponed spawn (Postponed spawns resolvers)
 
     combine :: BuildSpawn kernel env -> BuildSpawn kernel env -> BuildSpawn kernel env
     combine first second = BuildSpawn
-      (spawnFinallyResolves second)
-      (buildSeq (spawnTerm first) (spawnTerm second))
+      (spawnFinallyResolves first)
+      (buildSeq (spawnTerm first) (buildSpawnReturn $ spawnTerm second))
 
 -- Finds a spawned term, on which the next term (given by the directly-awaits
 -- list) directly depends on.
@@ -559,6 +563,10 @@ buildSpawn a b
       -- Only return the resolved signals at the place where the continuation is placed.
       -- We thus ignore 'a' here.
       finallyResolves = finallyResolves b,
+      -- TODO: Make trivial if 'b' is trivial?
+      -- Might be a problem if the then later on (in construct) make the Spawn sequential (the true case in the if below).
+      -- We could perhaps add a condition to not make the Spawn sequential if 'b' is trivial and there is some continuation,
+      -- but that might still be fragile.
       trivial = False,
       awhileHeight = awhileHeight a `max` awhileHeight b,
       construct = \k env postponed cont ->
@@ -572,6 +580,26 @@ buildSpawn a b
           else
             constructFull b' k env (spawnPostponed (BuildSpawn aResolves $ weaken' k a') postponed) cont
     }
+
+-- Builds a term of the form 'Spawn a Return'.
+-- This is a separate function from buildSpawn, as 'buildSpawn a Return' will be simplified to 'a'.
+-- This is sometimes not desired, like in spawnPostponed,
+-- where we must have term 'a' be spawned, to set things like 'finallyResolves' without taking 'a' into account.
+-- It must also guarantee that the continuation is placed in parallel with 'a', instead of after 'a'.
+-- 'buildSpawn a Return' fails to provide that.
+buildSpawnReturn :: BuildSchedule kernel env -> BuildSchedule kernel env
+buildSpawnReturn a =
+  BuildSchedule{
+    directlyAwaits = [],
+    finallyResolves = [],
+    trivial = True,
+    awhileHeight = awhileHeight a,
+    construct = \k env postponed cont ->
+      let
+        aResolves = sort $ mapMaybe ((`findSignal` env) . weaken k) $ finallyResolves a
+      in
+        constructFull buildReturn k env (spawnPostponed (BuildSpawn aResolves $ weaken' k a) postponed) cont
+  }
 
 buildAcond
   :: ExpVar env PrimBool
@@ -602,7 +630,8 @@ buildAwhile
   -> BuildSchedule kernel env
 buildAwhile io step initial next =
   BuildSchedule{
-    directlyAwaits = [], -- TODO: Compute this based on the use of the initial state and free variables of step.
+    -- TODO: Also check if the function directly awaits parts of the input, and take the accompanying signals from 'initial'
+    directlyAwaits = funDirectlyAwaits step,
     finallyResolves = finallyResolves next,
     trivial = False,
     awhileHeight = (funAwhileHeight step + 1) `max` awhileHeight next,
@@ -640,7 +669,7 @@ buildAwhileSeq
   -> BuildSchedule kernel env
 buildAwhileSeq io step initial next =
   BuildSchedule{
-    directlyAwaits = [], -- TODO: Compute this based on the use of the initial state and free variables of step.
+    directlyAwaits = funDirectlyAwaits step,
     finallyResolves = finallyResolves next,
     trivial = False,
     awhileHeight = (funAwhileHeight step + 1) `max` awhileHeight next,
