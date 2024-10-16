@@ -32,6 +32,7 @@ module Data.Array.Accelerate.AST.Partitioned (
   GroundR(..), NFData'(..), Arg(..),
   AccessGroundR(..),
   PreArgs(..), Modifier(..),
+  Label(..),
 ) where
 
 
@@ -51,7 +52,7 @@ import Data.Array.Accelerate.Type (ScalarType (..), SingleType (..), NumType (..
 import Data.Array.Accelerate.AST.Environment (Env (..), prj')
 
 
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (Labels, LabelledArgs, LabelledArg (..), ALabel (..), ELabel (..), Label)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (Labels, LabelledArgs, LabelledArg (..), ALabel (..), ELabel (..), Label(..))
 import Data.List (sortOn)
 import qualified Data.Functor.Const as C
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (LabelledArgOp (..), BackendClusterArg, MakesILP (..), LabelledArgsOp, BackendCluster)

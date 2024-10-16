@@ -24,7 +24,8 @@ import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Var
 import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.Trafo.LiveVars
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP, encodeBackendClusterArg)
+import Data.Array.Accelerate.Trafo.Operation.LiveVars
 
 import Crypto.Hash.XKCP
 import Data.ByteString.Builder
@@ -59,21 +60,50 @@ encodeModifier Out = intHost $(hashQ "Out")
 encodeModifier Mut = intHost $(hashQ "Mut")
 
 encodeCluster :: EncodeOperation op => Cluster op args -> Builder
-encodeCluster _ = intHost $(hashQ "todo") -- TODO
+encodeCluster (SingleOp op label)
+  = intHost $(hashQ "SingleOp") <> encodeSingleOp op <> encodeLabel label
+encodeCluster (Fused fusion left right)
+  = intHost $(hashQ "Fused") <> encodeFusion fusion <> encodeCluster left <> encodeCluster right
 
--- encodeClusterIO :: ClusterIO args input output -> Builder
--- encodeClusterIO Empty                 = intHost $(hashQ "Empty")
--- encodeClusterIO (Vertical t repr io)  = intHost $(hashQ "Vertical") <> encodeTake t <> encodeArrayType repr <> encodeClusterIO io
--- encodeClusterIO (Input io)            = intHost $(hashQ "Input") <> encodeClusterIO io
--- encodeClusterIO (Output t subT tp io) = intHost $(hashQ "Output") <> encodeTake t <> encodeSubTupR subT <> encodeTypeR tp <> encodeClusterIO io
--- encodeClusterIO (MutPut io)           = intHost $(hashQ "MutPut") <> encodeClusterIO io
--- encodeClusterIO (ExpPut io)           = intHost $(hashQ "ExpPut") <> encodeClusterIO io
--- encodeClusterIO (VarPut io)           = intHost $(hashQ "VarPut") <> encodeClusterIO io
--- encodeClusterIO (FunPut io)           = intHost $(hashQ "FunPut") <> encodeClusterIO io
--- encodeClusterIO (Trivial io)          = intHost $(hashQ "Trivial") <> encodeClusterIO io
+encodeLabel :: Label -> Builder
+encodeLabel (Label idx Nothing) = intHost idx <> intHost $(hashQ "Nothing")
+encodeLabel (Label idx (Just l)) = intHost idx <> intHost $(hashQ "Just") <> encodeLabel l
 
--- encodeTake :: Take x xargs args -> Builder
--- encodeTake = intHost . idxToInt . takeIdx
+encodeFusion :: Fusion largs rargs args -> Builder
+encodeFusion EmptyF         = intHost $(hashQ "EmptyF")
+encodeFusion (Vertical r f) = intHost $(hashQ "Vertical")   <> encodeArrayType r <> encodeFusion f
+encodeFusion (Horizontal f) = intHost $(hashQ "Horizontal") <> encodeFusion f
+encodeFusion (Diagonal f)   = intHost $(hashQ "Diagonal")   <> encodeFusion f
+encodeFusion (IntroI1 f)    = intHost $(hashQ "IntroI1")    <> encodeFusion f
+encodeFusion (IntroI2 f)    = intHost $(hashQ "IntroI2")    <> encodeFusion f
+encodeFusion (IntroO1 f)    = intHost $(hashQ "IntroO1")    <> encodeFusion f
+encodeFusion (IntroO2 f)    = intHost $(hashQ "IntroO2")    <> encodeFusion f
+encodeFusion (IntroL f)     = intHost $(hashQ "IntroL")     <> encodeFusion f
+encodeFusion (IntroR f)     = intHost $(hashQ "IntroR")     <> encodeFusion f
+
+encodeSingleOp :: EncodeOperation op => SingleOp op args -> Builder
+encodeSingleOp (Single op soa sorted sub)
+  = encodeOperation op
+  <> encodeSOAs soa
+  <> encodeSortedArgs sorted
+  <> encodeSubArgs sub
+
+encodeSOAs :: SOAs args expanded -> Builder
+encodeSOAs SOArgsNil = intHost $(hashQ "SOArgsNil")
+encodeSOAs (SOArgsCons soas soa) = intHost $(hashQ "SOArgsCons") <> encodeSOAs soas <> encodeSOA soa
+
+encodeSOA :: SOA arg appendto result -> Builder
+encodeSOA SOArgSingle = intHost $(hashQ "SOArgSingle")
+encodeSOA (SOArgTup a b) = intHost $(hashQ "SOArgTup") <> encodeSOA a <> encodeSOA b
+
+encodeSortedArgs :: SortedArgs args sorted -> Builder
+encodeSortedArgs _ = intHost $(hashQ "todo") -- TODO: Encode SortedArgs. I think we need to defunctionalize this data type to encode it.
+
+encodeSubArgs :: SubArgs a b -> Builder
+encodeSubArgs SubArgsNil = intHost $(hashQ "SubArgsNil")
+encodeSubArgs (SubArgsDead subArgs) = intHost $(hashQ "SubArgsDead") <> encodeSubArgs subArgs
+encodeSubArgs (SubArgsLive SubArgKeep subArgs) = intHost $(hashQ "SubArgsLive Keep") <> encodeSubArgs subArgs
+encodeSubArgs (SubArgsLive (SubArgOut subTup) subArgs) = intHost $(hashQ "SubArgsLive Out") <> encodeSubTupR subTup <> encodeSubArgs subArgs
 
 encodeSubTupR :: SubTupR s t -> Builder
 encodeSubTupR SubTupRskip       = intHost $(hashQ "skip")
