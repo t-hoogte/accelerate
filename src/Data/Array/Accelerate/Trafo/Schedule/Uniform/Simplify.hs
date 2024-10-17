@@ -708,6 +708,7 @@ downgradeAwhileFun signalIdx (BuildLam lhsInput (BuildLam lhsBool (BuildLam lhsO
     lhsSnd (LeftHandSidePair LeftHandSideWildcard{} l) = l
     lhsSnd (LeftHandSideWildcard (TupRpair _ t)) = LeftHandSideWildcard t
     lhsSnd _ = internalError "Pair impossible"
+downgradeAwhileFun _ _ = internalError "Fun impossible"
 
 buildFunLam
   :: BLeftHandSide t env1 env2
@@ -954,7 +955,7 @@ type family NoSignal input where
 -- We go via this indirection, since BuildSchedule cannot remove variables;
 -- it can only rename variables.
 declareRemovedSignal
-  :: forall env0 env1 env1' env2' t kernel.
+  :: forall env0 env1 env1' env2' t.
      BLeftHandSide t env0 env1
   -> BLeftHandSide (NoSignal t) env0 env1'
   -> Idx env0 Signal -- Index of a resolved signal

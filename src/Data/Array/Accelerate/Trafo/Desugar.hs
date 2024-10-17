@@ -1172,9 +1172,9 @@ uncons (ShapeRsnoc shr) (TupRpair v1 v3)
 uncons _ _ = internalError "Illegal shape tuple"
 
 mkIntersect :: ShapeR sh -> ExpVars benv sh -> ExpVars benv sh -> PreOpenExp (ArrayInstr benv) env sh
-mkIntersect shr x y
+mkIntersect shr' x y
   | Just Refl <- matchVars x y = paramsIn' x
-  | otherwise = mkIntersect' shr x y
+  | otherwise = mkIntersect' shr' x y
   where
     mkIntersect' :: ShapeR sh -> ExpVars benv sh -> ExpVars benv sh -> PreOpenExp (ArrayInstr benv) env sh
     mkIntersect' ShapeRz          _                _                = Nil
@@ -1216,6 +1216,7 @@ mkDefaultFoldFunction (ArgFun op) def (ArgArray _ (ArrayR (ShapeRsnoc shr) tp) (
       ArgFun $ Lam lhsIdx $ Body
         $ Let lhs (While condition step initial)
         $ expVars $ valueVal weakenId
+mkDefaultFoldFunction _ _ _ = internalError "Fun impossible"
 
 -- In case of a scan with a default value, prepends the initial value before the other elements
 -- The default value is placed as the first value in case of a left-to-right scan, or as the
