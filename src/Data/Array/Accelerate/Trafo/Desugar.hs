@@ -1,3 +1,4 @@
+{-# LANGUAGE AllowAmbiguousTypes  #-}
 {-# LANGUAGE GADTs                #-}
 {-# LANGUAGE OverloadedStrings    #-}
 {-# LANGUAGE RankNTypes           #-}
@@ -325,6 +326,12 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
                 -> Maybe (OperationAcc op env (DesugaredArrays bs))
   mkForeign _ _ _ = Nothing
 
+  -- Whether it is prefered to not use scalar operations.
+  -- When this is true, a 0-dimensional generate or map will
+  -- be converted to Compute nodes, instead of Exec nodes.
+  desugarPreferNoScalar :: Bool
+  desugarPreferNoScalar = True
+
 desugar :: (HasCallStack, DesugarAcc op) => Named.Acc a -> OperationAcc op () (DesugaredArrays a)
 desugar = desugarOpenAcc Empty
 
@@ -445,6 +452,9 @@ desugarOpenAcc env = travA
               $ alet (LeftHandSideWildcard TupRunit) (mkPermute argC argMut argF argSrc)
               $ Return (sh' `TupRpair` valOut)
 
+      Named.Generate (ArrayR ShapeRz tp) _ (Lam (LeftHandSideWildcard _) (Body expr))
+        | desugarPreferNoScalar @op ->
+          travA $ Named.OpenAcc $ Named.Unit tp expr
       Named.Generate (ArrayR shr tp) sh f
         | DeclareVars lhsSh kSh valueSh <- declareVars $ shapeType shr
         , DeclareVars lhsBf kBf valueBf <- declareVars $ buffersR tp ->
@@ -478,6 +488,16 @@ desugarOpenAcc env = travA
               $ aletUnique lhsOut (desugarAlloc (ArrayR shrOut tpOut) (valueShOut weakenId))
               $ alet (LeftHandSideWildcard TupRunit) (mkTransform argIdxF argValF argIn argOut)
               $ Return (shOut `TupRpair` bfOut)
+
+      Named.Map tp (Lam lhs (Body expr)) a
+        | desugarPreferNoScalar @op
+        , repr@(ArrayR ShapeRz _) <- Named.arrayR a ->
+          travA $ Named.OpenAcc
+            $ Named.Alet (LeftHandSideSingle repr) a
+            $ Named.OpenAcc
+            $ Named.Unit tp
+            $ Let lhs (ArrayInstr (Named.Index (Var repr ZeroIdx)) Nil)
+            $ mapArrayInstr (weaken $ weakenSucc weakenId) expr
 
       Named.Map _ (Lam lhs (Body e)) a
         | Just vars <- extractExpVars e
