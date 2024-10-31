@@ -8,12 +8,18 @@
 #include "flags.h"
 
 struct ObjectHeader {
-  uint64_t reference_count;
+  _Atomic uint64_t reference_count;
   uint64_t byte_size;
 } CACHE_ALIGNED;
 
 void* accelerate_buffer_alloc(uint64_t byte_size) {
-  void* ptr = aligned_alloc(CACHE_LINE_SIZE, byte_size + sizeof(struct ObjectHeader));
+  uint64_t size = byte_size + sizeof(struct ObjectHeader);
+  // Align size to the next multiple of CACHE_LINE_SIZE
+  // Note: it is apparently a requirement on macOS that the size is a multiple
+  // of the alignment, but it is not required on Linux.
+  size = (size + CACHE_LINE_SIZE - 1) / CACHE_LINE_SIZE * CACHE_LINE_SIZE;
+  void* ptr = aligned_alloc(CACHE_LINE_SIZE, size);
+
   // TODO: call ___tracy_emit_memory_alloc
 
   struct ObjectHeader* header = (struct ObjectHeader*) ptr;
