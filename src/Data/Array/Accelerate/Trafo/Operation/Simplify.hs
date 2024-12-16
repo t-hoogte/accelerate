@@ -439,7 +439,12 @@ unionSubTupR (SubTupRpair l1 r1) (SubTupRpair l2 r2)
   = Exists $ subTupRpair l r
 unionSubTupR _ _ = Exists SubTupRkeep
 
-
+-- Detects which parts of the state of an awhile loop are invariant and
+-- transforms the program accordingly.
+-- For instance, if the state of an awhile loop contains an array whose
+-- shape doesn't change throughout the execution of the awhile loop,
+-- it will remove the shape from the state of the loop and always refer
+-- to the initial shape of the array.
 awhileSimplifyInvariant
   :: Uniquenesses a
   -> PreOpenAfun op env (a -> PrimBool)
