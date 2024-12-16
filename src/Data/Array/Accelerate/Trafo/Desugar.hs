@@ -238,7 +238,7 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
           $ alet (LeftHandSideWildcard TupRunit) (mkGenerate argG argTmp')
           $ mkScan dir (weaken kTmp f) Nothing argTmp (weaken kTmp argOut)
   mkScan dir f Nothing (ArgArray _ (ArrayR shr tp) sh input) argOut
-  -- (inc, tmp) = awhile (\(inc, _) -> inc <= n / 4) (\(inc, a) -> (inc*2, generate {\i -> reduce i and i +/- inc in a})) input
+  -- (inc, tmp) = awhile (\(inc, _) -> inc < (n+1) / 2) (\(inc, a) -> (inc*2, generate {\i -> reduce i and i +/- inc in a})) input
   -- generate {\i -> reduce i and i +/- inc in tmp}
   -- 
   -- Note that the last iteration of the loop is decoupled, as that will output into argOut,
@@ -259,7 +259,10 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
               $ Abody
               $ Compute
               $ mkBinary (PrimLt singleType) (paramIn' $ Var scalarTypeInt ZeroIdx)
-              $ mkBinary (PrimBShiftR integralType) n (mkConstant (TupRsingle scalarTypeInt) 1) -- n/2
+              $ mkBinary
+                (PrimBShiftR integralType)
+                (mkBinary (PrimAdd numType) n (mkConstant (TupRsingle scalarTypeInt) 1))
+                (mkConstant (TupRsingle scalarTypeInt) 1) -- (n+1)/2
 
         argAlloc = ArgArray Out (ArrayR shr tp) (weakenVars (weakenSucc $ weakenSucc $ kAlloc .> kTmp) sh) (valueAlloc weakenId)
         -- Awhile step function
@@ -1240,7 +1243,6 @@ mkDefaultScanPrepend dir (ArgExp def) (ArgArray _ repr@(ArrayR (ShapeRsnoc shr) 
         $ index repr sh input
         $ Pair (expVars $ value $ weakenSucc weakenId) x
 
--- TODO: Is the order of arguments to 'f' correct, in both directions?
 mkDefaultScanFunction :: Direction -> GroundVar benv Int -> Arg benv (Fun' (e -> e -> e)) -> Arg benv (In (sh, Int) e) -> Fun benv ((sh, Int) -> e)
 mkDefaultScanFunction dir inc (ArgFun f) (ArgArray _ repr@(ArrayR (ShapeRsnoc shr) tp) sh input)
   | DeclareVars lhs _ value <- declareVars $ shapeType shr
@@ -1261,7 +1263,11 @@ mkDefaultScanFunction dir inc (ArgFun f) (ArgArray _ repr@(ArrayR (ShapeRsnoc sh
       Lam (lhs `LeftHandSidePair` LeftHandSideSingle scalarTypeInt)
         $ Body
         $ Cond condition
-          (apply2 tp f (index' x) (index' y))
+          (
+            case dir of
+              LeftToRight -> apply2 tp f (index' y) (index' x)
+              RightToLeft -> apply2 tp f (index' x) (index' y)
+          )
           (index' x)
 
 mkDefaultFoldSegFunction
