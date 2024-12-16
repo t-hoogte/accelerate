@@ -238,19 +238,21 @@ justOut (ArgArray Mut _ _ _ :>: args) (_   :>: fs) = justOut args fs
 
 
 left :: Fusion largs rargs args -> Args env args -> Args env largs
-left = left' (\(ArgVar sh) -> ArgArray Out (ArrayR (varsToShapeR sh) er) (mapTupR (\(Var t ix)->Var (GroundRscalar t) ix) sh) er)
-  where er = error "accessing fused away array"
-left' :: (forall sh e. f (Var' sh) -> f (Out sh e)) -> Fusion largs rargs args -> PreArgs f args -> PreArgs f largs
+left = left' (\repr (ArgVar sh) -> ArgArray Out repr (mapTupR (\(Var t ix)->Var (GroundRscalar t) ix) sh) er2)
+  where
+    er1 = error "accessing fused away array1"
+    er2 = error "accessing fused away array2"
+left' :: (forall sh e. ArrayR (Array sh e) -> f (Var' sh) -> f (Out sh e)) -> Fusion largs rargs args -> PreArgs f args -> PreArgs f largs
 left' _ EmptyF ArgsNil = ArgsNil
-left' k (Vertical _   f) (arg :>: args) = k arg :>: left' k f args
-left' k (Horizontal   f) (arg:>:args)   = arg :>: left' k f args
-left' k (Diagonal     f) (arg:>:args)   = arg :>: left' k f args
-left' k (IntroI1      f) (arg:>:args)   = arg :>: left' k f args
-left' k (IntroI2      f) (_  :>:args)   =         left' k f args
-left' k (IntroO1      f) (arg:>:args)   = arg :>: left' k f args
-left' k (IntroO2      f) (_  :>:args)   =         left' k f args
-left' k (IntroL       f) (arg:>:args)   = arg :>: left' k f args
-left' k (IntroR       f) (_  :>:args)   =         left' k f args
+left' k (Vertical repr f) (arg :>: args) = k repr arg :>: left' k f args
+left' k (Horizontal    f) (arg:>:args)   = arg :>: left' k f args
+left' k (Diagonal      f) (arg:>:args)   = arg :>: left' k f args
+left' k (IntroI1       f) (arg:>:args)   = arg :>: left' k f args
+left' k (IntroI2       f) (_  :>:args)   =         left' k f args
+left' k (IntroO1       f) (arg:>:args)   = arg :>: left' k f args
+left' k (IntroO2       f) (_  :>:args)   =         left' k f args
+left' k (IntroL        f) (arg:>:args)   = arg :>: left' k f args
+left' k (IntroR        f) (_  :>:args)   =         left' k f args
 
 right :: Fusion largs rargs args -> Args env args -> Args env rargs
 right = right' varToIn outToIn

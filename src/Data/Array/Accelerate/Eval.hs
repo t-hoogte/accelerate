@@ -112,7 +112,7 @@ makeBackendArg args env c b = go args c (defaultOuts args b) b
     go :: forall args. Args env args -> Cluster op args -> BackendArgs op env (OutArgsOf args) -> BackendCluster op args -> BackendArgs op env args
     go args (Fused f l r) outputs bs = let
       backR = go (right f args) r (rightB args f outputs) (right' (const bcaid) bcaid f bs)
-      backL = go (left  f args) l (backleft f backR outputs) (left' bcaid f bs)
+      backL = go (left  f args) l (backleft f backR outputs) (left' (const bcaid) f bs)
       in fuseBack f backL backR
     go args (Op (SLV (SOp (SOAOp op soa) (SA sort unsort)) subargs) _l) outputs bs =
         slv outToVar subargs 

@@ -676,7 +676,7 @@ iterationsize :: Cluster InterpretOp args -> BackendArgs InterpretOp env args ->
 iterationsize (Op _ _) ArgsNil = 0
 iterationsize (Op _ _) ((BCA _ n) :>: args) = if n==0 then iterationsize (Op undefined undefined) args else n
 iterationsize (P.Fused f l r) b = 
-  let lsz = iterationsize l (left' (\(BCA f x) -> BCA f x) f b) 
+  let lsz = iterationsize l (left' (\_ (BCA f x) -> BCA f x) f b) 
   in if lsz == 0 
      then iterationsize r (right' (\_ (BCA f x)->BCA f x) (\(BCA f x)->BCA f x) f b) 
      else lsz
