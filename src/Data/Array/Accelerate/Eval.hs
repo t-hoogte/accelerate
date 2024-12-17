@@ -25,7 +25,6 @@ module Data.Array.Accelerate.Eval where
 
 import Prelude                                                      hiding (take, (!!), sum)
 import Data.Array.Accelerate.AST.Partitioned
-import Data.Array.Accelerate.AST.Operation
 import Data.Array.Accelerate.Trafo.Desugar
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Representation.Type
@@ -40,16 +39,10 @@ import Data.Array.Accelerate.Pretty.Schedule.Uniform ()
 import Data.Kind (Type)
 import Data.Bifunctor (bimap)
 import Data.Biapplicative (biliftA2)
-import Data.Functor.Compose
 import Data.Type.Equality
 import Data.Array.Accelerate.Type (ScalarType)
 import Unsafe.Coerce (unsafeCoerce)
 import Data.Array.Accelerate.Representation.Shape (ShapeR (..))
-import Data.Composition ((.*))
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (Label)
-import Data.Array.Accelerate.AST.Var (varsType)
-import qualified Debug.Trace
-import Data.Array.Accelerate.Pretty.Exp (PrettyEnv)
 
 
 type BackendArgs op env = PreArgs (BackendClusterArg2 op env)
@@ -119,7 +112,7 @@ makeBackendArg args env c b = go args c (defaultOuts args b) b
     go :: forall args. Args env args -> Cluster op args -> BackendArgs op env (OutArgsOf args) -> BackendCluster op args -> BackendArgs op env args
     go args (Fused f l r) outputs bs = let
       backR = go (right f args) r (rightB args f outputs) (right' (const bcaid) bcaid f bs)
-      backL = go (left  f args) l (backleft f backR outputs) (left' bcaid f bs)
+      backL = go (left  f args) l (backleft f backR outputs) (left' (const bcaid) f bs)
       in fuseBack f backL backR
     go args (Op (SLV (SOp (SOAOp op soa) (SA sort unsort)) subargs) _l) outputs bs =
         slv outToVar subargs 

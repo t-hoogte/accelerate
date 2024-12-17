@@ -1,3 +1,4 @@
+{-# LANGUAGE AllowAmbiguousTypes  #-}
 {-# LANGUAGE GADTs                #-}
 {-# LANGUAGE OverloadedStrings    #-}
 {-# LANGUAGE RankNTypes           #-}
@@ -239,7 +240,7 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
           $ alet (LeftHandSideWildcard TupRunit) (mkGenerate argG argTmp')
           $ mkScan dir (weaken kTmp f) Nothing argTmp (weaken kTmp argOut)
   mkScan dir f Nothing (ArgArray _ (ArrayR shr tp) sh input) argOut
-  -- (inc, tmp) = awhile (\(inc, _) -> inc <= n / 4) (\(inc, a) -> (inc*2, generate {\i -> reduce i and i +/- inc in a})) input
+  -- (inc, tmp) = awhile (\(inc, _) -> inc < (n+1) / 2) (\(inc, a) -> (inc*2, generate {\i -> reduce i and i +/- inc in a})) input
   -- generate {\i -> reduce i and i +/- inc in tmp}
   -- 
   -- Note that the last iteration of the loop is decoupled, as that will output into argOut,
@@ -260,7 +261,10 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
               $ Abody
               $ Compute
               $ mkBinary (PrimLt singleType) (paramIn' $ Var scalarTypeInt ZeroIdx)
-              $ mkBinary (PrimBShiftR integralType) n (mkConstant (TupRsingle scalarTypeInt) 1) -- n/2
+              $ mkBinary
+                (PrimBShiftR integralType)
+                (mkBinary (PrimAdd numType) n (mkConstant (TupRsingle scalarTypeInt) 1))
+                (mkConstant (TupRsingle scalarTypeInt) 1) -- (n+1)/2
 
         argAlloc = ArgArray Out (ArrayR shr tp) (weakenVars (weakenSucc $ weakenSucc $ kAlloc .> kTmp) sh) (valueAlloc weakenId)
         -- Awhile step function
@@ -482,6 +486,12 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
                 -> Maybe (OperationAcc op env (DesugaredArrays bs))
   mkForeign _ _ _ = Nothing
 
+  -- Whether it is prefered to not use scalar operations.
+  -- When this is true, a 0-dimensional generate or map will
+  -- be converted to Compute nodes, instead of Exec nodes.
+  desugarPreferNoScalar :: Bool
+  desugarPreferNoScalar = True
+
 desugar :: (HasCallStack, DesugarAcc op) => Named.Acc a -> OperationAcc op () (DesugaredArrays a)
 desugar = desugarOpenAcc Empty
 
@@ -602,6 +612,9 @@ desugarOpenAcc env = travA
               $ alet (LeftHandSideWildcard TupRunit) (mkPermute argC argMut argF argSrc)
               $ Return (sh' `TupRpair` valOut)
 
+      Named.Generate (ArrayR ShapeRz tp) _ (Lam (LeftHandSideWildcard _) (Body expr))
+        | desugarPreferNoScalar @op ->
+          travA $ Named.OpenAcc $ Named.Unit tp expr
       Named.Generate (ArrayR shr tp) sh f
         | DeclareVars lhsSh kSh valueSh <- declareVars $ shapeType shr
         , DeclareVars lhsBf kBf valueBf <- declareVars $ buffersR tp ->
@@ -635,6 +648,16 @@ desugarOpenAcc env = travA
               $ aletUnique lhsOut (desugarAlloc (ArrayR shrOut tpOut) (valueShOut weakenId))
               $ alet (LeftHandSideWildcard TupRunit) (mkTransform argIdxF argValF argIn argOut)
               $ Return (shOut `TupRpair` bfOut)
+
+      Named.Map tp (Lam lhs (Body expr)) a
+        | desugarPreferNoScalar @op
+        , repr@(ArrayR ShapeRz _) <- Named.arrayR a ->
+          travA $ Named.OpenAcc
+            $ Named.Alet (LeftHandSideSingle repr) a
+            $ Named.OpenAcc
+            $ Named.Unit tp
+            $ Let lhs (ArrayInstr (Named.Index (Var repr ZeroIdx)) Nil)
+            $ mapArrayInstr (weaken $ weakenSucc weakenId) expr
 
       Named.Map _ (Lam lhs (Body e)) a
         | Just vars <- extractExpVars e
@@ -1433,9 +1456,9 @@ uncons (ShapeRsnoc shr) (TupRpair v1 v3)
 uncons _ _ = internalError "Illegal shape tuple"
 
 mkIntersect :: ShapeR sh -> ExpVars benv sh -> ExpVars benv sh -> PreOpenExp (ArrayInstr benv) env sh
-mkIntersect shr x y
+mkIntersect shr' x y
   | Just Refl <- matchVars x y = paramsIn' x
-  | otherwise = mkIntersect' shr x y
+  | otherwise = mkIntersect' shr' x y
   where
     mkIntersect' :: ShapeR sh -> ExpVars benv sh -> ExpVars benv sh -> PreOpenExp (ArrayInstr benv) env sh
     mkIntersect' ShapeRz          _                _                = Nil
@@ -1477,6 +1500,7 @@ mkDefaultFoldFunction (ArgFun op) def (ArgArray _ (ArrayR (ShapeRsnoc shr) tp) (
       ArgFun $ Lam lhsIdx $ Body
         $ Let lhs (While condition step initial)
         $ expVars $ valueVal weakenId
+mkDefaultFoldFunction _ _ _ = internalError "Fun impossible"
 
 -- In case of a scan with a default value, prepends the initial value before the other elements
 -- The default value is placed as the first value in case of a left-to-right scan, or as the
@@ -1500,7 +1524,6 @@ mkDefaultScanPrepend dir (ArgExp def) (ArgArray _ repr@(ArrayR (ShapeRsnoc shr) 
         $ index repr sh input
         $ Pair (expVars $ value $ weakenSucc weakenId) x
 
--- TODO: Is the order of arguments to 'f' correct, in both directions?
 mkDefaultScanFunction :: Direction -> GroundVar benv Int -> Arg benv (Fun' (e -> e -> e)) -> Arg benv (In (sh, Int) e) -> Fun benv ((sh, Int) -> e)
 mkDefaultScanFunction dir inc (ArgFun f) (ArgArray _ repr@(ArrayR (ShapeRsnoc shr) tp) sh input)
   | DeclareVars lhs _ value <- declareVars $ shapeType shr
@@ -1521,7 +1544,11 @@ mkDefaultScanFunction dir inc (ArgFun f) (ArgArray _ repr@(ArrayR (ShapeRsnoc sh
       Lam (lhs `LeftHandSidePair` LeftHandSideSingle scalarTypeInt)
         $ Body
         $ Cond condition
-          (apply2 tp f (index' x) (index' y))
+          (
+            case dir of
+              LeftToRight -> apply2 tp f (index' y) (index' x)
+              RightToLeft -> apply2 tp f (index' x) (index' y)
+          )
           (index' x)
 
 mkDefaultFoldSegFunction

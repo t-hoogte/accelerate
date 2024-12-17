@@ -65,7 +65,6 @@ import Prelude hiding (id, (.), read)
 import Control.Category
 
 import Data.Functor.Identity
-import Debug.Trace
 -- Constructs a partial schedule. It is partial as many details still need
 -- to be filled in for the actual schedule. This schedule does however
 -- decide whether the binding and body of a let-binding should be executed
