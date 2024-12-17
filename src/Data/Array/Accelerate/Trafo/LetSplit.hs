@@ -60,6 +60,12 @@ convertPreOpenAcc = \case
   Backpermute shr sh f a          -> Backpermute shr sh f (convertAcc a)
   Stencil s tp f b a              -> Stencil s tp f b (convertAcc a)
   Stencil2 s1 s2 tp f b1 a1 b2 a2 -> Stencil2 s1 s2 tp f b1 (convertAcc a1) b2 (convertAcc a2)
+  BFold f e a                     -> BFold f e (convertAcc a)
+  CartesianWith tp f a1 a2        -> CartesianWith tp f (convertAcc a1) (convertAcc a2)
+  BFilter tp f a                  -> BFilter tp f (convertAcc a)
+  BIntersect tp a1 a2             -> BIntersect tp (convertAcc a1) (convertAcc a2)
+  BUnion tp a1 a2                 -> BUnion tp (convertAcc a1) (convertAcc a2)
+  BSubtract tp a1 a2              -> BSubtract tp (convertAcc a1) (convertAcc a2)
 
 convertLHS
     :: ALeftHandSide bnd aenv aenv'

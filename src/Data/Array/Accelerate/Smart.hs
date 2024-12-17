@@ -460,6 +460,40 @@ data PreSmartAcc acc exp as where
                 -> PreBoundary acc exp (Array sh b)
                 -> acc (Array sh b)
                 -> PreSmartAcc acc exp (Array sh c)
+  
+  BFold         :: TypeR e
+                -> (SmartExp e -> SmartExp e -> exp e)
+                -> Maybe (exp e)
+                -> acc (Array DIM1 e)
+                -> PreSmartAcc acc exp (Array DIM0 e)
+  
+  CartesianWith :: TypeR e1
+                -> TypeR e2
+                -> TypeR e3
+                -> (SmartExp e1 -> SmartExp e2 -> exp e3)
+                -> acc (Array DIM1 e1)
+                -> acc (Array DIM1 e2)
+                -> PreSmartAcc acc exp (Array DIM1 e3)
+  
+  BFilter       :: TypeR e
+                -> (SmartExp e -> exp PrimBool)
+                -> acc (Array DIM1 e)
+                -> PreSmartAcc acc exp (Array DIM1 e)
+  
+  BIntersect    :: TypeR e
+                -> acc (Array DIM1 e)
+                -> acc (Array DIM1 e)
+                -> PreSmartAcc acc exp (Array DIM1 e)
+
+  BUnion        :: TypeR e
+                -> acc (Array DIM1 e)
+                -> acc (Array DIM1 e)
+                -> PreSmartAcc acc exp (Array DIM1 e)
+  
+  BSubtract     :: TypeR e
+                -> acc (Array DIM1 e)
+                -> acc (Array DIM1 e)
+                -> PreSmartAcc acc exp (Array DIM1 e)
 
 
 -- Embedded expressions of the surface language
@@ -794,43 +828,50 @@ arrayR acc = case arraysR acc of
 
 instance HasArraysR acc => HasArraysR (PreSmartAcc acc exp) where
   arraysR = \case
-    Atag repr _               -> repr
-    Pipe _ _ repr  _ _ _      -> repr
-    Aforeign repr _ _ _       -> repr
-    Acond _ a _               -> arraysR a
-    Awhile _ _ _ a            -> arraysR a
-    Anil                      -> TupRunit
-    Apair a1 a2               -> arraysR a1 `TupRpair` arraysR a2
+    Atag repr _                -> repr
+    Pipe _ _ repr  _ _ _       -> repr
+    Aforeign repr _ _ _        -> repr
+    Acond _ a _                -> arraysR a
+    Awhile _ _ _ a             -> arraysR a
+    Anil                       -> TupRunit
+    Apair a1 a2                -> arraysR a1 `TupRpair` arraysR a2
     Aprj idx a | TupRpair t1 t2 <- arraysR a
-                              -> case idx of
-                                   PairIdxLeft  -> t1
-                                   PairIdxRight -> t2
-    Aprj _ _                  -> error "Ejector seat? You're joking!"
-    Atrace _ _ a              -> arraysR a
-    Use repr _                -> TupRsingle repr
-    Unit tp _                 -> TupRsingle $ ArrayR ShapeRz $ tp
-    Generate repr _ _         -> TupRsingle repr
-    Reshape shr _ a           -> let ArrayR _ tp = arrayR a
-                                 in  TupRsingle $ ArrayR shr tp
-    Replicate si _ a          -> let ArrayR _ tp = arrayR a
-                                 in  TupRsingle $ ArrayR (sliceDomainR si) tp
-    Slice si a _              -> let ArrayR _ tp = arrayR a
-                                 in  TupRsingle $ ArrayR (sliceShapeR si) tp
-    Map _ tp _ a              -> let ArrayR shr _ = arrayR a
-                                 in  TupRsingle $ ArrayR shr tp
-    ZipWith _ _ tp _ a _      -> let ArrayR shr _ = arrayR a
-                                 in  TupRsingle $ ArrayR shr tp
-    Fold _ _ _ a              -> let ArrayR (ShapeRsnoc shr) tp = arrayR a
-                                 in  TupRsingle (ArrayR shr tp)
-    FoldSeg _ _ _ _ a _       -> arraysR a
-    Scan _ _ _ _ a            -> arraysR a
-    Scan' _ _ _ _ a           -> let repr@(ArrayR (ShapeRsnoc shr) tp) = arrayR a
-                                 in  TupRsingle repr `TupRpair` TupRsingle (ArrayR shr tp)
-    Permute _ _ a _ _         -> arraysR a
-    Backpermute shr _ _ a     -> let ArrayR _ tp = arrayR a
-                                 in  TupRsingle (ArrayR shr tp)
-    Stencil s tp _ _ _        -> TupRsingle $ ArrayR (stencilShapeR s) tp
-    Stencil2 s _ tp _ _ _ _ _ -> TupRsingle $ ArrayR (stencilShapeR s) tp
+                               -> case idx of
+                                    PairIdxLeft  -> t1
+                                    PairIdxRight -> t2
+    Aprj _ _                   -> error "Ejector seat? You're joking!"
+    Atrace _ _ a               -> arraysR a
+    Use repr _                 -> TupRsingle repr
+    Unit tp _                  -> TupRsingle $ ArrayR ShapeRz $ tp
+    Generate repr _ _          -> TupRsingle repr
+    Reshape shr _ a            -> let ArrayR _ tp = arrayR a
+                                  in  TupRsingle $ ArrayR shr tp
+    Replicate si _ a           -> let ArrayR _ tp = arrayR a
+                                  in  TupRsingle $ ArrayR (sliceDomainR si) tp
+    Slice si a _               -> let ArrayR _ tp = arrayR a
+                                  in  TupRsingle $ ArrayR (sliceShapeR si) tp
+    Map _ tp _ a               -> let ArrayR shr _ = arrayR a
+                                  in  TupRsingle $ ArrayR shr tp
+    ZipWith _ _ tp _ a _       -> let ArrayR shr _ = arrayR a
+                                  in  TupRsingle $ ArrayR shr tp
+    Fold _ _ _ a               -> let ArrayR (ShapeRsnoc shr) tp = arrayR a
+                                  in  TupRsingle (ArrayR shr tp)
+    FoldSeg _ _ _ _ a _        -> arraysR a
+    Scan _ _ _ _ a             -> arraysR a
+    Scan' _ _ _ _ a            -> let repr@(ArrayR (ShapeRsnoc shr) tp) = arrayR a
+                                  in  TupRsingle repr `TupRpair` TupRsingle (ArrayR shr tp)
+    Permute _ _ a _ _          -> arraysR a
+    Backpermute shr _ _ a      -> let ArrayR _ tp = arrayR a
+                                  in  TupRsingle (ArrayR shr tp)
+    Stencil s tp _ _ _         -> TupRsingle $ ArrayR (stencilShapeR s) tp
+    Stencil2 s _ tp _ _ _ _ _  -> TupRsingle $ ArrayR (stencilShapeR s) tp
+    BFold _ _ _ a              -> let ArrayR (ShapeRsnoc ShapeRz) tp = arrayR a
+                                  in  TupRsingle (ArrayR ShapeRz tp)
+    CartesianWith _ _ tp _ _ _ -> TupRsingle $ ArrayR (ShapeRsnoc ShapeRz) tp
+    BFilter tp _ _             -> TupRsingle $ ArrayR (ShapeRsnoc ShapeRz) tp
+    BIntersect tp _ _          -> TupRsingle $ ArrayR (ShapeRsnoc ShapeRz) tp
+    BUnion tp _ _              -> TupRsingle $ ArrayR (ShapeRsnoc ShapeRz) tp
+    BSubtract tp _ _           -> TupRsingle $ ArrayR (ShapeRsnoc ShapeRz) tp
 
 
 class HasTypeR f where

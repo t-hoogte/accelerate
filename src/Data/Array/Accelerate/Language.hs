@@ -67,12 +67,21 @@ module Data.Array.Accelerate.Language (
   Boundary, Stencil,
   clamp, mirror, wrap, function,
 
-
   -- ** Common stencil types
   Stencil3, Stencil5, Stencil7, Stencil9,
   Stencil3x3, Stencil5x3, Stencil3x5, Stencil5x5,
   Stencil3x3x3, Stencil5x3x3, Stencil3x5x3, Stencil3x3x5, Stencil5x5x3, Stencil5x3x5,
   Stencil3x5x5, Stencil5x5x5,
+
+  -- * Bag functions
+  arrayToBag, bagToArray,
+  bagSize,
+  
+  bagMap, bagFold,
+
+  cartesianWith,
+  bagFilter,
+  bagIntersect, bagUnion, bagSubtract,
 
   -- * Foreign functions
   foreignAcc,
@@ -106,10 +115,10 @@ import Data.Array.Accelerate.Representation.Array                   ( ArrayR(..)
 import Data.Array.Accelerate.Representation.Shape                   ( ShapeR(..) )
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Smart                                  hiding ( arraysR )
-import Data.Array.Accelerate.Sugar.Array                            ( Arrays(..), Array, Scalar, Segments, arrayR )
+import Data.Array.Accelerate.Sugar.Array                            ( Arrays(..), Array, Scalar, Segments, Bag, arrayR )
 import Data.Array.Accelerate.Sugar.Elt
 import Data.Array.Accelerate.Sugar.Foreign
-import Data.Array.Accelerate.Sugar.Shape                            ( Shape(..), Slice(..), (:.) )
+import Data.Array.Accelerate.Sugar.Shape                            ( Shape(..), Slice(..), DIM1, (:.) )
 import Data.Array.Accelerate.Type
 import qualified Data.Array.Accelerate.Representation.Array         as R
 
@@ -119,7 +128,7 @@ import Data.Array.Accelerate.Classes.Integral
 import Data.Array.Accelerate.Classes.Num
 import Data.Array.Accelerate.Classes.Ord
 
-import Prelude                                                      ( ($), (.), Maybe(..), Char )
+import Prelude                                                      ( ($), (.), Maybe(..), Char, undefined )
 #if __GLASGOW_HASKELL__ >= 904
 import Data.Type.Equality
 #endif
@@ -1177,6 +1186,65 @@ collect :: Arrays arrs => Seq arrs -> Acc arrs
 collect = Acc . Collect
 --}
 
+-- Bag functions
+-- ------------------------
+
+arrayToBag :: Acc (Array DIM1 a) -> Acc (Bag a)
+arrayToBag (Acc a) = Acc a
+
+bagToArray :: Acc (Bag a) -> Acc (Array DIM1 a)
+bagToArray (Acc a) = Acc a
+
+bagSize :: Elt e => Acc (Bag e) -> Exp Int
+bagSize = shapeSize . shape . bagToArray
+
+
+bagMap :: forall a b.
+          (Elt a, Elt b)
+       => (Exp a -> Exp b)
+       -> Acc (Bag a)
+       -> Acc (Bag b)
+bagMap = Acc $$ applyAcc (Map (eltR @a) (eltR @b))
+
+-- like fold on arrays, exept we assume that the function is /commutative/ in addition to being /associative/ 
+bagFold :: forall a. (Elt a)
+        => (Exp a -> Exp a -> Exp a)
+        -> Exp a
+        -> Acc (Bag a)
+        -> Acc (Scalar a)
+bagFold f (Exp x) = Acc . applyAcc (BFold (eltR @a) (unExpBinaryFunction f) (Just x))
+
+cartesianWith :: forall a b c.
+                 (Elt a, Elt b, Elt c)
+              => (Exp a -> Exp b -> Exp c)
+              -> Acc (Bag a)
+              -> Acc (Bag b)
+              -> Acc (Bag c)
+cartesianWith = Acc $$$ applyAcc (CartesianWith (eltR @a) (eltR @b) (eltR @c))
+
+bagFilter :: forall e. (Elt e)
+          => (Exp e -> Exp Bool)
+          -> Acc (Bag e)
+          -> Acc (Bag e)
+bagFilter f = Acc . applyAcc (BFilter (eltR @e) (mkCoerce' . unExp . f . Exp))
+
+bagIntersect :: forall a. (Elt a)
+             => Acc (Bag a)
+             -> Acc (Bag a)
+             -> Acc (Bag a)
+bagIntersect = Acc $$ applyAcc (BIntersect (eltR @a))
+
+bagUnion :: forall a. (Elt a)
+         => Acc (Bag a)
+         -> Acc (Bag a)
+         -> Acc (Bag a)
+bagUnion = Acc $$ applyAcc (BUnion (eltR @a))
+
+bagSubtract :: forall a. (Elt a)
+            => Acc (Bag a)
+            -> Acc (Bag a)
+            -> Acc (Bag a)
+bagSubtract = Acc $$ applyAcc (BSubtract (eltR @a))
 
 -- Foreign function calling
 -- ------------------------

@@ -171,7 +171,7 @@ module Data.Array.Accelerate (
   Acc,
 
   -- *** Arrays
-  Array, Arrays, Scalar, Vector, Matrix, Segments,
+  Array, Bag, Arrays, Scalar, Vector, Matrix, Segments,
 
   -- *** Array elements
   Elt,
@@ -302,6 +302,17 @@ module Data.Array.Accelerate (
   -- -- ** Sequence consumers
   -- foldSeq, foldSeqFlatten, fromSeq, fromSeqElems, fromSeqShapes,
   -- toSeqInner, toSeqOuter2, toSeqOuter3,
+
+  -- *** Bag functions
+  bagFill, bagSize, bagNull, emptyBag,
+  bagAll, bagAny, bagAnd, bagOr,
+
+  arrayToBag, bagToArray,
+  bagMap, bagFold,
+
+  cartesian, cartesianWith,
+  bagFilter,
+  bagIntersect, bagUnion, bagSubtract,
 
   -- ---------------------------------------------------------------------------
   -- * The /Accelerate/ Expression Language
@@ -457,7 +468,7 @@ import Data.Array.Accelerate.Prelude
 import Data.Array.Accelerate.Trafo (test, testWithObjective, testBench)
 import Data.Array.Accelerate.Pretty                                 () -- show instances
 import Data.Array.Accelerate.Smart
-import Data.Array.Accelerate.Sugar.Array                            ( Array, Arrays, Scalar, Vector, Matrix, Segments, fromFunction, fromFunctionM, toList, fromList )
+import Data.Array.Accelerate.Sugar.Array                            ( Array, Arrays, Scalar, Vector, Matrix, Segments, Bag, fromFunction, fromFunctionM, toList, fromList )
 import Data.Array.Accelerate.Sugar.Elt
 import Data.Array.Accelerate.Sugar.Shape                            hiding ( size, toIndex, fromIndex, intersect )
 import Data.Array.Accelerate.Sugar.Vec

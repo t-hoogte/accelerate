@@ -228,175 +228,175 @@ data PreOpenAcc (acc :: Type -> Type -> Type) aenv a where
   -- Local non-recursive binding to represent sharing and demand
   -- explicitly. Note this is an eager binding!
   --
-  Alet        :: ALeftHandSide bndArrs aenv aenv'
-              -> acc            aenv  bndArrs         -- bound expression
-              -> acc            aenv' bodyArrs        -- the bound expression scope
-              -> PreOpenAcc acc aenv  bodyArrs
+  Alet          :: ALeftHandSide bndArrs aenv aenv'
+                -> acc            aenv  bndArrs         -- bound expression
+                -> acc            aenv' bodyArrs        -- the bound expression scope
+                -> PreOpenAcc acc aenv  bodyArrs
 
   -- Variable bound by a 'Let', represented by a de Bruijn index
   --
-  Avar        :: ArrayVar       aenv (Array sh e)
-              -> PreOpenAcc acc aenv (Array sh e)
+  Avar          :: ArrayVar       aenv (Array sh e)
+                -> PreOpenAcc acc aenv (Array sh e)
 
   -- Tuples of arrays
   --
-  Apair       :: acc            aenv as
-              -> acc            aenv bs
-              -> PreOpenAcc acc aenv (as, bs)
+  Apair         :: acc            aenv as
+                -> acc            aenv bs
+                -> PreOpenAcc acc aenv (as, bs)
 
-  Anil        :: PreOpenAcc acc aenv ()
+  Anil          :: PreOpenAcc acc aenv ()
 
   -- Array-function application.
   --
   -- The array function is not closed at the core level because we need access
   -- to free variables introduced by 'run1' style evaluators. See Issue#95.
   --
-  Apply       :: ArraysR arrs2
-              -> PreOpenAfun acc aenv (arrs1 -> arrs2)
-              -> acc             aenv arrs1
-              -> PreOpenAcc  acc aenv arrs2
+  Apply         :: ArraysR arrs2
+                -> PreOpenAfun acc aenv (arrs1 -> arrs2)
+                -> acc             aenv arrs1
+                -> PreOpenAcc  acc aenv arrs2
 
   -- Apply a backend-specific foreign function to an array, with a pure
   -- Accelerate version for use with other backends. The functions must be
   -- closed.
   --
-  Aforeign    :: Foreign asm
-              => ArraysR bs
-              -> asm                   (as -> bs) -- The foreign function for a given backend
-              -> PreAfun      acc      (as -> bs) -- Fallback implementation(s)
-              -> acc              aenv as         -- Arguments to the function
-              -> PreOpenAcc   acc aenv bs
+  Aforeign      :: Foreign asm
+                => ArraysR bs
+                -> asm                   (as -> bs) -- The foreign function for a given backend
+                -> PreAfun      acc      (as -> bs) -- Fallback implementation(s)
+                -> acc              aenv as         -- Arguments to the function
+                -> PreOpenAcc   acc aenv bs
 
   -- If-then-else for array-level computations
   --
-  Acond       :: Exp            aenv PrimBool
-              -> acc            aenv arrs
-              -> acc            aenv arrs
-              -> PreOpenAcc acc aenv arrs
+  Acond         :: Exp            aenv PrimBool
+                -> acc            aenv arrs
+                -> acc            aenv arrs
+                -> PreOpenAcc acc aenv arrs
 
   -- Value-recursion for array-level computations
   --
-  Awhile      :: PreOpenAfun acc aenv (arrs -> Scalar PrimBool) -- continue iteration while true
-              -> PreOpenAfun acc aenv (arrs -> arrs)            -- function to iterate
-              -> acc             aenv arrs                      -- initial value
-              -> PreOpenAcc  acc aenv arrs
+  Awhile        :: PreOpenAfun acc aenv (arrs -> Scalar PrimBool) -- continue iteration while true
+                -> PreOpenAfun acc aenv (arrs -> arrs)            -- function to iterate
+                -> acc             aenv arrs                      -- initial value
+                -> PreOpenAcc  acc aenv arrs
 
-  Atrace      :: Message              arrs1
-              -> acc             aenv arrs1
-              -> acc             aenv arrs2
-              -> PreOpenAcc  acc aenv arrs2
+  Atrace        :: Message              arrs1
+                -> acc             aenv arrs1
+                -> acc             aenv arrs2
+                -> PreOpenAcc  acc aenv arrs2
 
   -- Array inlet. Triggers (possibly) asynchronous host->device transfer if
   -- necessary.
   --
-  Use         :: ArrayR (Array sh e)
-              -> Array sh e
-              -> PreOpenAcc acc aenv (Array sh e)
+  Use           :: ArrayR (Array sh e)
+                -> Array sh e
+                -> PreOpenAcc acc aenv (Array sh e)
 
   -- Capture a scalar (or a tuple of scalars) in a singleton array
   --
-  Unit        :: TypeR e
-              -> Exp            aenv e
-              -> PreOpenAcc acc aenv (Scalar e)
+  Unit          :: TypeR e
+                -> Exp            aenv e
+                -> PreOpenAcc acc aenv (Scalar e)
 
   -- Change the shape of an array without altering its contents.
   -- Precondition (this may not be checked!):
   --
   -- > dim == size dim'
   --
-  Reshape     :: ShapeR sh
-              -> Exp            aenv sh                         -- new shape
-              -> acc            aenv (Array sh' e)              -- array to be reshaped
-              -> PreOpenAcc acc aenv (Array sh e)
+  Reshape       :: ShapeR sh
+                -> Exp            aenv sh                         -- new shape
+                -> acc            aenv (Array sh' e)              -- array to be reshaped
+                -> PreOpenAcc acc aenv (Array sh e)
 
   -- Construct a new array by applying a function to each index.
   --
-  Generate    :: ArrayR (Array sh e)
-              -> Exp            aenv sh                         -- output shape
-              -> Fun            aenv (sh -> e)                  -- representation function
-              -> PreOpenAcc acc aenv (Array sh e)
+  Generate      :: ArrayR (Array sh e)
+                -> Exp            aenv sh                         -- output shape
+                -> Fun            aenv (sh -> e)                  -- representation function
+                -> PreOpenAcc acc aenv (Array sh e)
 
   -- Hybrid map/backpermute, where we separate the index and value
   -- transformations.
   --
-  Transform   :: ArrayR (Array sh' b)
-              -> Exp            aenv sh'                        -- dimension of the result
-              -> Fun            aenv (sh' -> sh)                -- index permutation function
-              -> Fun            aenv (a   -> b)                 -- function to apply at each element
-              ->            acc aenv (Array sh  a)              -- source array
-              -> PreOpenAcc acc aenv (Array sh' b)
+  Transform     :: ArrayR (Array sh' b)
+                -> Exp            aenv sh'                        -- dimension of the result
+                -> Fun            aenv (sh' -> sh)                -- index permutation function
+                -> Fun            aenv (a   -> b)                 -- function to apply at each element
+                ->            acc aenv (Array sh  a)              -- source array
+                -> PreOpenAcc acc aenv (Array sh' b)
 
   -- Replicate an array across one or more dimensions as given by the first
   -- argument
   --
-  Replicate   :: SliceIndex slix sl co sh                       -- slice type specification
-              -> Exp            aenv slix                       -- slice value specification
-              -> acc            aenv (Array sl e)               -- data to be replicated
-              -> PreOpenAcc acc aenv (Array sh e)
+  Replicate     :: SliceIndex slix sl co sh                       -- slice type specification
+                -> Exp            aenv slix                       -- slice value specification
+                -> acc            aenv (Array sl e)               -- data to be replicated
+                -> PreOpenAcc acc aenv (Array sh e)
 
   -- Index a sub-array out of an array; i.e., the dimensions not indexed
   -- are returned whole
   --
-  Slice       :: SliceIndex slix sl co sh                       -- slice type specification
-              -> acc            aenv (Array sh e)               -- array to be indexed
-              -> Exp            aenv slix                       -- slice value specification
-              -> PreOpenAcc acc aenv (Array sl e)
+  Slice         :: SliceIndex slix sl co sh                       -- slice type specification
+                -> acc            aenv (Array sh e)               -- array to be indexed
+                -> Exp            aenv slix                       -- slice value specification
+                -> PreOpenAcc acc aenv (Array sl e)
 
   -- Apply the given unary function to all elements of the given array
   --
-  Map         :: TypeR e'
-              -> Fun            aenv (e -> e')
-              -> acc            aenv (Array sh e)
-              -> PreOpenAcc acc aenv (Array sh e')
+  Map           :: TypeR e'
+                -> Fun            aenv (e -> e')
+                -> acc            aenv (Array sh e)
+                -> PreOpenAcc acc aenv (Array sh e')
 
   -- Apply a given binary function pairwise to all elements of the given
   -- arrays. The length of the result is the length of the shorter of the
   -- two argument arrays.
   --
-  ZipWith     :: TypeR e3
-              -> Fun            aenv (e1 -> e2 -> e3)
-              -> acc            aenv (Array sh e1)
-              -> acc            aenv (Array sh e2)
-              -> PreOpenAcc acc aenv (Array sh e3)
+  ZipWith       :: TypeR e3
+                -> Fun            aenv (e1 -> e2 -> e3)
+                -> acc            aenv (Array sh e1)
+                -> acc            aenv (Array sh e2)
+                -> PreOpenAcc acc aenv (Array sh e3)
 
   -- Fold along the innermost dimension of an array with a given
   -- /associative/ function.
   --
-  Fold        :: Fun            aenv (e -> e -> e)              -- combination function
-              -> Maybe     (Exp aenv e)                         -- default value
-              -> acc            aenv (Array (sh, Int) e)        -- folded array
-              -> PreOpenAcc acc aenv (Array sh e)
+  Fold          :: Fun            aenv (e -> e -> e)              -- combination function
+                -> Maybe     (Exp aenv e)                         -- default value
+                -> acc            aenv (Array (sh, Int) e)        -- folded array
+                -> PreOpenAcc acc aenv (Array sh e)
 
   -- Segmented fold along the innermost dimension of an array with a given
   -- /associative/ function
   --
-  FoldSeg     :: IntegralType i
-              -> Fun            aenv (e -> e -> e)              -- combination function
-              -> Maybe     (Exp aenv e)                         -- default value
-              -> acc            aenv (Array (sh, Int) e)        -- folded array
-              -> acc            aenv (Segments i)               -- segment descriptor
-              -> PreOpenAcc acc aenv (Array (sh, Int) e)
+  FoldSeg       :: IntegralType i
+                -> Fun            aenv (e -> e -> e)              -- combination function
+                -> Maybe     (Exp aenv e)                         -- default value
+                -> acc            aenv (Array (sh, Int) e)        -- folded array
+                -> acc            aenv (Segments i)               -- segment descriptor
+                -> PreOpenAcc acc aenv (Array (sh, Int) e)
 
   -- Haskell-style scan of a linear array with a given
   -- /associative/ function and optionally an initial element
   -- (which does not need to be the neutral of the associative operations)
   -- If no initial value is given, this is a scan1
   --
-  Scan        :: Direction
-              -> Fun            aenv (e -> e -> e)              -- combination function
-              -> Maybe     (Exp aenv e)                         -- initial value
-              -> acc            aenv (Array (sh, Int) e)
-              -> PreOpenAcc acc aenv (Array (sh, Int) e)
+  Scan          :: Direction
+                -> Fun            aenv (e -> e -> e)              -- combination function
+                -> Maybe     (Exp aenv e)                         -- initial value
+                -> acc            aenv (Array (sh, Int) e)
+                -> PreOpenAcc acc aenv (Array (sh, Int) e)
 
   -- Like 'Scan', but produces a rightmost (in case of a left-to-right scan)
   -- fold value and an array with the same length as the input array (the
   -- fold value would be the rightmost element in a Haskell-style scan)
   --
-  Scan'       :: Direction
-              -> Fun            aenv (e -> e -> e)              -- combination function
-              -> Exp            aenv e                          -- initial value
-              -> acc            aenv (Array (sh, Int) e)
-              -> PreOpenAcc acc aenv (Array (sh, Int) e, Array sh e)
+  Scan'         :: Direction
+                -> Fun            aenv (e -> e -> e)              -- combination function
+                -> Exp            aenv e                          -- initial value
+                -> acc            aenv (Array (sh, Int) e)
+                -> PreOpenAcc acc aenv (Array (sh, Int) e, Array sh e)
 
   -- Generalised forward permutation is characterised by a permutation function
   -- that determines for each element of the source array where it should go in
@@ -418,42 +418,73 @@ data PreOpenAcc (acc :: Type -> Type -> Type) aenv a where
   --      function is used to combine elements, which needs to be /associative/
   --      and /commutative/.
   --
-  Permute     :: Fun            aenv (e -> e -> e)              -- combination function
-              -> acc            aenv (Array sh' e)              -- default values
-              -> Fun            aenv (sh -> PrimMaybe sh')      -- permutation function
-              -> acc            aenv (Array sh e)               -- source array
-              -> PreOpenAcc acc aenv (Array sh' e)
+  Permute       :: Fun            aenv (e -> e -> e)              -- combination function
+                -> acc            aenv (Array sh' e)              -- default values
+                -> Fun            aenv (sh -> PrimMaybe sh')      -- permutation function
+                -> acc            aenv (Array sh e)               -- source array
+                -> PreOpenAcc acc aenv (Array sh' e)
 
   -- Generalised multi-dimensional backwards permutation; the permutation can
   -- be between arrays of varying shape; the permutation function must be total
   --
-  Backpermute :: ShapeR sh'
-              -> Exp            aenv sh'                        -- dimensions of the result
-              -> Fun            aenv (sh' -> sh)                -- permutation function
-              -> acc            aenv (Array sh e)               -- source array
-              -> PreOpenAcc acc aenv (Array sh' e)
+  Backpermute   :: ShapeR sh'
+                -> Exp            aenv sh'                        -- dimensions of the result
+                -> Fun            aenv (sh' -> sh)                -- permutation function
+                -> acc            aenv (Array sh e)               -- source array
+                -> PreOpenAcc acc aenv (Array sh' e)
 
   -- Map a stencil over an array.  In contrast to 'map', the domain of
   -- a stencil function is an entire /neighbourhood/ of each array element.
   --
-  Stencil     :: StencilR sh e stencil
-              -> TypeR e'
-              -> Fun             aenv (stencil -> e')           -- stencil function
-              -> Boundary        aenv (Array sh e)              -- boundary condition
-              -> acc             aenv (Array sh e)              -- source array
-              -> PreOpenAcc  acc aenv (Array sh e')
+  Stencil       :: StencilR sh e stencil
+                -> TypeR e'
+                -> Fun             aenv (stencil -> e')           -- stencil function
+                -> Boundary        aenv (Array sh e)              -- boundary condition
+                -> acc             aenv (Array sh e)              -- source array
+                -> PreOpenAcc  acc aenv (Array sh e')
 
   -- Map a binary stencil over an array.
   --
-  Stencil2    :: StencilR sh a stencil1
-              -> StencilR sh b stencil2
-              -> TypeR c
-              -> Fun             aenv (stencil1 -> stencil2 -> c) -- stencil function
-              -> Boundary        aenv (Array sh a)                -- boundary condition #1
-              -> acc             aenv (Array sh a)                -- source array #1
-              -> Boundary        aenv (Array sh b)                -- boundary condition #2
-              -> acc             aenv (Array sh b)                -- source array #2
-              -> PreOpenAcc acc  aenv (Array sh c)
+  Stencil2      :: StencilR sh a stencil1
+                -> StencilR sh b stencil2
+                -> TypeR c
+                -> Fun             aenv (stencil1 -> stencil2 -> c) -- stencil function
+                -> Boundary        aenv (Array sh a)                -- boundary condition #1
+                -> acc             aenv (Array sh a)                -- source array #1
+                -> Boundary        aenv (Array sh b)                -- boundary condition #2
+                -> acc             aenv (Array sh b)                -- source array #2
+                -> PreOpenAcc acc  aenv (Array sh c)
+  
+  BFold         :: Fun            aenv (e -> e -> e)              -- combination function
+                -> Maybe     (Exp aenv e)                         -- default value
+                -> acc            aenv (Array DIM1 e)             -- folded array
+                -> PreOpenAcc acc aenv (Array DIM0 e)
+  
+  CartesianWith :: TypeR e3
+                -> Fun            aenv (e1 -> e2 -> e3)
+                -> acc            aenv (Array DIM1 e1)
+                -> acc            aenv (Array DIM1 e2)
+                -> PreOpenAcc acc aenv (Array DIM1 e3)
+  
+  BFilter       :: TypeR e
+                -> Fun            aenv (e -> PrimBool)
+                -> acc            aenv (Array DIM1 e)
+                -> PreOpenAcc acc aenv (Array DIM1 e)
+  
+  BIntersect    :: TypeR e
+                -> acc            aenv (Array DIM1 e)
+                -> acc            aenv (Array DIM1 e)
+                -> PreOpenAcc acc aenv (Array DIM1 e)
+  
+  BUnion        :: TypeR e
+                -> acc            aenv (Array DIM1 e)
+                -> acc            aenv (Array DIM1 e)
+                -> PreOpenAcc acc aenv (Array DIM1 e)
+
+  BSubtract     :: TypeR e
+                -> acc            aenv (Array DIM1 e)
+                -> acc            aenv (Array DIM1 e)
+                -> PreOpenAcc acc aenv (Array DIM1 e)
 
 -- | Vanilla boundary condition specification for stencil operations
 --
@@ -586,6 +617,18 @@ instance HasArraysR acc => HasArraysR (PreOpenAcc acc) where
   arraysR (Stencil _ tR _ _ a)        = let ArrayR sh _ = arrayR a
                                          in arraysRarray sh tR
   arraysR (Stencil2 _ _ tR _ _ a _ _) = let ArrayR sh _ = arrayR a
+                                         in arraysRarray sh tR
+  arraysR (BFold _ _ a)               = let ArrayR (ShapeRsnoc sh) tR = arrayR a
+                                         in arraysRarray sh tR
+  arraysR (CartesianWith tR _ a _)    = let ArrayR sh _ = arrayR a
+                                         in arraysRarray sh tR
+  arraysR (BFilter tR _ a)            = let ArrayR sh _ = arrayR a
+                                         in arraysRarray sh tR
+  arraysR (BIntersect tR a _)         = let ArrayR sh _ = arrayR a
+                                         in arraysRarray sh tR
+  arraysR (BUnion tR a _)             = let ArrayR sh _ = arrayR a
+                                         in arraysRarray sh tR
+  arraysR (BSubtract tR a _)          = let ArrayR sh _ = arrayR a
                                          in arraysRarray sh tR
 
 -- Normal form data

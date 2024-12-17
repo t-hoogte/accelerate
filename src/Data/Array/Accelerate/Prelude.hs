@@ -113,6 +113,11 @@ module Data.Array.Accelerate.Prelude (
   -- * Irregular data-parallelism
   expand,
 
+  -- * Bag functions
+  bagFill, bagNull, emptyBag,
+  bagAll, bagAny, bagAnd, bagOr,
+  cartesian,
+
   -- * Sequence operations
   -- fromSeq, fromSeqElems, fromSeqShapes, toSeqInner, toSeqOuter2, toSeqOuter3, generateSeq,
 
@@ -124,7 +129,7 @@ import Data.Array.Accelerate.Lift
 import Data.Array.Accelerate.Pattern
 import Data.Array.Accelerate.Pattern.Maybe
 import Data.Array.Accelerate.Smart
-import Data.Array.Accelerate.Sugar.Array                            ( Arrays, Array, Scalar, Vector, Segments,  fromList )
+import Data.Array.Accelerate.Sugar.Array                            ( Arrays, Array, Bag, Scalar, Vector, Segments,  fromList )
 import Data.Array.Accelerate.Sugar.Elt
 import Data.Array.Accelerate.Sugar.Shape                            ( Shape, Slice, Z(..), (:.)(..), All(..), DIM1, DIM2, empty )
 import Data.Array.Accelerate.Type
@@ -138,7 +143,7 @@ import Data.Array.Accelerate.Classes.Ord
 import Data.Array.Accelerate.Data.Bits
 
 import Lens.Micro                                                   ( Lens', (&), (^.), (.~), (+~), (-~), lens, over )
-import Prelude                                                      ( (.), ($), Maybe(..), const, id, flip )
+import Prelude                                                      ( (.), ($), Maybe(..), const, id, flip, undefined )
 #if __GLASGOW_HASKELL__ >= 904
 import Data.Type.Equality
 #endif
@@ -2685,6 +2690,43 @@ generateSeq n f = toSeq (Z :. Split) (generate (index1 n) (f . unindex1))
 emptyArray :: (Shape sh, Elt e) => Acc (Array sh e)
 emptyArray = fill (constant empty) undef
 
+-- Bag functions
+-- ------------------------
+
+bagFill :: Elt e => Exp Int -> Exp e -> Acc (Bag e)
+bagFill s c = arrayToBag $ fill (I1 s) c
+
+bagNull :: Elt e => Acc (Bag e) -> Exp Bool
+bagNull bag = bagSize bag == 0
+
+emptyBag :: Elt e => Acc (Bag e)
+emptyBag = arrayToBag $ use $ fromList (Z :. 0) []
+
+bagAll :: (Elt e)
+       => (Exp e -> Exp Bool)
+       -> Acc (Bag e)
+       -> Acc (Array Z Bool)
+bagAll f = bagAnd . bagMap f
+
+bagAny :: (Elt e)
+       => (Exp e -> Exp Bool)
+       -> Acc (Bag e)
+       -> Acc (Array Z Bool)
+bagAny f = bagOr . bagMap f
+
+bagAnd :: Acc (Bag Bool)
+       -> Acc (Scalar Bool)
+bagAnd = bagFold (&&) True_
+
+bagOr :: Acc (Bag Bool)
+      -> Acc (Scalar Bool)
+bagOr = bagFold (||) False_
+
+cartesian :: (Elt a, Elt b)
+          => Acc (Bag a)
+          -> Acc (Bag b)
+          -> Acc (Bag (a, b))
+cartesian = cartesianWith T2
 
 -- Lenses
 -- ------

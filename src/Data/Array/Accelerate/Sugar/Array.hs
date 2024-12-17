@@ -306,6 +306,15 @@ instance (Shape sh, Elt e) => Arrays (Array sh e) where
   fromArr (Array arr) = arr
   toArr               = Array
 
+newtype Bag e = Bag (R.Array (EltR DIM1) (EltR e))
+  deriving Typeable
+
+instance (Elt e) => Arrays (Bag e) where
+  type ArraysR (Bag e) = R.Array (EltR DIM1) (EltR e)
+  arraysR = R.arraysRarray (shapeR @DIM1) (eltR @e)
+  fromArr (Bag arr) = arr
+  toArr             = Bag
+
 #ifndef __GHCIDE__
 
 runQ $ do

@@ -638,7 +638,7 @@ buildAwhile io step initial next =
     construct = \k env postponed cont ->
       placePostponed postponed env
         -- TODO: Decide whether this Awhile should become an AwhileSeq
-        $ if True {- awhileHeight .. > 1 -} then
+        $ if False {- awhileHeight .. > 1 -} then
             let
               env' = env `BPush` IResolved `BPush` INone
               k' = weakenSucc' $ weakenSucc' k

@@ -375,6 +375,13 @@ convertSharingAcc config alyt aenv (ScopedAcc lams (AccSharing _ preAcc))
                         (cvtA acc1)
                         (convertSharingBoundary config alyt aenv' shr bndy2)
                         (cvtA acc2)
+      BFold tp f e acc            -> AST.BFold (cvtF2 tp tp f) (cvtE <$> e) (cvtA acc)
+      CartesianWith t1 t2 t3 f acc1 acc2
+                                  -> AST.CartesianWith t3 (cvtF2 t1 t2 f) (cvtA acc1) (cvtA acc2)
+      BFilter tp f acc            -> AST.BFilter tp (cvtF1 tp f) (cvtA acc)
+      BIntersect tp acc1 acc2     -> AST.BIntersect tp (cvtA acc1) (cvtA acc2)
+      BUnion tp acc1 acc2         -> AST.BUnion tp (cvtA acc1) (cvtA acc2)
+      BSubtract tp acc1 acc2      -> AST.BSubtract tp (cvtA acc1) (cvtA acc2)
       -- Collect seq -> AST.Collect (convertSharingSeq config alyt EmptyLayout aenv' [] seq)
 
 {--
@@ -1587,6 +1594,16 @@ makeOccMapSharingAcc config accOccMap = traverseAcc
                                              (acc2', h5) <- traverseAcc lvl acc2
                                              return (Stencil2 s1 s2 tp f' bnd1' acc1' bnd2' acc2',
                                                      h1 `max` h2 `max` h3 `max` h4 `max` h5 + 1)
+            BFold tp f e acc            -> travF2MEA (BFold tp) tp tp f e acc
+            CartesianWith t1 t2 t3 f acc1 acc2
+                                        -> travF2A2 (CartesianWith t1 t2 t3) t1 t2 f acc1 acc2
+            BFilter tp f acc            -> do
+                                             (f'  , h1) <- traverseFun1 lvl tp f
+                                             (acc', h2) <- traverseAcc lvl acc
+                                             return (BFilter tp f' acc', h1 `max` h2 + 1)
+            BIntersect tp acc1 acc2     -> travA2 (BIntersect tp) tp acc1 acc2
+            BUnion tp acc1 acc2         -> travA2 (BUnion tp) tp acc1 acc2
+            BSubtract tp acc1 acc2      -> travA2 (BSubtract tp) tp acc1 acc2
             -- Collect s                   -> do
             --                                  (s', h) <- traverseSeq lvl s
             --                                  return (Collect s', h + 1)
@@ -1601,6 +1618,19 @@ makeOccMapSharingAcc config accOccMap = traverseAcc
           = do
               (acc', h) <- traverseAcc lvl acc
               return (c acc', h + 1)
+        
+        travA2
+            :: HasCallStack
+            => (UnscopedAcc arrs1 -> UnscopedAcc arrs2 -> PreSmartAcc UnscopedAcc RootExp arrs)
+            -> TypeR a
+            -> SmartAcc arrs1
+            -> SmartAcc arrs2
+            -> IO (PreSmartAcc UnscopedAcc RootExp arrs, Int)
+        travA2 c tp acc1 acc2
+          = do
+              (acc1', h1) <- traverseAcc lvl acc1
+              (acc2', h2) <- traverseAcc lvl acc2
+              return (c acc1' acc2', h1 `max` h2 + 1)
 
         travEA :: HasCallStack
                => (RootExp b -> UnscopedAcc arrs' -> PreSmartAcc UnscopedAcc RootExp arrs)
@@ -2459,6 +2489,17 @@ determineScopesSharingAcc config accOccMap = scopesAcc
                                      in
                                      reconstruct (Stencil2 s1 s2 tp st' bnd1' acc1' bnd2' acc2')
                                        (accCount1 +++ accCount2 +++ accCount3 +++ accCount4 +++ accCount5)
+          BFold tp f z acc        -> travF2MEA (BFold tp) f z acc
+          CartesianWith t1 t2 t3 f acc1 acc2
+                                  -> travF2A2 (CartesianWith t1 t2 t3) f acc1 acc2
+          BFilter tp f acc        -> let
+                                       (f'  , accCount1) = scopesFun1 f
+                                       (acc', accCount2) = scopesAcc  acc
+                                     in
+                                     reconstruct (BFilter tp f' acc') (accCount1 +++ accCount2)
+          BIntersect tp acc1 acc2 -> travA2 (BIntersect tp) acc1 acc2
+          BUnion tp acc1 acc2     -> travA2 (BUnion tp) acc1 acc2
+          BSubtract tp acc1 acc2  -> travA2 (BSubtract tp) acc1 acc2
           -- Collect seq             -> let
           --                              (seq', accCount1) = scopesSeq seq
           --                            in
@@ -2520,6 +2561,18 @@ determineScopesSharingAcc config accOccMap = scopesAcc
             (acc1', accCount2) = scopesAcc  acc1
             (acc2', accCount3) = scopesAcc  acc2
 
+        travA2
+            :: HasCallStack
+            => (ScopedAcc arrs1 -> ScopedAcc arrs2 -> PreSmartAcc ScopedAcc ScopedExp arrs)
+            -> UnscopedAcc arrs1
+            -> UnscopedAcc arrs2
+            -> (ScopedAcc arrs, NodeCounts)
+        travA2 c acc1 acc2 = reconstruct (c acc1' acc2')
+                                             (accCount1 +++ accCount2)
+          where
+            (acc1', accCount1) = scopesAcc  acc1
+            (acc2', accCount2) = scopesAcc  acc2
+        
         travA :: HasCallStack
               => (ScopedAcc arrs' -> PreSmartAcc ScopedAcc ScopedExp arrs)
               -> UnscopedAcc arrs'

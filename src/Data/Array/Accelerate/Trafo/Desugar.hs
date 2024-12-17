@@ -42,6 +42,8 @@ import Data.Array.Accelerate.Error
 import Data.Kind
 import Data.Maybe (isJust)
 
+import Debug.Trace
+
 type a $ b = a b
 infixr 0 $
 
@@ -317,6 +319,161 @@ class NFData' op => DesugarAcc (op :: Type -> Type) where
             )
           $ alet (LeftHandSideWildcard TupRunit) (mkBackpermute argG argTmp $ weaken k out2)
           $ Return TupRunit
+
+  mkBFold       :: Arg env (Fun' (e -> e -> e))
+                -> Maybe (Arg env (Exp' e))
+                -> Arg env (In  DIM1 e)
+                -> Arg env (Out DIM0 e)
+                -> OperationAcc op env ()
+  mkBFold = mkFold
+
+  mkCartesian :: Arg env (Fun' (e1 -> e2 -> e3))
+              -> Arg env (In  DIM1 e1)
+              -> Arg env (In  DIM1 e2)
+              -> Arg env (Out DIM1 e3)
+              -> OperationAcc op env ()
+  mkCartesian (ArgFun f') (ArgArray _ (ArrayR _ t1) _ bf1) (ArgArray _ (ArrayR _ t2) (TupRpair _ sh2) bf2) output
+    | Lam lhs1 (Lam lhs2 (Body f)) <- weakenE (weakenSucc weakenId) f'
+    , g <- 
+        Lam (LeftHandSidePair LeftHandSideUnit $ LeftHandSideSingle $ scalarTypeInt) 
+          $ Body 
+          $ Let lhs1 (Let (LeftHandSideSingle scalarTypeInt)
+            (mkBinary (PrimIDiv TypeInt) (Evar $ Var scalarTypeInt ZeroIdx) (paramsIn (TupRsingle scalarTypeInt) sh2)) 
+            $ linearIndex t1 bf1 $ Var scalarTypeInt ZeroIdx)
+          $ Let lhs2 (Let (LeftHandSideSingle scalarTypeInt) 
+            (mkBinary (PrimMod  TypeInt) (Evar $ Var scalarTypeInt (weaken (weakenWithLHS lhs1) ZeroIdx)) (paramsIn (TupRsingle scalarTypeInt) sh2)) 
+            $ linearIndex t2 bf2 $ Var scalarTypeInt ZeroIdx) f
+      = mkGenerate (ArgFun g) output
+  
+  mkBFilter     :: Arg env (Fun' (t -> PrimBool))
+                -> Arg env (In DIM1 t)
+                -> OperationAcc op env (DesugaredArrays (Array DIM1 t))
+  mkBFilter (ArgFun f@(Lam flhs _)) input@(ArgArray In (ArrayR (ShapeRsnoc ShapeRz) tp) (TupRpair TupRunit s) _) 
+    | DeclareVars lhs1  k1  value1  <- declareVars $ buffersR (TupRsingle scalarTypeWord8)
+    , DeclareVars lhs2  k2  value2  <- declareVars $ buffersR tp
+    = let
+        argMapFun = ArgFun (mapArrayInstrFun (weaken k1) f) -- weakened predicate
+
+        sh1  = TupRpair TupRunit $ weakenVars k1 s
+        sh2  = TupRpair TupRunit $ TupRsingle $ Var (GroundRscalar scalarTypeInt) $ weaken k2 ZeroIdx 
+        
+        argMapIn  = weaken k1 input
+        argMapOut = ArgArray Out (ArrayR (ShapeRsnoc ShapeRz) (TupRsingle scalarTypeWord8)) sh1 (value1 weakenId)
+        argComp1  = ArgArray In  (ArrayR (ShapeRsnoc ShapeRz) (TupRsingle scalarTypeWord8)) sh1 (value1 weakenId)
+        argComp2  = weaken k1 input
+      in
+        aletUnique lhs1 (desugarAlloc (ArrayR (ShapeRsnoc ShapeRz) (TupRsingle scalarTypeWord8)) (fromGrounds (TupRpair TupRunit s)))
+          -- calculate bool array
+          $ alet (LeftHandSideWildcard TupRunit) (mkMap argMapFun argMapIn argMapOut)
+          $ alet (LeftHandSidePair (LeftHandSidePair (LeftHandSideWildcard TupRunit) $ LeftHandSideSingle $ GroundRscalar scalarTypeInt) lhs2) (mkBCompact argComp1 argComp2)
+          $ Return (sh2 `TupRpair` value2 weakenId)
+
+  mkBIntersect :: Arg env (In DIM1 t)
+               -> Arg env (In DIM1 t)
+               -> OperationAcc op env (DesugaredArrays (Array DIM1 t))
+  mkBIntersect input1@(ArgArray In (ArrayR (ShapeRsnoc ShapeRz) tp) sh1@(TupRpair TupRunit s1) _) input2@(ArgArray In (ArrayR (ShapeRsnoc ShapeRz) _) sh2@(TupRpair TupRunit s2) _)
+    | DeclareVars lhs1 k1 value1 <- declareVars $ buffersR (TupRpair tp tp)
+    , DeclareVars lhs2 k2 value2 <- declareVars $ buffersR (TupRpair tp tp)
+    , DeclareVars lhs3 k3 value3 <- declareVars $ buffersR tp
+    , DeclareVars tplhs1 tpk1 tpvalue1 <- declareVars tp
+    , DeclareVars tplhs2 tpk2 tpvalue2 <- declareVars tp
+    , DeclareVars tplhs3 tpk3 tpvalue3 <- declareVars (TupRpair tp tp)
+    , DeclareVars tplhs4 tpk4 tpvalue4 <- declareVars tp
+    , DeclareVars tplhs5 tpk5 tpvalue5 <- declareVars tp
+    , DeclareVars tplhs6 tpk6 tpvalue6 <- declareVars (TupRpair tp tp)
+    , DeclareVars tplhs7 tpk7 tpvalue7 <- declareVars tp
+    , DeclareVars tplhs8 tpk8 tpvalue8 <- declareVars tp
+    = let
+        shCrtOut = TupRpair TupRunit $ TupRsingle $ Var (GroundRscalar scalarTypeInt) $ weaken k1 ZeroIdx
+        shMapIn  = TupRpair TupRunit $ TupRsingle $ Var (GroundRscalar scalarTypeInt) $ weaken (k3 .> k2) ZeroIdx
+        argCF    = ArgFun $ Lam tplhs1 $ Lam tplhs2 $ Body $ Pair (expVars (tpvalue1 tpk2)) (expVars (tpvalue2 weakenId)) -- pair
+        argFF    = ArgFun $ Lam tplhs3 $ Body $ Let (LeftHandSidePair tplhs4 tplhs5) (expVars (tpvalue3 weakenId)) $ varsEq (tpvalue4 tpk5) (tpvalue5 weakenId) -- fst == snd
+        argMF    = ArgFun $ Lam tplhs6 $ Body $ Let (LeftHandSidePair tplhs7 tplhs8) (expVars (tpvalue6 weakenId)) (expVars $ tpvalue7 tpk8) -- fst
+        argCrtOut = ArgArray Out (ArrayR (ShapeRsnoc ShapeRz) (TupRpair tp tp)) shCrtOut (value1 weakenId)
+        argFtrIn  = ArgArray In  (ArrayR (ShapeRsnoc ShapeRz) (TupRpair tp tp)) shCrtOut (value1 weakenId)
+        argMapIn  = ArgArray In  (ArrayR (ShapeRsnoc ShapeRz) (TupRpair tp tp)) shMapIn  (value2 k3)
+        argMapOut = ArgArray Out (ArrayR (ShapeRsnoc ShapeRz) tp)               shMapIn  (value3 weakenId)
+      in
+        alet (LeftHandSideSingle $ GroundRscalar scalarTypeInt)
+             (Compute $ (mkBinary (PrimMul numType) (paramsIn (TupRsingle scalarTypeInt) s1) (paramsIn (TupRsingle scalarTypeInt) s2) ))
+          $ aletUnique lhs1 (desugarAlloc (ArrayR (ShapeRsnoc ShapeRz) (TupRpair tp tp)) (TupRpair TupRunit $ TupRsingle $ Var scalarTypeInt ZeroIdx))
+          $ alet (LeftHandSideWildcard TupRunit) (mkCartesian argCF (weaken (k1 .> weakenSucc weakenId) input1) (weaken (k1 .> weakenSucc weakenId) input2) argCrtOut)
+          $ alet (LeftHandSidePair (LeftHandSidePair (LeftHandSideWildcard TupRunit) $ LeftHandSideSingle $ GroundRscalar scalarTypeInt) lhs2) 
+                 (mkBFilter argFF argFtrIn)
+          $ aletUnique lhs3 (desugarAlloc (ArrayR (ShapeRsnoc ShapeRz) tp) (TupRpair TupRunit $ TupRsingle $ Var scalarTypeInt $ weaken k2 ZeroIdx))
+          $ alet (LeftHandSideWildcard TupRunit) (mkMap argMF argMapIn argMapOut)
+          $ Return (shMapIn `TupRpair` value3 weakenId)
+
+  mkBUnion     :: Arg env (In  DIM1 t)
+               -> Arg env (In  DIM1 t)
+               -> OperationAcc op env (DesugaredArrays (Array DIM1 t))
+  mkBUnion (ArgArray _ (ArrayR _ tp) (TupRpair TupRunit s1) b1) (ArgArray _ _ (TupRpair TupRunit s2) b2)
+    | DeclareVars lhs k value <- declareVars $ buffersR tp
+    , g <- mapArrayInstrFun (weaken (k .> weakenSucc weakenId)) $
+        Lam (LeftHandSidePair LeftHandSideUnit $ LeftHandSideSingle $ scalarTypeInt)
+          $ Body $ Cond (mkBinary (PrimLt (NumSingleType numType)) (Evar (Var scalarTypeInt ZeroIdx)) (paramsIn (TupRsingle scalarTypeInt) s1)) 
+                        (linearIndex tp b1 (Var scalarTypeInt ZeroIdx))
+                        (Let (LeftHandSideSingle $ scalarTypeInt) 
+                             (mkBinary (PrimSub numType) (Evar $ Var scalarTypeInt ZeroIdx) (paramsIn (TupRsingle scalarTypeInt) s1)) 
+                             (linearIndex tp b2 (Var scalarTypeInt ZeroIdx)))
+      = let 
+          sh  = TupRpair TupRunit $ TupRsingle $ Var (GroundRscalar scalarTypeInt) $ weaken k ZeroIdx
+          arg = ArgArray Out (ArrayR (ShapeRsnoc ShapeRz) tp) sh (value weakenId)
+        in 
+          alet (LeftHandSideSingle $ GroundRscalar scalarTypeInt)
+               (Compute $ (mkBinary (PrimAdd numType) (paramsIn (TupRsingle scalarTypeInt) s1) (paramsIn (TupRsingle scalarTypeInt) s2)))
+            $ aletUnique lhs (desugarAlloc (ArrayR (ShapeRsnoc ShapeRz) tp) (TupRpair TupRunit $ TupRsingle $ Var scalarTypeInt ZeroIdx)) 
+            $ alet (LeftHandSideWildcard TupRunit) (mkGenerate (ArgFun g) arg)
+            $ Return (sh `TupRpair` value weakenId)
+
+  mkBSubtract :: Arg env (In DIM1 t)
+              -> Arg env (In DIM1 t)
+              -> OperationAcc op env (DesugaredArrays (Array DIM1 t))
+  mkBSubtract input1@(ArgArray _ (ArrayR _ tp) (TupRpair TupRunit s1) _) input2@(ArgArray _ _ (TupRpair TupRunit s2) _)
+    | DeclareVars lhs1 k1 value1 <- declareVars $ buffersR tp
+    , DeclareVars lhs2 k2 value2 <- declareVars $ buffersR tp
+    , DeclareVars lhs3 k3 value3 <- declareVars $ buffersR (TupRsingle scalarTypeWord8)
+    , DeclareVars lhs4 k4 value4 <- declareVars $ buffersR (TupRsingle scalarTypeWord8)
+    , DeclareVars lhs5 k5 value5 <- declareVars $ buffersR tp
+    , DeclareVars tplhs1 tpk1 tpvalue1 <- declareVars tp
+    , DeclareVars tplhs2 tpk2 tpvalue2 <- declareVars tp
+    = let
+        sh1     = TupRpair (TupRpair TupRunit (weakenVars k1 s1)) (weakenVars k1 s2)
+        sh2     = TupRpair (TupRpair TupRunit (weakenVars (k2 .> k1) s1)) (weakenVars (k2 .> k1) s2)
+        sh3     = TupRpair (TupRpair TupRunit (weakenVars (k3 .> k2 .> k1) s1)) (weakenVars (k3 .> k2 .> k1) s2)
+        sh4     = TupRpair (TupRpair TupRunit (weakenVars (k4 .> k3 .> k2 .> k1) s1)) (weakenVars (k4 .> k3 .> k2 .> k1) s2)
+        sh      = TupRpair TupRunit $ TupRsingle $ Var (GroundRscalar scalarTypeInt) $ weaken k5 ZeroIdx
+        argFun1 = ArgFun 
+                    $ Lam (LeftHandSidePair (LeftHandSidePair LeftHandSideUnit $ LeftHandSideSingle scalarTypeInt) (LeftHandSideSingle scalarTypeInt))
+                    $ Body $ Pair Nil (Evar $ Var scalarTypeInt ZeroIdx)
+        argFun2 = ArgFun
+                    $ Lam (LeftHandSidePair (LeftHandSidePair LeftHandSideUnit $ LeftHandSideSingle scalarTypeInt) (LeftHandSideSingle scalarTypeInt))
+                    $ Body $ Pair Nil (Evar $ Var scalarTypeInt $ weaken (weakenSucc weakenId) ZeroIdx)        
+        argFunZip  = ArgFun $ Lam tplhs1 $ Lam tplhs2 $ Body $ PrimApp PrimLNot $ varsEq (tpvalue1 tpk2) (tpvalue2 weakenId)
+        argFunFold = ArgFun 
+                      $ Lam (LeftHandSideSingle scalarTypeWord8)
+                      $ Lam (LeftHandSideSingle scalarTypeWord8) 
+                      $ Body $ mkBinary PrimLAnd (Evar $ Var scalarTypeWord8 ZeroIdx) (Evar $ Var scalarTypeWord8 $ weaken (weakenSucc weakenId) ZeroIdx)
+        argPerm1   = ArgArray Out (ArrayR (ShapeRsnoc $ ShapeRsnoc ShapeRz) tp) sh1 (value1 weakenId)
+        argPerm2   = ArgArray Out (ArrayR (ShapeRsnoc $ ShapeRsnoc ShapeRz) tp) sh2 (value2 weakenId)
+        argZip1    = ArgArray In  (ArrayR (ShapeRsnoc $ ShapeRsnoc ShapeRz) tp) sh3 (value1 (k3 .> k2)) 
+        argZip2    = ArgArray In  (ArrayR (ShapeRsnoc $ ShapeRsnoc ShapeRz) tp) sh3 (value2 k3) 
+        argZipOut  = ArgArray Out (ArrayR (ShapeRsnoc $ ShapeRsnoc ShapeRz) (TupRsingle scalarTypeWord8)) sh3 (value3 weakenId)
+        argFoldExp = ArgExp $ Const scalarType 1
+        argFoldIn  = ArgArray In  (ArrayR (ShapeRsnoc $ ShapeRsnoc ShapeRz) (TupRsingle scalarTypeWord8)) sh4 (value3 k4)
+        argFoldOut = ArgArray Out (ArrayR (ShapeRsnoc ShapeRz) (TupRsingle scalarTypeWord8)) (TupRpair TupRunit (weakenVars (k4 .> k3 .> k2 .> k1) s1)) (value4 weakenId)
+        argCmpIn   = ArgArray In  (ArrayR (ShapeRsnoc ShapeRz) (TupRsingle scalarTypeWord8)) (TupRpair TupRunit (weakenVars (k4 .> k3 .> k2 .> k1) s1)) (value4 weakenId)
+      in
+        aletUnique lhs1 (desugarAlloc (ArrayR (ShapeRsnoc $ ShapeRsnoc ShapeRz) tp) (fromGrounds (TupRpair (TupRpair TupRunit s1) s2)))
+          $ alet (LeftHandSideWildcard TupRunit) (mkBackpermute argFun1 (weaken k1 input2) argPerm1)
+          $ aletUnique lhs2 (desugarAlloc (ArrayR (ShapeRsnoc $ ShapeRsnoc ShapeRz) tp) (fromGrounds sh1))
+          $ alet (LeftHandSideWildcard TupRunit) (mkBackpermute argFun2 (weaken (k2 .> k1) input1) argPerm2)
+          $ aletUnique lhs3 (desugarAlloc (ArrayR (ShapeRsnoc $ ShapeRsnoc ShapeRz) (TupRsingle scalarTypeWord8)) (fromGrounds sh2))
+          $ alet (LeftHandSideWildcard TupRunit) (mkZipWith argFunZip argZip1 argZip2 argZipOut)
+          $ aletUnique lhs4 (desugarAlloc (ArrayR (ShapeRsnoc ShapeRz) (TupRsingle scalarTypeWord8)) (fromGrounds $ TupRpair TupRunit (weakenVars (k3 .> k2 .> k1) s1)))
+          $ alet (LeftHandSideWildcard TupRunit) (mkFold argFunFold (Just argFoldExp) argFoldIn argFoldOut)
+          $ alet (LeftHandSidePair (LeftHandSidePair (LeftHandSideWildcard TupRunit) $ LeftHandSideSingle $ GroundRscalar scalarTypeInt) lhs5) (mkBCompact argCmpIn (weaken (k4 .> k3 .> k2 .> k1) input1))
+          $ Return (sh `TupRpair` value5 weakenId)
 
   mkForeign     :: Foreign asm
                 => ArraysR bs
@@ -595,6 +752,7 @@ desugarOpenAcc env = travA
                   $ aletUnique lhsOut (desugarAlloc (ArrayR shr tp) (valueSh weakenId))
                   $ alet LeftHandSideUnit (mkZipWith argF argIn1 argIn2 argOut)
                   $ Return (sh `TupRpair` valueOut weakenId)
+      
       Named.Slice sliceIx a slix
         | ArrayR shr tp <- Named.arrayR a
         , slr <- sliceShapeR sliceIx
@@ -832,6 +990,122 @@ desugarOpenAcc env = travA
               $ aletUnique lhsOut (desugarAlloc (ArrayR shr tp3) (valueSh weakenId))
               $ alet (LeftHandSideWildcard TupRunit) (mkStencil2 sr1 sr2 argF b1' argIn1 b2' argIn2 argOut)
               $ Return (sh `TupRpair` valueOut weakenId)
+
+      Named.BFold f def a
+        | ArrayR (ShapeRsnoc ShapeRz) tp <- Named.arrayR a
+        , DeclareVars lhsIn  kIn  valueIn  <- declareVars $ buffersR tp
+        , DeclareVars lhsOut kOut valueOut <- declareVars $ buffersR tp -> 
+          let
+            shIn   = TupRpair TupRunit $ TupRsingle $ Var (GroundRscalar scalarTypeInt) $ weaken (kOut .> kIn) ZeroIdx
+            shOut  = case shIn of
+              TupRpair sh _ -> sh
+              TupRsingle _  -> error "Impossible pair"
+            k = kOut .> kIn .> weakenSucc weakenId
+            argF   = ArgFun $ desugarFun (weakenBEnv k env) f
+            argDef = fmap (ArgExp . desugarExp (weakenBEnv k env)) def
+            argIn  = ArgArray In  (ArrayR (ShapeRsnoc ShapeRz) tp) shIn  (valueIn  kOut)
+            argOut = ArgArray Out (ArrayR ShapeRz              tp) shOut (valueOut weakenId)
+          in
+            alet (LeftHandSidePair (LeftHandSidePair (LeftHandSideWildcard TupRunit) $ LeftHandSideSingle $ GroundRscalar scalarTypeInt) lhsIn) (travA a)
+              $ aletUnique lhsOut (desugarAlloc (ArrayR ShapeRz tp) TupRunit)
+              $ alet (LeftHandSideWildcard TupRunit) (mkBFold argF argDef argIn argOut)
+              $ Return (shOut `TupRpair` valueOut weakenId)
+
+      Named.CartesianWith tp f a1 a2
+        | ArrayR (ShapeRsnoc ShapeRz) t1 <- Named.arrayR a1
+        , ArrayR (ShapeRsnoc ShapeRz) t2 <- Named.arrayR a2
+        , DeclareVars lhsIn1  kIn1  valueIn1  <- declareVars $ buffersR t1
+        , DeclareVars lhsIn2  kIn2  valueIn2  <- declareVars $ buffersR t2
+        , DeclareVars lhsOut  kOut  valueOut  <- declareVars $ buffersR tp ->
+          let
+            sh1     = TupRpair TupRunit $ TupRsingle $ Var (GroundRscalar scalarTypeInt) $ weaken (kOut .> weakenSucc weakenId .> kIn2 .> weakenSucc weakenId .> kIn1) ZeroIdx
+            sh2     = TupRpair TupRunit $ TupRsingle $ Var (GroundRscalar scalarTypeInt) $ weaken (kOut .> weakenSucc weakenId .> kIn2) ZeroIdx
+            sh      = TupRpair TupRunit $ TupRsingle $ Var (GroundRscalar scalarTypeInt) $ weaken (kOut) ZeroIdx
+            argF    = ArgFun $ desugarFun (weakenBEnv (kOut .> weakenSucc weakenId .> kIn2 .> weakenSucc weakenId .> kIn1 .> weakenSucc weakenId) env) f
+            argIn1  = ArgArray In  (ArrayR (ShapeRsnoc ShapeRz) t1) sh1  (valueIn1 $ kOut .> weakenSucc weakenId .> kIn2 .> weakenSucc weakenId)
+            argIn2  = ArgArray In  (ArrayR (ShapeRsnoc ShapeRz) t2) sh2  (valueIn2 $ kOut .> weakenSucc weakenId)
+            argOut  = ArgArray Out (ArrayR (ShapeRsnoc ShapeRz) tp) sh   (valueOut weakenId)
+          in
+            alet (LeftHandSidePair (LeftHandSidePair (LeftHandSideWildcard TupRunit) $ LeftHandSideSingle $ GroundRscalar scalarTypeInt) lhsIn1) (travA a1)
+              $ alet (LeftHandSidePair (LeftHandSidePair (LeftHandSideWildcard TupRunit) $ LeftHandSideSingle $ GroundRscalar scalarTypeInt) lhsIn2) 
+                     (desugarOpenAcc (weakenBEnv (kIn1 .> weakenSucc weakenId) env) a2)
+              $ alet (LeftHandSideSingle $ GroundRscalar scalarTypeInt)
+                     (Compute $ (mkBinary (PrimMul numType) (ArrayInstr (Parameter $ Var scalarType $ weaken kIn2 ZeroIdx) Nil) (ArrayInstr (Parameter $ Var scalarType $ weaken (kIn2 .> weakenSucc weakenId .> kIn1) ZeroIdx) Nil) ))
+              $ aletUnique lhsOut (desugarAlloc (ArrayR (ShapeRsnoc ShapeRz) tp) (TupRpair TupRunit $ TupRsingle $ Var scalarTypeInt ZeroIdx))
+              $ alet       (LeftHandSideWildcard TupRunit) (mkCartesian argF argIn1 argIn2 argOut)
+              $ Return     (sh `TupRpair` valueOut weakenId)
+
+      Named.BFilter tp f a
+        | ArrayR (ShapeRsnoc ShapeRz) tp <- Named.arrayR a
+        , DeclareVars lhsIn  kIn  valueIn  <- declareVars $ buffersR tp
+        , DeclareVars lhsOut kOut valueOut <- declareVars $ buffersR tp ->
+          let
+            shIn   = TupRpair TupRunit $ TupRsingle $ Var (GroundRscalar scalarTypeInt) $ weaken (kIn) ZeroIdx
+            shOut  = TupRpair TupRunit $ TupRsingle $ Var (GroundRscalar scalarTypeInt) $ weaken (kOut) ZeroIdx
+            argF   = ArgFun $ desugarFun (weakenBEnv (kIn .> weakenSucc weakenId) env) f
+            argIn  = ArgArray In (ArrayR (ShapeRsnoc ShapeRz) tp) shIn (valueIn weakenId)
+          in
+            alet (LeftHandSidePair (LeftHandSidePair (LeftHandSideWildcard TupRunit) $ LeftHandSideSingle $ GroundRscalar scalarTypeInt) lhsIn) (travA a)
+              $ alet (LeftHandSidePair (LeftHandSidePair (LeftHandSideWildcard TupRunit) $ LeftHandSideSingle $ GroundRscalar scalarTypeInt) lhsOut) (mkBFilter argF argIn)
+              $ Return (shOut `TupRpair` valueOut weakenId)
+      
+      Named.BIntersect tp a1 a2
+        | ArrayR (ShapeRsnoc ShapeRz) tp <- Named.arrayR a1
+        , ArrayR (ShapeRsnoc ShapeRz) tp <- Named.arrayR a2
+        , DeclareVars lhsIn1 kIn1 valueIn1 <- declareVars $ buffersR tp
+        , DeclareVars lhsIn2 kIn2 valueIn2 <- declareVars $ buffersR tp
+        , DeclareVars lhsOut kOut valueOut <- declareVars $ buffersR tp ->
+          let
+            shIn1  = TupRpair TupRunit $ TupRsingle $ Var (GroundRscalar scalarTypeInt) $ weaken (kIn2 .> weakenSucc weakenId .> kIn1) ZeroIdx
+            shIn2  = TupRpair TupRunit $ TupRsingle $ Var (GroundRscalar scalarTypeInt) $ weaken (kIn2) ZeroIdx
+            shOut  = TupRpair TupRunit $ TupRsingle $ Var (GroundRscalar scalarTypeInt) $ weaken (kOut) ZeroIdx
+            argIn1 = ArgArray In (ArrayR (ShapeRsnoc ShapeRz) tp) shIn1 (valueIn1 (kIn2 .> weakenSucc weakenId))
+            argIn2 = ArgArray In (ArrayR (ShapeRsnoc ShapeRz) tp) shIn2 (valueIn2 weakenId)
+          in
+            alet (LeftHandSidePair (LeftHandSidePair (LeftHandSideWildcard TupRunit) $ LeftHandSideSingle $ GroundRscalar scalarTypeInt) lhsIn1) (travA a1)
+              $ alet (LeftHandSidePair (LeftHandSidePair (LeftHandSideWildcard TupRunit) $ LeftHandSideSingle $ GroundRscalar scalarTypeInt) lhsIn2) 
+                     (desugarOpenAcc (weakenBEnv (kIn1 .> weakenSucc weakenId) env) a2)
+              $ alet (LeftHandSidePair (LeftHandSidePair (LeftHandSideWildcard TupRunit) $ LeftHandSideSingle $ GroundRscalar scalarTypeInt) lhsOut) (mkBIntersect argIn1 argIn2)
+              $ Return (shOut `TupRpair` valueOut weakenId)
+
+      Named.BUnion tp a1 a2 
+        | ArrayR (ShapeRsnoc ShapeRz) t1 <- Named.arrayR a1
+        , ArrayR (ShapeRsnoc ShapeRz) t2 <- Named.arrayR a2
+        , DeclareVars lhsIn1  kIn1  valueIn1  <- declareVars $ buffersR t1
+        , DeclareVars lhsIn2  kIn2  valueIn2  <- declareVars $ buffersR t2
+        , DeclareVars lhsOut  kOut  valueOut  <- declareVars $ buffersR tp ->
+          let
+            sh1     = TupRpair TupRunit $ TupRsingle $ Var (GroundRscalar scalarTypeInt) $ weaken (kIn2 .> weakenSucc weakenId .> kIn1) ZeroIdx
+            sh2     = TupRpair TupRunit $ TupRsingle $ Var (GroundRscalar scalarTypeInt) $ weaken (kIn2) ZeroIdx
+            sh      = TupRpair TupRunit $ TupRsingle $ Var (GroundRscalar scalarTypeInt) $ weaken (kOut) ZeroIdx
+            argIn1  = ArgArray In  (ArrayR (ShapeRsnoc ShapeRz) t1) sh1  (valueIn1 $ kIn2 .> weakenSucc weakenId)
+            argIn2  = ArgArray In  (ArrayR (ShapeRsnoc ShapeRz) t2) sh2  (valueIn2 weakenId)
+          in
+            alet (LeftHandSidePair (LeftHandSidePair (LeftHandSideWildcard TupRunit) $ LeftHandSideSingle $ GroundRscalar scalarTypeInt) lhsIn1) (travA a1)
+              $ alet (LeftHandSidePair (LeftHandSidePair (LeftHandSideWildcard TupRunit) $ LeftHandSideSingle $ GroundRscalar scalarTypeInt) lhsIn2) 
+                     (desugarOpenAcc (weakenBEnv (kIn1 .> weakenSucc weakenId) env) a2)
+              $ alet (LeftHandSidePair (LeftHandSidePair (LeftHandSideWildcard TupRunit) $ LeftHandSideSingle $ GroundRscalar scalarTypeInt) lhsOut) (mkBUnion argIn1 argIn2)
+              $ Return (sh `TupRpair` valueOut weakenId)
+
+      Named.BSubtract tp a1 a2
+        | ArrayR (ShapeRsnoc ShapeRz) tp <- Named.arrayR a1
+        , ArrayR (ShapeRsnoc ShapeRz) tp <- Named.arrayR a2
+        , DeclareVars lhsIn1 kIn1 valueIn1 <- declareVars $ buffersR tp
+        , DeclareVars lhsIn2 kIn2 valueIn2 <- declareVars $ buffersR tp
+        , DeclareVars lhsOut kOut valueOut <- declareVars $ buffersR tp ->
+          let
+            shIn1  = TupRpair TupRunit $ TupRsingle $ Var (GroundRscalar scalarTypeInt) $ weaken (kIn2 .> weakenSucc weakenId .> kIn1) ZeroIdx
+            shIn2  = TupRpair TupRunit $ TupRsingle $ Var (GroundRscalar scalarTypeInt) $ weaken (kIn2) ZeroIdx
+            shOut  = TupRpair TupRunit $ TupRsingle $ Var (GroundRscalar scalarTypeInt) $ weaken (kOut) ZeroIdx
+            argIn1 = ArgArray In (ArrayR (ShapeRsnoc ShapeRz) tp) shIn1 (valueIn1 (kIn2 .> weakenSucc weakenId))
+            argIn2 = ArgArray In (ArrayR (ShapeRsnoc ShapeRz) tp) shIn2 (valueIn2 weakenId)
+          in
+            alet (LeftHandSidePair (LeftHandSidePair (LeftHandSideWildcard TupRunit) $ LeftHandSideSingle $ GroundRscalar scalarTypeInt) lhsIn1) (travA a1)
+              $ alet (LeftHandSidePair (LeftHandSidePair (LeftHandSideWildcard TupRunit) $ LeftHandSideSingle $ GroundRscalar scalarTypeInt) lhsIn2) 
+                     (desugarOpenAcc (weakenBEnv (kIn1 .> weakenSucc weakenId) env) a2)
+              $ alet (LeftHandSidePair (LeftHandSidePair (LeftHandSideWildcard TupRunit) $ LeftHandSideSingle $ GroundRscalar scalarTypeInt) lhsOut) (mkBSubtract argIn1 argIn2)
+              $ Return (shOut `TupRpair` valueOut weakenId)
+      
       Named.Atrace _ _ _ -> error "implement me"
 
 desugarAlloc :: forall benv op sh a. ArrayR (Array sh a) -> ExpVars benv sh -> OperationAcc op benv (Buffers a)
@@ -932,6 +1206,13 @@ desugarUnzip buffers lhs (TupRsingle (Var _ idx)) = case lookupVar buffers lhs i
 
 -- Utilities
 --
+
+varsEq :: ExpVars env t -> ExpVars env t -> PreOpenExp arr env PrimBool 
+varsEq TupRunit                                     TupRunit          = (Const scalarType 1)
+varsEq a1@(TupRsingle (Var (SingleScalarType t) _)) a2@(TupRsingle _) = mkBinary (PrimEq t) (expVars a1) (expVars a2)
+-- typeEq a1@(TupRsingle (Var (SingleVectorType t) _)) a2@(TupRsingle _) = mkBinary (PrimEq t) (expVars a1) (expVars a2)
+varsEq (TupRpair a1 b1)                             (TupRpair a2 b2)  = mkBinary (PrimLAnd) (varsEq a1 a2) (varsEq b1 b2)
+varsEq _                                             _                = (Const scalarType 0)
 
 index :: ArrayR (Array sh e) -> GroundVars benv sh -> GroundVars benv (Buffers e) -> OpenExp env benv sh -> OpenExp env benv e
 index (ArrayR shr tp) sh buffers ix = Let lhs (ToIndex shr (paramsIn (shapeType shr) sh) ix) $ linearIndex tp buffers $ Var int ZeroIdx
@@ -1280,6 +1561,59 @@ mkDefaultFoldSegFunction itp (ArgFun f) def (ArgArray _ (ArrayR shr tp) sh input
         $ Let (lhsE `LeftHandSidePair` LeftHandSideWildcard (TupRsingle scalarTypeInt)) (While cond step initial)
         $ expVars $ valueE weakenId
 
+-- this implementation assumes that both input arrays are the same size
+mkBCompact :: DesugarAcc op 
+           => Arg env (In DIM1 PrimBool)
+           -> Arg env (In DIM1 t)
+           -> OperationAcc op env (DesugaredArrays (Array DIM1 t))
+mkBCompact input1@(ArgArray In (ArrayR _ (TupRsingle scalarTypeWord8)) _ bf) input2@(ArgArray In (ArrayR _ tp) (TupRpair TupRunit s) _) -- = undefined
+    | DeclareVars lhs2 k2 value2 <- declareVars $ buffersR (TupRsingle scalarTypeInt)
+    , DeclareVars lhs3 k3 value3 <- declareVars $ buffersR (TupRsingle scalarTypeInt)
+    , DeclareVars lhs4 k4 value4 <- declareVars $ buffersR (TupRsingle scalarTypeInt)
+    , DeclareVars lhs5 k5 value5 <- declareVars $ buffersR tp
+    , DeclareVars shlhs1 shk1 shvalue1 <- declareVars tp
+    , DeclareVars shlhs2 shk2 shvalue2 <- declareVars tp
+    = let
+        argMapFun    = ArgFun 
+                        $ Lam (LeftHandSideSingle scalarTypeWord8) 
+                              (Body $ Cond (Evar (Var scalarTypeWord8 ZeroIdx)) (Const scalarType 1) (Const scalarType 0)) -- bool to int function
+        argScan'Fun  = ArgFun 
+                        $ Lam (LeftHandSideSingle scalarTypeInt) 
+                        $ Lam (LeftHandSideSingle scalarTypeInt) 
+                              (Body (mkBinary (PrimAdd numType) (Evar (Var scalarTypeInt ZeroIdx)) (Evar (Var scalarTypeInt (weaken (weakenSucc weakenId) ZeroIdx))))) -- plus function for scan
+        argPermFun1  = ArgFun 
+                        $ Lam shlhs1
+                        $ Lam shlhs2 (Body (expVars (shvalue1 shk2))) -- const
+        argPermFun2  = ArgFun
+                        $ Lam (LeftHandSidePair LeftHandSideUnit $ LeftHandSideSingle $ scalarTypeInt) 
+                              (Body $ Cond (mapArrayInstr (weaken (k5 .> weakenSucc weakenId .> k4 .> k3 .> k2)) (linearIndex (TupRsingle scalarTypeWord8) bf $ Var scalarTypeInt ZeroIdx)) 
+                                           (Pair (Const scalarType 1) (Pair Nil (Pair Nil $ (linearIndex (TupRsingle scalarTypeInt) (value3 (k5 .> weakenSucc weakenId .> k4)) $ Var scalarTypeInt ZeroIdx)))) 
+                                           (Pair (Const scalarType 0) (Pair Nil (Pair Nil $ Const scalarTypeInt (-1))))) 
+        sh1  = TupRpair TupRunit $ weakenVars k2 s
+        sh2  = TupRpair TupRunit $ weakenVars (k4 .> k3 .> k2) s
+        sh3  = TupRpair TupRunit $ TupRsingle $ Var (GroundRscalar scalarTypeInt) $ weaken k5 ZeroIdx 
+        argMapOut    = ArgArray Out (ArrayR (ShapeRsnoc ShapeRz) (TupRsingle scalarTypeInt)) sh1 (value2 weakenId)
+        argScan'In   = ArgArray In  (ArrayR (ShapeRsnoc ShapeRz) (TupRsingle scalarTypeInt)) sh2 (value2 (k4 .> k3))
+        argScan'Out1 = ArgArray Out (ArrayR (ShapeRsnoc ShapeRz) (TupRsingle scalarTypeInt)) sh2 (value3 k4)
+        argScan'Out2 = ArgArray Out (ArrayR ShapeRz              (TupRsingle scalarTypeInt)) TupRunit (value4 weakenId)
+        argPermMut   = ArgArray Mut (ArrayR (ShapeRsnoc ShapeRz) tp)                         sh3 (value5 weakenId)
+        argPermIn    = weaken (k5 .> weakenSucc weakenId .> k4 .> k3 .> k2) input2
+      in -- allocate space for int arrays
+        aletUnique lhs2 (desugarAlloc (ArrayR (ShapeRsnoc ShapeRz) (TupRsingle scalarTypeInt)) (fromGrounds (TupRpair TupRunit s)))
+          -- calculate int array
+          $ alet (LeftHandSideWildcard TupRunit) (mkMap argMapFun (weaken k2 input1) argMapOut)
+          -- allocate space for both scan' outputs
+          $ aletUnique lhs3 (desugarAlloc (ArrayR (ShapeRsnoc ShapeRz) (TupRsingle scalarTypeInt)) $ (fromGrounds (TupRpair TupRunit $ weakenVars k2 s)))
+          $ aletUnique lhs4 (desugarAlloc (ArrayR ShapeRz              (TupRsingle scalarTypeInt)) $ TupRunit)
+          -- calculate scan'
+          $ alet (LeftHandSideWildcard TupRunit) (mkScan' LeftToRight argScan'Fun (ArgExp $ Const scalarType 0) argScan'In argScan'Out1 argScan'Out2)
+          -- lookup 0 in scalar array
+          $ alet (LeftHandSideSingle $ GroundRscalar scalarTypeInt) (Compute $ ArrayInstr ((\(TupRsingle var) -> Index var) (value4 weakenId)) (Const scalarType 0))
+          -- make mut array
+          $ aletUnique lhs5 (desugarAlloc (ArrayR (ShapeRsnoc ShapeRz) tp) $ (TupRpair TupRunit $ TupRsingle $ Var scalarTypeInt ZeroIdx))
+          -- calculate permutation
+          $ alet (LeftHandSideWildcard TupRunit) (mkPermute argPermFun1 argPermMut argPermFun2 argPermIn)
+          $ Return (sh3 `TupRpair` value5 weakenId)
 
 uncurry' :: Fun env (a -> b -> c) -> Fun env ((a, b) -> c)
 uncurry' (Lam lhs1 (Lam lhs2 f)) = Lam (LeftHandSidePair lhs1 lhs2) f
