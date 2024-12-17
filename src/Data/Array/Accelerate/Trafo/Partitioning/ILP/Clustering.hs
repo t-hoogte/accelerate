@@ -25,7 +25,7 @@
 module Data.Array.Accelerate.Trafo.Partitioning.ILP.Clustering where
 
 import Data.Array.Accelerate.AST.LeftHandSide ( Exists(..), LeftHandSide (..) )
-import Data.Array.Accelerate.AST.Partitioned hiding (take', unfused)
+import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.Representation.Type
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph hiding (info)
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels hiding (ELabels)
@@ -34,7 +34,6 @@ import qualified Data.Map as M
 import Unsafe.Coerce (unsafeCoerce)
 import qualified Data.Graph as G
 import qualified Data.Set as S
-import Data.Array.Accelerate.AST.Operation
 import Data.Maybe (fromJust)
 import Data.Type.Equality ( type (:~:)(Refl) )
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Solve (ClusterLs (Execs, NonExec))
@@ -43,17 +42,9 @@ import Data.Array.Accelerate.AST.Environment (weakenWithLHS)
 import Prelude hiding ( take )
 import Lens.Micro (_1)
 import Lens.Micro.Extras (view)
-import Data.Array.Accelerate.Trafo.LiveVars (SubTupR(SubTupRkeep))
 import Data.Array.Accelerate.Representation.Array (ArrayR (ArrayR))
-import qualified Data.Functor.Const as C
-import Data.Bifunctor (first, second)
-import Data.Array.Accelerate.AST.Idx
-import Data.Array.Accelerate.Trafo.Operation.Substitution (weaken)
 import Data.Functor.Identity
-import Data.Array.Accelerate.Pretty.Exp (IdxF(..))
 import qualified Data.Tree as T
-import qualified Debug.Trace
-import GHC.Exts (SpecConstrAnnotation)
 import Data.Array.Accelerate.Representation.Shape (shapeType)
 
 -- "open research question"
@@ -71,10 +62,10 @@ Within each cluster (Labels), we do a topological sort using the edges in Graph
 Data.Graph (containers) has a nice topological sort.
 -}
 
-
-map !?? key = case map M.!? key of
+(!??) :: (Ord a1, Show a1) => M.Map a1 a2 -> a1 -> a2
+map' !?? key = case map' M.!? key of
   Just x -> x
-  Nothing -> error $ ("error: map with keys " <> show (M.keys map) <> " does not contain key " <> show key)
+  Nothing -> error $ ("error: map with keys " <> show (M.keys map') <> " does not contain key " <> show key)
 
 -- instance Show (Exists a) where
 --   show (Exists x) = "exis"
@@ -128,7 +119,7 @@ topSort singletons (Graph _ fedges fpedges) cluster construct = if singletons th
                                                               orders = S.map readOrderOf relevantEdges
                                                               ordersWithEdges = S.map (\o -> S.map (\(_:->b) -> (l,o,b)) $ S.filter (\e-> readOrderOf e == o) relevantEdges) orders
                                                           in ordersWithEdges) parents
-    nodes = S.map (,defaultBA @op) cluster <> S.map (\(x,y,z)-> (x,y)) parentsPlusEdges
+    nodes = S.map (,defaultBA @op) cluster <> S.map (\(x,y,_)-> (x,y)) parentsPlusEdges
     edges = S.union parentsPlusEdges $ S.map (\(a:->b) -> (a,defaultBA @op,b)) fedges
     (graph, getAdj, _) = buildGraph nodes
 

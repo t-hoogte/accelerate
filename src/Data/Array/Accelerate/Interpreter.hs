@@ -53,7 +53,7 @@ import Data.Array.Accelerate.Trafo.Desugar
 import qualified Data.Array.Accelerate.Debug.Internal as Debug
 import Data.Array.Accelerate.Representation.Array
 import Data.Array.Accelerate.Error
-import Data.Array.Accelerate.Analysis.Hash.Exp ( intHost, hashQ, encodeTupR, encodeIdx )
+import Data.Array.Accelerate.Analysis.Hash.Exp ( intHost, hashQ )
 import Data.Array.Accelerate.Analysis.Hash.Operation
 import Data.Array.Accelerate.Representation.Ground
 import Data.Array.Accelerate.Representation.Type
@@ -676,7 +676,7 @@ iterationsize :: Cluster InterpretOp args -> BackendArgs InterpretOp env args ->
 iterationsize (Op _ _) ArgsNil = 0
 iterationsize (Op _ _) ((BCA _ n) :>: args) = if n==0 then iterationsize (Op undefined undefined) args else n
 iterationsize (P.Fused f l r) b = 
-  let lsz = iterationsize l (left' (\(BCA f x) -> BCA f x) f b) 
+  let lsz = iterationsize l (left' (\_ (BCA f x) -> BCA f x) f b) 
   in if lsz == 0 
      then iterationsize r (right' (\_ (BCA f x)->BCA f x) (\(BCA f x)->BCA f x) f b) 
      else lsz
