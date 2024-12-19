@@ -59,7 +59,7 @@ import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (LabelledArgOp (..), B
 import Data.Array.Accelerate.Trafo.Operation.LiveVars
 import Data.Maybe (fromJust)
 import Data.Array.Accelerate.AST.Var (varsType)
-import Data.Array.Accelerate.Analysis.Match (matchShapeR)
+import Data.Array.Accelerate.Analysis.Match (matchShapeR, matchArrayR)
 
 
 
@@ -199,15 +199,40 @@ soaOut k (ArgArray Out _ _ _:>:args) (SOArgsCons soas soa) (Push env arg) = go s
     go :: SOA (Out sh e) appendto both -> f (Value sh e) -> Env f (OutArgs appendto) -> Env f (OutArgs both)
     go SOArgSingle v appendto = Push appendto v
     go (SOArgTup soar soal) v appendto = go soal (fst $ k v) $ go soar (snd $ k v) appendto
-soaOut k (_ :>: args) (SOArgsCons soas soa) env -- we match on 'ArgArray Out' above, so the unsafe calls are fine, because the arg is not an output
-  | Refl <- unsafeOutargslemma @args
-  , Refl <- unsafeSOAlemma soa = soaOut k args soas env
--- only use if the arg is not Out!
-unsafeOutargslemma :: (args' ~ (a -> args)) => OutArgs args' :~: OutArgs args
-unsafeOutargslemma = unsafeCoerce Refl
--- only use if the arg is not Out!
-unsafeSOAlemma :: SOA arg appendto result -> OutArgs appendto :~: OutArgs result
-unsafeSOAlemma = unsafeCoerce Refl
+soaOut k (arg :>: args) (SOArgsCons soas soa) env -- we match on 'ArgArray Out' above, so the unsafe calls are fine, because the arg is not an output
+  | Just Refl <- outArgsNotOut @args arg
+  , Just Refl <- soaArgNotOut soa arg = soaOut k args soas env
+  | otherwise = error "Out argument impossible"
+
+-- If 'a' is not an Out array, it returns the proof that OutArgs args' is equal to OutArgs args
+outArgsNotOut :: (args' ~ (a -> args)) => Arg env a -> Maybe (OutArgs args' :~: OutArgs args)
+outArgsNotOut (ArgVar _) = Just Refl
+outArgsNotOut (ArgExp _) = Just Refl
+outArgsNotOut (ArgFun _) = Just Refl
+outArgsNotOut (ArgArray In _ _ _) = Just Refl
+outArgsNotOut (ArgArray Mut _ _ _) = Just Refl
+outArgsNotOut (ArgArray Out _ _ _) = Nothing
+
+-- If 'arg' is not an Out array, it returns the proof that OutArgs appendto is equal to OutArgs result
+soaArgNotOut :: SOA arg appendto result -> Arg env arg -> Maybe (OutArgs appendto :~: OutArgs result)
+soaArgNotOut SOArgSingle arg = case arg of
+  ArgVar _ -> Just Refl
+  ArgExp _ -> Just Refl
+  ArgFun _ -> Just Refl
+  ArgArray In _ _ _ -> Just Refl
+  ArgArray Mut _ _ _ -> Just Refl
+  ArgArray Out _ _ _ -> Nothing
+soaArgNotOut soa (ArgArray Out _ _ _) = Nothing
+soaArgNotOut soa (ArgArray m _ _ _) = go m soa
+  where
+    go :: Modifier f -> SOA (f sh e) args args' -> Maybe (OutArgs args :~: OutArgs args')
+    go m (SOArgTup right left)
+      | Just Refl <- go m right
+      = go m left
+      | otherwise = Nothing
+    go In SOArgSingle = Just Refl
+    go Mut SOArgSingle = Just Refl
+    go Out _ = error "Out impossible. This is already catched in soaArgNotOut"
 
 soaIn :: forall f env args expanded. (forall aarrgg l r. Arg env (aarrgg (l,r)) -> f (InArg (aarrgg l)) -> f (InArg (aarrgg r)) -> f (InArg (aarrgg (l,r)))) -> Args env expanded -> SOAs args expanded -> Env f (InArgs expanded) -> Env f (InArgs args)
 soaIn _ ArgsNil SOArgsNil Empty = Empty
@@ -486,9 +511,12 @@ addright (ArgArray In  _ _ _) f = IntroI2 f
 addright (ArgArray Out _ _ _) f = IntroO2 f
 
 addboth :: Arg env l -> Arg env r -> Fusion left right args -> (forall arg. Fusion (l->left) (r->right) (arg -> args) -> result) -> result
--- unsafeCoerce convinces the type checker that l and r are on the same array (i.e. both working on the same element type)
-addboth (ArgArray In  _ _ _) (ArgArray In  _ _ _) f k = k $ unsafeCoerce $ Horizontal f
-addboth (ArgArray Out _ _ _) (ArgArray In  _ _ _) f k = k $ unsafeCoerce $ Diagonal f
+addboth (ArgArray In  r1 _ _) (ArgArray In  r2 _ _) f k
+  | Just Refl <- matchArrayR r1 r2 = k $ Horizontal f
+  | otherwise = error "types of horizontally fused arrays are different"
+addboth (ArgArray Out r1 _ _) (ArgArray In  r2 _ _) f k
+  | Just Refl <- matchArrayR r1 r2 = k $ Diagonal f
+  | otherwise = error "types of diagonally fused arrays are different"
 addboth (ArgArray Out _ _ _) (ArgArray Out _ _ _) _ _ = error "two producers of the same array"
 addboth (ArgArray In  _ _ _) (ArgArray Out _ _ _) _ _ = error "reverse vertical/diagonal"
 addboth _ _ _ _ = error "fusing non-arrays"
