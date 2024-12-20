@@ -114,7 +114,7 @@ makeBackendArg args env c b = go args c (defaultOuts args b) b
       backR = go (right f args) r (rightB args f outputs) (right' (const bcaid) bcaid f bs)
       backL = go (left  f args) l (backleft f backR outputs) (left' (const bcaid) f bs)
       in fuseBack f backL backR
-    go args (Op (SLV (SOp (SOAOp op soa) (SA sort unsort)) subargs) _l) outputs bs =
+    go args (SingleOp (Single op soa (SA sort unsort) subargs) _l) outputs bs =
         slv outToVar subargs 
       . sort 
       . mapArgs snd'
@@ -256,7 +256,7 @@ evalCluster c b args env ix = do
 
 evalOps :: forall op args env. (EvalOp op) => Index op -> Cluster op args -> BackendArgEnv op env (InArgs args) -> Args env args -> FEnv op env -> EvalMonad op (EmbedEnv op env (OutArgs args))
 evalOps ix c ba args env = case c of
-  Op (SLV (SOp (SOAOp op soas) (SA f g)) subargs) l 
+  SingleOp (Single op soas (SA f g) subargs) l
      -> slvOut args subargs 
       . outargs f (g $ slv' varout subargs args)
       . soaOut splitFromArg' (soaShrink combine soas $ g $ slv' varout subargs args) soas
@@ -420,7 +420,7 @@ instance TupRmonoid (Sh' op sh) where
 -- use this to check whether a singleton cluster is a generate, map, etc
 peekSingletonCluster :: (forall args'. op args' -> r) -> Cluster op args -> Maybe r
 peekSingletonCluster k = \case
-  Op (SLV (SOp (SOAOp op _) _) _) _ -> Just $ k op
+  SingleOp (Single op _ _ _) _ -> Just $ k op
   _ -> Nothing -- not a singleton cluster
 
 
@@ -432,7 +432,7 @@ applySingletonCluster :: forall op env args args' r
                        -> Args env args
                        -> r
 applySingletonCluster k c args = case c of
-  Op (SLV (SOp (SOAOp op soas) (SA _ unsort)) subargs) _ ->
+  SingleOp (Single op soas (SA _ unsort) subargs) _ ->
     unsafeCoerce @(op args' -> Args env args' -> r) @(op _ -> Args env _ -> r) 
       k 
       op 
@@ -449,7 +449,7 @@ applySingletonCluster' :: forall op env args args' f
                        -> Args env args
                        -> PreArgs f args
 applySingletonCluster' k f outvar' c args = case c of
-  Op (SLV (SOp (SOAOp op soas) (SA sort unsort)) subargs) _ ->
+  SingleOp (Single op soas (SA sort unsort) subargs) _ ->
     slv outvar' subargs $ sort $ soaExpand f soas $
       unsafeCoerce @(op args' -> Args env args' -> PreArgs f args') @(op _ -> Args env _ -> PreArgs f _) 
         k 

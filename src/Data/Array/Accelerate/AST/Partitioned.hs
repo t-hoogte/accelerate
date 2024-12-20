@@ -83,35 +83,10 @@ data SingleOp op args where
          -> SubArgs sorted live
          -> SingleOp op live
 
--- this pattern synonym translates between the 'new' ast (above) and the 'old' ast (below):
--- the first constructor of `Cluster` used to be called `Op` and contain an `SLVOp`.
--- todo: slowly change all use sites from the old to the new, and eventually retire the old and this pattern synonym.
-{-# COMPLETE Op, Fused #-}
-pattern Op :: SLVOp op args -> Label -> Cluster op args
-pattern Op slv l <- SingleOp (toOld -> slv) l where
-  Op (SLV (SOp (SOAOp op soas) sortedargs) subargs) l = SingleOp (Single op soas sortedargs subargs) l
-toOld :: SingleOp op args -> SLVOp op args
-toOld (Single op soas sortedargs subargs) = SLV (SOp (SOAOp op soas) sortedargs) subargs
-
-data SLVOp op args where
-  SLV :: SortedOp op big
-      -> SubArgs big small
-      -> SLVOp op small
-
-data SortedOp op args where
-  SOp :: SOAOp op args
-      -> SortedArgs args sorted
-      -> SortedOp op sorted
-
 data SortedArgs args sorted where
   SA :: (forall f. PreArgs f args -> PreArgs f sorted)
      -> (forall f. PreArgs f sorted -> PreArgs f args)
      -> SortedArgs args sorted
-
-data SOAOp op args where
-  SOAOp :: op args
-        -> SOAs args expanded
-        -> SOAOp op expanded
 
 data SOAs args expanded where
   SOArgsNil :: SOAs () ()
@@ -326,11 +301,8 @@ flattenCluster :: Cluster op args -> [Exists op]
 flattenCluster = (`go` [])
   where
     go :: Cluster op args -> [Exists op] -> [Exists op]
-    go (Op s _)      accum = extract s : accum
-    go (Fused _ a b) accum = go a $ go b accum
-
-    extract :: SLVOp op args -> Exists op
-    extract (SLV (SOp (SOAOp op _) _) _) = Exists op
+    go (SingleOp (Single op _ _ _) _) accum = Exists op : accum
+    go (Fused _ a b)                  accum = go a $ go b accum
 
 varsToShapeR :: Vars ScalarType g sh -> ShapeR sh
 varsToShapeR = typeRtoshapeR . varsType
@@ -524,7 +496,8 @@ addboth _ _ _ _ = error "fusing non-arrays"
 singleton :: MakesILP op => Label -> LabelledArgsOp op env args -> op args -> (forall args'. Clustered op args' -> r) -> r
 singleton l largs op k = mkSOAs (mapArgs (\(LOp a _ _) -> a) largs) $ \soas ->
   sortArgs (soaExpand splitLabelledArgs soas (unOpLabels' largs)) $ \sa@(SA sort _) slv ->
-    k $ Clustered (Op (SLV (SOp (SOAOp op soas) sa) slv) l) (mapArgs getClusterArg $ sort $ soaExpand splitLabelledArgsOp soas largs)
+-- (Single op soas sortedargs subargs) = SLV (SOp (SOAOp op soas) sortedargs) subargs
+    k $ Clustered (SingleOp (Single op soas sa slv) l) (mapArgs getClusterArg $ sort $ soaExpand splitLabelledArgsOp soas largs)
 -- (subargsId $ sort $ soaExpand splitLabelledArgsOp soas largs)
 
 sortArgs :: LabelledArgs env args -> (forall sorted. SortedArgs args sorted -> SubArgs sorted sorted -> r) -> r
@@ -597,13 +570,8 @@ instance SimplifyOperation (Clustered op)
 --         ShrunkOperation' cluster' args'' -> ShrunkOperation cluster' args''
 
 slvCluster :: Cluster op f -> SubArgs f f' -> Args env' f' -> Args env f -> ShrunkOperation' (Cluster op) env' f'
-slvCluster (Op op label) sub args' _
-  -- | ShrunkOperation' op' subargs <- undefined op sub args'
-  | op' <- slvSLVOp op sub
-  = ShrunkOperation' (Op op' label) args'
-  where
-    slvSLVOp :: SLVOp op big -> SubArgs big small -> SLVOp op small
-    slvSLVOp (SLV op sa1) sa2 = SLV op (composeSubArgs sa1 sa2)
+slvCluster (SingleOp (Single op soas sortedargs subargs) label) sub args' _
+  = ShrunkOperation' (SingleOp (Single op soas sortedargs $ composeSubArgs subargs sub) label) args'
 
 slvCluster (Fused fusion left right) sub args1' args1 = splitslvstuff fusion sub args1' args1 $
   \f' lsub largs' largs rsub rargs' rargs -> case (slvCluster left lsub largs' largs, slvCluster right rsub rargs' rargs) of
