@@ -32,7 +32,7 @@ import Data.Array.Accelerate.AST.Environment
 import Data.Array.Accelerate.Trafo.Operation.LiveVars
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (MakesILP (BackendClusterArg), BackendCluster)
 import Data.Array.Accelerate.Pretty.Partitioned ()
-
+import Data.Array.Accelerate.Error
 
 import Data.Array.Accelerate.Trafo.Schedule.Uniform ()
 import Data.Array.Accelerate.Pretty.Schedule.Uniform ()
@@ -128,10 +128,12 @@ makeBackendArg args env c b = go args c (defaultOuts args b) b
               (soaShrink combine soa . unsort $ slv' varout subargs args) 
               env
 
-    combineB   :: Arg env (g (l,r)) -> BackendClusterArg2 op env (f l) -> BackendClusterArg2 op env (f r) -> BackendClusterArg2 op env (f (l,r))
-    combineB a x y = (unsafeCoerce $ pairinfo @op) a x y
-    uncombineB :: Arg env (g (l,r)) -> BackendClusterArg2 op env (f (l,r)) -> (BackendClusterArg2 op env (f l), BackendClusterArg2 op env (f r))
-    uncombineB = unsafeCoerce $ unpairinfo @op
+    combineB   :: Arg env (g (l,r)) -> BackendClusterArg2 op env (g l) -> BackendClusterArg2 op env (g r) -> BackendClusterArg2 op env (g (l,r))
+    combineB a@ArgArray{} = (pairinfo @op) a
+    combineB _ = internalError "Expected array"
+    uncombineB :: Arg env (g (l,r)) -> BackendClusterArg2 op env (g (l,r)) -> (BackendClusterArg2 op env (g l), BackendClusterArg2 op env (g r))
+    uncombineB a@ArgArray{} = unpairinfo @op a
+    uncombineB _ = internalError "Expected array"
     combineB' :: Both (Arg env) (BackendClusterArg2 op env) (g l)
               -> Both (Arg env) (BackendClusterArg2 op env) (g r)
               -> Both (Arg env) (BackendClusterArg2 op env) (g (l, r))

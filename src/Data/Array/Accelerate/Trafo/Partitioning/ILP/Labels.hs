@@ -40,7 +40,6 @@ import qualified Data.Map as M
 import Lens.Micro ((^.))
 import Data.Bifunctor (first)
 import Data.Type.Equality
-import Unsafe.Coerce (unsafeCoerce)
 import qualified Data.Functor.Const as C
 import qualified Debug.Trace
 
