@@ -96,18 +96,28 @@ prettyCluster _ (Fused fusion left right) args fresh
     , fresh''')
 
 prettySingleOp :: PrettyOp op => Bool -> SingleOp op t -> PrettyArgs t -> Adoc
-prettySingleOp topLevel (Single op soas (SA _ sortArgs) subArgs) args =
+prettySingleOp topLevel (Single op opArgs) args =
   hang 2 $ group $ vsep $
     [ annotate Execute "execute" | topLevel]
     ++
     [
       prettyOp op,
-      tupled $ map (\(Exists a) -> prettyPrettyArg a) $ argsToList args'''
+      tupled $ map (\(Exists a) -> prettyPrettyArg $ prettyClusterArg args a) $ argsToList opArgs
     ]
+
+prettyClusterArg :: forall f t. PrettyArgs f -> ClusterArg (FunToEnv f) t -> PrettyArg t
+prettyClusterArg pArgs = \case
+  ClusterArgSingle idx -> funToEnvPrj pArgs idx
+  ClusterArgArray m _ _ buffers -> prettyBuffers m buffers
   where
-    args' = prettyExtendArgs subArgs args
-    args'' = sortArgs args'
-    args''' = prettySoaArgs soas args''
+    prettyBuffers :: Modifier m -> ClusterArgBuffers (FunToEnv f) m sh e -> PrettyArg (m sh e)
+    prettyBuffers _ (ClusterArgBuffersDead _ idx) = case funToEnvPrj pArgs idx of
+      PrettyArgVarShape _ sh ->
+        PrettyArgArray Out sh (TupRsingle $ Adoc' "_")
+      PrettyArgOther sh ->
+        PrettyArgArray Out sh (TupRsingle $ Adoc' "_")
+    prettyBuffers _ (ClusterArgBuffersLive _ idx) = funToEnvPrj pArgs idx
+    prettyBuffers m (ClusterArgBuffersPair l r) = prettyBuffers m l `prettyPairArg` prettyBuffers m r
 
 toPrettyArg :: Val env -> Arg env t -> PrettyArg t
 toPrettyArg env (ArgArray m _ sh buffers) = PrettyArgArray m (prettyShapeVars env sh) (mapTupR (Adoc' . prettyVar env) buffers)
@@ -120,37 +130,6 @@ prettyPrettyArg :: PrettyArg t -> Adoc
 prettyPrettyArg (PrettyArgArray m sh buffers) = group $ vsep [prettyModifier m, "(" <> sh <> ")", prettyTupR (\_ (Adoc' doc) -> doc) 0 buffers]
 prettyPrettyArg (PrettyArgVarShape doc _) = doc
 prettyPrettyArg (PrettyArgOther doc) = doc
-
-prettyExtendArgs :: SubArgs a b -> PrettyArgs b -> PrettyArgs a
-prettyExtendArgs SubArgsNil ArgsNil = ArgsNil
-prettyExtendArgs (SubArgsLive subArg subArgs) (a :>: as) = prettyExtendArg subArg a :>: prettyExtendArgs subArgs as
-prettyExtendArgs (SubArgsDead subArgs) (a :>: as) = case a of
-  PrettyArgVarShape _ sh
-    -> PrettyArgArray Out sh (TupRsingle $ Adoc' "_") :>: prettyExtendArgs subArgs as
-  _ -> PrettyArgOther "?" :>: prettyExtendArgs subArgs as
-
-prettyExtendArg :: SubArg a b -> PrettyArg b -> PrettyArg a
-prettyExtendArg (SubArgOut subTup) (PrettyArgArray m sh buffers) = PrettyArgArray m sh $ prettyExtendTup subTup buffers
-prettyExtendArg (SubArgOut _) _ = PrettyArgOther "?"
-prettyExtendArg SubArgKeep arg = arg
-
-prettyExtendTup :: SubTupR a b -> TupR Adoc' (Buffers b) -> TupR Adoc' (Buffers a)
-prettyExtendTup SubTupRskip _ = TupRsingle $ Adoc' "_"
-prettyExtendTup SubTupRkeep a = a
-prettyExtendTup (SubTupRpair s1 s2) (TupRpair t1 t2) = prettyExtendTup s1 t1 `TupRpair` prettyExtendTup s2 t2
-
-prettySoaArgs :: SOAs args expanded -> PrettyArgs expanded -> PrettyArgs args
-prettySoaArgs SOArgsNil _ = ArgsNil
-prettySoaArgs (SOArgsCons xs x) args
-  | (arg, args') <- prettySoaArg x args
-  = arg :>: prettySoaArgs xs args'
-
-prettySoaArg :: SOA arg appendto result -> PrettyArgs result -> (PrettyArg arg, PrettyArgs appendto)
-prettySoaArg SOArgSingle (a :>: as) = (a, as)
-prettySoaArg (SOArgTup right left) as
-  | (left', as') <- prettySoaArg left as
-  , (right', as'') <- prettySoaArg right as'
-  = (prettyPairArg left' right', as'')
 
 prettyPairArg :: PrettyArg (f left) -> PrettyArg (f right) -> PrettyArg (f (left, right))
 prettyPairArg (PrettyArgArray m sh left) (PrettyArgArray _ _ right) = PrettyArgArray m sh $ TupRpair left right

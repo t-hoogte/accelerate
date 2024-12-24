@@ -1,20 +1,22 @@
-{-# LANGUAGE AllowAmbiguousTypes #-}
-{-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE FlexibleContexts      #-}
-{-# LANGUAGE FlexibleInstances     #-}
-{-# LANGUAGE GADTs                 #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE QuantifiedConstraints #-}
-{-# LANGUAGE RankNTypes            #-}
-{-# LANGUAGE ScopedTypeVariables   #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE TypeFamilyDependencies#-}
-{-# LANGUAGE TypeOperators         #-}
-{-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE ViewPatterns #-}
-{-# OPTIONS_GHC -Wno-orphans #-}
+{-# LANGUAGE AllowAmbiguousTypes    #-}
+{-# LANGUAGE DerivingStrategies     #-}
+{-# LANGUAGE FlexibleContexts       #-}
+{-# LANGUAGE FlexibleInstances      #-}
+{-# LANGUAGE GADTs                  #-}
+{-# LANGUAGE LambdaCase             #-}
+{-# LANGUAGE MultiParamTypeClasses  #-}
+{-# LANGUAGE OverloadedStrings      #-}
+{-# LANGUAGE PatternSynonyms        #-}
+{-# LANGUAGE QuantifiedConstraints  #-}
+{-# LANGUAGE RankNTypes             #-}
+{-# LANGUAGE ScopedTypeVariables    #-}
+{-# LANGUAGE StandaloneDeriving     #-}
+{-# LANGUAGE TypeApplications       #-}
+{-# LANGUAGE TypeFamilyDependencies #-}
+{-# LANGUAGE TypeOperators          #-}
+{-# LANGUAGE UndecidableInstances   #-}
+{-# LANGUAGE ViewPatterns           #-}
+{-# OPTIONS_GHC -Wno-orphans        #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
 -- |
@@ -47,19 +49,21 @@ import Data.Array.Accelerate.AST.LeftHandSide
 import Data.Array.Accelerate.Representation.Shape (ShapeR (..), shapeType, typeShape)
 import Data.Type.Equality
 import Unsafe.Coerce (unsafeCoerce)
-import Data.Array.Accelerate.Representation.Type (TypeR, TupR (..), mapTupR)
-import Data.Array.Accelerate.Type (ScalarType (..), SingleType (..), NumType (..), IntegralType (..))
+import Data.Array.Accelerate.Representation.Type
+import Data.Array.Accelerate.Type
+import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Environment (Env (..), prj')
+import Data.Array.Accelerate.Error
 
-
-import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (Labels, LabelledArgs, LabelledArg (..), ALabel (..), ELabel (..), Label(..))
-import Data.List (sortOn)
+import Data.Array.Accelerate.Trafo.Partitioning.ILP.Labels (Labels, LabelledArgs, LabelledArg (..), ALabel (..), ELabel (..), Label(..), ELabelTup)
+import Data.List (sortOn, partition, groupBy, nubBy)
 import qualified Data.Functor.Const as C
 import Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph (LabelledArgOp (..), BackendClusterArg, MakesILP (..), LabelledArgsOp, BackendCluster)
 import Data.Array.Accelerate.Trafo.Operation.LiveVars
 import Data.Maybe (fromJust)
+import Control.Applicative ((<|>))
 import Data.Array.Accelerate.AST.Var (varsType)
-import Data.Array.Accelerate.Analysis.Match (matchShapeR, matchArrayR)
+import Data.Array.Accelerate.Analysis.Match
 
 
 
@@ -77,11 +81,9 @@ data Cluster op args where
         -> Cluster op args
 
 data SingleOp op args where
-  Single :: op args
-         -> SOAs args expanded
-         -> SortedArgs expanded sorted
-         -> SubArgs sorted live
-         -> SingleOp op live
+  Single :: op opArgs
+         -> ClusterArgs (FunToEnv args) opArgs
+         -> SingleOp op args
 
 data SortedArgs args sorted where
   SA :: (forall f. PreArgs f args -> PreArgs f sorted)
@@ -96,7 +98,44 @@ data SOA arg appendto result where
   SOArgSingle :: SOA arg args (arg -> args)
   SOArgTup :: SOA (f right) args args' -> SOA (f left) args' args'' -> SOA (f (left,right)) args args''
 
+type ClusterArgs env = PreArgs (ClusterArg env)
+data ClusterArg env t where
+  -- Perhaps require that 't' is not 'In sh e' or 'Out sh e'
+  ClusterArgSingle
+    :: Idx env t
+    -> ClusterArg env t
 
+  ClusterArgArray
+    -- Perhaps require that 'm' is 'In' or 'Out'
+    :: Modifier m -- Not Mut
+    -> ShapeR sh
+    -> TypeR e
+    -> ClusterArgBuffers env m sh e
+    -> ClusterArg env (m sh e)
+
+data ClusterArgBuffers env m sh t where
+  ClusterArgBuffersPair
+    :: ClusterArgBuffers env m sh l
+    -> ClusterArgBuffers env m sh r
+    -> ClusterArgBuffers env m sh (l, r)
+
+  ClusterArgBuffersDead
+    :: TypeR t
+    -> Idx env (Var' sh)
+    -> ClusterArgBuffers env Out sh t
+
+  ClusterArgBuffersLive
+    :: TypeR t
+    -> Idx env (m sh t)
+    -> ClusterArgBuffers env m sh t
+
+type family FunToEnv f = env | env -> f where
+  FunToEnv () = ()
+  FunToEnv (s -> t) = (FunToEnv t, s)
+
+funToEnvPrj :: PreArgs a f' -> Idx (FunToEnv f') e -> a e
+funToEnvPrj (a :>: _ ) ZeroIdx       = a
+funToEnvPrj (_ :>: as) (SuccIdx idx) = funToEnvPrj as idx
 
 -- These correspond to the inference rules in the paper
 -- datatype describing how to combine the arguments of two fused clusters
@@ -118,6 +157,7 @@ data Fusion largs rars args where
   IntroO2 :: Fusion l r a
           -> Fusion l (Out sh e -> r) (Out sh e -> a)
   -- not in the paper; not meant for array args:
+  -- Ivo: 'mut' arguments do go in here, right?
   IntroL :: Fusion l r a -> Fusion (x -> l) r (x -> a)
   IntroR :: Fusion l r a -> Fusion l (x -> r) (x -> a)
 deriving instance Show (Fusion l r total)
@@ -238,10 +278,9 @@ justOut (ArgArray Mut _ _ _ :>: args) (_   :>: fs) = justOut args fs
 
 
 left :: Fusion largs rargs args -> Args env args -> Args env largs
-left = left' (\repr (ArgVar sh) -> ArgArray Out repr (mapTupR (\(Var t ix)->Var (GroundRscalar t) ix) sh) er2)
+left = left' (\repr (ArgVar sh) -> ArgArray Out repr (mapTupR (\(Var t ix)->Var (GroundRscalar t) ix) sh) er)
   where
-    er1 = error "accessing fused away array1"
-    er2 = error "accessing fused away array2"
+    er = error "accessing fused away array"
 left' :: (forall sh e. ArrayR (Array sh e) -> f (Var' sh) -> f (Out sh e)) -> Fusion largs rargs args -> PreArgs f args -> PreArgs f largs
 left' _ EmptyF ArgsNil = ArgsNil
 left' k (Vertical repr f) (arg :>: args) = k repr arg :>: left' k f args
@@ -301,8 +340,8 @@ flattenCluster :: Cluster op args -> [Exists op]
 flattenCluster = (`go` [])
   where
     go :: Cluster op args -> [Exists op] -> [Exists op]
-    go (SingleOp (Single op _ _ _) _) accum = Exists op : accum
-    go (Fused _ a b)                  accum = go a $ go b accum
+    go (SingleOp (Single op _) _) accum = Exists op : accum
+    go (Fused _ a b)              accum = go a $ go b accum
 
 varsToShapeR :: Vars ScalarType g sh -> ShapeR sh
 varsToShapeR = typeRtoshapeR . varsType
@@ -447,15 +486,15 @@ fuse' labl labr largs rargs l r c k =
 
 mkFused :: MakesILP op => LabelledArgsOp op env l -> LabelledArgsOp op env r -> (forall args. Fusion l r args -> result) -> result
 mkFused ArgsNil ArgsNil k = k EmptyF
-mkFused ArgsNil ((LOp r _ _) :>: rs) k = mkFused ArgsNil rs $ \f -> k (addright r f)
+mkFused ArgsNil (LOp r _ _ :>: rs) k = mkFused ArgsNil rs $ \f -> k (addright r f)
 mkFused (LOp l _ _ :>: ls) ArgsNil k = mkFused ls ArgsNil $ \f -> k (addleft l f)
 mkFused ((LOp l (NotArr,_) _) :>: ls) rs k = mkFused ls rs $ \f -> k (addleft l f)
 mkFused ls ((LOp r (NotArr,_)_ ) :>: rs) k = mkFused ls rs $ \f -> k (addright r f)
 mkFused ((LOp l (Arr TupRunit,_)_ ) :>: ls) rs k = mkFused ls rs $ \f -> k (addleft l f)
 mkFused ls ((LOp r (Arr TupRunit,_)_) :>: rs) k = mkFused ls rs $ \f -> k (addright r f)
 mkFused (l'@(LOp l _ bl) :>: ls) (r'@(LOp r _ br) :>: rs) k
-  | Left le <- getElabelForSort $ unOpLabel l'
-  , Left re <- getElabelForSort $ unOpLabel r'
+  | Just le <- getElabelForSort $ unOpLabel l'
+  , Just re <- getElabelForSort $ unOpLabel r'
     = case compare le re of
       LT -> mkFused ls (r':>:rs) $ \f -> k (addleft l f)
       GT -> mkFused (l':>:ls) rs $ \f -> k (addright r f)
@@ -493,66 +532,205 @@ addboth (ArgArray Out _ _ _) (ArgArray Out _ _ _) _ _ = error "two producers of 
 addboth (ArgArray In  _ _ _) (ArgArray Out _ _ _) _ _ = error "reverse vertical/diagonal"
 addboth _ _ _ _ = error "fusing non-arrays"
 
-singleton :: MakesILP op => Label -> LabelledArgsOp op env args -> op args -> (forall args'. Clustered op args' -> r) -> r
-singleton l largs op k = mkSOAs (mapArgs (\(LOp a _ _) -> a) largs) $ \soas ->
-  sortArgs (soaExpand splitLabelledArgs soas (unOpLabels' largs)) $ \sa@(SA sort _) slv ->
--- (Single op soas sortedargs subargs) = SLV (SOp (SOAOp op soas) sortedargs) subargs
-    k $ Clustered (SingleOp (Single op soas sa slv) l) (mapArgs getClusterArg $ sort $ soaExpand splitLabelledArgsOp soas largs)
--- (subargsId $ sort $ soaExpand splitLabelledArgsOp soas largs)
-
-sortArgs :: LabelledArgs env args -> (forall sorted. SortedArgs args sorted -> SubArgs sorted sorted -> r) -> r
-sortArgs args k =
-    k (SA
-        sort
-        unsort)
-      (keepAll $ sort args)
-  where
-    sort :: PreArgs f args -> PreArgs f sorted
-    sort   args = case argsFromList . map snd . sortOn fst . zip ls  . argsToList $ args of Exists a -> unsafeCoerce a
-    unsort :: PreArgs f sorted -> PreArgs f args
-    unsort srts = case argsFromList . map snd . sortOn fst . zip ls' . argsToList $ srts of Exists a -> unsafeCoerce a
-    args' = argsToList args
-    ls = map (\(Exists l) -> getElabelForSort l) args'
-    ls' = map snd $ sortOn fst $ zip ls [1 :: Int ..]
-    keepAll :: LabelledArgs env args -> SubArgs args args
-    keepAll ArgsNil = SubArgsNil
-    keepAll (_:>:as) = SubArgKeep `SubArgsLive` keepAll as
--- If it's a buffer, we only care about its unique label. If it's not a buffer, the other labels suffice to give any ordering.
-getElabelForSort :: LabelledArg env a -> Either ELabel Labels
+getElabelForSort :: LabelledArg env a -> Maybe ELabel
 getElabelForSort (L (ArgArray m (ArrayR _ TupRsingle{}) _ _) (Arr (TupRsingle (C.Const e)),_))
-  | In  <- m = Left e
-  | Out <- m = Left e
-getElabelForSort (L _ (_,ls)) = Right ls
+  | In  <- m = Just e
+  | Out <- m = Just e
+getElabelForSort _ = Nothing
 
+singleton
+  :: MakesILP op
+  => Label
+  -> LabelledArgsOp op env args
+  -> op args
+  -> (forall args'. Clustered op args' -> LabelledArgsOp op env args' -> r)
+  -> r
+singleton l largs op k
+  | Exists sorted <- sortAndExpandArgs largs
+  , opArgs <- createClusterArgs sorted largs
+  = k
+    (Clustered
+      (SingleOp (Single op opArgs) l)
+      (mapArgs getClusterArg sorted))
+    sorted
 
+createClusterArgs
+  :: forall op env sorted args.
+     LabelledArgsOp op env sorted
+  -> LabelledArgsOp op env args
+  -> ClusterArgs (FunToEnv sorted) args
+createClusterArgs sorted = go 0
+  where
+    go
+      :: Int -- Number of ClusterArgSingle that we've already handled
+      -> LabelledArgsOp op env args'
+      -> ClusterArgs (FunToEnv sorted) args'
+    go _ ArgsNil = ArgsNil
+    go n (a :>: as) = a' :>: go n' as
+      where
+        a' = createClusterArg n sorted a
+        n' = case a' of
+          ClusterArgSingle _ -> n + 1
+          _ -> n
 
+-- We ensure that environment starts with all non-in-or-out-array arguments,
+-- then all array arguments. That simplifies the search for non-array arguments in 'sorted'.
+createClusterArg
+  :: forall op env sorted arg.
+     Int -- Number of ClusterArgSingle that we've already handled
+  -> LabelledArgsOp op env sorted
+  -> LabelledArgOp op env arg
+  -> ClusterArg (FunToEnv sorted) arg
+createClusterArg _ sorted (LOp (ArgArray (m :: Modifier m) (ArrayR (shr :: ShapeR sh) tp) sh buffers) (Arr labels, _) _)
+  | inOrOut m = ClusterArgArray m shr tp $ go tp labels
+  where
+    inOrOut :: Modifier m -> Bool
+    inOrOut In  = True
+    inOrOut Out = True
+    inOrOut _   = False
 
-subargsId :: PreArgs f args -> SubArgs args args
-subargsId ArgsNil = SubArgsNil
-subargsId (_ :>: args) = SubArgsLive SubArgKeep $ subargsId args
+    go :: TypeR t -> ELabelTup t -> ClusterArgBuffers (FunToEnv sorted) m sh t
+    go TupRunit TupRunit
+      = ClusterArgBuffersLive TupRunit $ findUnit sorted
+    go (TupRsingle t) (TupRsingle (C.Const label))
+      = ClusterArgBuffersLive (TupRsingle t) $ findLabel (TupRsingle t) label sorted
+    go (TupRpair t1 t2) (TupRpair l1 l2)
+      = go t1 l1 `ClusterArgBuffersPair` go t2 l2
+    go _ _ = internalError "Tuple mismatch"
 
-mkSOAs :: Args env args -> (forall expanded. SOAs args expanded -> r) -> r
-mkSOAs ArgsNil k = k SOArgsNil
-mkSOAs (a:>:args) k = mkSOAs args $ \soas -> mkSOA a $ \soa -> k (SOArgsCons soas soa)
+    findUnit
+      :: LabelledArgsOp op env sorted'
+      -> Idx (FunToEnv sorted') (m sh ())
+    findUnit = \case
+      LOp (ArgArray m' (ArrayR _ TupRunit) sh' _) _ _ :>: _
+        | Just Refl <- matchModifier m m'
+        , Just Refl <- matchVars sh sh'
+        -> ZeroIdx
+      _ :>: sorted' -> SuccIdx $ findUnit sorted'
+      ArgsNil -> internalError "Unit array not found in sorted arguments"
 
-mkSOA :: Arg env arg -> (forall result. SOA arg toappend result -> r) -> r
-mkSOA     (ArgArray In  (ArrayR shr (TupRpair tl tr)) sh (TupRpair bufl bufr)) k =
-  mkSOA   (ArgArray In  (ArrayR shr tr              ) sh bufr                ) $ \soar ->
-    mkSOA (ArgArray In  (ArrayR shr tl              ) sh bufl                ) $ \soal ->
-      k (SOArgTup soar soal)
-mkSOA     (ArgArray Out (ArrayR shr (TupRpair tl tr)) sh (TupRpair bufl bufr)) k =
-  mkSOA   (ArgArray Out (ArrayR shr tr              ) sh bufr                ) $ \soar ->
-    mkSOA (ArgArray Out (ArrayR shr tl              ) sh bufl                ) $ \soal ->
-      k (SOArgTup soar soal)
-mkSOA (ArgArray In  _ _ TupRunit    ) k = k SOArgSingle
-mkSOA (ArgArray Out _ _ TupRunit    ) k = k SOArgSingle
-mkSOA (ArgArray In  _ _ TupRsingle{}) k = k SOArgSingle
-mkSOA (ArgArray Out _ _ TupRsingle{}) k = k SOArgSingle
-mkSOA (ArgVar _) k = k SOArgSingle
-mkSOA (ArgExp _) k = k SOArgSingle
-mkSOA (ArgFun _) k = k SOArgSingle
-mkSOA (ArgArray Mut _ _ _) k = k SOArgSingle
-mkSOA _ _ = error "pair or unit in a tuprsingle somewhere"
+    findLabel
+      :: TupR ScalarType t
+      -> ELabel
+      -> LabelledArgsOp op env sorted'
+      -> Idx (FunToEnv sorted') (m sh t)
+    findLabel tp label = \case
+      LOp (ArgArray m' (ArrayR _ tp') sh' _) (Arr (TupRsingle (C.Const label')), _) _ :>: _
+        | label == label'
+        , Refl <- expectOr "Modifier didn't match" $ matchModifier m m'
+        , Refl <- expectOr "Shapes didn't match" $ matchVars sh sh'
+        , Refl <- expectOr "Array types didn't match" $ matchTypeR tp tp'
+        -> ZeroIdx
+      _ :>: sorted' -> SuccIdx $ findLabel tp label sorted'
+      ArgsNil -> internalError "Label not found in sorted arguments"
+
+    expectOr _ (Just x) = x
+    expectOr err _ = internalError err
+
+-- ClusterArgSingles are not shuffled, they are kept in the original order.
+-- To find the ith ClusterArgSingle, we thus search for the ith ClusterArgSingle in 'sorted'.
+-- Function 'go' does this search, and skips over any In or Out arguments.
+createClusterArg count sorted (LOp arg _ _) = ClusterArgSingle $ go count sorted
+  where
+    go :: Int -> LabelledArgsOp op env sorted' -> Idx (FunToEnv sorted') arg
+    go n (LOp (ArgArray In  _ _ _) _ _ :>: args) = SuccIdx $ go n args
+    go n (LOp (ArgArray Out _ _ _) _ _ :>: args) = SuccIdx $ go n args
+    go 0 (LOp arg' _ _ :>: _)
+      -- We only validate the type of the argument.
+      -- We assume the ClusterArgSingles are not shuffled. We only do this
+      -- to inform GHC that this is sound, and to catch situations where things
+      -- are really broken.
+      | Just Refl <- matchArgType arg arg' = ZeroIdx
+      | otherwise = internalError "ClusterArgSingles are not in the right order"
+    go n (_ :>: args) = SuccIdx $ go (n - 1) args
+    go _ ArgsNil = internalError "ClusterArgSingle not found"
+
+-- Checks whether two types are equal, to a certain extent.
+-- If this function returns Just, the types of the two arguments are equal.
+-- However, the inverse is not always true.
+-- Use this function if you know that the arguments are equal, but want
+-- type-level proof that the types match.
+matchArgType :: Arg env s -> Arg env t -> Maybe (s :~: t)
+matchArgType (ArgVar v1) (ArgVar v2)
+  | Just Refl <- matchVars v1 v2 = Just Refl
+matchArgType (ArgExp e1) (ArgExp e2)
+  | Just Refl <- matchTypeR (expType e1) (expType e2) = Just Refl
+matchArgType (ArgFun fun1) (ArgFun fun2)
+  | Just Refl <- go fun1 fun2 = Just Refl
+  where
+    go :: OpenFun env1 env t1 -> OpenFun env2 env t2 -> Maybe (t1 :~: t2)
+    go (Lam lhs1 f1) (Lam lhs2 f2)
+      | Just Refl <- matchTypeR (lhsToTupR lhs1) (lhsToTupR lhs2)
+      , Just Refl <- go f1 f2
+      = Just Refl
+    go (Body e1) (Body e2) = matchTypeR (expType e1) (expType e2)
+    go _ _ = Nothing
+matchArgType (ArgArray m1 repr1 _ _) (ArgArray m2 repr2 _ _)
+  | Just Refl <- matchModifier m1 m2
+  , Just Refl <- matchArrayR repr1 repr2 = Just Refl
+matchArgType _ _ = Nothing
+
+-- Checks whether the two Args are the same.
+-- Assumes that the Args are both arrays and that
+-- the arrays both consist of a single array, or a unit array
+-- This is used in createClusterArg to both find the corresponding argument,
+-- and to inform the type checker that the array has the correct type.
+matchArgArraySingle :: Arg env a -> Arg env b -> Maybe (a :~: b)
+matchArgArraySingle (ArgArray m1 (ArrayR _ (TupRsingle t1)) sh1 (TupRsingle buffer1)) (ArgArray m2 (ArrayR _ (TupRsingle t2)) sh2 (TupRsingle buffer2))
+  | Just Refl <- matchModifier m1 m2
+  , Just Refl <- matchVar buffer1 buffer2
+  , Just Refl <- matchVars sh1 sh2
+  , Just Refl <- matchScalarType t1 t2 = Just Refl
+matchArgArraySingle (ArgArray m1 (ArrayR _ TupRunit) sh1 _) (ArgArray m2 (ArrayR _ TupRunit) sh2 _)
+  | Just Refl <- matchModifier m1 m2
+  , Just Refl <- matchVars sh1 sh2 = Just Refl
+matchArgArraySingle _ _ = Nothing
+
+matchModifier :: Modifier m1 -> Modifier m2 -> Maybe (m1 :~: m2)
+matchModifier In In = Just Refl
+matchModifier Out Out = Just Refl
+matchModifier Mut Mut = Just Refl
+matchModifier _ _ = Nothing
+
+sortAndExpandArgs :: LabelledArgsOp op env args -> Exists (LabelledArgsOp op env)
+sortAndExpandArgs args = argsFromList $ singles ++ unitArraysDedup ++ dedup
+  where
+    (arrays, singles) = partition isNonUnitInOut $ argsToList args
+    expanded = arrays >>= \(Exists arg) -> expandArg arg
+    sorted = sortOn fst expanded
+    dedup = map (snd . head) $ groupBy (\a b -> fst a == fst b) sorted
+    unitArraysDedup = nubBy compareUnitArrays (arrays >>= \(Exists arg) -> expandUnitArg arg)
+
+    isNonUnitInOut :: Exists (LabelledArgOp op env) -> Bool
+    isNonUnitInOut (Exists (LOp (ArgArray _ (ArrayR _ TupRunit) _ _) _ _)) = False
+    isNonUnitInOut (Exists (LOp (ArgArray m _ _ _) _ _)) = case m of
+      In -> True
+      Out -> True
+      _ -> False
+    isNonUnitInOut _ = False
+
+    compareUnitArrays :: Exists (LabelledArgOp op env) -> Exists (LabelledArgOp op env) -> Bool
+    compareUnitArrays (Exists (LOp (ArgArray m _ sh _) _ _)) (Exists (LOp (ArgArray m' _ sh' _) _ _))
+      | Just _ <- matchModifier m m'
+      , Just _ <- matchVars sh sh'
+      = True
+    compareUnitArrays _ _ = False
+
+expandUnitArg :: LabelledArgOp op env t -> [(Exists (LabelledArgOp op env))]
+expandUnitArg (LOp (ArgArray m (ArrayR shr (TupRpair t1 t2)) sh (TupRpair b1 b2)) (Arr (TupRpair l1 l2), set) ba)
+  =  expandUnitArg (LOp (ArgArray m (ArrayR shr t1) sh b1) (Arr l1, set) ba)
+  ++ expandUnitArg (LOp (ArgArray m (ArrayR shr t2) sh b2) (Arr l2, set) ba)
+expandUnitArg arg@(LOp _ (Arr TupRunit, _) _) = [Exists arg]
+expandUnitArg _ = []
+
+expandArg :: LabelledArgOp op env t -> [(ELabel, Exists (LabelledArgOp op env))]
+expandArg (LOp (ArgArray m (ArrayR shr (TupRpair t1 t2)) sh (TupRpair b1 b2)) (Arr (TupRpair l1 l2), set) ba)
+  =  expandArg (LOp (ArgArray m (ArrayR shr t1) sh b1) (Arr l1, set) ba)
+  ++ expandArg (LOp (ArgArray m (ArrayR shr t2) sh b2) (Arr l2, set) ba)
+expandArg arg@(LOp _ (Arr (TupRsingle (C.Const l)), _) _)
+  = [(l, Exists arg)]
+expandArg (LOp _ (Arr TupRunit, _) _) = []
+expandArg _ = internalError "Tuple mismatch with labels"
 
 instance ShrinkArg (BackendClusterArg op) => SLVOperation (Clustered op) where
   slvOperation (Clustered cluster b) = Just $ ShrinkOperation $ \ff' a' a ->
@@ -562,16 +740,42 @@ instance ShrinkArg (BackendClusterArg op) => SLVOperation (Clustered op) where
 
 instance SimplifyOperation (Clustered op)
   -- Default implementation, where detectCopy always returns []
+  -- Any copies should already have been detected before the program was fused.
 
--- instance SLVOperation (Cluster op) where
---   slvOperation cluster = -- Nothing
---     Just $ ShrinkOperation $ \sub args' args ->
---       case slvCluster cluster sub args' args of
---         ShrunkOperation' cluster' args'' -> ShrunkOperation cluster' args''
+slvClusterArg :: forall f f' t. SubArgs f f' -> ClusterArg (FunToEnv f) t -> ClusterArg (FunToEnv f') t
+slvClusterArg subArgs (ClusterArgSingle idx) = case reindexSlv subArgs idx of
+  ReindexSlvKeep idx' -> ClusterArgSingle idx'
+  _ -> internalError "Expected a preserved variable, as this is not an Out argument"
+slvClusterArg subArgs (ClusterArgArray m shr tp buffers) = ClusterArgArray m shr tp $ go buffers
+  where
+    go :: ClusterArgBuffers (FunToEnv f) m sh e -> ClusterArgBuffers (FunToEnv f') m sh e
+    go (ClusterArgBuffersPair a1 a2) = go a1 `ClusterArgBuffersPair` go a2
+    go (ClusterArgBuffersDead tp idx) = case reindexSlv subArgs idx of
+      ReindexSlvKeep idx' -> ClusterArgBuffersDead tp idx'
+    go (ClusterArgBuffersLive tp idx) = case reindexSlv subArgs idx of
+      ReindexSlvKeep idx' -> ClusterArgBuffersLive tp idx'
+      ReindexSlvDead idx' -> ClusterArgBuffersDead tp idx'
+
+reindexSlv :: SubArgs f f' -> Idx (FunToEnv f) t -> ReindexSlv f' t
+reindexSlv (SubArgsDead _) ZeroIdx = ReindexSlvDead ZeroIdx
+reindexSlv (SubArgsLive arg _) ZeroIdx = case arg of
+  SubArgKeep -> ReindexSlvKeep ZeroIdx
+  SubArgOut SubTupRkeep -> ReindexSlvKeep ZeroIdx
+  _ -> internalError "Expected preserved value"
+reindexSlv (SubArgsDead s) (SuccIdx idx) = case reindexSlv s idx of
+  ReindexSlvKeep idx -> ReindexSlvKeep $ SuccIdx idx
+  ReindexSlvDead idx -> ReindexSlvDead $ SuccIdx idx
+reindexSlv (SubArgsLive _ s) (SuccIdx idx) = case reindexSlv s idx of
+  ReindexSlvKeep idx -> ReindexSlvKeep $ SuccIdx idx
+  ReindexSlvDead idx -> ReindexSlvDead $ SuccIdx idx
+
+data ReindexSlv f t where
+  ReindexSlvKeep :: Idx (FunToEnv f) t -> ReindexSlv f t
+  ReindexSlvDead :: Idx (FunToEnv f) (Var' sh) -> ReindexSlv f (Out sh e)
 
 slvCluster :: Cluster op f -> SubArgs f f' -> Args env' f' -> Args env f -> ShrunkOperation' (Cluster op) env' f'
-slvCluster (SingleOp (Single op soas sortedargs subargs) label) sub args' _
-  = ShrunkOperation' (SingleOp (Single op soas sortedargs $ composeSubArgs subargs sub) label) args'
+slvCluster (SingleOp (Single op args) label) sub args' _
+  = ShrunkOperation' (SingleOp (Single op $ mapArgs (slvClusterArg sub) args) label) args'
 
 slvCluster (Fused fusion left right) sub args1' args1 = splitslvstuff fusion sub args1' args1 $
   \f' lsub largs' largs rsub rargs' rargs -> case (slvCluster left lsub largs' largs, slvCluster right rsub rargs' rargs) of
@@ -611,52 +815,32 @@ slvCluster (Fused fusion left right) sub args1' args1 = splitslvstuff fusion sub
 data ShrunkOperation' op env f where
   ShrunkOperation' :: op f -> Args env f -> ShrunkOperation' op env f
 
--- slvSLVedOp :: SLVedOp op f -> SubArgs f f' -> Args env' f' -> ShrunkOperation' (SLVedOp op) env' f'
--- slvSLVedOp (SLVOp op subargs) sub args' = ShrunkOperation' (SLVOp op $ composeSubArgs subargs sub) args'
-
--- instance SLVOperation (SLVedOp op) where
---   slvOperation (SLVOp op subargs) = Just $ ShrinkOperation (\sub args' _ -> ShrunkOperation (SLVOp op $ composeSubArgs subargs sub) args')
-
-
-
-
-
-
 outvar :: Arg env (Out sh e) -> Arg env (Var' sh)
 outvar (ArgArray Out (ArrayR shr _) sh _) = ArgVar $ groundToExpVar (shapeType shr) sh
 
-varout :: Arg env (Var' sh) -> Arg env (Out sh e)
-varout (ArgVar sh) = ArgArray Out (ArrayR (fromJust $ typeShape $ varsType sh) (error "fake")) (expToGroundVar sh) (error "fake")
+prjClusterArgs :: Args env args -> ClusterArgs (FunToEnv args) s -> Args env s
+prjClusterArgs args = mapArgs (prjClusterArg args)
 
+prjClusterArg :: forall env args s. Args env args -> ClusterArg (FunToEnv args) s -> Arg env s
+prjClusterArg args (ClusterArgSingle idx) = funToEnvPrj args idx
+prjClusterArg args (ClusterArgArray (m :: Modifier m) (shr :: ShapeR sh) tp buffers') = case go buffers' of
+  (Just sh, buffers) -> ArgArray m (ArrayR shr tp) sh buffers
+  _ -> internalError "Arrays only consisting of units are not supported in fusion"
+  where
+    go :: ClusterArgBuffers (FunToEnv args) m sh e -> (Maybe (GroundVars env sh), GroundVars env (Buffers e))
+    go (ClusterArgBuffersPair c1 c2)
+      | (sh1, buffers1) <- go c1
+      , (sh2, buffers2) <- go c2
+      = (sh1 <|> sh2, TupRpair buffers1 buffers2)
+    go (ClusterArgBuffersLive _ idx)
+      | ArgArray _ _ sh buffers <- funToEnvPrj args idx
+      = (Just sh, buffers)
+    go (ClusterArgBuffersDead tp idx)
+      | ArgVar sh <- funToEnvPrj args idx
+      = (Just $ mapTupR f sh, TupRsingle $ internalError "Cannot access array removed by strongly-live-variable analysis")
 
-slv  :: (forall sh e. f (Out sh e) -> f (Var' sh)) -> SubArgs args args' -> PreArgs f args -> PreArgs f args'
-slv _ SubArgsNil ArgsNil = ArgsNil
-slv f (SubArgsDead    sas) (arg:>:args) = f arg :>: slv f sas args
-slv f (SubArgsLive SubArgKeep sas) (arg:>:args) = arg :>: slv f sas args
-slv _ _ _ = error "not soa'ed"
-slv' :: (forall sh e. f (Var' sh) -> f (Out sh e)) -> SubArgs args args' -> PreArgs f args' -> PreArgs f args
-slv' _ SubArgsNil ArgsNil = ArgsNil
-slv' f (SubArgsDead    sas) (arg:>:args) = f arg :>: slv' f sas args
-slv' f (SubArgsLive SubArgKeep sas) (arg:>:args) = arg :>: slv' f sas args
-slv' _ _ _ = error "not soa'ed"
-slvIn  :: (forall sh e. f (Var' sh) -> f (Sh sh e)) -> SubArgs args args' -> Env f (InArgs args') -> Env f (InArgs args)
-slvIn _ SubArgsNil Empty = Empty
-slvIn f (SubArgsDead    sas) (Push env x) = Push (slvIn f sas env) (f    x)
-slvIn f (SubArgsLive SubArgKeep sas) (Push env x) = Push (slvIn f sas env) x
-slvIn _ _ _ = error "not soa'ed"
-slvOut :: Args env args' -> SubArgs args args' -> Env f (OutArgs args) -> Env f (OutArgs args')
-slvOut _ SubArgsNil Empty = Empty
-slvOut (_:>:args) (SubArgsDead    sas) (Push env _) = slvOut args sas env
-slvOut (a :>: args)  (SubArgsLive SubArgKeep sas) env = case a of
-  ArgArray Out _ _ _
-    | Push env' x <- env -> Push (slvOut args sas env') x
-  ArgArray In  _ _ _ -> slvOut args sas env
-  ArgArray Mut _ _ _ -> slvOut args sas env
-  ArgVar _ -> slvOut args sas env
-  ArgFun _ -> slvOut args sas env
-  ArgExp _ -> slvOut args sas env
-slvOut _ _ _ = error "not soa'ed"
-
+    f :: ExpVar env t -> GroundVar env t
+    f (Var tp idx) = Var (GroundRscalar tp) idx
 
 showSorted :: LabelledArgsOp op env args -> String
 showSorted ArgsNil = ""

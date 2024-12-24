@@ -24,6 +24,7 @@
 module Data.Array.Accelerate.Eval where
 
 import Prelude                                                      hiding (take, (!!), sum)
+import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Partitioned
 import Data.Array.Accelerate.Trafo.Desugar
 import Data.Array.Accelerate.Representation.Array
@@ -43,6 +44,7 @@ import Data.Type.Equality
 import Data.Array.Accelerate.Type (ScalarType)
 import Unsafe.Coerce (unsafeCoerce)
 import Data.Array.Accelerate.Representation.Shape (ShapeR (..))
+import Control.Applicative
 
 
 type BackendArgs op env = PreArgs (BackendClusterArg2 op env)
@@ -76,17 +78,18 @@ class ( MakesILP op
   varToValue   :: BackendClusterArg2 op env (Var'  sh)       -> BackendClusterArg2 op env (Value sh e)
   varToSh      :: BackendClusterArg2 op env (Var'  sh)       -> BackendClusterArg2 op env (Sh    sh e)
   shToVar      :: BackendClusterArg2 op env (Sh    sh e)     -> BackendClusterArg2 op env (Var'  sh  )
-  shrinkOrGrow :: Arg env (n sh e') -> Arg env (n sh e) -> BackendClusterArg2 op env (m     sh e')    -> BackendClusterArg2 op env (m     sh e)
+  shrinkOrGrow :: ArrayR (Array sh e') -> ArrayR (Array sh e) -> BackendClusterArg2 op env (m     sh e')    -> BackendClusterArg2 op env (m     sh e)
   addTup       :: BackendClusterArg2 op env (v     sh e)     -> BackendClusterArg2 op env (v     sh ((), e))
   unitToVar    :: BackendClusterArg2 op env (m     sh ())    -> BackendClusterArg2 op env (Var'  sh  )
   varToUnit    :: BackendClusterArg2 op env (Var' sh)        -> BackendClusterArg2 op env (m     sh ())
   inToVar      :: BackendClusterArg2 op env (In sh e)        -> BackendClusterArg2 op env (Var' sh   )
-  pairinfo     :: Arg env (n sh (a,b)) -> BackendClusterArg2 op env (m sh a)         -> BackendClusterArg2 op env (m sh b) -> BackendClusterArg2 op env (m sh (a,b))
+  unitinfo     :: BackendClusterArg2 op env (m     sh ())
+  pairinfo     :: ArrayR (Array sh (a,b)) -> BackendClusterArg2 op env (m sh a)         -> BackendClusterArg2 op env (m sh b) -> BackendClusterArg2 op env (m sh (a,b))
   -- pairinfo a b = if shrinkOrGrow a == b then shrinkOrGrow a else error $ "pairing unequal: " <> show a <> ", " <> show b
-  unpairinfo   :: Arg env (n sh (a,b)) -> BackendClusterArg2 op env (m sh (a,b))     -> (BackendClusterArg2 op env (m sh a),  BackendClusterArg2 op env (m sh b))
-  unpairinfo arg@(ArgArray m (ArrayR shr (TupRpair a b)) sh (TupRpair a' b')) x = 
-    ( shrinkOrGrow arg (ArgArray m (ArrayR shr a) sh a') x
-    , shrinkOrGrow arg (ArgArray m (ArrayR shr b) sh b') x)
+  unpairinfo   :: ArrayR (Array sh (a,b)) -> BackendClusterArg2 op env (m sh (a,b))     -> (BackendClusterArg2 op env (m sh a),  BackendClusterArg2 op env (m sh b))
+  unpairinfo repr@(ArrayR shr (TupRpair a b)) x = 
+    ( shrinkOrGrow repr (ArrayR shr a) x
+    , shrinkOrGrow repr (ArrayR shr b) x)
 
 foo :: StaticClusterAnalysis op => SubArgs big small -> Args env small -> BackendArgs op env (OutArgsOf small) -> FEnv op env -> BackendCluster op small -> BackendArgs op env (OutArgsOf big)
 foo SubArgsNil                          ArgsNil    ArgsNil  _   _  = ArgsNil
@@ -97,12 +100,13 @@ foo (SubArgKeep `SubArgsLive` subargs)  (a:>:as)   bs       env (_ :>: cs) = cas
   ArgVar _ -> foo subargs as bs env cs
   ArgExp _ -> foo subargs as bs env cs
   ArgFun _ -> foo subargs as bs env cs
-foo (SubArgOut s `SubArgsLive` subargs) (a :>: as) (b:>:bs) env (c :>: cs) = shrinkOrGrow a (grow' s a) b :>: foo subargs as bs env cs
+foo (SubArgOut s `SubArgsLive` subargs) (a :>: as) (b:>:bs) env (c :>: cs) = case a of
+  ArgArray _ repr _ _ -> shrinkOrGrow repr (grow' s repr) b :>: foo subargs as bs env cs
 foo (SubArgsDead subargs)               (a :>: as) bs       env (c :>: cs) = 
   shToOut (varToSh (def a env c)) :>: foo subargs as bs env cs
 
-grow' :: SubTupR big small -> Arg env (m sh small) -> Arg env (m sh big)
-grow' SubTupRskip (ArgArray m (ArrayR shr ty) sh buf) = ArgArray m (ArrayR shr (TupRsingle $ error "fused away output")) sh (TupRsingle $ error "fused away output")
+grow' :: SubTupR big small -> ArrayR (Array sh small) -> ArrayR (Array sh big)
+grow' SubTupRskip (ArrayR shr ty) = ArrayR shr (TupRsingle $ error "fused away output")
 grow' SubTupRkeep a = a
 grow' (SubTupRpair l r) a = error "todo"
 
@@ -114,25 +118,14 @@ makeBackendArg args env c b = go args c (defaultOuts args b) b
       backR = go (right f args) r (rightB args f outputs) (right' (const bcaid) bcaid f bs)
       backL = go (left  f args) l (backleft f backR outputs) (left' (const bcaid) f bs)
       in fuseBack f backL backR
-    go args (SingleOp (Single op soa (SA sort unsort) subargs) _l) outputs bs =
-        slv outToVar subargs 
-      . sort 
-      . mapArgs snd'
-      . soaExpand uncombineB' soa
-      . zipArgs (soaShrink combine soa . unsort $ slv' varout subargs args)
-      $ onOp @op 
-              op 
-              (forgetIn (soaShrink combine soa . unsort $ slv' varout subargs args) 
-                        . mapArgs snd'
-                        . soaShrink combineB' soa . unsort $ zipArgs (slv' varout subargs args) $ inventIn (slv' varout subargs args) (foo subargs args outputs env bs)) 
-              (soaShrink combine soa . unsort $ slv' varout subargs args) 
-              env
+    go args (SingleOp (Single op opArgs) _l) outputs bs =
+      inverseBackendArgs args opArgs $ onOp @op op (backendClusterOutArgs args outputs opArgs) (prjClusterArgs args opArgs) env
 
     combineB   :: Arg env (g (l,r)) -> BackendClusterArg2 op env (g l) -> BackendClusterArg2 op env (g r) -> BackendClusterArg2 op env (g (l,r))
-    combineB a@ArgArray{} = (pairinfo @op) a
+    combineB (ArgArray _ repr _ _) = pairinfo @op repr
     combineB _ = internalError "Expected array"
     uncombineB :: Arg env (g (l,r)) -> BackendClusterArg2 op env (g (l,r)) -> (BackendClusterArg2 op env (g l), BackendClusterArg2 op env (g r))
-    uncombineB a@ArgArray{} = unpairinfo @op a
+    uncombineB (ArgArray _ repr _ _) = unpairinfo @op repr
     uncombineB _ = internalError "Expected array"
     combineB' :: Both (Arg env) (BackendClusterArg2 op env) (g l)
               -> Both (Arg env) (BackendClusterArg2 op env) (g r)
@@ -244,10 +237,10 @@ data Sh' op sh e = Shape' (ShapeR sh) (Embed' op sh)
 splitFromArg' :: (EvalOp op) => FromArg' op env (Value sh (l,r)) -> (FromArg' op env (Value sh l), FromArg' op env (Value sh r))
 splitFromArg' (FromArg v) = bimap FromArg FromArg $ unpair' v
 
-pairInArg :: (EvalOp op) => Arg env (arg (l,r)) -> BackendArgEnvElem op env (InArg (arg l)) ->  BackendArgEnvElem op env (InArg (arg r)) ->  BackendArgEnvElem op env (InArg (arg (l,r)))
-pairInArg a@(ArgArray In  _ _ _) (BAE x b) (BAE y d) = BAE (pair' x y) (pairinfo a b d)
-pairInArg a@(ArgArray Out _ _ _) (BAE x b) (BAE y d) = BAE (pair' x y) (pairinfo a b d)
-pairInArg _ _ _ = error "SOA'd non-array args"
+pairInArg :: (EvalOp op) => Modifier m -> ArrayR (Array sh (l,r)) -> BackendArgEnvElem op env (InArg (m sh l)) ->  BackendArgEnvElem op env (InArg (m sh r)) ->  BackendArgEnvElem op env (InArg (m sh (l,r)))
+pairInArg In  repr (BAE x b) (BAE y d) = BAE (pair' x y) (pairinfo repr b d)
+pairInArg Out repr (BAE x b) (BAE y d) = BAE (pair' x y) (pairinfo repr b d)
+pairInArg _ _ _ _ = error "SOA'd non-array args"
 
 evalCluster :: (EvalOp op) => Cluster op args -> BackendCluster op args -> Args env args -> FEnv op env -> Index op -> EvalMonad op ()
 evalCluster c b args env ix = do
@@ -258,18 +251,126 @@ evalCluster c b args env ix = do
 
 evalOps :: forall op args env. (EvalOp op) => Index op -> Cluster op args -> BackendArgEnv op env (InArgs args) -> Args env args -> FEnv op env -> EvalMonad op (EmbedEnv op env (OutArgs args))
 evalOps ix c ba args env = case c of
-  SingleOp (Single op soas (SA f g) subargs) l
-     -> slvOut args subargs 
-      . outargs f (g $ slv' varout subargs args)
-      . soaOut splitFromArg' (soaShrink combine soas $ g $ slv' varout subargs args) soas
-        <$> evalOp ix l op env (soaIn pairInArg (g $ slv' varout subargs args) soas
-         $ inargs g $ slvIn (flip bvartosh env) subargs ba)
+  SingleOp (Single op cargs) l
+     -> prjOpOutputs args cargs
+        <$> evalOp ix l op env (prjOpInputs env args ba cargs)
   Fused f l r -> do
     lin <- leftIn f ba env
     lout <- evalOps ix l lin (left f args) env
     let rin = rightIn f lout ba
     rout <- evalOps ix r rin (right f args) env
     return $ totalOut f lout rout
+
+prjOpInputs
+  :: forall op env args opArgs.
+     EvalOp op
+  => FEnv op env
+  -> Args env args
+  -> BackendArgEnv op env (InArgs args)
+  -> ClusterArgs (FunToEnv args) opArgs
+  -> Env (BackendArgEnvElem op env) (InArgs opArgs)
+prjOpInputs fenv args bcas = \case
+  opArg :>: opArgs ->
+    prjOpInputs @op fenv args bcas opArgs `Push` prjOpInput @op fenv args bcas opArg
+  ArgsNil -> Empty
+
+argsPrj
+  :: Args env args
+  -> BackendArgEnv op env (InArgs args)
+  -> Idx (FunToEnv args) opArg
+  -> BackendArgEnvElem op env (InArg opArg)
+argsPrj (_ :>: _) (_ `Push` b) ZeroIdx = b -- (a, b)
+argsPrj (_ :>: as) (bs `Push` _) (SuccIdx idx) = argsPrj as bs idx
+
+prjOpInput
+  :: forall op env args opArg.
+     EvalOp op
+  => FEnv op env
+  -> Args env args
+  -> BackendArgEnv op env (InArgs args)
+  -> ClusterArg (FunToEnv args) opArg
+  -> BackendArgEnvElem op env (InArg opArg)
+prjOpInput fenv args bcas (ClusterArgSingle idx) = argsPrj args bcas idx
+prjOpInput fenv args bcas (ClusterArgArray (m :: Modifier m) (shr :: ShapeR sh) _ buffers)
+  = snd $ go buffers
+  where
+    go :: ClusterArgBuffers (FunToEnv args) m sh t -> (TypeR t, BackendArgEnvElem op env (InArg (m sh t)))
+    go (ClusterArgBuffersPair a1 a2)
+      | (tp1, ba1) <- go a1
+      , (tp2, ba2) <- go a2
+      , tp <- (TupRpair tp1 tp2)
+      = (tp, pairInArg m (ArrayR shr tp) ba1 ba2)
+    go (ClusterArgBuffersDead tp idx)
+      = (tp, bvartosh (argsPrj args bcas idx) fenv)
+    go (ClusterArgBuffersLive tp idx)
+      = (tp, argsPrj args bcas idx)
+
+-- Build a PartialEnv, and at the end try to convert the PartialEnv to an Env.
+prjOpOutputs
+  :: forall op env opArgs args.
+     EvalOp op
+  => Args env args
+  -> ClusterArgs (FunToEnv args) opArgs
+  -> EmbedEnv op env (OutArgs opArgs)
+  -> EmbedEnv op env (OutArgs args)
+prjOpOutputs args opArgs result = completeEnv args $ go opArgs result PEnd
+  where
+    go :: ClusterArgs (FunToEnv args) opArgs' -> EmbedEnv op env (OutArgs opArgs') -> PartialEnv (FromArg' op env) (OutArgs args) -> PartialEnv (FromArg' op env) (OutArgs args)
+    go ArgsNil _ accum = accum
+    go (ClusterArgSingle idx :>: as) out accum = case funToEnvPrj args idx of
+      ArgVar _ -> go as out accum
+      ArgExp _ -> go as out accum
+      ArgFun _ -> go as out accum
+      ArgArray Mut _ _ _ -> go as out accum
+      ArgArray _ _ _ _ -> internalError "In or Out array should not occur in ClusterArgSingle"
+    go (ClusterArgArray In  _ _ _ :>: as) out accum = go as out accum
+    go (ClusterArgArray Mut _ _ _ :>: as) out accum = go as out accum
+    go (ClusterArgArray Out _ _ buffers :>: as) (Push out o) accum = go as out $ handleBuffers buffers o accum
+
+    handleBuffers
+      :: ClusterArgBuffers (FunToEnv args) Out sh e
+      -> FromArg' op env (Value sh e)
+      -> PartialEnv (FromArg' op env) (OutArgs args)
+      -> PartialEnv (FromArg' op env) (OutArgs args)
+    handleBuffers (ClusterArgBuffersLive _ idx) value accum = partialUpdate value (toOutArgsIdx args idx) accum
+    handleBuffers (ClusterArgBuffersPair b1 b2) value accum
+      | (value1, value2) <- splitFromArg' value
+      = handleBuffers b1 value1 $ handleBuffers b2 value2 accum
+    handleBuffers _ _ accum = accum
+
+    completeEnv :: Args env args' -> PartialEnv (FromArg' op env) (OutArgs args') -> EmbedEnv op env (OutArgs args')
+    completeEnv (a :>: as) e = case a of
+      ArgVar _ -> completeEnv as e
+      ArgExp _ -> completeEnv as e
+      ArgFun _ -> completeEnv as e
+      ArgArray Mut _ _ _ -> completeEnv as e
+      ArgArray In  _ _ _ -> completeEnv as e
+      ArgArray Out r _ _ -> case e of
+        PPush e' o -> completeEnv as e' `Push` o
+        PNone e'
+          | ArrayR _ TupRunit <- r -> completeEnv as e' `Push` internalError "Unit binding missing in environment. The ClusterArgs didn't use an Out parameter"
+          | otherwise -> completeEnv as e' `Push` internalError "Binding missing in environment. The ClusterArgs didn't use an Out parameter"
+    completeEnv ArgsNil PEnd = Empty
+
+toOutArgsIdx :: Args env args -> Idx (FunToEnv args) (Out sh e) -> Idx (OutArgs args) (Value sh e)
+toOutArgsIdx (a :>: as) (SuccIdx idx) = case a of
+  ArgVar _ -> toOutArgsIdx as idx
+  ArgExp _ -> toOutArgsIdx as idx
+  ArgFun _ -> toOutArgsIdx as idx
+  ArgArray Mut _ _ _ -> toOutArgsIdx as idx
+  ArgArray In _ _ _ -> toOutArgsIdx as idx
+  ArgArray Out _ _ _ -> SuccIdx $ toOutArgsIdx as idx
+toOutArgsIdx (a :>: _) ZeroIdx = ZeroIdx
+
+toOutArgsIdx' :: Args env args -> Idx (FunToEnv args) (Out sh e) -> Idx (FunToEnv (OutArgsOf args)) (Out sh e)
+toOutArgsIdx' (a :>: as) (SuccIdx idx) = case a of
+  ArgVar _ -> toOutArgsIdx' as idx
+  ArgExp _ -> toOutArgsIdx' as idx
+  ArgFun _ -> toOutArgsIdx' as idx
+  ArgArray Mut _ _ _ -> toOutArgsIdx' as idx
+  ArgArray In _ _ _ -> toOutArgsIdx' as idx
+  ArgArray Out _ _ _ -> SuccIdx $ toOutArgsIdx' as idx
+toOutArgsIdx' (a :>: _) ZeroIdx = ZeroIdx
 
 bvartosh :: forall op sh e env. EvalOp op => BackendArgEnvElem op env (Var' sh) -> FEnv op env -> BackendArgEnvElem op env (Sh sh e)
 bvartosh (BAE e b) env = BAE (Shape' (varsToShapeR e) (fromTupR (unit @op) $ mapTupR (embed @op) $ varsGet' e env)) (varToSh b)
@@ -396,6 +497,84 @@ instance TupRmonoid (Sh' op sh) where
   pair' (Shape' shr sh) _ = Shape' shr sh
   unpair' (Shape' shr sh) = (Shape' shr sh, Shape' shr sh)
 
+backendClusterOutArgs
+  :: forall op env args opArgs.
+     StaticClusterAnalysis op
+  => Args env args
+  -> BackendArgs op env (OutArgsOf args)
+  -> PreArgs (ClusterArg (FunToEnv args)) opArgs
+  -> BackendArgs op env (OutArgsOf opArgs)
+backendClusterOutArgs _ _ ArgsNil = ArgsNil
+backendClusterOutArgs args ba (a :>: as) = case prjClusterArg args a of
+  ArgVar _ -> backendClusterOutArgs args ba as
+  ArgExp _ -> backendClusterOutArgs args ba as
+  ArgFun _ -> backendClusterOutArgs args ba as
+  ArgArray In  _ _ _ -> backendClusterOutArgs args ba as
+  ArgArray Mut _ _ _ -> backendClusterOutArgs args ba as
+  ArgArray Out (ArrayR shr _) _ _
+    | ClusterArgArray _ _ _ buffers <- a -> case go shr buffers of
+        (_, Just b) -> b :>: backendClusterOutArgs args ba as
+        _ -> internalError "No BackendClusterArg2. Are all outputs marked as dead?"
+    | otherwise -> internalError "Out array not allowed in ClusterArgSingle"
+  where
+    go :: ShapeR sh -> ClusterArgBuffers (FunToEnv args) Out sh e -> (TypeR e, Maybe (BackendClusterArg2 op env (Out sh e)))
+    go shr (ClusterArgBuffersPair c1 c2)
+      | (tp1, b1) <- go shr c1
+      , (tp2, b2) <- go shr c2
+      , tp <- TupRpair tp1 tp2
+      , repr <- ArrayR shr tp
+      , b <- case (b1, b2) of
+          (Nothing, Nothing) -> Nothing
+          (Just x , Nothing) -> Just $ shrinkOrGrow (ArrayR shr tp1) repr x
+          (Nothing, Just x ) -> Just $ shrinkOrGrow (ArrayR shr tp2) repr x
+          (Just x , Just y ) -> Just $ pairinfo repr x y
+      = (tp, b)
+    go shr (ClusterArgBuffersLive tp idx)
+      = (tp, Just $ funToEnvPrj ba $ toOutArgsIdx' args idx)
+    go shr (ClusterArgBuffersDead tp idx)
+      = (tp, Nothing)
+
+inverseBackendArgs
+  :: forall op env args opArgs.
+     StaticClusterAnalysis op
+  => Args env args
+  -> ClusterArgs (FunToEnv args) opArgs
+  -> BackendArgs op env opArgs
+  -> BackendArgs op env args
+inverseBackendArgs args opArgs bArgs = completeEnv args $ go opArgs bArgs PEnd
+  where
+    go
+      :: ClusterArgs (FunToEnv args) opArgs'
+      -> BackendArgs op env opArgs'
+      -> PartialEnv (BackendClusterArg2 op env) (FunToEnv args)
+      -> PartialEnv (BackendClusterArg2 op env) (FunToEnv args)
+    go ArgsNil _ accum = accum
+    go (ClusterArgSingle idx :>: as) (o :>: os) accum =
+      go as os $ partialUpdate o idx accum
+    go (ClusterArgArray _ shr tp buffers :>: as) (o :>: os) accum =
+      go as os $ handleBuffers shr tp buffers o accum
+    
+    handleBuffers
+      :: ShapeR sh
+      -> TypeR e
+      -> ClusterArgBuffers (FunToEnv args) m sh e
+      -> BackendClusterArg2 op env (m sh e)
+      -> PartialEnv (BackendClusterArg2 op env) (FunToEnv args)
+      -> PartialEnv (BackendClusterArg2 op env) (FunToEnv args)
+    handleBuffers shr tp (ClusterArgBuffersPair b1 b2) value accum
+      | TupRpair t1 t2 <- tp
+      , (value1, value2) <- unpairinfo @op (ArrayR shr tp) value
+      = handleBuffers shr t1 b1 value1 $ handleBuffers shr t2 b2 value2 accum
+      | otherwise = internalError "Pair impossible"
+    handleBuffers _ _ (ClusterArgBuffersLive _ idx) value accum
+      = partialUpdate value idx accum
+    handleBuffers _ _ (ClusterArgBuffersDead _ idx) value accum
+      = partialUpdate (outToVar @op value) idx accum
+
+    completeEnv :: Args env args' -> PartialEnv (BackendClusterArg2 op env) (FunToEnv args') -> BackendArgs op env args'
+    completeEnv (_ :>: as) (os `PPush` o) = o :>: completeEnv as os
+    completeEnv ArgsNil _ = ArgsNil
+    completeEnv (_ :>: as) (PNone os) = internalError "Binding missing in environment. The ClusterArgs didn't use a parameter" :>: completeEnv as os
 
 -- instance EvalOp op => TupRmonoid (Compose (BackendArgEnvElem op env) (Value sh)) where
 --   pair' (Compose (BAE x b)) (Compose (BAE y d)) =
@@ -422,13 +601,13 @@ instance TupRmonoid (Sh' op sh) where
 -- use this to check whether a singleton cluster is a generate, map, etc
 peekSingletonCluster :: (forall args'. op args' -> r) -> Cluster op args -> Maybe r
 peekSingletonCluster k = \case
-  SingleOp (Single op _ _ _) _ -> Just $ k op
+  SingleOp (Single op _) _ -> Just $ k op
   _ -> Nothing -- not a singleton cluster
 
 
 -- only use this function if you know it is a singleton cluster of the right operation
 -- unsafeCoerce here matches the provided function against the type of the actual operation, e.g. Generate
-applySingletonCluster :: forall op env args args' r
+{- applySingletonCluster :: forall op env args args' r
                        . (op args' -> Args env args' -> r)
                        -> Cluster op args
                        -> Args env args
@@ -457,5 +636,5 @@ applySingletonCluster' k f outvar' c args = case c of
         k 
         op 
         $ soaShrink combine soas $ unsort $ slv' varout subargs args
-  _ -> error "not singleton"
+  _ -> error "not singleton" -}
 

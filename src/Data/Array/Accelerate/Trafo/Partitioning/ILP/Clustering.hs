@@ -182,7 +182,7 @@ openReconstruct' singletons labelenv graph clusterslist mlab subclustersmap cons
     makeAST _ [] _ = error "empty AST"
     makeAST env [cluster] prev = case makeCluster env cluster of
       Fold c args -> Exists $ Exec c $ unLabelOp args
-      InitFold o l args -> unfused o l args $
+      InitFold o l args -> singleton l args o $
                             \c args' ->
                                 Exists $ Exec c (mapArgs (\(LOp a _ _) -> a) args')
       NotFold con -> case con of
@@ -277,7 +277,7 @@ openReconstruct' singletons labelenv graph clusterslist mlab subclustersmap cons
     fuseCluster :: FoldType op env -> FoldType op env -> FoldType op env
     fuseCluster (Fold cluster cargs) (InitFold op l largs) =
       consCluster l largs op cargs cluster Fold
-    fuseCluster (InitFold op l largs) x = unfused op l largs $ \c cargs -> fuseCluster (Fold c cargs) x
+    fuseCluster (InitFold op l largs) x = singleton l largs op $ \c cargs -> fuseCluster (Fold c cargs) x
     fuseCluster Fold{} Fold{} = error "fuseCluster got non-leaf as second argument" -- Should never happen
     fuseCluster NotFold{}   _ = error "fuseCluster encountered NotFold" -- Should only occur in singleton clusters
     fuseCluster _   NotFold{} = error "fuseCluster encountered NotFold" -- Should only occur in singleton clusters
@@ -292,14 +292,6 @@ data FoldType op env
   | forall args. InitFold (op args) Label (LabelledArgsOp op env args)
   | NotFold (Construction op)
 
-
-
-unfused :: forall op args env r. MakesILP op => op args -> Label -> LabelledArgsOp op env args -> (forall args'. Clustered op args' -> LabelledArgsOp op env args' -> r) -> r
-unfused op l largs k = singleton l largs op \case
-  c@(Clustered (SingleOp (Single (_op :: op argsToo) soas (SA sort _unsort) subargs) _l) _b) ->
-    case unsafeCoerce Refl of -- we know that `_op` is the same as `op`
-      (Refl :: args :~: argsToo) -> k c (slv louttovar subargs $ sort $ soaExpand splitLabelledArgsOp soas largs)
-  _ -> error "singleton gave fused"
 
 louttovar :: LabelledArgOp op env (Out sh e) -> LabelledArgOp op env (Var' sh)
 louttovar (LOp a (_,ls) b) = LOp (outvar a) (NotArr, ls) b -- unsafe marker: maybe this NotArr ends up a problem?
@@ -335,7 +327,7 @@ consCluster :: forall env args extra op r
             -> Clustered op args
             -> (forall args'. Clustered op args' -> LabelledArgsOp op env args' -> r)
             -> r
-consCluster l lop op lcluster cluster k = unfused op l lop $ \c lop' ->
+consCluster l lop op lcluster cluster k = singleton l lop op $ \c lop' ->
   fuse 
     lop'
     lcluster 
