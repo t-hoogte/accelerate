@@ -85,19 +85,6 @@ data SingleOp op args where
          -> ClusterArgs (FunToEnv args) opArgs
          -> SingleOp op args
 
-data SortedArgs args sorted where
-  SA :: (forall f. PreArgs f args -> PreArgs f sorted)
-     -> (forall f. PreArgs f sorted -> PreArgs f args)
-     -> SortedArgs args sorted
-
-data SOAs args expanded where
-  SOArgsNil :: SOAs () ()
-  SOArgsCons :: SOAs args expanded -> SOA arg expanded both -> SOAs (arg -> args) both
-
-data SOA arg appendto result where
-  SOArgSingle :: SOA arg args (arg -> args)
-  SOArgTup :: SOA (f right) args args' -> SOA (f left) args' args'' -> SOA (f (left,right)) args args''
-
 type ClusterArgs env = PreArgs (ClusterArg env)
 data ClusterArg env t where
   -- Perhaps require that 't' is not 'In sh e' or 'Out sh e'
@@ -163,32 +150,6 @@ data Fusion largs rars args where
 deriving instance Show (Fusion l r total)
 
 
-soaShrink :: forall args expanded f
-           .
-          --  (forall a. Show (f a))
-          -- => 
-          (forall l r g. f (g l) -> f (g r) -> f (g (l,r)))
-          -> SOAs args expanded -> PreArgs f expanded -> PreArgs f args
-soaShrink _ SOArgsNil ArgsNil = ArgsNil
-soaShrink f (SOArgsCons soas soa) args = case go soa args of (arg :>: args') -> arg :>: soaShrink f soas args'
-  where
-    go :: SOA arg appendto result -> PreArgs f result -> PreArgs f (arg -> appendto)
-    go SOArgSingle args' = args'
-    go (SOArgTup soar soal) args' = case go soal args' of
-      argl :>: args'' -> case go soar args'' of
-        argr :>: args''' -> f argl argr :>: args'''
-
-soaExpand :: forall args expanded f. (forall l r g. f (g (l,r)) -> (f (g l), f (g r))) -> SOAs args expanded -> PreArgs f args -> PreArgs f expanded
-soaExpand _ SOArgsNil ArgsNil = ArgsNil
-soaExpand f (SOArgsCons soas soa) (arg :>: args) = go soa arg $ soaExpand f soas args
-  where
-    go :: SOA arg appendto result -> f arg -> PreArgs f appendto -> PreArgs f result
-    go SOArgSingle arg appendto = arg :>: appendto
-    go (SOArgTup soar soal) arg appendto = let (l,r) = f arg
-                                               appendtor = go soar r appendto
-                                           in go soal l appendtor
-
-
 combine :: Arg env (f l) -> Arg env (f r) -> Arg env (f (l,r))
 combine (ArgArray m (ArrayR shr lr) sh l) (ArgArray _ (ArrayR _ rr) _ r) = ArgArray m (ArrayR shr (TupRpair lr rr)) sh (TupRpair l r)
 combine _ _ = error "SOA'd non-arrays"
@@ -206,75 +167,6 @@ splitLabelledArgsOp :: LabelledArgOp op env (f (l,r)) -> (LabelledArgOp op env (
 splitLabelledArgsOp (LOp _ (Arr (TupRsingle _), _) _) = error "pair in single"
 splitLabelledArgsOp (LOp arg (Arr (TupRpair labl labr), labs) b) = bimap (flip (`LOp` (Arr labl, labs)) b) (flip (`LOp` (Arr labr, labs)) b) $ split arg
 splitLabelledArgsOp (LOp _ (NotArr, _) _) = error "SOA'd non-array arg"
-
-soaOut :: forall env args expanded f. (forall sh l r. f (Value sh (l,r)) -> (f (Value sh l),f (Value sh r))) -> Args env args -> SOAs args expanded -> Env f (OutArgs args) -> Env f (OutArgs expanded)
-soaOut _ ArgsNil SOArgsNil Empty = Empty
-soaOut k (ArgArray Out _ _ _:>:args) (SOArgsCons soas soa) (Push env arg) = go soa arg $ soaOut k args soas env
-  where
-    go :: SOA (Out sh e) appendto both -> f (Value sh e) -> Env f (OutArgs appendto) -> Env f (OutArgs both)
-    go SOArgSingle v appendto = Push appendto v
-    go (SOArgTup soar soal) v appendto = go soal (fst $ k v) $ go soar (snd $ k v) appendto
-soaOut k (arg :>: args) (SOArgsCons soas soa) env -- we match on 'ArgArray Out' above, so the unsafe calls are fine, because the arg is not an output
-  | Just Refl <- outArgsNotOut @args arg
-  , Just Refl <- soaArgNotOut soa arg = soaOut k args soas env
-  | otherwise = error "Out argument impossible"
-
--- If 'a' is not an Out array, it returns the proof that OutArgs args' is equal to OutArgs args
-outArgsNotOut :: (args' ~ (a -> args)) => Arg env a -> Maybe (OutArgs args' :~: OutArgs args)
-outArgsNotOut (ArgVar _) = Just Refl
-outArgsNotOut (ArgExp _) = Just Refl
-outArgsNotOut (ArgFun _) = Just Refl
-outArgsNotOut (ArgArray In _ _ _) = Just Refl
-outArgsNotOut (ArgArray Mut _ _ _) = Just Refl
-outArgsNotOut (ArgArray Out _ _ _) = Nothing
-
--- If 'arg' is not an Out array, it returns the proof that OutArgs appendto is equal to OutArgs result
-soaArgNotOut :: SOA arg appendto result -> Arg env arg -> Maybe (OutArgs appendto :~: OutArgs result)
-soaArgNotOut SOArgSingle arg = case arg of
-  ArgVar _ -> Just Refl
-  ArgExp _ -> Just Refl
-  ArgFun _ -> Just Refl
-  ArgArray In _ _ _ -> Just Refl
-  ArgArray Mut _ _ _ -> Just Refl
-  ArgArray Out _ _ _ -> Nothing
-soaArgNotOut soa (ArgArray Out _ _ _) = Nothing
-soaArgNotOut soa (ArgArray m _ _ _) = go m soa
-  where
-    go :: Modifier f -> SOA (f sh e) args args' -> Maybe (OutArgs args :~: OutArgs args')
-    go m (SOArgTup right left)
-      | Just Refl <- go m right
-      = go m left
-      | otherwise = Nothing
-    go In SOArgSingle = Just Refl
-    go Mut SOArgSingle = Just Refl
-    go Out _ = error "Out impossible. This is already catched in soaArgNotOut"
-
-soaIn :: forall f env args expanded. (forall aarrgg l r. Arg env (aarrgg (l,r)) -> f (InArg (aarrgg l)) -> f (InArg (aarrgg r)) -> f (InArg (aarrgg (l,r)))) -> Args env expanded -> SOAs args expanded -> Env f (InArgs expanded) -> Env f (InArgs args)
-soaIn _ ArgsNil SOArgsNil Empty = Empty
-soaIn k args (SOArgsCons soas soa) expanded = case go args soa expanded of
-  (_, v, rest, args') -> Push (soaIn k args' soas rest) v
-  where
-    go :: Args env result -> SOA arg appendto result -> Env f (InArgs result) -> (Arg env arg, f (InArg arg), Env f (InArgs appendto), Args env appendto)
-    go (a:>:args) SOArgSingle (Push env v) = (a, v, env, args)
-    go args (SOArgTup soar soal) env = case go args soal env of
-      (la, l, env', args') -> case go args' soar env' of
-        (ra, r, env'', args'') -> (combine la ra, k (combine la ra) l r, env'', args'')
-
-emptySoaImpossible :: SOA a b () -> anything
-emptySoaImpossible (SOArgTup _ soa) = emptySoaImpossible soa
-
-
-
-
-justOut :: Args env args -> PreArgs f args -> PreArgs f (OutArgsOf args)
-justOut ArgsNil ArgsNil = ArgsNil
-justOut (ArgArray Out _ _ _ :>: args) (arg :>: fs) = arg :>: justOut args fs
-justOut (ArgVar _           :>: args) (_   :>: fs) = justOut args fs
-justOut (ArgExp _           :>: args) (_   :>: fs) = justOut args fs
-justOut (ArgFun _           :>: args) (_   :>: fs) = justOut args fs
-justOut (ArgArray In  _ _ _ :>: args) (_   :>: fs) = justOut args fs
-justOut (ArgArray Mut _ _ _ :>: args) (_   :>: fs) = justOut args fs
-
 
 
 left :: Fusion largs rargs args -> Args env args -> Args env largs

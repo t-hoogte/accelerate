@@ -44,7 +44,6 @@ import Data.Type.Equality
 import Data.Array.Accelerate.Type (ScalarType)
 import Unsafe.Coerce (unsafeCoerce)
 import Data.Array.Accelerate.Representation.Shape (ShapeR (..))
-import Control.Applicative
 
 
 type BackendArgs op env = PreArgs (BackendClusterArg2 op env)
@@ -90,6 +89,7 @@ class ( MakesILP op
   unpairinfo repr@(ArrayR shr (TupRpair a b)) x = 
     ( shrinkOrGrow repr (ArrayR shr a) x
     , shrinkOrGrow repr (ArrayR shr b) x)
+  unpairinfo _ _ = internalError "Pair impossible"
 
 foo :: StaticClusterAnalysis op => SubArgs big small -> Args env small -> BackendArgs op env (OutArgsOf small) -> FEnv op env -> BackendCluster op small -> BackendArgs op env (OutArgsOf big)
 foo SubArgsNil                          ArgsNil    ArgsNil  _   _  = ArgsNil
@@ -100,13 +100,13 @@ foo (SubArgKeep `SubArgsLive` subargs)  (a:>:as)   bs       env (_ :>: cs) = cas
   ArgVar _ -> foo subargs as bs env cs
   ArgExp _ -> foo subargs as bs env cs
   ArgFun _ -> foo subargs as bs env cs
-foo (SubArgOut s `SubArgsLive` subargs) (a :>: as) (b:>:bs) env (c :>: cs) = case a of
+foo (SubArgOut s `SubArgsLive` subargs) (a :>: as) (b:>:bs) env (_ :>: cs) = case a of
   ArgArray _ repr _ _ -> shrinkOrGrow repr (grow' s repr) b :>: foo subargs as bs env cs
 foo (SubArgsDead subargs)               (a :>: as) bs       env (c :>: cs) = 
   shToOut (varToSh (def a env c)) :>: foo subargs as bs env cs
 
 grow' :: SubTupR big small -> ArrayR (Array sh small) -> ArrayR (Array sh big)
-grow' SubTupRskip (ArrayR shr ty) = ArrayR shr (TupRsingle $ error "fused away output")
+grow' SubTupRskip (ArrayR shr _) = ArrayR shr (TupRsingle $ error "fused away output")
 grow' SubTupRkeep a = a
 grow' (SubTupRpair l r) a = error "todo"
 
@@ -118,25 +118,8 @@ makeBackendArg args env c b = go args c (defaultOuts args b) b
       backR = go (right f args) r (rightB args f outputs) (right' (const bcaid) bcaid f bs)
       backL = go (left  f args) l (backleft f backR outputs) (left' (const bcaid) f bs)
       in fuseBack f backL backR
-    go args (SingleOp (Single op opArgs) _l) outputs bs =
+    go args (SingleOp (Single op opArgs) _l) outputs _ =
       inverseBackendArgs args opArgs $ onOp @op op (backendClusterOutArgs args outputs opArgs) (prjClusterArgs args opArgs) env
-
-    combineB   :: Arg env (g (l,r)) -> BackendClusterArg2 op env (g l) -> BackendClusterArg2 op env (g r) -> BackendClusterArg2 op env (g (l,r))
-    combineB (ArgArray _ repr _ _) = pairinfo @op repr
-    combineB _ = internalError "Expected array"
-    uncombineB :: Arg env (g (l,r)) -> BackendClusterArg2 op env (g (l,r)) -> (BackendClusterArg2 op env (g l), BackendClusterArg2 op env (g r))
-    uncombineB (ArgArray _ repr _ _) = unpairinfo @op repr
-    uncombineB _ = internalError "Expected array"
-    combineB' :: Both (Arg env) (BackendClusterArg2 op env) (g l)
-              -> Both (Arg env) (BackendClusterArg2 op env) (g r)
-              -> Both (Arg env) (BackendClusterArg2 op env) (g (l, r))
-    combineB' (Both al l) (Both ar r) = Both (combine al ar) (combineB (combine al ar) l r)
-    uncombineB' :: Both (Arg env) (BackendClusterArg2 op env) (g (l, r))
-                -> (Both (Arg env) (BackendClusterArg2 op env) (g l),
-                    Both (Arg env) (BackendClusterArg2 op env) (g r))
-    uncombineB' (Both a x) = let (al, ar) = split a
-                                 (l, r) = uncombineB a x
-                             in (Both al l, Both ar r)
 
     defaultOuts :: Args env args -> BackendCluster op args -> BackendArgs op env (OutArgsOf args)
     defaultOuts args backendcluster = forgetIn args $ fuseArgsWith args backendcluster (\arg b -> def arg env b)
@@ -147,9 +130,9 @@ makeBackendArg args env c b = go args c (defaultOuts args b) b
              -> BackendArgs op env rargs
              -> BackendArgs op env args
     fuseBack EmptyF ArgsNil ArgsNil = ArgsNil
-    fuseBack (Vertical ar f) (l :>: ls) (r :>: rs) = inToVar r :>: fuseBack f ls rs
-    fuseBack (Horizontal  f) (l :>: ls) (r :>: rs) = l :>: fuseBack f ls rs
-    fuseBack (Diagonal    f) (l :>: ls) (r :>: rs) = l :>: fuseBack f ls rs
+    fuseBack (Vertical _  f) (_ :>: ls) (r :>: rs) = inToVar r :>: fuseBack f ls rs
+    fuseBack (Horizontal  f) (l :>: ls) (_ :>: rs) = l :>: fuseBack f ls rs
+    fuseBack (Diagonal    f) (l :>: ls) (_ :>: rs) = l :>: fuseBack f ls rs
     fuseBack (IntroI1     f) (l :>: ls)        rs  = l :>: fuseBack f ls rs
     fuseBack (IntroI2     f)        ls  (r :>: rs) = r :>: fuseBack f ls rs
     fuseBack (IntroO1     f) (l :>: ls)        rs  = l :>: fuseBack f ls rs
@@ -172,9 +155,9 @@ makeBackendArg args env c b = go args c (defaultOuts args b) b
              -> BackendArgs op env (OutArgsOf args)
              -> BackendArgs op env (OutArgsOf largs)
     backleft EmptyF ArgsNil ArgsNil = ArgsNil
-    backleft (Vertical ar f) (r:>:rs)      as  = (valueToOut . inToValue) r :>: backleft f rs as
+    backleft (Vertical _  f) (r:>:rs)      as  = (valueToOut . inToValue) r :>: backleft f rs as
     backleft (Horizontal  f) (_:>:rs)      as  =                                backleft f rs as
-    backleft (Diagonal    f) (r:>:rs) (a:>:as) = (valueToOut . inToValue) r :>: backleft f rs as -- just using 'a' is also type correct, and maybe also fine? Not sure anymore
+    backleft (Diagonal    f) (r:>:rs) (_:>:as) = (valueToOut . inToValue) r :>: backleft f rs as -- just using 'a' is also type correct, and maybe also fine? Not sure anymore
     backleft (IntroI1     f)      rs       as  =                                backleft f rs as
     backleft (IntroI2     f) (_:>:rs)      as  =                                backleft f rs as
     backleft (IntroO1     f)      rs  (a:>:as) = a                          :>: backleft f rs as
@@ -200,10 +183,6 @@ forgetIn (ArgVar _           :>: args) (_   :>: out) = forgetIn args out
 forgetIn (ArgExp _           :>: args) (_   :>: out) = forgetIn args out
 forgetIn (ArgFun _           :>: args) (_   :>: out) = forgetIn args out
 
-
-
-sortingOnOut :: (forall f. PreArgs f args -> PreArgs f sorted) -> Args env args -> PreArgs g (OutArgsOf args) -> PreArgs g (OutArgsOf sorted)
-sortingOnOut sort args out = justOut (sort args) $ sort $ inventIn args out
 
 
 class (StaticClusterAnalysis op, Monad (EvalMonad op), TupRmonoid (Embed' op))
@@ -279,8 +258,9 @@ argsPrj
   -> BackendArgEnv op env (InArgs args)
   -> Idx (FunToEnv args) opArg
   -> BackendArgEnvElem op env (InArg opArg)
-argsPrj (_ :>: _) (_ `Push` b) ZeroIdx = b -- (a, b)
+argsPrj (_ :>: _) (_ `Push` b) ZeroIdx = b
 argsPrj (_ :>: as) (bs `Push` _) (SuccIdx idx) = argsPrj as bs idx
+argsPrj ArgsNil _ idx = case idx of {}
 
 prjOpInput
   :: forall op env args opArg.
@@ -290,7 +270,7 @@ prjOpInput
   -> BackendArgEnv op env (InArgs args)
   -> ClusterArg (FunToEnv args) opArg
   -> BackendArgEnvElem op env (InArg opArg)
-prjOpInput fenv args bcas (ClusterArgSingle idx) = argsPrj args bcas idx
+prjOpInput _    args bcas (ClusterArgSingle idx) = argsPrj args bcas idx
 prjOpInput fenv args bcas (ClusterArgArray (m :: Modifier m) (shr :: ShapeR sh) _ buffers)
   = snd $ go buffers
   where
@@ -347,9 +327,7 @@ prjOpOutputs args opArgs result = completeEnv args $ go opArgs result PEnd
       ArgArray In  _ _ _ -> completeEnv as e
       ArgArray Out r _ _ -> case e of
         PPush e' o -> completeEnv as e' `Push` o
-        PNone e'
-          | ArrayR _ TupRunit <- r -> completeEnv as e' `Push` internalError "Unit binding missing in environment. The ClusterArgs didn't use an Out parameter"
-          | otherwise -> completeEnv as e' `Push` internalError "Binding missing in environment. The ClusterArgs didn't use an Out parameter"
+        _ -> internalError  "Binding missing in environment. The ClusterArgs didn't use an Out parameter"
     completeEnv ArgsNil PEnd = Empty
 
 toOutArgsIdx :: Args env args -> Idx (FunToEnv args) (Out sh e) -> Idx (OutArgs args) (Value sh e)
@@ -361,6 +339,7 @@ toOutArgsIdx (a :>: as) (SuccIdx idx) = case a of
   ArgArray In _ _ _ -> toOutArgsIdx as idx
   ArgArray Out _ _ _ -> SuccIdx $ toOutArgsIdx as idx
 toOutArgsIdx (a :>: _) ZeroIdx = ZeroIdx
+toOutArgsIdx ArgsNil idx = case idx of {}
 
 toOutArgsIdx' :: Args env args -> Idx (FunToEnv args) (Out sh e) -> Idx (FunToEnv (OutArgsOf args)) (Out sh e)
 toOutArgsIdx' (a :>: as) (SuccIdx idx) = case a of
@@ -370,13 +349,14 @@ toOutArgsIdx' (a :>: as) (SuccIdx idx) = case a of
   ArgArray Mut _ _ _ -> toOutArgsIdx' as idx
   ArgArray In _ _ _ -> toOutArgsIdx' as idx
   ArgArray Out _ _ _ -> SuccIdx $ toOutArgsIdx' as idx
-toOutArgsIdx' (a :>: _) ZeroIdx = ZeroIdx
+toOutArgsIdx' (_ :>: _) ZeroIdx = ZeroIdx
+toOutArgsIdx' ArgsNil idx = case idx of {}
 
 bvartosh :: forall op sh e env. EvalOp op => BackendArgEnvElem op env (Var' sh) -> FEnv op env -> BackendArgEnvElem op env (Sh sh e)
 bvartosh (BAE e b) env = BAE (Shape' (varsToShapeR e) (fromTupR (unit @op) $ mapTupR (embed @op) $ varsGet' e env)) (varToSh b)
 
 readInputs :: forall args env op. (EvalOp op) => Index op -> Args env args -> BackendArgs op env args -> FEnv op env -> EvalMonad op (BackendArgEnv op env (InArgs args))
-readInputs _ ArgsNil ArgsNil env = pure Empty
+readInputs _ ArgsNil ArgsNil _ = pure Empty
 readInputs ix (arg :>: args) (bca :>: bcas) env = case arg of
   ArgVar x -> flip Push (BAE x bca) <$> readInputs ix args bcas env
   ArgExp x -> flip Push (BAE x bca) <$> readInputs ix args bcas env
@@ -389,7 +369,7 @@ readInputs ix (arg :>: args) (bca :>: bcas) env = case arg of
     TupRpair{} -> error "not SOA'd"
 
 writeOutputs :: forall args env op. (EvalOp op) => Index op -> Args env args -> EmbedEnv op env (OutArgs args) -> FEnv op env -> EvalMonad op ()
-writeOutputs ix ArgsNil Empty _ = pure ()
+writeOutputs _  ArgsNil Empty _ = pure ()
 writeOutputs ix (ArgArray Out (ArrayR _ r) sh buf :>: args) (PushFA env (Value' x _)) env'
   | TupRsingle t <- r = writeOutput @op t sh buf env' ix x >> writeOutputs ix args env env'
   | TupRunit <- r = writeOutputs ix args env env'
@@ -402,15 +382,15 @@ writeOutputs ix (ArgArray Mut _ _ _ :>: args) env env' = writeOutputs ix args en
 
 leftIn :: forall largs rargs args op env. (EvalOp op) => Fusion largs rargs args -> BackendArgEnv op env (InArgs args) -> FEnv op env -> EvalMonad op (BackendArgEnv op env (InArgs largs))
 leftIn EmptyF Empty _ = pure Empty
-leftIn (Vertical ar f) (Push env (BAE x b)) env'= Push <$> leftIn f env env' <*> ((`BAE` varToSh b) . Shape' (varsToShapeR x) <$> indexsh' @op x env')
-leftIn (Horizontal  f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
-leftIn (Diagonal    f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
-leftIn (IntroI1     f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
-leftIn (IntroI2     f) (Push env _  ) env' =                  leftIn f env env'
-leftIn (IntroO1     f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
-leftIn (IntroO2     f) (Push env _  ) env' =                  leftIn f env env'
-leftIn (IntroL      f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
-leftIn (IntroR      f) (Push env _  ) env' =                  leftIn f env env'
+leftIn (Vertical _ f) (Push env (BAE x b)) env'= Push <$> leftIn f env env' <*> ((`BAE` varToSh b) . Shape' (varsToShapeR x) <$> indexsh' @op x env')
+leftIn (Horizontal f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
+leftIn (Diagonal   f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
+leftIn (IntroI1    f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
+leftIn (IntroI2    f) (Push env _  ) env' =                  leftIn f env env'
+leftIn (IntroO1    f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
+leftIn (IntroO2    f) (Push env _  ) env' =                  leftIn f env env'
+leftIn (IntroL     f) (Push env bae) env' = (`Push` bae) <$> leftIn f env env'
+leftIn (IntroR     f) (Push env _  ) env' =                  leftIn f env env'
 
 rightIn :: (EvalOp op)
         => Fusion largs rargs args
@@ -452,7 +432,7 @@ totalOut :: (EvalOp op)
          -> EmbedEnv op env (OutArgs rargs)
          -> EmbedEnv op env (OutArgs args)
 totalOut EmptyF Empty Empty = Empty
-totalOut (Vertical ar f) (Push l _)      r    =       totalOut f l r
+totalOut (Vertical _ f) (Push l _)      r    =       totalOut f l r
 totalOut (Horizontal f)       l         r    =       totalOut f l r
 totalOut (Diagonal   f) (Push l o)      r    = Push (totalOut f l r) o
 totalOut (IntroI1    f)       l         r    =       totalOut f l r
@@ -529,9 +509,9 @@ backendClusterOutArgs args ba (a :>: as) = case prjClusterArg args a of
           (Nothing, Just x ) -> Just $ shrinkOrGrow (ArrayR shr tp2) repr x
           (Just x , Just y ) -> Just $ pairinfo repr x y
       = (tp, b)
-    go shr (ClusterArgBuffersLive tp idx)
+    go _ (ClusterArgBuffersLive tp idx)
       = (tp, Just $ funToEnvPrj ba $ toOutArgsIdx' args idx)
-    go shr (ClusterArgBuffersDead tp idx)
+    go _ (ClusterArgBuffersDead tp _)
       = (tp, Nothing)
 
 inverseBackendArgs
@@ -574,7 +554,7 @@ inverseBackendArgs args opArgs bArgs = completeEnv args $ go opArgs bArgs PEnd
     completeEnv :: Args env args' -> PartialEnv (BackendClusterArg2 op env) (FunToEnv args') -> BackendArgs op env args'
     completeEnv (_ :>: as) (os `PPush` o) = o :>: completeEnv as os
     completeEnv ArgsNil _ = ArgsNil
-    completeEnv (_ :>: as) (PNone os) = internalError "Binding missing in environment. The ClusterArgs didn't use a parameter" :>: completeEnv as os
+    completeEnv _ _ = internalError "Binding missing in environment. The ClusterArgs didn't use a parameter"
 
 -- instance EvalOp op => TupRmonoid (Compose (BackendArgEnvElem op env) (Value sh)) where
 --   pair' (Compose (BAE x b)) (Compose (BAE y d)) =
