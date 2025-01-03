@@ -47,8 +47,6 @@ import Data.Array.Accelerate.Representation.Shape (ShapeR (..))
 
 
 type BackendArgs op env = PreArgs (BackendClusterArg2 op env)
-type BackendEnv op env = Env (BackendEnvElem op env)
-data BackendEnvElem op env arg = BEE (ToArg env arg) (BackendClusterArg2 op env arg)
 type BackendArgEnv op env = Env (BackendArgEnvElem op env)
 data BackendArgEnvElem op env arg = BAE (FromArg env (Embed op arg)) (BackendClusterArg2 op env arg)
 type EmbedEnv op env = Env (FromArg' op env)
@@ -90,25 +88,6 @@ class ( MakesILP op
     ( shrinkOrGrow repr (ArrayR shr a) x
     , shrinkOrGrow repr (ArrayR shr b) x)
   unpairinfo _ _ = internalError "Pair impossible"
-
-foo :: StaticClusterAnalysis op => SubArgs big small -> Args env small -> BackendArgs op env (OutArgsOf small) -> FEnv op env -> BackendCluster op small -> BackendArgs op env (OutArgsOf big)
-foo SubArgsNil                          ArgsNil    ArgsNil  _   _  = ArgsNil
-foo (SubArgKeep `SubArgsLive` subargs)  (a:>:as)   bs       env (_ :>: cs) = case a of
-  ArgArray Out _ _ _ -> case bs of (b:>:bs') -> b :>: foo subargs as bs' env cs
-  ArgArray In  _ _ _ -> foo subargs as bs env cs
-  ArgArray Mut _ _ _ -> foo subargs as bs env cs
-  ArgVar _ -> foo subargs as bs env cs
-  ArgExp _ -> foo subargs as bs env cs
-  ArgFun _ -> foo subargs as bs env cs
-foo (SubArgOut s `SubArgsLive` subargs) (a :>: as) (b:>:bs) env (_ :>: cs) = case a of
-  ArgArray _ repr _ _ -> shrinkOrGrow repr (grow' s repr) b :>: foo subargs as bs env cs
-foo (SubArgsDead subargs)               (a :>: as) bs       env (c :>: cs) = 
-  shToOut (varToSh (def a env c)) :>: foo subargs as bs env cs
-
-grow' :: SubTupR big small -> ArrayR (Array sh small) -> ArrayR (Array sh big)
-grow' SubTupRskip (ArrayR shr _) = ArrayR shr (TupRsingle $ error "fused away output")
-grow' SubTupRkeep a = a
-grow' (SubTupRpair l r) a = error "todo"
 
 makeBackendArg :: forall op env args. StaticClusterAnalysis op => Args env args -> FEnv op env -> Cluster op args -> BackendCluster op args -> BackendArgs op env args
 makeBackendArg args env c b = go args c (defaultOuts args b) b
@@ -325,7 +304,7 @@ prjOpOutputs args opArgs result = completeEnv args $ go opArgs result PEnd
       ArgFun _ -> completeEnv as e
       ArgArray Mut _ _ _ -> completeEnv as e
       ArgArray In  _ _ _ -> completeEnv as e
-      ArgArray Out r _ _ -> case e of
+      ArgArray Out _ _ _ -> case e of
         PPush e' o -> completeEnv as e' `Push` o
         _ -> internalError  "Binding missing in environment. The ClusterArgs didn't use an Out parameter"
     completeEnv ArgsNil PEnd = Empty
@@ -338,7 +317,7 @@ toOutArgsIdx (a :>: as) (SuccIdx idx) = case a of
   ArgArray Mut _ _ _ -> toOutArgsIdx as idx
   ArgArray In _ _ _ -> toOutArgsIdx as idx
   ArgArray Out _ _ _ -> SuccIdx $ toOutArgsIdx as idx
-toOutArgsIdx (a :>: _) ZeroIdx = ZeroIdx
+toOutArgsIdx (_ :>: _) ZeroIdx = ZeroIdx
 toOutArgsIdx ArgsNil idx = case idx of {}
 
 toOutArgsIdx' :: Args env args -> Idx (FunToEnv args) (Out sh e) -> Idx (FunToEnv (OutArgsOf args)) (Out sh e)
@@ -398,7 +377,7 @@ rightIn :: (EvalOp op)
         -> BackendArgEnv op env  ( InArgs  args)
         -> BackendArgEnv op env  ( InArgs rargs)
 rightIn EmptyF Empty Empty = Empty
-rightIn (Vertical ar f) (PushFA lenv fa) (Push env (BAE _ b)) = Push (rightIn f lenv env) (BAE fa $ varToValue b)
+rightIn (Vertical _  f) (PushFA lenv fa) (Push env (BAE _ b)) = Push (rightIn f lenv env) (BAE fa $ varToValue b)
 rightIn (Horizontal  f)         lenv     (Push env bae      ) = Push (rightIn f lenv env) bae
 rightIn (Diagonal    f) (PushFA lenv fa) (Push env (BAE _ b)) = Push (rightIn f lenv env) (BAE fa $ shToValue b)
 rightIn (IntroI1     f)         lenv     (Push env _        ) =       rightIn f lenv env
