@@ -66,7 +66,6 @@ import Data.Array.Accelerate.Pretty (prettyOpenAcc)
 import Data.Array.Accelerate.Pretty.Partitioned ()
 import Data.String (fromString)
 import Data.Char (toUpper)
-import Data.Text.Lazy.Builder hiding (fromString)
 import qualified Data.Array.Accelerate.AST.Operation as Operation
 import qualified Data.Array.Accelerate.Trafo.Partitioning.ILP.Graph as Graph
 import Data.Array.Accelerate.Pretty.Print (configPlain, Val (Empty))

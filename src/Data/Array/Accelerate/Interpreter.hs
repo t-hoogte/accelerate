@@ -673,8 +673,12 @@ evalClusterInterpreter (Clustered c b) args env =
 
 
 iterationsize :: Cluster InterpretOp args -> BackendArgs InterpretOp env args -> Int
-iterationsize (Op _ _) ArgsNil = 0
-iterationsize (Op _ _) ((BCA _ n) :>: args) = if n==0 then iterationsize (Op undefined undefined) args else n
+iterationsize (SingleOp _ _) args' = go args'
+  where
+    go :: BackendArgs InterpretOp env args -> Int
+    go ((BCA _ 0) :>: args) = go args
+    go ((BCA _ n) :>: _) = n
+    go ArgsNil = 0
 iterationsize (P.Fused f l r) b = 
   let lsz = iterationsize l (left' (\_ (BCA f x) -> BCA f x) f b) 
   in if lsz == 0 
