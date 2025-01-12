@@ -238,7 +238,7 @@ simplify' uniquenesses = \case
           let
             bnd'' = bnd' env
             env' = bindingEnv setBnd lhs bnd'' (invalidate setBnd env)
-          in bindLet lhs us bnd'' (body' env')
+          in alet' lhs us bnd'' (body' env')
       )
   Alloc shr tp sh -> (IdxSet.empty, \env -> Alloc shr tp $ mapTupR (weaken $ substitute env) sh)
   Use tp 1 buffer ->
@@ -288,22 +288,6 @@ simplifyReturnVars env (TupRsingle Shared) v = mapTupR (weaken $ substitute env)
 simplifyReturnVars env (TupRsingle Unique) v = mapTupR (weaken $ substituteOutput env) v
 simplifyReturnVars _   TupRunit _ = TupRunit
 simplifyReturnVars _   _ _ = internalError "Tuple mismatch"
-
-bindLet :: forall env env' op t s. GLeftHandSide t env env' -> Uniquenesses t -> OperationAcc op env t -> OperationAcc op env' s -> OperationAcc op env s
-bindLet (LeftHandSidePair l1 l2) (TupRpair u1 u2) (Compute (Pair e1 e2))
-  = bindLet l1 u1 (Compute e1) . bindLet l2 u2 (Compute $ weakenArrayInstr (weakenWithLHS l1) e2)
-bindLet (LeftHandSidePair l1 l2) (TupRpair u1 u2) (Return (TupRpair v1 v2))
-  = bindLet l1 u1 (Return v1) . bindLet l2 u2 (Return $ mapTupR (weaken $ weakenWithLHS l1) v2)
-bindLet lhs@(LeftHandSideWildcard _) us bnd = case bnd of
-  Compute _ -> id -- Drop this binding, as it has no observable effect
-  Return _  -> id
-  Alloc{}   -> id
-  Use{}     -> id
-  Unit _    -> id
-  _ -> Alet lhs us bnd -- Might have a side effect
-bindLet lhs@(LeftHandSideSingle _) us (Compute (ArrayInstr (Parameter (Var tp ix)) _))
-  = Alet lhs us $ Return $ TupRsingle $ Var (GroundRscalar tp) ix
-bindLet lhs us bnd = Alet lhs us bnd
 
 bindingEnv :: forall op t env env'. SimplifyOperation op => IdxSet env -> GLeftHandSide t env env' -> OperationAcc op env t -> InfoEnv env -> InfoEnv env'
 bindingEnv _ lhs (Compute expr) (InfoEnv environment) = InfoEnv $ weaken (weakenWithLHS lhs) $ go lhs expr environment
@@ -452,10 +436,11 @@ awhileSimplifyInvariant
   -> GroundVars     env a
   -> PreOpenAcc  op env a
 awhileSimplifyInvariant us cond step initial = case awhileDropInvariantFun step of
+  Exists SubTupRkeep -> Awhile us cond step initial
   Exists sub
     | Just Refl <- subTupPreserves tp sub -> Awhile us cond step initial
     | DeclareVars lhs k value <- declareVars $ subTupR sub tp ->
-      Alet lhs (subTupR sub us)
+      alet' lhs (subTupR sub us)
         (Awhile (subTupR sub us)
           (subTupFunctionArgument sub initial cond)
           (subTupFunctionArgument sub initial $ subTupFunctionResult sub step)
