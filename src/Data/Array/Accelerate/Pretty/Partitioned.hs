@@ -206,68 +206,35 @@ prettyFuseList :: Adoc -> [Adoc] -> Adoc
 prettyFuseList _ [] = ""
 prettyFuseList name docs = (hang 2 $ group $ vsep $ [name, tupled docs]) <> line
 
-instance PrettyOp op => PrettyOp (FlatCluster op) where
-  prettyOp _ = "cluster"
-  prettyOpWithArgs env (FlatCluster lhs sizes ops) args
-    | [op] <- ops = -- Cluster of one operation: print as normal operation
-      prettyFlatOp True env'' op
-    | otherwise =
-      annotate Execute "execute" <+> "{" <> line
-      <> indent 2 (vsep body) <> line <> "}"
-    where
-      env' = toEnv $ mapArgs (toPrettyArg env) args
-      (env'', count) = prettyFusedLHS env' env' 0 lhs sizes
-      ops' = map (prettyFlatOp False env'') ops
-      body
-        | count == 0 = ops'
-        | count < 10 = (let_ <+> hsep (punctuate comma
-            [ "%" <> viaShow i | i <- [0..count] ]
-          )) : ops'
-        | otherwise = (let_ <+> "%0 .. %" <> viaShow count) : ops'
-
-toEnv :: PreArgs f args -> Env f (FunToEnv args)
-toEnv ArgsNil = Env.Empty
-toEnv (a :>: as) = toEnv as `Env.Push` a
-
-prettyFusedLHS :: Env PrettyArg env0 -> Env PrettyArg env -> Int -> LeftHandSide OutR t env env' -> OutShapes env0 t -> (Env PrettyArg env', Int)
-prettyFusedLHS _ env fresh (LeftHandSideWildcard _) _ = (env, fresh)
-prettyFusedLHS env0 env fresh (LeftHandSideSingle _) (TupRsingle (OutShape idx)) =
-  (env `Env.Push` arg, fresh + 1)
+prettyFlatCluster :: PrettyOp op => Val env -> FlatCluster op env -> Adoc
+prettyFlatCluster env (FlatCluster fusedR fusedLHS ops) =
+  annotate Execute "execute" <+> "{" <> line
+    <> indent 2 (vsep body) <> line <> "}"
   where
-    arg = case Env.prj' idx env0 of
-      PrettyArgVarShape _ sh
-        -> PrettyArgArray Out sh $ TupRsingle $ Adoc' $ "%" <> viaShow fresh
-      PrettyArgOther sh
-        -> PrettyArgArray Out sh $ TupRsingle $ Adoc' $ "%" <> viaShow fresh
-prettyFusedLHS env0 env fresh (LeftHandSidePair lhs1 lhs2) (TupRpair o1 o2)
-  | (env', fresh') <- prettyFusedLHS env0 env fresh lhs1 o1
-  = prettyFusedLHS env0 env' fresh' lhs2 o2
-prettyFusedLHS _ _ _ _ _ = internalError "Tuple mismatch"
+    (env', count) = prettyFusedLHS env 0 fusedLHS
+    body
+      | count == 0 = ops'
+      | count < 10 = (let_ <+> hsep (punctuate comma
+          [ "%" <> viaShow i | i <- [0..count] ]
+        )) : ops'
+      | otherwise = (let_ <+> "%0 .. %" <> viaShow count) : ops'
+    ops' = map (prettyFlatOp False env') ops
 
-prettyFlatOp :: PrettyOp op => Bool -> Env PrettyArg env -> FlatOp op env -> Adoc
+prettyFusedLHS :: Val env -> Int -> GLeftHandSide t env env' -> (Val env', Int)
+prettyFusedLHS env fresh (LeftHandSideWildcard _) = (env, fresh)
+prettyFusedLHS env fresh (LeftHandSideSingle _) =
+  (env `Pretty.Push` ("%" <> viaShow fresh), fresh + 1)
+prettyFusedLHS env fresh (LeftHandSidePair lhs1 lhs2)
+  | (env', fresh') <- prettyFusedLHS env fresh lhs1
+  = prettyFusedLHS env' fresh' lhs2
+prettyFusedLHS _ _ _ = internalError "Tuple mismatch"
+
+prettyFlatOp :: PrettyOp op => Bool -> Val env -> FlatOp op env -> Adoc
 prettyFlatOp single env (FlatOp op args) =
   hang 2 $ group $ vsep $
     [ annotate Execute "execute" | single ]
     ++
     [
       prettyOp op,
-      tupled $ map (\(Exists a) -> prettyPrettyArg $ prettyFlatArg env a) $ argsToList args
+      prettyArgs env args
     ]
-
-prettyFlatArg :: forall env t. Env PrettyArg env -> FlatArg env t -> PrettyArg t
-prettyFlatArg env (FlatArgSingle idx) = Env.prj' idx env
-prettyFlatArg env (FlatArgArray _ _ tp bs) = go tp bs
-  where
-    go :: TypeR e -> FlatArgBuffers env m sh e -> PrettyArg (m sh e)
-    go (TupRpair t1 t2) (FlatArgBuffersPair l r)
-      | PrettyArgArray m' sh l' <- go t1 l
-      , PrettyArgArray _ _ r' <- go t2 r
-      = PrettyArgArray m' sh (TupRpair l' r')
-      | otherwise = PrettyArgOther "?"
-    go _ (FlatArgBuffersLive _ idx) = Env.prj' idx env
-    go _ (FlatArgBuffersFused _ idx) = case Env.prj' idx env of
-      PrettyArgArray _ sh (TupRsingle (Adoc' d))
-        -> PrettyArgArray In sh
-          $ TupRsingle $ Adoc' $ d <> " [fused]"
-      _ -> PrettyArgOther "?"
-    go _ _ = internalError "Tuple mismatch"

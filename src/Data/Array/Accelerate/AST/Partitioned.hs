@@ -6,6 +6,7 @@
 {-# LANGUAGE GADTs                  #-}
 {-# LANGUAGE LambdaCase             #-}
 {-# LANGUAGE MultiParamTypeClasses  #-}
+{-# LANGUAGE MultiWayIf             #-}
 {-# LANGUAGE OverloadedStrings      #-}
 {-# LANGUAGE PatternSynonyms        #-}
 {-# LANGUAGE QuantifiedConstraints  #-}
@@ -52,6 +53,7 @@ import Data.Array.Accelerate.Representation.Shape (ShapeR (..), shapeType, typeS
 import Data.Type.Equality
 import Unsafe.Coerce (unsafeCoerce)
 import Data.Array.Accelerate.Representation.Type
+import Data.Array.Accelerate.Representation.Ground
 import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.AST.Idx
 import Data.Array.Accelerate.AST.Environment
@@ -733,281 +735,195 @@ showSorted (a :>: args) = case a of
   LOp (ArgArray m _ _ _) (_,ls) _ -> show m <> "{" <> show ls <> "}" <> showSorted args
   _ -> showSorted args
 
-data FlatCluster op f where
+data FlatCluster op env where
   FlatCluster
-    :: LeftHandSide OutR t (FunToEnv f) env
-    -> OutShapes (FunToEnv f) t
-    -> [FlatOp op env]
-    -> FlatCluster op f
+    :: TypeR t
+    -> GLeftHandSide (Buffers t) env env'
+    -> [FlatOp op env']
+    -> FlatCluster op env
 
 data FlatOp op env where
   FlatOp
-    :: op opArgs
-    -> FlatArgs env opArgs
+    :: op args
+    -> Args env args
     -> FlatOp op env
-
-type FlatArgs env = PreArgs (FlatArg env)
-data FlatArg env t where
-  -- Perhaps require that 't' is not 'In sh e' or 'Out sh e'
-  FlatArgSingle
-    :: Idx env t
-    -> FlatArg env t
-
-  FlatArgArray
-    -- Perhaps require that 'm' is 'In' or 'Out'
-    :: Modifier m -- Not Mut
-    -> ShapeR sh
-    -> TypeR e
-    -> FlatArgBuffers env m sh e
-    -> FlatArg env (m sh e)
-
-data FlatArgBuffers env m sh t where
-  FlatArgBuffersPair
-    :: FlatArgBuffers env m sh l
-    -> FlatArgBuffers env m sh r
-    -> FlatArgBuffers env m sh (l, r)
-
-  FlatArgBuffersLive
-    :: TypeR t
-    -> Idx env (m sh t)
-    -> FlatArgBuffers env m sh t
-
-  FlatArgBuffersFused
-    :: TypeR t
-    -> Idx env (Out sh t)
-    -> FlatArgBuffers env In sh t
-
-data OutR a where
-  OutR :: ArrayR (Array sh e) -> OutR (Out sh e)
-
-type OutShapes env = TupR (OutShape env)
-data OutShape env a where
-  OutShape :: Idx env (Var' sh) -> OutShape env (Out sh e)
 
 instance Sink' (FlatOp op) where
   weaken' k (FlatOp op args) = FlatOp op $ mapArgs (weaken k) args
 
-instance Sink FlatArg where
-  weaken k (FlatArgSingle i) = FlatArgSingle $ weaken k i
-  weaken k (FlatArgArray m shr tp bs) = FlatArgArray m shr tp $ weakenFlatArgBuffers k bs
-
-weakenFlatArgBuffers :: env :> env' -> FlatArgBuffers env m sh t -> FlatArgBuffers env' m sh t
-weakenFlatArgBuffers k (FlatArgBuffersPair b1 b2)
-  = weakenFlatArgBuffers k b1 `FlatArgBuffersPair` weakenFlatArgBuffers k b2
-weakenFlatArgBuffers k (FlatArgBuffersLive tp idx)
-  = FlatArgBuffersLive tp $ weaken k idx
-weakenFlatArgBuffers k (FlatArgBuffersFused tp idx)
-  = FlatArgBuffersFused tp $ weaken k idx
-
-data ToFlatCluster op env where
+data ToFlatCluster op f where
   ToFlatCluster
-    :: TupR OutR a -- Fused away and dead output arrays
+    :: TypeR a -- Fused away and dead output arrays
     -- The OutR Vars should not be needed for the OutShapes, but we include them
     -- anyway to use the same index transformation for the OutShapes and the FlatOps.
-    -> (forall env'. FlattenEnv env env' -> Vars OutR env' a -> OutShapes env' a)
-    -> (forall env'. FlattenEnv env env' -> Vars OutR env' a -> [FlatOp op env'])
-    -> ToFlatCluster op env
+    -> (forall env'. Args env' f -> Vars GroundR env' (Buffers a) -> [FlatOp op env'])
+    -> ToFlatCluster op f
 
-data ToFlatArgs env t where
+data ToFlatArgs f t where
   ToFlatArgs
-    :: TupR OutR a -- Fused away and dead output arrays
-    -> (forall env'. FlattenEnv env env' -> OutShapes env' a)
-    -> (forall env'. FlattenEnv env env' -> Vars OutR env' a -> FlatArgs env' t)
-    -> ToFlatArgs env t
+    :: TypeR a -- Fused away and dead output arrays
+    -> (forall env'. Args env' f -> Vars GroundR env' (Buffers a) -> Args env' t)
+    -> ToFlatArgs f t
 
-data ToFlatArg env t where
+data ToFlatArg f t where
   ToFlatArg
-    :: TupR OutR a -- Fused away and dead output arrays
-    -> (forall env'. FlattenEnv env env' -> OutShapes env' a)
-    -> (forall env'. FlattenEnv env env' -> Vars OutR env' a -> FlatArg env' t)
-    -> ToFlatArg env t
+    :: TypeR a -- Fused away and dead output arrays
+    -> (forall env'. Args env' f -> Vars GroundR env' (Buffers a) -> Arg env' t)
+    -> ToFlatArg f t
 
-data ToFlatArgBuffers env m sh t where
+data ToFlatArgBuffers f t where
   ToFlatArgBuffers
-    :: TupR OutR a -- Fused away and dead output arrays
-    -> (forall env'. FlattenEnv env env' -> OutShapes env' a)
-    -> (forall env'. FlattenEnv env env' -> Vars OutR env' a -> FlatArgBuffers env' m sh t)
-    -> ToFlatArgBuffers env m sh t
+    :: TypeR a -- Fused away and dead output arrays
+    -> (forall env'. Args env' f -> Vars GroundR env' (Buffers a) -> GroundVars env' (Buffers t))
+    -> ToFlatArgBuffers f t
 
-data ToFlatFusion env envL envR where
+data ToFlatFusion fun funL funR where
   ToFlatFusion
-    :: TupR OutR a -- Fused away and dead output arrays
-    -> (forall env'. FlattenEnv env env' -> OutShapes env' a)
-    -> (forall env'. FlattenEnv env env' -> Vars OutR env' a -> FlattenEnv envL env')
-    -> (forall env'. FlattenEnv env env' -> Vars OutR env' a -> FlattenEnv envR env')
-    -> ToFlatFusion env envL envR
+    :: TypeR a -- Fused away and dead output arrays
+    -> (forall env'. Args env' fun -> Vars GroundR env' (Buffers a) -> Args env' funL)
+    -> (forall env'. Args env' fun -> Vars GroundR env' (Buffers a) -> Args env' funR)
+    -> ToFlatFusion fun funL funR
 
-data ToFlatIdx env t where
-  ToFlatIdxEqual :: Idx env t -> ToFlatIdx env t
-  ToFlatIdxFused :: Idx env (Out sh e) -> ToFlatIdx env (In sh e)
+toFlatClustered :: Clustered op f -> Args env f -> FlatCluster op env
+toFlatClustered (Clustered cluster _) args = toFlatCluster cluster args
 
-type FlattenEnv env env' = forall t. Idx env t -> ToFlatIdx env' t
-
-toFlatClustered :: Clustered op f -> FlatCluster op f
-toFlatClustered (Clustered cluster _) = toFlatCluster cluster
-
-toFlatCluster :: Cluster op f -> FlatCluster op f
-toFlatCluster cluster
-  | ToFlatCluster tp outs ops <- toFlatCluster' cluster
-  , DeclareVars lhs k values <- declareVars tp
+toFlatCluster :: Cluster op f -> Args env f -> FlatCluster op env
+toFlatCluster cluster args
+  | ToFlatCluster tp ops <- toFlatCluster' cluster
+  , DeclareVars lhs k values <- declareVars $ buffersR tp
   , values' <- values weakenId
-  = FlatCluster lhs
-    (mapTupR
-      (\(OutShape idx) -> OutShape $ fromMaybe (internalError "Out impossible") $ strengthenWithLHS lhs idx)
-      $ outs (ToFlatIdxEqual . weaken k) values'
-    )
-    $ ops (ToFlatIdxEqual . weaken k) values'
-toFlatCluster' :: Cluster op f -> ToFlatCluster op (FunToEnv f)
+  = FlatCluster
+    tp
+    lhs
+    $ ops (mapArgs (weaken k) args) values'
+
+toFlatCluster' :: forall op f. Cluster op f -> ToFlatCluster op f
 toFlatCluster' (Fused fusion l r)
-  | ToFlatCluster tp1 o1 l' <- toFlatCluster' l
-  , ToFlatFusion  tp2 o2 kLeft kRight <- travFusion fusion
-  , ToFlatCluster tp3 o3 r' <- toFlatCluster' r
+  | ToFlatCluster tp1 l' <- toFlatCluster' l
+  , ToFlatFusion  tp2 leftArgs rightArgs <- travFusion fusion
+  , ToFlatCluster tp3 r' <- toFlatCluster' r
   = case (tp1, tp2, tp3) of
       (_, TupRunit, TupRunit) ->
         ToFlatCluster tp1
-          (\k value -> o1 (kLeft k TupRunit) value)
-          $ \k value ->
-            l' (kLeft k TupRunit) value ++ r' (kRight k TupRunit) TupRunit
+          $ \args value ->
+            l' (leftArgs args TupRunit) value ++ r' (rightArgs args TupRunit) TupRunit
       (TupRunit, _, TupRunit) ->
         ToFlatCluster tp2
-          (\k _ -> o2 k)
-          $ \k value ->
-            l' (kLeft k value) TupRunit ++ r' (kRight k value) TupRunit
+          $ \args value ->
+            l' (leftArgs args value) TupRunit ++ r' (rightArgs args value) TupRunit
       (TupRunit, TupRunit, _) ->
         ToFlatCluster tp3
-          (\k value -> o3 (kRight k TupRunit) value)
-          $ \k value ->
-            l' (kLeft k TupRunit) TupRunit ++ r' (kRight k TupRunit) value
+          $ \args value ->
+            l' (leftArgs args TupRunit) TupRunit ++ r' (rightArgs args TupRunit) value
       -- This last case is the generic case. Only having this case would be
       -- sufficient, but the prior cases just prevent that we put many many
       -- TupRunits in the type.
       _ ->
         ToFlatCluster
           (tp1 `TupRpair` tp2 `TupRpair` tp3)
-          (\k value -> case value of
+          $ \args value -> case value of
             v1 `TupRpair` v2 `TupRpair` v3 ->
-              o1 (kLeft k v2) v1 `TupRpair` o2 k `TupRpair` o3 (kRight k v2) v3
-            _ -> internalError "Pair impossible"
-          )
-          $ \k value -> case value of
-            v1 `TupRpair` v2 `TupRpair` v3 ->
-              l' (kLeft k v2) v1 ++ r' (kRight k v2) v3
+              l' (leftArgs args v2) v1 ++ r' (rightArgs args v2) v3
             _ -> internalError "Pair impossible"
   where
-    travFusion :: Fusion largs rargs args -> ToFlatFusion (FunToEnv args) (FunToEnv largs) (FunToEnv rargs)
-    travFusion EmptyF = ToFlatFusion TupRunit (const TupRunit) (\_ _ -> \case {}) (\_ _ -> \case {})
+    travFusion :: Fusion largs rargs args -> ToFlatFusion args largs rargs
+    travFusion EmptyF = ToFlatFusion TupRunit (\_ _ -> ArgsNil) (\_ _ -> ArgsNil)
     travFusion (IntroI1 f) = travFusion (IntroL f)
     travFusion (IntroI2 f) = travFusion (IntroR f)
     travFusion (IntroO1 f) = travFusion (IntroL f)
     travFusion (IntroO2 f) = travFusion (IntroR f)
     travFusion (IntroL f)
-      | ToFlatFusion tp outs l r <- travFusion f
-      = ToFlatFusion tp (\k -> outs (succ k))
-        (\k value -> \case
-          ZeroIdx -> k ZeroIdx
-          SuccIdx idx -> l (succ k) value idx
-        )
-        (\k value -> r (succ k) value)
+      | ToFlatFusion tp l r <- travFusion f
+      = ToFlatFusion tp
+        (\(arg :>: args) value -> arg :>: l args value)
+        (\(_ :>: args) value -> r args value)
     travFusion (IntroR f)
-      | ToFlatFusion tp outs l r <- travFusion f
-      = ToFlatFusion tp (\k -> outs (succ k))
-        (\k value -> l (succ k) value)
-        (\k value -> \case
-          ZeroIdx -> k ZeroIdx
-          SuccIdx idx -> r ( succ k) value idx
-        )
+      | ToFlatFusion tp l r <- travFusion f
+      = ToFlatFusion tp
+        (\(_ :>: args) value -> l args value)
+        (\(arg :>: args) value -> arg :>: r args value)
     travFusion (Horizontal f)
-      | ToFlatFusion tp outs l r <- travFusion f
-      = ToFlatFusion tp (\k -> outs (succ k))
-        (\k value -> \case
-          ZeroIdx -> k ZeroIdx
-          SuccIdx idx -> l (succ k) value idx
-        )
-        (\k value -> \case
-          ZeroIdx -> k ZeroIdx
-          SuccIdx idx -> r (succ k) value idx
-        )
+      | ToFlatFusion tp l r <- travFusion f
+      = ToFlatFusion tp
+        (\(arg :>: args) value -> arg :>: l args value)
+        (\(arg :>: args) value -> arg :>: r args value)
     travFusion (Diagonal f)
-      | ToFlatFusion tp outs l r <- travFusion f
-      = ToFlatFusion tp (\k -> outs (succ k))
-        (\k value -> \case
-          ZeroIdx -> k ZeroIdx
-          SuccIdx idx -> l (succ k) value idx
+      | ToFlatFusion tp l r <- travFusion f
+      = ToFlatFusion tp
+        (\(arg :>: args) value -> arg :>: l args value)
+        (\(arg :>: args) value -> case arg of
+          ArgArray _ repr sh bs -> ArgArray In repr sh bs :>: r args value
         )
-        (\k value -> \case
-          ZeroIdx -> markFused $ k ZeroIdx
-          SuccIdx idx -> r (succ k) value idx
+    travFusion (Vertical repr@(ArrayR _ tp1) f)
+      | ToFlatFusion tp2 l r <- travFusion f
+      = ToFlatFusion (TupRpair tp1 tp2)
+        (\(arg :>: args) value -> if
+          | ArgVar sh <- arg
+          , TupRpair value1 value2 <- value ->
+            ArgArray Out repr
+              (mapTupR (\(Var tp idx) -> Var (GroundRscalar tp) idx) sh)
+              value1
+            :>: l args value2
+          | otherwise -> internalError "Pair impossible"
         )
-    travFusion (Vertical repr f)
-      | ToFlatFusion tp outs l r <- travFusion f
-      = ToFlatFusion
-        (TupRpair tp $ TupRsingle $ OutR repr)
-        (\k -> TupRpair (outs $ succ k) $ TupRsingle $ OutShape $ case k ZeroIdx of
-          ToFlatIdxEqual idx' -> idx'
+        (\(arg :>: args) value -> if
+          | ArgVar sh <- arg
+          , TupRpair value1 value2 <- value ->
+            ArgArray In repr
+              (mapTupR (\(Var tp idx) -> Var (GroundRscalar tp) idx) sh)
+              value1
+            :>: r args value2
+          | otherwise -> internalError "Pair impossible"
         )
-        (\k value -> case value of
-          TupRpair v1 (TupRsingle v2) -> \case
-            ZeroIdx -> ToFlatIdxEqual $ varIdx v2
-            SuccIdx idx -> l (succ k) v1 idx
-          _ -> internalError "Pair impossible"
-        )
-        (\k value -> case value of
-          TupRpair v1 (TupRsingle v2) -> \case
-            ZeroIdx -> ToFlatIdxFused $ varIdx v2
-            SuccIdx idx -> r (succ k) v1 idx
-          _ -> internalError "Pair impossible"
-        )
-
-    succ :: FlattenEnv (env, t) env' -> FlattenEnv env env'
-    succ f = f . SuccIdx
-
-    markFused :: ToFlatIdx env (Out sh e) -> ToFlatIdx env (In sh e)
-    markFused (ToFlatIdxEqual idx) = ToFlatIdxFused idx
-toFlatCluster' (SingleOp (Single op args) _)
-  | ToFlatArgs tp outs args' <- travArgs args
-  = ToFlatCluster tp (\k _ -> outs k) $ \k values -> [FlatOp op $ args' k values]
+toFlatCluster' (SingleOp (Single op opArgs) _)
+  | ToFlatArgs tp args' <- travArgs opArgs
+  = ToFlatCluster tp $ \args values -> [FlatOp op $ args' args values]
   where
-    travArgs :: ClusterArgs env f -> ToFlatArgs env f
-    travArgs ArgsNil = ToFlatArgs TupRunit (const TupRunit) $ \_ _ -> ArgsNil
+    travArgs :: ClusterArgs (FunToEnv f) f' -> ToFlatArgs f f'
+    travArgs ArgsNil = ToFlatArgs TupRunit $ \_ _ -> ArgsNil
     travArgs (a :>: as) = case (travArg a, travArgs as) of
-      (ToFlatArg TupRunit _ a', ToFlatArgs tp outs as') ->
-        ToFlatArgs tp outs $ \k values -> a' k TupRunit :>: as' k values
-      (ToFlatArg tp outs a', ToFlatArgs TupRunit _ as') ->
-        ToFlatArgs tp outs $ \k values -> a' k values :>: as' k TupRunit
-      (ToFlatArg t1 o1 a', ToFlatArgs t2 o2 as') ->
-        ToFlatArgs (TupRpair t1 t2) (\k -> o1 k `TupRpair` o2 k)
-          $ \k values -> case values of
-            TupRpair v1 v2 -> a' k v1 :>: as' k v2
+      (ToFlatArg TupRunit a', ToFlatArgs tp as') ->
+        ToFlatArgs tp $ \args values -> a' args TupRunit :>: as' args values
+      (ToFlatArg tp a', ToFlatArgs TupRunit as') ->
+        ToFlatArgs tp $ \args values -> a' args values :>: as' args TupRunit
+      (ToFlatArg t1 a', ToFlatArgs t2 as') ->
+        ToFlatArgs (TupRpair t1 t2)
+          $ \args values -> case values of
+            TupRpair v1 v2 -> a' args v1 :>: as' args v2
             TupRsingle _ -> internalError "Pair impossible"
 
-    travArg :: ClusterArg env t -> ToFlatArg env t
-    travArg (ClusterArgSingle idx) = ToFlatArg TupRunit (const TupRunit)
-      $ \k _ -> case k idx of
-        ToFlatIdxEqual idx' -> FlatArgSingle idx'
-        ToFlatIdxFused _ -> internalError "In argument not allowed in ClusterArgSingle"
+    travArg :: ClusterArg (FunToEnv f) t -> ToFlatArg f t
+    travArg (ClusterArgSingle idx) = ToFlatArg TupRunit $ \args _ -> funToEnvPrj args idx
     travArg (ClusterArgArray m shr tp bs)
-      | ToFlatArgBuffers fusedR outs f <- travBuffers shr bs
-      = ToFlatArg fusedR outs $ \k values -> FlatArgArray m shr tp $ f k values
+      | ToFlatArgBuffers fusedR bs' <- travBuffers bs
+      = ToFlatArg fusedR $ \args values ->
+        ArgArray
+          m
+          (ArrayR shr tp)
+          (findSize args bs)
+          (bs' args values)
 
-    travBuffers :: ShapeR sh -> ClusterArgBuffers env m sh t -> ToFlatArgBuffers env m sh t
-    travBuffers shr (ClusterArgBuffersPair b1 b2) = case (travBuffers shr b1, travBuffers shr b2) of
-      (ToFlatArgBuffers TupRunit _ f1, ToFlatArgBuffers tp outs f2) ->
-        ToFlatArgBuffers tp outs $ \k values -> f1 k TupRunit `FlatArgBuffersPair` f2 k values
-      (ToFlatArgBuffers tp outs f1, ToFlatArgBuffers TupRunit _ f2) ->
-        ToFlatArgBuffers tp outs $ \k values -> f1 k values `FlatArgBuffersPair` f2 k TupRunit
-      (ToFlatArgBuffers t1 o1 f1, ToFlatArgBuffers t2 o2 f2) ->
-        ToFlatArgBuffers (TupRpair t1 t2) (\k -> o1 k `TupRpair` o2 k) $ \k values -> case values of
-          TupRpair v1 v2 -> f1 k v1 `FlatArgBuffersPair` f2 k v2
+    findSize :: Args env f -> ClusterArgBuffers (FunToEnv f) m sh t -> GroundVars env sh
+    findSize args (ClusterArgBuffersPair b1 _) = findSize args b1
+    findSize args (ClusterArgBuffersLive _ idx) = case funToEnvPrj args idx of
+      ArgArray _ _ sh _ -> sh
+    findSize args (ClusterArgBuffersDead _ idx) = case funToEnvPrj args idx of
+      ArgVar vars -> mapTupR (\(Var tp idx) -> Var (GroundRscalar tp) idx) vars
+
+    travBuffers :: ClusterArgBuffers (FunToEnv f) m sh t -> ToFlatArgBuffers f t
+    travBuffers (ClusterArgBuffersPair b1 b2) = case (travBuffers b1, travBuffers b2) of
+      (ToFlatArgBuffers TupRunit f1, ToFlatArgBuffers tp f2) ->
+        ToFlatArgBuffers tp $ \args values -> f1 args TupRunit `TupRpair` f2 args values
+      (ToFlatArgBuffers tp f1, ToFlatArgBuffers TupRunit f2) ->
+        ToFlatArgBuffers tp $ \args values -> f1 args values `TupRpair` f2 args TupRunit
+      (ToFlatArgBuffers t1 f1, ToFlatArgBuffers t2 f2) ->
+        ToFlatArgBuffers (TupRpair t1 t2) $ \args values -> case values of
+          TupRpair v1 v2 -> f1 args v1 `TupRpair` f2 args v2
           TupRsingle _ -> internalError "Pair impossible"
-    travBuffers _   (ClusterArgBuffersLive tp idx) =
-      ToFlatArgBuffers TupRunit (const TupRunit) $ \k _ -> case k idx of
-        ToFlatIdxEqual idx' -> FlatArgBuffersLive tp idx'
-        ToFlatIdxFused idx' -> FlatArgBuffersFused tp idx'
-    travBuffers shr (ClusterArgBuffersDead tp idx) =
+    travBuffers (ClusterArgBuffersLive _ idx) =
+      ToFlatArgBuffers TupRunit $ \args _ -> case funToEnvPrj args idx of
+          ArgArray _ _ _ bs -> bs
+    travBuffers (ClusterArgBuffersDead tp _) =
       ToFlatArgBuffers
-        (TupRsingle $ OutR $ ArrayR shr tp)
-        (\k -> TupRsingle $ OutShape $ case k idx of
-          ToFlatIdxEqual idx' -> idx'
-        )
-        $ \_ value -> case value of
-          TupRsingle var -> FlatArgBuffersLive tp $ varIdx var
+        tp
+        $ \_ value -> value
