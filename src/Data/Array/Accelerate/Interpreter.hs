@@ -279,9 +279,9 @@ instance EncodeOperation InterpretOp where
 -- mkBackpermuteOr a b c d = Exec IBackpermuteOr (a :>: b :>: c :>: d :>: ArgsNil)
 
 instance SimplifyOperation InterpretOp where
-  detectCopy _          IMap         = detectMapCopies
-  detectCopy matchVars' IBackpermute = detectBackpermuteCopies matchVars'
-  detectCopy _ _                     = const []
+  detectCopy IMap         = detectMapCopies
+  detectCopy IBackpermute = detectBackpermuteCopies
+  detectCopy _            = const []
 
 instance SLVOperation InterpretOp where
   slvOperation IGenerate    = defaultSlvGenerate    IGenerate
