@@ -289,6 +289,9 @@ instance SLVOperation InterpretOp where
   slvOperation IBackpermute = defaultSlvBackpermute IBackpermute
   slvOperation _            = Nothing
 
+instance SetOpIndices InterpretOp where
+  setOpIndices _ _ _ _ = error "TODO"
+
 data InterpretKernel env where
   InterpretKernel :: Clustered InterpretOp args -> Args env args -> InterpretKernel env
 

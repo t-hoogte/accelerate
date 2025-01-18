@@ -47,9 +47,9 @@ import Data.Bifunctor
 import Data.Maybe (fromMaybe)
 import Data.Array.Accelerate.Trafo.Desugar (ArrayDescriptor(..))
 import Data.Array.Accelerate.Trafo.Operation.Simplify (SimplifyOperation(..))
-import Data.Array.Accelerate.Representation.Array (Array, Buffers, ArrayR (..))
+import Data.Array.Accelerate.Representation.Array (Array, Buffer, Buffers, ArrayR (..))
 import Data.Array.Accelerate.AST.LeftHandSide
-import Data.Array.Accelerate.Representation.Shape (ShapeR (..), shapeType, typeShape)
+import Data.Array.Accelerate.Representation.Shape (ShapeR (..), shapeType, typeShape, rank)
 import Data.Type.Equality
 import Unsafe.Coerce (unsafeCoerce)
 import Data.Array.Accelerate.Representation.Type
@@ -737,26 +737,55 @@ showSorted (a :>: args) = case a of
 
 data FlatCluster op env where
   FlatCluster
-    :: TypeR t
+    :: ShapeR sh
+    -> ELeftHandSide sh () idxEnv
+    -> GroundVars env sh
+    -> TypeR t
     -> GLeftHandSide (Buffers t) env env'
-    -> [FlatOp op env']
+    -> FlatOps op env' idxEnv
     -> FlatCluster op env
 
-data FlatOp op env where
+data FlatOps op env idxEnv where
+  FlatOpsNil :: FlatOps op env idxEnv
+
+  FlatOpsBind
+    :: ELeftHandSide t idxEnv idxEnv'
+    -> OpenExp idxEnv env t
+    -> FlatOps op env idxEnv'
+    -> FlatOps op env idxEnv
+
+  FlatOpsOp
+    :: FlatOp op env idxEnv
+    -> FlatOps op env idxEnv
+    -> FlatOps op env idxEnv
+
+data FlatOp op env idxEnv where
   FlatOp
     :: op args
     -> Args env args
-    -> FlatOp op env
+    -> IdxArgs idxEnv args
+    -> FlatOp op env idxEnv
 
-instance Sink' (FlatOp op) where
-  weaken' k (FlatOp op args) = FlatOp op $ mapArgs (weaken k) args
+instance Sink (FlatOp op) where
+  weaken k (FlatOp op args idxEnv) = FlatOp op (mapArgs (weaken k) args) idxEnv
+
+type IdxArgs idxEnv = PreArgs (IdxArg idxEnv)
+
+data IdxArg idxEnv t where
+  IdxArgIdx :: ExpVars idxEnv sh -> IdxArg idxEnv (m sh t)
+
+  IdxArgNone :: IdxArg idxEnv t
+
+instance Sink IdxArg where
+  weaken k (IdxArgIdx idxs) = IdxArgIdx $ mapTupR (weaken k) idxs
+  weaken _ IdxArgNone = IdxArgNone
 
 data ToFlatCluster op f where
   ToFlatCluster
     :: TypeR a -- Fused away and dead output arrays
     -- The OutR Vars should not be needed for the OutShapes, but we include them
     -- anyway to use the same index transformation for the OutShapes and the FlatOps.
-    -> (forall env'. Args env' f -> Vars GroundR env' (Buffers a) -> [FlatOp op env'])
+    -> (forall env'. Args env' f -> Vars GroundR env' (Buffers a) -> [FlatOp op env' ()])
     -> ToFlatCluster op f
 
 data ToFlatArgs f t where
@@ -784,18 +813,15 @@ data ToFlatFusion fun funL funR where
     -> (forall env'. Args env' fun -> Vars GroundR env' (Buffers a) -> Args env' funR)
     -> ToFlatFusion fun funL funR
 
-toFlatClustered :: Clustered op f -> Args env f -> FlatCluster op env
+toFlatClustered :: SetOpIndices op => Clustered op f -> Args env f -> FlatCluster op env
 toFlatClustered (Clustered cluster _) args = toFlatCluster cluster args
 
-toFlatCluster :: Cluster op f -> Args env f -> FlatCluster op env
+toFlatCluster :: SetOpIndices op => Cluster op f -> Args env f -> FlatCluster op env
 toFlatCluster cluster args
   | ToFlatCluster tp ops <- toFlatCluster' cluster
   , DeclareVars lhs k values <- declareVars $ buffersR tp
   , values' <- values weakenId
-  = FlatCluster
-    tp
-    lhs
-    $ ops (mapArgs (weaken k) args) values'
+  = flatOpsSetIndices tp lhs $ ops (mapArgs (weaken k) args) values'
 
 toFlatCluster' :: forall op f. Cluster op f -> ToFlatCluster op f
 toFlatCluster' (Fused fusion l r)
@@ -877,7 +903,9 @@ toFlatCluster' (Fused fusion l r)
         )
 toFlatCluster' (SingleOp (Single op opArgs) _)
   | ToFlatArgs tp args' <- travArgs opArgs
-  = ToFlatCluster tp $ \args values -> [FlatOp op $ args' args values]
+  = ToFlatCluster tp $ \args values ->
+    let args'' = args' args values
+    in [FlatOp op args'' $ mapArgs (\_ -> IdxArgNone) args'']
   where
     travArgs :: ClusterArgs (FunToEnv f) f' -> ToFlatArgs f f'
     travArgs ArgsNil = ToFlatArgs TupRunit $ \_ _ -> ArgsNil
@@ -927,3 +955,278 @@ toFlatCluster' (SingleOp (Single op opArgs) _)
       ToFlatArgBuffers
         tp
         $ \_ value -> value
+
+class SetOpIndices op where
+  setOpIndices
+    -- Get the index variable for the next dimension / loop nest.
+    -- If this returns Nothing, there is no next dimension.
+    -- setOpIndices may also return Nothing then.
+    :: (forall sh. ExpVars idxEnv sh -> Maybe (Idx idxEnv Int))
+    -> op args
+    -> Args env args
+    -- IdxArgs where only the Out positions are filled
+    -> IdxArgs idxEnv args
+    -- IdxArgs where both the In and Out positions are filled.
+    -- Returns Nothing if (and only if) there were not enough iteration variables,
+    -- i.e. when the function was called with too low dimensionality
+    -> Maybe (Either (IsBackpermute args) (IdxArgs idxEnv args))
+
+data IsBackpermute args where
+  IsBackpermute :: IsBackpermute (Fun' (sh' -> sh) -> In sh t -> Out sh' t -> ())
+
+flatOpsSetIndices
+  :: forall op env env' t.
+     SetOpIndices op
+  => TypeR t
+  -> GLeftHandSide (Buffers t) env env'
+  -> [FlatOp op env' ()]
+  -> FlatCluster op env
+flatOpsSetIndices fusedR fusedLHS ops = go ShapeRz
+  where
+    go :: ShapeR sh -> FlatCluster op env
+    go shr
+      | DeclareVars lhs _ value <- declareVars $ shapeType shr
+      , indices <- map (\(Exists idx) -> expectIntVar idx) $ flattenTupR $ value weakenId
+      , (_, depths) <- initDepths lhs 0 Empty
+      , Just (FlatOpsSetIndices _ _ k bnd ops') <- flatTrySetIndices indices depths ops
+      , ops'' <- ops' weakenId
+      = FlatCluster
+        shr
+        lhs
+        (mapTupR
+          (weaken $ Weaken $ fromMaybe (internalError "Iteration size refers to local environment, which should only contain buffers, not sizes") . strengthenWithLHS fusedLHS)
+          $ findIterationSizes ops'' shr $ value k)
+        fusedR
+        fusedLHS
+        $ bnd ops''
+      | otherwise
+      = go (ShapeRsnoc shr)
+
+    expectIntVar :: ExpVar e a -> Idx e Int
+    expectIntVar (Var tp idx)
+      | Just Refl <- matchScalarType tp scalarTypeInt
+      = idx
+      | otherwise
+      = internalError "All scalar types in shapeType should be Int"
+
+flatTrySetIndices
+  :: SetOpIndices op
+  => [Idx idxEnv Int] -- Indices for the different dimensions
+  -> Env (C.Const Int) idxEnv
+  -> [FlatOp op env ()]
+  -> Maybe (FlatOpsSetIndices op env idxEnv)
+flatTrySetIndices _ depths [] =
+  Just $ FlatOpsSetIndices PEnd depths weakenId id $ const FlatOpsNil
+flatTrySetIndices indices depths (FlatOp op args _ : ops)
+  | Just (FlatOpsSetIndices env depths' k bnd ops') <- flatTrySetIndices indices depths ops
+  , Just idxArgs1 <- setOutArgsIndices (map (weaken k) indices) env args
+  , Just e <- setOpIndices
+      (\vars ->
+        let
+          d = findDepth depths' vars + 1
+        in weaken k <$> indices !? d)
+      op
+      args
+      idxArgs1
+  = case e of
+      Left IsBackpermute
+        | ArgFun (Lam lhs (Body idxTransform))
+          :>: _ <- args
+        -- Find the indices of the output
+        , _ :>: _ :>: IdxArgIdx idxs :>: _ <- idxArgs1
+        -- Weaken lhs into the right environment
+        , Exists lhs' <- rebuildLHS lhs
+        -- Declare new variables for the input indices
+        -- (the output of the index transformation)
+        , DeclareVars lhs1 k1 values1 <- declareVars $ expType idxTransform
+        , expr <- Let lhs' (expVars idxs) (weakenE (sinkWithLHS lhs lhs' weakenEmpty) idxTransform)
+        -- Construct the final IdxArgs, where the input is annotated with the correct indices
+        , idxArgs2 <- IdxArgNone
+          :>: IdxArgIdx (values1 weakenId)
+          :>: IdxArgIdx (mapTupR (weaken k1) idxs)
+          :>: ArgsNil
+        -- Weaken all bindings in the environment
+        , env' <- mapPartialEnv (weaken k1) env
+        -- Store newly introduced index variables in environment
+        , env'' <- propagateArrayIndices env' args idxArgs2
+        , depth <- findDepth depths' idxs
+        -> Just $ FlatOpsSetIndices
+          env''
+          (pushDepths lhs1 depth depths')
+          (k1 .> k)
+          (bnd . FlatOpsBind lhs1 expr)
+          $ \k0 -> FlatOpsOp
+            (FlatOp op args $ mapArgs (weaken k0) idxArgs2)
+            (ops' (k0 .> k1))
+        | otherwise
+        -> internalError "No index available for output of backpermute"
+      Right idxArgs2
+        | env' <- propagateArrayIndices env args idxArgs2
+        -> Just $ FlatOpsSetIndices env' depths' k bnd
+          $ \k0 -> FlatOpsOp (FlatOp op args $ mapArgs (weaken k0) idxArgs2) (ops' k0)
+  | otherwise
+  = Nothing
+
+findDepth
+  :: Env (C.Const Int) idxEnv'
+  -> Vars r idxEnv' sh
+  -> Int
+findDepth depths vars
+  | [] <- ds = -1
+  | otherwise = maximum ds
+  where
+    ds = map (\(Exists (Var _ idx)) -> C.getConst $ prj' idx depths) $ flattenTupR vars
+
+pushDepths
+  :: LeftHandSide ScalarType sh' idxEnv' idxEnv''
+  -> Int
+  -> Env (C.Const Int) idxEnv'
+  -> Env (C.Const Int) idxEnv''
+pushDepths (LeftHandSideWildcard _) _ depths = depths
+pushDepths (LeftHandSideSingle _)   d depths = depths `Push` C.Const d
+pushDepths (LeftHandSidePair l1 l2) d depths =
+  pushDepths l2 d $ pushDepths l1 d depths
+
+initDepths
+  :: LeftHandSide ScalarType sh idxEnv idxEnv'
+  -> Int
+  -> Env (C.Const Int) idxEnv
+  -> (Int, Env (C.Const Int) idxEnv')
+initDepths (LeftHandSideWildcard _) d depths = (d, depths)
+initDepths (LeftHandSideSingle _)   d depths = (d + 1, depths `Push` C.Const d)
+initDepths (LeftHandSidePair l1 l2) d depths
+  | (d', depths') <- initDepths l1 d depths
+  = initDepths l2 d' depths'
+
+setOutArgsIndices
+  :: forall env idxEnv' args.
+     [Idx idxEnv' Int]
+  -> PartialEnv (BufferIdx idxEnv') env
+  -> Args env args
+  -> Maybe (IdxArgs idxEnv' args)
+setOutArgsIndices indices env args = go args
+  where
+    go :: Args env t -> Maybe (IdxArgs idxEnv' t)
+    go (ArgArray Out (ArrayR shr _) _ bs :>: as)
+      | Just as' <- go as
+      , Just idxs <- findIndices shr bs <|> findDefault (rank shr) shr
+      = Just $ IdxArgIdx idxs :>: as'
+      | otherwise
+      = Nothing
+    go (_ :>: as) = (IdxArgNone :>:) <$> go as
+    go ArgsNil = Just ArgsNil
+
+    findIndices :: ShapeR sh -> GroundVars env b -> Maybe (ExpVars idxEnv' sh)
+    findIndices shr (TupRsingle (Var _ idx))
+      | Just (BufferIdx idxs) <- prjPartial idx env
+      = case matchTypeR (shapeType shr) (varsType idxs) of
+          Just Refl -> Just idxs
+          Nothing -> internalError "Buffer is fused in cluster with ranks. This should not be fused, is fusion missing a constraint?"
+    findIndices shr (TupRpair v1 v2) = findIndices shr v1 <|> findIndices shr v2
+    findIndices _ _ = Nothing
+
+    findDefault :: Int -> ShapeR sh -> Maybe (ExpVars idxEnv' sh)
+    findDefault _ ShapeRz = Just $ TupRunit
+    findDefault rank' (ShapeRsnoc shr)
+      | Just idx <- indices !? (rank' - 1)
+      , Just idxs <- findDefault (rank' - 1) shr
+      = Just (idxs `TupRpair` TupRsingle (Var scalarTypeInt idx))
+      | otherwise = Nothing
+
+propagateArrayIndices
+  :: forall env idxEnv' args.
+     PartialEnv (BufferIdx idxEnv') env
+  -> Args env args
+  -> IdxArgs idxEnv' args
+  -> PartialEnv (BufferIdx idxEnv') env
+propagateArrayIndices env (a :>: as) (i :>: is)
+  | IdxArgIdx idxs <- i
+  , ArgArray In _ _ bs <- a
+  = go env' idxs bs
+  | otherwise
+  = env'
+  where
+    env' = propagateArrayIndices env as is
+    go
+      :: PartialEnv (BufferIdx idxEnv') env
+      -> ExpVars idxEnv' sh
+      -> GroundVars env t
+      -> PartialEnv (BufferIdx idxEnv') env
+    go env'' idxs (TupRsingle (Var _ buffer))
+      = partialUpdate (BufferIdx idxs) buffer env''
+    go env'' idxs (TupRpair v1 v2)
+      = go (go env'' idxs v1) idxs v2
+    go env'' _ TupRunit = env''
+propagateArrayIndices env ArgsNil ArgsNil = env
+
+data BufferIdx idxEnv t where
+  -- Only used for Buffer values, but to encode that we need some more type information
+  -- and we don't really benefit from this guarantee.
+  BufferIdx :: ExpVars idxEnv sh -> BufferIdx idxEnv t
+
+instance Sink BufferIdx where
+  weaken k (BufferIdx vars) = BufferIdx $ mapTupR (weaken k) vars
+
+data FlatOpsSetIndices op env idxEnv where
+  FlatOpsSetIndices
+    :: PartialEnv (BufferIdx idxEnv') env
+    -> Env (C.Const Int) idxEnv' -- The iteration depth of each index variable
+    -> idxEnv :> idxEnv'
+    -> (FlatOps op env idxEnv' -> FlatOps op env idxEnv)
+    -> (forall idxEnv''. idxEnv' :> idxEnv'' -> FlatOps op env idxEnv'')
+    -> FlatOpsSetIndices op env idxEnv
+
+findIterationSizes
+  :: FlatOps op env idxEnv
+  -> ShapeR sh
+  -> ExpVars idxEnv sh
+  -> GroundVars env sh
+findIterationSizes _ ShapeRz _ = TupRunit
+findIterationSizes ops (ShapeRsnoc shr) (vars `TupRpair` TupRsingle var)
+  | Just sz <- findIterationSize ops (varIdx var)
+  , szs <- findIterationSizes ops shr vars
+  = szs `TupRpair` TupRsingle (Var (GroundRscalar scalarTypeInt) sz)
+  | otherwise
+  = internalError "Could not find iteration size. Is an iteration index not used?"
+findIterationSizes _ _ _ = internalError "Tuple mismatch"
+
+findIterationSize
+  :: forall op env idxEnv.
+     FlatOps op env idxEnv
+  -> Idx idxEnv Int
+  -> Maybe (Idx env Int)
+findIterationSize FlatOpsNil _ = Nothing
+findIterationSize (FlatOpsBind lhs _ ops) idx =
+  findIterationSize ops $ weaken (weakenWithLHS lhs) idx
+findIterationSize (FlatOpsOp (FlatOp _ args idxArgs) ops) idx
+  = findInArgs args idxArgs `expectSame` findIterationSize ops idx
+  where
+    findInArgs :: Args env f -> IdxArgs idxEnv f -> Maybe (Idx env Int)
+    findInArgs (a :>: as) (i :>: is) = findInArg a i `expectSame` findInArgs as is
+    findInArgs ArgsNil ArgsNil = Nothing
+
+    findInArg :: Arg env t -> IdxArg idxEnv t -> Maybe (Idx env Int)
+    findInArg (ArgArray _ _ sh _) (IdxArgIdx idxs) = findInVars sh idxs
+    findInArg _ _ = Nothing
+
+    findInVars :: GroundVars env sh -> ExpVars idxEnv sh -> Maybe (Idx env Int)
+    findInVars (TupRpair v1 v2) (TupRpair i1 i2) = findInVars v1 i1 `expectSame` findInVars v2 i2
+    findInVars TupRunit TupRunit = Nothing
+    findInVars (TupRsingle v) (TupRsingle i)
+      | Just Refl <- matchIdx (varIdx i) idx = Just $ varIdx v
+      | otherwise = Nothing
+    findInVars _ _ = internalError "Tuple mismatch"
+
+expectSame :: Maybe (Idx env a) -> Maybe (Idx env a) -> Maybe (Idx env a)
+expectSame Nothing m = m
+expectSame m Nothing = m
+expectSame (Just a) (Just b)
+  | a == b = Just a
+  | otherwise = internalError "Mismatch in iteration size: the iteration sizes of different operations in a cluster are different"
+
+(!?) :: [a] -> Int -> Maybe a
+[] !? _ = Nothing
+(x : _) !? 0 = Just x
+(_ : xs) !? i
+  | i < 0 = Nothing
+  | otherwise = xs !? (i - 1)

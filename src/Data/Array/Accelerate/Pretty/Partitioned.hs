@@ -207,18 +207,32 @@ prettyFuseList _ [] = ""
 prettyFuseList name docs = (hang 2 $ group $ vsep $ [name, tupled docs]) <> line
 
 prettyFlatCluster :: PrettyOp op => Val env -> FlatCluster op env -> Adoc
-prettyFlatCluster env (FlatCluster fusedR fusedLHS ops) =
+prettyFlatCluster env (FlatCluster _ idxLhs sizes fusedR fusedLHS ops) =
   annotate Execute "execute" <+> "{" <> line
-    <> indent 2 (vsep body) <> line <> "}"
+    <> indent 2 (forIndices <> vsep body) <> line <> "}"
   where
+    (forIndices, idxEnv, _) = prettyIdxLHS env Pretty.Empty 0 idxLhs sizes
     (env', count) = prettyFusedLHS env 0 fusedLHS
     body
       | count == 0 = ops'
       | count < 10 = (let_ <+> hsep (punctuate comma
-          [ "%" <> viaShow i | i <- [0..count] ]
+          [ "%" <> viaShow i | i <- [0 .. count - 1] ]
         )) : ops'
       | otherwise = (let_ <+> "%0 .. %" <> viaShow count) : ops'
-    ops' = map (prettyFlatOp False env') ops
+    ops' = prettyFlatOps False env' idxEnv ops
+
+prettyIdxLHS :: Val env0 -> Val env -> Int -> ELeftHandSide sh env env' -> GroundVars env0 sh -> (Adoc, Val env', Int)
+prettyIdxLHS _ env fresh (LeftHandSideWildcard _) _ = (mempty, env, fresh)
+prettyIdxLHS env0 env fresh (LeftHandSideSingle _) (TupRsingle sz) =
+  (doc, env `Pretty.Push` var, fresh + 1)
+  where
+    doc = for_ <+> var <+> in_ <+> "0 .. " <> prettyVar env0 sz <> hardline
+    var = "i" <> viaShow fresh
+prettyIdxLHS env0 env fresh (LeftHandSidePair lhs1 lhs2) (TupRpair sz1 sz2)
+  | (doc1, env1, fresh1) <- prettyIdxLHS env0 env fresh lhs1 sz1
+  , (doc2, env2, fresh2) <- prettyIdxLHS env0 env1 fresh1 lhs2 sz2
+  = (doc1 <> doc2, env2, fresh2)
+prettyIdxLHS _ _ _ _ _ = internalError "Tuple mismatch"
 
 prettyFusedLHS :: Val env -> Int -> GLeftHandSide t env env' -> (Val env', Int)
 prettyFusedLHS env fresh (LeftHandSideWildcard _) = (env, fresh)
@@ -227,14 +241,39 @@ prettyFusedLHS env fresh (LeftHandSideSingle _) =
 prettyFusedLHS env fresh (LeftHandSidePair lhs1 lhs2)
   | (env', fresh') <- prettyFusedLHS env fresh lhs1
   = prettyFusedLHS env' fresh' lhs2
-prettyFusedLHS _ _ _ = internalError "Tuple mismatch"
 
-prettyFlatOp :: PrettyOp op => Bool -> Val env -> FlatOp op env -> Adoc
-prettyFlatOp single env (FlatOp op args) =
+prettyFlatOps :: PrettyOp op => Bool -> Val env -> Val idxEnv -> FlatOps op env idxEnv -> [Adoc]
+prettyFlatOps single env idxEnv = \case
+  FlatOpsNil -> []
+  FlatOpsOp op ops ->
+    prettyFlatOp single env idxEnv op : prettyFlatOps single env idxEnv ops
+  FlatOpsBind lhs expr ops
+    | (idxEnv', lhs') <- prettyLhs False 'i' idxEnv lhs ->
+      (let_ <+> lhs' <+> "=" <+> prettyPreOpenExp context0 (prettyArrayInstr env) idxEnv expr)
+      : prettyFlatOps single env idxEnv' ops
+
+prettyFlatOp :: PrettyOp op => Bool -> Val env -> Val idxEnv -> FlatOp op env idxEnv -> Adoc
+prettyFlatOp single env idxEnv (FlatOp op args idxArgs) =
   hang 2 $ group $ vsep $
     [ annotate Execute "execute" | single ]
     ++
     [
       prettyOp op,
-      prettyArgs env args
+      tupled $ prettyArgsWithIdx env idxEnv args idxArgs
     ]
+
+prettyArgsWithIdx :: Val env -> Val idxEnv -> Args env args -> IdxArgs idxEnv args -> [Adoc]
+prettyArgsWithIdx _ _ ArgsNil _ = []
+prettyArgsWithIdx env idxEnv (a :>: as) (i :>: is)
+  = prettyArgWithIdx env idxEnv a i : prettyArgsWithIdx env idxEnv as is
+
+prettyArgWithIdx :: Val env -> Val idxEnv -> Arg env arg -> IdxArg idxEnv arg -> Adoc
+prettyArgWithIdx env idxEnv arg idxArg
+  | ArgArray{} <- arg = case idxArg of
+    IdxArgIdx idx ->
+      let idx' = map (\(Exists var) -> prettyVar idxEnv var) $ flattenTupR idx
+      in arg' <> " @ " <> tupled idx'
+    IdxArgNone -> arg' <> " @ ?"
+  | otherwise = arg'
+  where
+    arg' = prettyArg env arg
