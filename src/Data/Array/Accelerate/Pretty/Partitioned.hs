@@ -247,9 +247,12 @@ prettyFlatOps single env idxEnv = \case
   FlatOpsNil -> []
   FlatOpsOp op ops ->
     prettyFlatOp single env idxEnv op : prettyFlatOps single env idxEnv ops
-  FlatOpsBind lhs expr ops
+  FlatOpsBind depth lhs expr ops
     | (idxEnv', lhs') <- prettyLhs False 'i' idxEnv lhs ->
-      (let_ <+> lhs' <+> "=" <+> prettyPreOpenExp context0 (prettyArrayInstr env) idxEnv expr)
+      ( ( if depth == 0
+          then "-- Backpermute outside all for loops"
+          else "-- Backpermute in for loop of i" <> viaShow (depth - 1) <> hardline)
+        <> let_ <+> lhs' <+> "=" <+> prettyPreOpenExp context0 (prettyArrayInstr env) idxEnv expr)
       : prettyFlatOps single env idxEnv' ops
 
 prettyFlatOp :: PrettyOp op => Bool -> Val env -> Val idxEnv -> FlatOp op env idxEnv -> Adoc
@@ -270,9 +273,13 @@ prettyArgsWithIdx env idxEnv (a :>: as) (i :>: is)
 prettyArgWithIdx :: Val env -> Val idxEnv -> Arg env arg -> IdxArg idxEnv arg -> Adoc
 prettyArgWithIdx env idxEnv arg idxArg
   | ArgArray{} <- arg = case idxArg of
-    IdxArgIdx idx ->
-      let idx' = map (\(Exists var) -> prettyVar idxEnv var) $ flattenTupR idx
-      in arg' <> " @ " <> tupled idx'
+    IdxArgIdx depth idx ->
+      let
+        idx' = map (\(Exists var) -> prettyVar idxEnv var) $ flattenTupR idx
+        comment
+          | depth == 0 = "{- outside for loops -}"
+          | otherwise = "{- in for i" <> viaShow (depth - 1) <> " -}"
+      in arg' <> " @ " <> tupled idx' <+> comment
     IdxArgNone -> arg' <> " @ ?"
   | otherwise = arg'
   where

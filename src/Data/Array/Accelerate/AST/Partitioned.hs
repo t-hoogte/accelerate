@@ -749,7 +749,8 @@ data FlatOps op env idxEnv where
   FlatOpsNil :: FlatOps op env idxEnv
 
   FlatOpsBind
-    :: ELeftHandSide t idxEnv idxEnv'
+    :: LoopDepth
+    -> ELeftHandSide t idxEnv idxEnv'
     -> OpenExp idxEnv env t
     -> FlatOps op env idxEnv'
     -> FlatOps op env idxEnv
@@ -766,18 +767,24 @@ data FlatOp op env idxEnv where
     -> IdxArgs idxEnv args
     -> FlatOp op env idxEnv
 
+-- The nesting depth of something in nested loops.
+-- In absence of backpermutes, this is equal to the dimensionality.
+-- E.g., a zero-dimensional index or array is in nesting depth zero,
+-- and a two-dimensional index or array is in nesting depth two.
+type LoopDepth = Int
+
 instance Sink (FlatOp op) where
   weaken k (FlatOp op args idxEnv) = FlatOp op (mapArgs (weaken k) args) idxEnv
 
 type IdxArgs idxEnv = PreArgs (IdxArg idxEnv)
 
 data IdxArg idxEnv t where
-  IdxArgIdx :: ExpVars idxEnv sh -> IdxArg idxEnv (m sh t)
+  IdxArgIdx :: LoopDepth -> ExpVars idxEnv sh -> IdxArg idxEnv (m sh t)
 
   IdxArgNone :: IdxArg idxEnv t
 
 instance Sink IdxArg where
-  weaken k (IdxArgIdx idxs) = IdxArgIdx $ mapTupR (weaken k) idxs
+  weaken k (IdxArgIdx depth idxs) = IdxArgIdx depth $ mapTupR (weaken k) idxs
   weaken _ IdxArgNone = IdxArgNone
 
 data ToFlatCluster op f where
@@ -958,10 +965,13 @@ toFlatCluster' (SingleOp (Single op opArgs) _)
 
 class SetOpIndices op where
   setOpIndices
-    -- Get the index variable for the next dimension / loop nest.
-    -- If this returns Nothing, there is no next dimension.
-    -- setOpIndices may also return Nothing then.
-    :: (forall sh. ExpVars idxEnv sh -> Maybe (Idx idxEnv Int))
+    -- Get the index variable for the given dimension / loop depth.
+    -- For instance, when calling this function with 0 as argument, it will return
+    -- the iteration variable for the outer loop. Note that the contents of that
+    -- loop is in LoopDepth 1, not zero.
+    -- If there is no loop nesting for that depth, this function returns Nothing.
+    -- In this case, and only in this case, setOpIndices may return Nothing.
+    :: (LoopDepth -> Maybe (Idx idxEnv Int))
     -> op args
     -> Args env args
     -- IdxArgs where only the Out positions are filled
@@ -987,8 +997,7 @@ flatOpsSetIndices fusedR fusedLHS ops = go ShapeRz
     go shr
       | DeclareVars lhs _ value <- declareVars $ shapeType shr
       , indices <- map (\(Exists idx) -> expectIntVar idx) $ flattenTupR $ value weakenId
-      , (_, depths) <- initDepths lhs 0 Empty
-      , Just (FlatOpsSetIndices _ _ k bnd ops') <- flatTrySetIndices indices depths ops
+      , Just (FlatOpsSetIndices _ k bnd ops') <- flatTrySetIndices indices ops
       , ops'' <- ops' weakenId
       = FlatCluster
         shr
@@ -1009,22 +1018,26 @@ flatOpsSetIndices fusedR fusedLHS ops = go ShapeRz
       | otherwise
       = internalError "All scalar types in shapeType should be Int"
 
+data FlatOpsSetIndices op env idxEnv where
+  FlatOpsSetIndices
+    :: PartialEnv (BufferIdx idxEnv') env
+    -> idxEnv :> idxEnv'
+    -> (FlatOps op env idxEnv' -> FlatOps op env idxEnv)
+    -> (forall idxEnv''. idxEnv' :> idxEnv'' -> FlatOps op env idxEnv'')
+    -> FlatOpsSetIndices op env idxEnv
+
 flatTrySetIndices
   :: SetOpIndices op
   => [Idx idxEnv Int] -- Indices for the different dimensions
-  -> Env (C.Const Int) idxEnv
   -> [FlatOp op env ()]
   -> Maybe (FlatOpsSetIndices op env idxEnv)
-flatTrySetIndices _ depths [] =
-  Just $ FlatOpsSetIndices PEnd depths weakenId id $ const FlatOpsNil
-flatTrySetIndices indices depths (FlatOp op args _ : ops)
-  | Just (FlatOpsSetIndices env depths' k bnd ops') <- flatTrySetIndices indices depths ops
+flatTrySetIndices _ [] =
+  Just $ FlatOpsSetIndices PEnd weakenId id $ const FlatOpsNil
+flatTrySetIndices indices (FlatOp op args _ : ops)
+  | Just (FlatOpsSetIndices env k bnd ops') <- flatTrySetIndices indices ops
   , Just idxArgs1 <- setOutArgsIndices (map (weaken k) indices) env args
   , Just e <- setOpIndices
-      (\vars ->
-        let
-          d = findDepth depths' vars + 1
-        in weaken k <$> indices !? d)
+      (\d -> weaken k <$> indices !? d)
       op
       args
       idxArgs1
@@ -1033,7 +1046,7 @@ flatTrySetIndices indices depths (FlatOp op args _ : ops)
         | ArgFun (Lam lhs (Body idxTransform))
           :>: _ <- args
         -- Find the indices of the output
-        , _ :>: _ :>: IdxArgIdx idxs :>: _ <- idxArgs1
+        , _ :>: _ :>: IdxArgIdx depth idxs :>: _ <- idxArgs1
         -- Weaken lhs into the right environment
         , Exists lhs' <- rebuildLHS lhs
         -- Declare new variables for the input indices
@@ -1042,19 +1055,17 @@ flatTrySetIndices indices depths (FlatOp op args _ : ops)
         , expr <- Let lhs' (expVars idxs) (weakenE (sinkWithLHS lhs lhs' weakenEmpty) idxTransform)
         -- Construct the final IdxArgs, where the input is annotated with the correct indices
         , idxArgs2 <- IdxArgNone
-          :>: IdxArgIdx (values1 weakenId)
-          :>: IdxArgIdx (mapTupR (weaken k1) idxs)
+          :>: IdxArgIdx depth (values1 weakenId)
+          :>: IdxArgIdx depth (mapTupR (weaken k1) idxs)
           :>: ArgsNil
         -- Weaken all bindings in the environment
         , env' <- mapPartialEnv (weaken k1) env
         -- Store newly introduced index variables in environment
         , env'' <- propagateArrayIndices env' args idxArgs2
-        , depth <- findDepth depths' idxs
         -> Just $ FlatOpsSetIndices
           env''
-          (pushDepths lhs1 depth depths')
           (k1 .> k)
-          (bnd . FlatOpsBind lhs1 expr)
+          (bnd . FlatOpsBind depth lhs1 expr)
           $ \k0 -> FlatOpsOp
             (FlatOp op args $ mapArgs (weaken k0) idxArgs2)
             (ops' (k0 .> k1))
@@ -1062,41 +1073,10 @@ flatTrySetIndices indices depths (FlatOp op args _ : ops)
         -> internalError "No index available for output of backpermute"
       Right idxArgs2
         | env' <- propagateArrayIndices env args idxArgs2
-        -> Just $ FlatOpsSetIndices env' depths' k bnd
+        -> Just $ FlatOpsSetIndices env' k bnd
           $ \k0 -> FlatOpsOp (FlatOp op args $ mapArgs (weaken k0) idxArgs2) (ops' k0)
   | otherwise
   = Nothing
-
-findDepth
-  :: Env (C.Const Int) idxEnv'
-  -> Vars r idxEnv' sh
-  -> Int
-findDepth depths vars
-  | [] <- ds = -1
-  | otherwise = maximum ds
-  where
-    ds = map (\(Exists (Var _ idx)) -> C.getConst $ prj' idx depths) $ flattenTupR vars
-
-pushDepths
-  :: LeftHandSide ScalarType sh' idxEnv' idxEnv''
-  -> Int
-  -> Env (C.Const Int) idxEnv'
-  -> Env (C.Const Int) idxEnv''
-pushDepths (LeftHandSideWildcard _) _ depths = depths
-pushDepths (LeftHandSideSingle _)   d depths = depths `Push` C.Const d
-pushDepths (LeftHandSidePair l1 l2) d depths =
-  pushDepths l2 d $ pushDepths l1 d depths
-
-initDepths
-  :: LeftHandSide ScalarType sh idxEnv idxEnv'
-  -> Int
-  -> Env (C.Const Int) idxEnv
-  -> (Int, Env (C.Const Int) idxEnv')
-initDepths (LeftHandSideWildcard _) d depths = (d, depths)
-initDepths (LeftHandSideSingle _)   d depths = (d + 1, depths `Push` C.Const d)
-initDepths (LeftHandSidePair l1 l2) d depths
-  | (d', depths') <- initDepths l1 d depths
-  = initDepths l2 d' depths'
 
 setOutArgsIndices
   :: forall env idxEnv' args.
@@ -1108,20 +1088,22 @@ setOutArgsIndices indices env args = go args
   where
     go :: Args env t -> Maybe (IdxArgs idxEnv' t)
     go (ArgArray Out (ArrayR shr _) _ bs :>: as)
-      | Just as' <- go as
-      , Just idxs <- findIndices shr bs <|> findDefault (rank shr) shr
-      = Just $ IdxArgIdx idxs :>: as'
+      | Just as' <- go as = case findIndices shr bs of
+        Just (depth, idxs) -> Just $ IdxArgIdx depth idxs :>: as'
+        Nothing -> case findDefault (rank shr) shr of
+          Just idxs -> Just $ IdxArgIdx (rank shr) idxs :>: as'
+          Nothing -> Nothing
       | otherwise
       = Nothing
     go (_ :>: as) = (IdxArgNone :>:) <$> go as
     go ArgsNil = Just ArgsNil
 
-    findIndices :: ShapeR sh -> GroundVars env b -> Maybe (ExpVars idxEnv' sh)
+    findIndices :: ShapeR sh -> GroundVars env b -> Maybe (LoopDepth, ExpVars idxEnv' sh)
     findIndices shr (TupRsingle (Var _ idx))
-      | Just (BufferIdx idxs) <- prjPartial idx env
+      | Just (BufferIdx depth idxs) <- prjPartial idx env
       = case matchTypeR (shapeType shr) (varsType idxs) of
-          Just Refl -> Just idxs
-          Nothing -> internalError "Buffer is fused in cluster with ranks. This should not be fused, is fusion missing a constraint?"
+          Just Refl -> Just (depth, idxs)
+          Nothing -> internalError "Buffer is fused in cluster with different ranks. This should not be fused, is fusion missing a constraint?"
     findIndices shr (TupRpair v1 v2) = findIndices shr v1 <|> findIndices shr v2
     findIndices _ _ = Nothing
 
@@ -1140,41 +1122,33 @@ propagateArrayIndices
   -> IdxArgs idxEnv' args
   -> PartialEnv (BufferIdx idxEnv') env
 propagateArrayIndices env (a :>: as) (i :>: is)
-  | IdxArgIdx idxs <- i
+  | IdxArgIdx depth idxs <- i
   , ArgArray In _ _ bs <- a
-  = go env' idxs bs
+  = go env' depth idxs bs
   | otherwise
   = env'
   where
     env' = propagateArrayIndices env as is
     go
       :: PartialEnv (BufferIdx idxEnv') env
+      -> LoopDepth
       -> ExpVars idxEnv' sh
       -> GroundVars env t
       -> PartialEnv (BufferIdx idxEnv') env
-    go env'' idxs (TupRsingle (Var _ buffer))
-      = partialUpdate (BufferIdx idxs) buffer env''
-    go env'' idxs (TupRpair v1 v2)
-      = go (go env'' idxs v1) idxs v2
-    go env'' _ TupRunit = env''
+    go env'' depth idxs (TupRsingle (Var _ buffer))
+      = partialUpdate (BufferIdx depth idxs) buffer env''
+    go env'' depth idxs (TupRpair v1 v2)
+      = go (go env'' depth idxs v1) depth idxs v2
+    go env'' _ _ TupRunit = env''
 propagateArrayIndices env ArgsNil ArgsNil = env
 
 data BufferIdx idxEnv t where
   -- Only used for Buffer values, but to encode that we need some more type information
   -- and we don't really benefit from this guarantee.
-  BufferIdx :: ExpVars idxEnv sh -> BufferIdx idxEnv t
+  BufferIdx :: LoopDepth -> ExpVars idxEnv sh -> BufferIdx idxEnv t
 
 instance Sink BufferIdx where
-  weaken k (BufferIdx vars) = BufferIdx $ mapTupR (weaken k) vars
-
-data FlatOpsSetIndices op env idxEnv where
-  FlatOpsSetIndices
-    :: PartialEnv (BufferIdx idxEnv') env
-    -> Env (C.Const Int) idxEnv' -- The iteration depth of each index variable
-    -> idxEnv :> idxEnv'
-    -> (FlatOps op env idxEnv' -> FlatOps op env idxEnv)
-    -> (forall idxEnv''. idxEnv' :> idxEnv'' -> FlatOps op env idxEnv'')
-    -> FlatOpsSetIndices op env idxEnv
+  weaken k (BufferIdx depth vars) = BufferIdx depth $ mapTupR (weaken k) vars
 
 findIterationSizes
   :: FlatOps op env idxEnv
@@ -1196,7 +1170,7 @@ findIterationSize
   -> Idx idxEnv Int
   -> Maybe (Idx env Int)
 findIterationSize FlatOpsNil _ = Nothing
-findIterationSize (FlatOpsBind lhs _ ops) idx =
+findIterationSize (FlatOpsBind _ lhs _ ops) idx =
   findIterationSize ops $ weaken (weakenWithLHS lhs) idx
 findIterationSize (FlatOpsOp (FlatOp _ args idxArgs) ops) idx
   = findInArgs args idxArgs `expectSame` findIterationSize ops idx
@@ -1206,7 +1180,7 @@ findIterationSize (FlatOpsOp (FlatOp _ args idxArgs) ops) idx
     findInArgs ArgsNil ArgsNil = Nothing
 
     findInArg :: Arg env t -> IdxArg idxEnv t -> Maybe (Idx env Int)
-    findInArg (ArgArray _ _ sh _) (IdxArgIdx idxs) = findInVars sh idxs
+    findInArg (ArgArray _ _ sh _) (IdxArgIdx _ idxs) = findInVars sh idxs
     findInArg _ _ = Nothing
 
     findInVars :: GroundVars env sh -> ExpVars idxEnv sh -> Maybe (Idx env Int)
