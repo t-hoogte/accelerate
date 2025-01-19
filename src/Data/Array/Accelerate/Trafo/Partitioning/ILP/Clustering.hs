@@ -36,7 +36,6 @@ import Data.Array.Accelerate.Analysis.Match
 import Data.Array.Accelerate.Error
 
 import qualified Data.Map as M
-import Unsafe.Coerce (unsafeCoerce)
 import qualified Data.Graph as G
 import qualified Data.Set as S
 import Data.Maybe (fromJust)
@@ -295,19 +294,6 @@ data FoldType op env
 
 louttovar :: LabelledArgOp op env (Out sh e) -> LabelledArgOp op env (Var' sh)
 louttovar (LOp a (_,ls) b) = LOp (outvar a) (NotArr, ls) b -- unsafe marker: maybe this NotArr ends up a problem?
-
-
-{- [NOTE unsafeCoerce result type]
-
-  Because we lose some type information by rebuilding the AST from scratch, we use
-  unsafeCoerce to tell GHC what the result type of the computation is.
-  TypeApplications allows us to specify the exact types unsafeCoerce works on,
-  which in turn helps retain as much typesafety as possible. Whereever this note
-  is found, unsafeCoerce's type is restricted to only work on the result type.
-  In particular, we take care to not allow unsafeCoerce to mess with environment types,
-  as they are tricky to get right and we really want GHC to check our work.
-
--}
 
 tryUpdateList :: (a -> Bool) -> (a -> a) -> [a] -> Maybe [a]
 tryUpdateList _ _ [] = Nothing
