@@ -207,11 +207,11 @@ prettyFuseList _ [] = ""
 prettyFuseList name docs = (hang 2 $ group $ vsep $ [name, tupled docs]) <> line
 
 prettyFlatCluster :: PrettyOp op => Val env -> FlatCluster op env -> Adoc
-prettyFlatCluster env (FlatCluster _ idxLhs sizes fusedR fusedLHS ops) =
+prettyFlatCluster env (FlatCluster _ idxLhs sizes directions fusedR fusedLHS ops) =
   annotate Execute "execute" <+> "{" <> line
     <> indent 2 (forIndices <> vsep body) <> line <> "}"
   where
-    (forIndices, idxEnv, _) = prettyIdxLHS env Pretty.Empty 0 idxLhs sizes
+    (forIndices, idxEnv, _) = prettyIdxLHS env Pretty.Empty 0 idxLhs sizes directions
     (env', count) = prettyFusedLHS env 0 fusedLHS
     body
       | count == 0 = ops'
@@ -221,18 +221,23 @@ prettyFlatCluster env (FlatCluster _ idxLhs sizes fusedR fusedLHS ops) =
       | otherwise = (let_ <+> "%0 .. %" <> viaShow count) : ops'
     ops' = prettyFlatOps False env' idxEnv ops
 
-prettyIdxLHS :: Val env0 -> Val env -> Int -> ELeftHandSide sh env env' -> GroundVars env0 sh -> (Adoc, Val env', Int)
-prettyIdxLHS _ env fresh (LeftHandSideWildcard _) _ = (mempty, env, fresh)
-prettyIdxLHS env0 env fresh (LeftHandSideSingle _) (TupRsingle sz) =
+prettyIdxLHS :: Val env0 -> Val env -> Int -> ELeftHandSide sh env env' -> GroundVars env0 sh -> TupR LoopDirection sh -> (Adoc, Val env', Int)
+prettyIdxLHS _ env fresh (LeftHandSideWildcard _) _ _ = (mempty, env, fresh)
+prettyIdxLHS env0 env fresh (LeftHandSideSingle _) (TupRsingle sz) (TupRsingle direction) =
   (doc, env `Pretty.Push` var, fresh + 1)
   where
-    doc = for_ <+> var <+> in_ <+> "0 .. " <> prettyVar env0 sz <> hardline
+    doc = for_ <+> var <+> in_ <+> "0 .. " <> prettyVar env0 sz <> direction' <> hardline
     var = "i" <> viaShow fresh
-prettyIdxLHS env0 env fresh (LeftHandSidePair lhs1 lhs2) (TupRpair sz1 sz2)
-  | (doc1, env1, fresh1) <- prettyIdxLHS env0 env fresh lhs1 sz1
-  , (doc2, env2, fresh2) <- prettyIdxLHS env0 env1 fresh1 lhs2 sz2
+    direction' = case direction of
+      LoopAny -> mempty
+      LoopMonotone -> " [monotone]"
+      LoopAscending -> " [ascending]"
+      LoopDescending -> " [descending]"
+prettyIdxLHS env0 env fresh (LeftHandSidePair lhs1 lhs2) (TupRpair sz1 sz2) (TupRpair d1 d2)
+  | (doc1, env1, fresh1) <- prettyIdxLHS env0 env fresh lhs1 sz1 d1
+  , (doc2, env2, fresh2) <- prettyIdxLHS env0 env1 fresh1 lhs2 sz2 d2
   = (doc1 <> doc2, env2, fresh2)
-prettyIdxLHS _ _ _ _ _ = internalError "Tuple mismatch"
+prettyIdxLHS _ _ _ _ _ _ = internalError "Tuple mismatch"
 
 prettyFusedLHS :: Val env -> Int -> GLeftHandSide t env env' -> (Val env', Int)
 prettyFusedLHS env fresh (LeftHandSideWildcard _) = (env, fresh)

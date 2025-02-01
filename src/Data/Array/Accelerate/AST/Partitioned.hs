@@ -740,10 +740,21 @@ data FlatCluster op env where
     :: ShapeR sh
     -> ELeftHandSide sh () idxEnv
     -> GroundVars env sh
+    -> TupR LoopDirection sh
     -> TypeR t
     -> GLeftHandSide (Buffers t) env env'
     -> FlatOps op env' idxEnv
     -> FlatCluster op env
+
+data LoopDirection t where
+  -- Any order; there are no dependencies between iterations of the loop
+  LoopAny :: LoopDirection Int
+  -- Either ascending or descending
+  LoopMonotone :: LoopDirection Int
+  -- from 0 to n - 1
+  LoopAscending :: LoopDirection Int
+  -- from n - 1 to 0
+  LoopDescending :: LoopDirection Int
 
 data FlatOps op env idxEnv where
   FlatOpsNil :: FlatOps op env idxEnv
@@ -981,6 +992,13 @@ class SetOpIndices op where
     -- i.e. when the function was called with too low dimensionality
     -> Maybe (Either (IsBackpermute args) (IdxArgs idxEnv args))
 
+  getOpLoopDirections
+    :: op args
+    -> Args env args
+    -> IdxArgs idxEnv args
+    -> [(Idx idxEnv Int, LoopDirection Int)]
+  getOpLoopDirections _ _ _ = []
+
 data IsBackpermute args where
   IsBackpermute :: IsBackpermute (Fun' (sh' -> sh) -> In sh t -> Out sh' t -> ())
 
@@ -999,12 +1017,21 @@ flatOpsSetIndices fusedR fusedLHS ops = go ShapeRz
       , indices <- map (\(Exists idx) -> expectIntVar idx) $ flattenTupR $ value weakenId
       , Just (FlatOpsSetIndices _ k bnd ops') <- flatTrySetIndices indices ops
       , ops'' <- ops' weakenId
+      , directions <- getOpsLoopDirections ops''
       = FlatCluster
         shr
         lhs
         (mapTupR
           (weaken $ Weaken $ fromMaybe (internalError "Iteration size refers to local environment, which should only contain buffers, not sizes") . strengthenWithLHS fusedLHS)
           $ findIterationSizes ops'' shr $ value k)
+        (mapTupR
+          (\(Var tp idx) -> case prjPartial idx directions of
+            Just dir -> dir
+            Nothing
+              | SingleScalarType (NumSingleType (IntegralNumType TypeInt)) <- tp -> LoopAny
+              | otherwise -> internalError "Expected Int variable"
+          )
+          $ value k)
         fusedR
         fusedLHS
         $ bnd ops''
@@ -1204,3 +1231,23 @@ expectSame (Just a) (Just b)
 (_ : xs) !? i
   | i < 0 = Nothing
   | otherwise = xs !? (i - 1)
+
+getOpsLoopDirections :: forall op env idxEnv. SetOpIndices op => FlatOps op env idxEnv -> PartialEnv LoopDirection idxEnv
+getOpsLoopDirections flatOps = partialEnvFromList join $ map (\(idx, dir) -> EnvBinding idx dir) $ go flatOps
+  where
+    join :: LoopDirection t -> LoopDirection t -> LoopDirection t
+    join LoopAny d = d
+    join d LoopAny = d
+    join LoopMonotone d = d
+    join d LoopMonotone = d
+    join LoopAscending LoopAscending = LoopAscending
+    join LoopAscending LoopDescending = LoopDescending
+    join _ _ = internalError "Illegal cluster: an ascending (left-to-right) operation like scanl was fused with a descending (right-to-left) operation like scanr"
+
+    go
+      :: FlatOps op env idxEnv
+      -> [(Idx idxEnv Int, LoopDirection Int)]
+    go (FlatOpsBind _ _ _ _) = internalError "Did not expect a Bind here"
+    go (FlatOpsOp (FlatOp op args idxArgs) ops)
+      = getOpLoopDirections op args idxArgs ++ go ops
+    go FlatOpsNil = []
