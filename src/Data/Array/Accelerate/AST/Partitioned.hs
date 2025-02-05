@@ -1298,3 +1298,12 @@ getOpsLoopDirections flatOps = partialEnvFromList join $ map (\(idx, dir) -> Env
     go (FlatOpsOp (FlatOp op args idxArgs) ops)
       = getOpLoopDirections op args idxArgs ++ go ops
     go FlatOpsNil = []
+
+-- Returns the number of outermost dimensions (loops)
+-- that have order LoopAny
+flatClusterIndependentLoopDepth :: FlatCluster op env -> LoopDepth
+flatClusterIndependentLoopDepth (FlatCluster _ _ _ dirs _ _ _)
+  = length $ takeWhile isAny $ flattenTupR dirs
+  where
+    isAny (Exists LoopAny) = True
+    isAny _ = False
