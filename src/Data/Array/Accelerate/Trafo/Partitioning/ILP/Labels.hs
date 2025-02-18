@@ -138,7 +138,7 @@ reindexLabelledArgs = reindexPreArgs reindexLabelledArg
 
 -- | Keeps track of which array in the environment belongs to which label
 data LabelEnv env where
-  LabelEnvNil  :: LabelEnv ()
+  LabelEnvNil :: LabelEnv ()
   (:>>:)      :: ELabels -> LabelEnv t -> LabelEnv (t, s)
 instance Semigroup (LabelEnv env) where
   LabelEnvNil <> LabelEnvNil = LabelEnvNil
